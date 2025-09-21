@@ -1,5 +1,5 @@
-use magaya::{Result, VERSION, APP_NAME};
-use tracing::{info, error};
+use magaya::{Result, APP_NAME, VERSION};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
