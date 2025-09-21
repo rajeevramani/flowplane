@@ -12,12 +12,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 // Import envoy-types for proper Envoy protobuf types
 use envoy_types::pb::envoy::service::discovery::v3::{
-    aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
-    DiscoveryRequest, DiscoveryResponse, DeltaDiscoveryRequest, DeltaDiscoveryResponse,
+    aggregated_discovery_service_server::{
+        AggregatedDiscoveryService, AggregatedDiscoveryServiceServer,
+    },
+    DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
 use envoy_types::pb::google::protobuf::Any;
 
@@ -95,8 +97,10 @@ impl MinimalAggregatedDiscoveryService {
 
 #[tonic::async_trait]
 impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
-    type StreamAggregatedResourcesStream = Pin<Box<dyn Stream<Item = std::result::Result<DiscoveryResponse, Status>> + Send>>;
-    type DeltaAggregatedResourcesStream = Pin<Box<dyn Stream<Item = std::result::Result<DeltaDiscoveryResponse, Status>> + Send>>;
+    type StreamAggregatedResourcesStream =
+        Pin<Box<dyn Stream<Item = std::result::Result<DiscoveryResponse, Status>> + Send>>;
+    type DeltaAggregatedResourcesStream =
+        Pin<Box<dyn Stream<Item = std::result::Result<DeltaDiscoveryResponse, Status>> + Send>>;
 
     async fn stream_aggregated_resources(
         &self,
@@ -162,7 +166,9 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
         });
 
         let out_stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(out_stream) as Self::StreamAggregatedResourcesStream))
+        Ok(Response::new(
+            Box::pin(out_stream) as Self::StreamAggregatedResourcesStream
+        ))
     }
 
     async fn delta_aggregated_resources(
@@ -175,7 +181,9 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
         let (_tx, rx) = mpsc::channel(1);
         let out_stream = ReceiverStream::new(rx);
 
-        Ok(Response::new(Box::pin(out_stream) as Self::DeltaAggregatedResourcesStream))
+        Ok(Response::new(
+            Box::pin(out_stream) as Self::DeltaAggregatedResourcesStream
+        ))
     }
 }
 
@@ -206,7 +214,8 @@ pub async fn start_minimal_xds_server() -> Result<()> {
     info!("XDS server listening on {}", addr);
 
     // Start the server
-    server.await
+    server
+        .await
         .map_err(|e| crate::Error::Transport(format!("XDS server failed: {}", e)))?;
 
     Ok(())
@@ -235,7 +244,7 @@ mod tests {
     #[tokio::test]
     async fn test_minimal_ads_service_creation() {
         let state = Arc::new(XdsState::new(XdsConfig::default()));
-        let service = MinimalAggregatedDiscoveryService::new(state);
+        let _service = MinimalAggregatedDiscoveryService::new(state);
 
         // Basic test that service can be created
         assert!(true); // Placeholder - in real tests we'd test the service methods

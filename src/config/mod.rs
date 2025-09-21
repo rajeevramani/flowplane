@@ -6,17 +6,9 @@
 use crate::Result;
 
 /// Minimal application configuration for Checkpoint 1
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     pub xds: XdsConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            xds: XdsConfig::default(),
-        }
-    }
 }
 
 /// XDS server configuration
@@ -43,8 +35,8 @@ impl Config {
             .parse()
             .map_err(|e| crate::Error::config(format!("Invalid XDS port: {}", e)))?;
 
-        let xds_bind_address = std::env::var("MAGAYA_XDS_BIND_ADDRESS")
-            .unwrap_or_else(|_| "0.0.0.0".to_string());
+        let xds_bind_address =
+            std::env::var("MAGAYA_XDS_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
 
         Ok(Self {
             xds: XdsConfig {
@@ -69,6 +61,10 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
+        // Clean up any existing vars first
+        env::remove_var("MAGAYA_XDS_PORT");
+        env::remove_var("MAGAYA_XDS_BIND_ADDRESS");
+
         // Set environment variables
         env::set_var("MAGAYA_XDS_PORT", "9090");
         env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
