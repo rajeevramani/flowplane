@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Documentation
+README.md
+CHANGELOG.md
+LICENSE
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Rust
+target/
+**/*.rs.bk
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Local development
+.local/
+.tmp/
+.cache/
+
+# macOS
+.DS_Store
+
+# Coverage
+coverage/
+*.profraw
+
+# Test databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Claude Code
+.claude/
+CLAUDE.md

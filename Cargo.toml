@@ -8,51 +8,52 @@ edition = "2021"
 tokio = { version = "1.47.1", features = ["full"] }
 
 # REST API framework
-axum = { version = "0.8.4", features = ["json", "tokio", "tower-log", "headers"] }
-tower = "0.5.2"
-tower-http = { version = "0.6.6", features = ["trace", "cors", "timeout", "limit", "auth"] }
-tower-health = "0.1.1"
-tower-governor = "0.4.2"
+axum = { version = "0.8.4", features = ["macros"] }
+axum-extra = { version = "0.10.1", features = ["typed-header", "cookie"] }
+tower = "0.5.1"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower_governor = "0.8.0"
 
-# Envoy xDS and protobuf
+# Envoy xDS and protobuf - matched to PoC proven versions
 envoy-types = "0.7.0"
-tonic = "0.14.2"
-prost = "0.14.1"
+tonic = { version = "0.14.0", features = ["tls-ring"] }
+tonic-reflection = "0.14.0"
+prost = "0.14.0"
 
 # Configuration and state management
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"
-serde_yml = "0.0.13"
+serde_yml = "0.0.12"
 
 # Storage and persistence
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "sqlite", "json", "migrate", "chrono", "uuid"] }
 
-# Authentication and security
-jsonwebtoken = "9.3.0"
-argon2 = "0.5.3"
+# Authentication and security - aligned with PoC
+jsonwebtoken = "9.3.1"
+bcrypt = "0.17"
 ring = "0.17.14"
-base64 = "0.22.1"
+base64 = "0.22"
+async-trait = "0.1.88"
+rand = "0.8"
 
-# Observability and monitoring
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-metrics = "0.24.2"
-metrics-exporter-prometheus = "0.17.2"
-opentelemetry = "0.27.1"
-opentelemetry-jaeger = "0.26.0"
+# Observability and monitoring - enhanced like PoC
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
 
 # Error handling and validation
-anyhow = "1.0.100"
-thiserror = "1.0.69"
+anyhow = "1.0"
+thiserror = "2.0"
 validator = { version = "0.20.0", features = ["derive"] }
 
 # Configuration and environment
-config = "0.15.16"
+config = "0.15"
 clap = { version = "4.5.48", features = ["derive"] }
 
 # Utilities
-uuid = { version = "1.18", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4.41", features = ["serde"] }
+time = "0.3.41"
 
 [dev-dependencies]
 tokio-test = "0.4"
