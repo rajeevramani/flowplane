@@ -1,56 +1,44 @@
 //! # Error Handling
 //!
-//! This module provides comprehensive error handling for the Magaya control plane.
-//! It defines custom error types using `thiserror` and provides consistent error
-//! handling patterns throughout the application.
+//! This module provides error handling for the Magaya control plane.
+//! It defines custom error types using `thiserror` for the minimal XDS server.
 
-pub mod types;
+/// Custom result type for Magaya operations
+pub type Result<T> = std::result::Result<T, Error>;
 
-pub use types::{MagayaError, Result};
+/// Main error type for the Magaya control plane
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    /// Configuration errors
+    #[error("Configuration error: {0}")]
+    Config(String),
 
-/// Error context for adding additional information to errors
-pub trait ErrorContext<T> {
-    /// Add context to an error
-    fn with_context<F>(self, f: F) -> Result<T>
-    where
-        F: FnOnce() -> String;
+    /// Network transport errors (gRPC, HTTP)
+    #[error("Transport error: {0}")]
+    Transport(String),
+
+    /// I/O errors
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Internal server errors
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
-impl<T, E> ErrorContext<T> for std::result::Result<T, E>
-where
-    E: Into<MagayaError>,
-{
-    fn with_context<F>(self, f: F) -> Result<T>
-    where
-        F: FnOnce() -> String,
-    {
-        self.map_err(|e| {
-            let mut error = e.into();
-            error.add_context(f());
-            error
-        })
+impl Error {
+    /// Create a new configuration error
+    pub fn config<S: Into<String>>(message: S) -> Self {
+        Self::Config(message.into())
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::errors::MagayaError;
+    /// Create a new transport error
+    pub fn transport<S: Into<String>>(message: S) -> Self {
+        Self::Transport(message.into())
+    }
 
-    #[test]
-    fn test_error_context() {
-        let result: std::result::Result<(), std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
-
-        let error = result
-            .with_context(|| "Failed to read configuration file".to_string())
-            .unwrap_err();
-
-        match error {
-            MagayaError::Io { source: _, context } => {
-                assert!(context.contains("Failed to read configuration file"));
-            }
-            _ => panic!("Expected IoError"),
-        }
+    /// Create a new internal error
+    pub fn internal<S: Into<String>>(message: S) -> Self {
+        Self::Internal(message.into())
     }
 }

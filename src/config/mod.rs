@@ -1,155 +1,95 @@
 //! # Configuration Management
 //!
-//! This module provides comprehensive configuration management for the Magaya control plane.
-//! It supports multiple configuration sources including files, environment variables,
-//! and command-line arguments.
+//! This module provides minimal configuration management for the Magaya control plane.
+//! For Checkpoint 1, we only need basic configuration support.
 
-pub mod settings;
+use crate::Result;
 
-pub use settings::{AppConfig, DatabaseConfig, ServerConfig, ObservabilityConfig, AuthConfig};
+/// Minimal application configuration for Checkpoint 1
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub xds: XdsConfig,
+}
 
-use crate::errors::{MagayaError, Result};
-use config::{Config, Environment, File};
-use std::path::Path;
-
-/// Load application configuration from multiple sources
-///
-/// Configuration is loaded in the following order (later sources override earlier ones):
-/// 1. Default values
-/// 2. Configuration file (if specified)
-/// 3. Environment variables with MAGAYA_ prefix
-/// 4. Command line arguments (via clap, handled separately)
-pub fn load_config<P: AsRef<Path>>(config_path: Option<P>) -> Result<AppConfig> {
-    let mut builder = Config::builder();
-
-    // Add default configuration
-    builder = builder.add_source(Config::try_from(&AppConfig::default())?);
-
-    // Add configuration file if specified
-    if let Some(path) = config_path {
-        let path = path.as_ref();
-        if path.exists() {
-            builder = builder.add_source(File::from(path));
-        } else {
-            return Err(MagayaError::config(format!(
-                "Configuration file not found: {}",
-                path.display()
-            )));
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            xds: XdsConfig::default(),
         }
     }
-
-    // Add environment variables with MAGAYA_ prefix
-    builder = builder.add_source(
-        Environment::with_prefix("MAGAYA")
-            .separator("_")
-            .try_parsing(true),
-    );
-
-    // Build the configuration
-    let config = builder
-        .build()
-        .map_err(|e| MagayaError::config_with_source("Failed to build configuration", Box::new(e)))?;
-
-    // Deserialize into AppConfig
-    let app_config: AppConfig = config
-        .try_deserialize()
-        .map_err(|e| MagayaError::config_with_source("Failed to deserialize configuration", Box::new(e)))?;
-
-    // Validate the configuration
-    app_config.validate()?;
-
-    Ok(app_config)
 }
 
-/// Load configuration from environment variables only
-/// Useful for containerized deployments
-pub fn load_config_from_env() -> Result<AppConfig> {
-    load_config::<&str>(None)
+/// XDS server configuration
+#[derive(Debug, Clone)]
+pub struct XdsConfig {
+    pub bind_address: String,
+    pub port: u16,
 }
 
-/// Load configuration from a YAML file
-pub fn load_config_from_file<P: AsRef<Path>>(path: P) -> Result<AppConfig> {
-    load_config(Some(path))
+impl Default for XdsConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: "0.0.0.0".to_string(),
+            port: 18000,
+        }
+    }
+}
+
+impl Config {
+    /// Create configuration from environment variables
+    pub fn from_env() -> Result<Self> {
+        let xds_port = std::env::var("MAGAYA_XDS_PORT")
+            .unwrap_or_else(|_| "18000".to_string())
+            .parse()
+            .map_err(|e| crate::Error::config(format!("Invalid XDS port: {}", e)))?;
+
+        let xds_bind_address = std::env::var("MAGAYA_XDS_BIND_ADDRESS")
+            .unwrap_or_else(|_| "0.0.0.0".to_string());
+
+        Ok(Self {
+            xds: XdsConfig {
+                bind_address: xds_bind_address,
+                port: xds_port,
+            },
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
-    use tempfile::NamedTempFile;
-    use std::io::Write;
 
     #[test]
-    fn test_load_default_config() {
-        let config = load_config_from_env().unwrap();
-        assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 8080);
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.xds.bind_address, "0.0.0.0");
+        assert_eq!(config.xds.port, 18000);
     }
 
     #[test]
-    fn test_load_config_from_env() {
+    fn test_config_from_env() {
         // Set environment variables
-        env::set_var("MAGAYA_SERVER_PORT", "9090");
-        env::set_var("MAGAYA_DATABASE_URL", "postgresql://test:test@localhost/test");
+        env::set_var("MAGAYA_XDS_PORT", "9090");
+        env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
 
-        let config = load_config_from_env().unwrap();
-        assert_eq!(config.server.port, 9090);
-        assert_eq!(config.database.url, "postgresql://test:test@localhost/test");
-
-        // Clean up
-        env::remove_var("MAGAYA_SERVER_PORT");
-        env::remove_var("MAGAYA_DATABASE_URL");
-    }
-
-    #[test]
-    fn test_load_config_from_file() {
-        let yaml_content = r#"
-server:
-  host: "0.0.0.0"
-  port: 8081
-database:
-  url: "postgresql://localhost/magaya"
-  max_connections: 20
-"#;
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        temp_file.write_all(yaml_content.as_bytes()).unwrap();
-
-        let config = load_config_from_file(temp_file.path()).unwrap();
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, 8081);
-        assert_eq!(config.database.max_connections, 20);
-    }
-
-    #[test]
-    fn test_load_config_nonexistent_file() {
-        let result = load_config_from_file("/nonexistent/file.yaml");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Configuration file not found"));
-    }
-
-    #[test]
-    fn test_config_precedence() {
-        // Set an environment variable
-        env::set_var("MAGAYA_SERVER_PORT", "7777");
-
-        let yaml_content = r#"
-server:
-  host: "0.0.0.0"
-  port: 8888
-"#;
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        temp_file.write_all(yaml_content.as_bytes()).unwrap();
-
-        let config = load_config_from_file(temp_file.path()).unwrap();
-
-        // Environment variable should override file
-        assert_eq!(config.server.port, 7777);
-        // File should override default
-        assert_eq!(config.server.host, "0.0.0.0");
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.xds.port, 9090);
+        assert_eq!(config.xds.bind_address, "127.0.0.1");
 
         // Clean up
-        env::remove_var("MAGAYA_SERVER_PORT");
+        env::remove_var("MAGAYA_XDS_PORT");
+        env::remove_var("MAGAYA_XDS_BIND_ADDRESS");
+    }
+
+    #[test]
+    fn test_config_from_env_defaults() {
+        // Ensure no env vars are set
+        env::remove_var("MAGAYA_XDS_PORT");
+        env::remove_var("MAGAYA_XDS_BIND_ADDRESS");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.xds.port, 18000);
+        assert_eq!(config.xds.bind_address, "0.0.0.0");
     }
 }
