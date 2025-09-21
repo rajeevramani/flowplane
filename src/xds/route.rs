@@ -1,0 +1,395 @@
+//! Route management using envoy-types
+//!
+//! This module provides functionality for creating and managing Envoy route configurations
+//! using the proper envoy-types protobuf definitions.
+
+use envoy_types::pb::envoy::config::{
+    route::v3::{
+        RouteConfiguration, VirtualHost, Route, RouteMatch, RouteAction,
+        route_match::PathSpecifier, route_action::ClusterSpecifier,
+    },
+    core::v3::HeaderValueOption,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// REST API representation of a route configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteConfig {
+    pub name: String,
+    pub virtual_hosts: Vec<VirtualHostConfig>,
+}
+
+/// REST API representation of a virtual host
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualHostConfig {
+    pub name: String,
+    pub domains: Vec<String>,
+    pub routes: Vec<RouteRule>,
+}
+
+/// REST API representation of a route rule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteRule {
+    pub name: Option<String>,
+    pub r#match: RouteMatchConfig,
+    pub action: RouteActionConfig,
+}
+
+/// REST API representation of route matching criteria
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteMatchConfig {
+    pub path: PathMatch,
+    pub headers: Option<Vec<HeaderMatchConfig>>,
+    pub query_parameters: Option<Vec<QueryParameterMatchConfig>>,
+}
+
+/// REST API representation of path matching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PathMatch {
+    Exact(String),
+    Prefix(String),
+    Regex(String),
+}
+
+/// REST API representation of header matching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeaderMatchConfig {
+    pub name: String,
+    pub value: Option<String>,
+    pub regex: Option<String>,
+    pub present: Option<bool>,
+}
+
+/// REST API representation of query parameter matching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryParameterMatchConfig {
+    pub name: String,
+    pub value: Option<String>,
+    pub regex: Option<String>,
+    pub present: Option<bool>,
+}
+
+/// REST API representation of route actions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RouteActionConfig {
+    Cluster {
+        name: String,
+        timeout: Option<u64>, // seconds
+    },
+    WeightedClusters {
+        clusters: Vec<WeightedClusterConfig>,
+        total_weight: Option<u32>,
+    },
+    Redirect {
+        host_redirect: Option<String>,
+        path_redirect: Option<String>,
+        response_code: Option<u32>,
+    },
+}
+
+/// REST API representation of weighted cluster
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightedClusterConfig {
+    pub name: String,
+    pub weight: u32,
+}
+
+impl RouteConfig {
+    /// Convert REST API RouteConfig to envoy-types RouteConfiguration
+    pub fn to_envoy_route_configuration(&self) -> Result<RouteConfiguration, crate::Error> {
+        let virtual_hosts: Result<Vec<VirtualHost>, crate::Error> = self.virtual_hosts
+            .iter()
+            .map(|vh| vh.to_envoy_virtual_host())
+            .collect();
+
+        let route_config = RouteConfiguration {
+            name: self.name.clone(),
+            virtual_hosts: virtual_hosts?,
+            ..Default::default()
+        };
+
+        Ok(route_config)
+    }
+}
+
+impl VirtualHostConfig {
+    /// Convert REST API VirtualHostConfig to envoy-types VirtualHost
+    fn to_envoy_virtual_host(&self) -> Result<VirtualHost, crate::Error> {
+        let routes: Result<Vec<Route>, crate::Error> = self.routes
+            .iter()
+            .map(|r| r.to_envoy_route())
+            .collect();
+
+        let virtual_host = VirtualHost {
+            name: self.name.clone(),
+            domains: self.domains.clone(),
+            routes: routes?,
+            ..Default::default()
+        };
+
+        Ok(virtual_host)
+    }
+}
+
+impl RouteRule {
+    /// Convert REST API RouteRule to envoy-types Route
+    fn to_envoy_route(&self) -> Result<Route, crate::Error> {
+        let route = Route {
+            name: self.name.clone().unwrap_or_default(),
+            r#match: Some(self.r#match.to_envoy_route_match()?),
+            action: Some(self.action.to_envoy_route_action()?),
+            ..Default::default()
+        };
+
+        Ok(route)
+    }
+}
+
+impl RouteMatchConfig {
+    /// Convert REST API RouteMatchConfig to envoy-types RouteMatch
+    fn to_envoy_route_match(&self) -> Result<RouteMatch, crate::Error> {
+        let path_specifier = match &self.path {
+            PathMatch::Exact(path) => PathSpecifier::Path(path.clone()),
+            PathMatch::Prefix(prefix) => PathSpecifier::Prefix(prefix.clone()),
+            PathMatch::Regex(regex) => PathSpecifier::SafeRegex(
+                envoy_types::pb::envoy::r#type::matcher::v3::RegexMatcher {
+                    regex: regex.clone(),
+                    ..Default::default()
+                }
+            ),
+        };
+
+        let route_match = RouteMatch {
+            path_specifier: Some(path_specifier),
+            // TODO: Add header and query parameter matching
+            ..Default::default()
+        };
+
+        Ok(route_match)
+    }
+}
+
+impl RouteActionConfig {
+    /// Convert REST API RouteActionConfig to envoy-types route action
+    fn to_envoy_route_action(&self) -> Result<envoy_types::pb::envoy::config::route::v3::route::Action, crate::Error> {
+        let action = match self {
+            RouteActionConfig::Cluster { name, timeout } => {
+                let route_action = RouteAction {
+                    cluster_specifier: Some(ClusterSpecifier::Cluster(name.clone())),
+                    timeout: timeout.map(|t|
+                        envoy_types::pb::google::protobuf::Duration {
+                            seconds: t as i64,
+                            nanos: 0,
+                        }
+                    ),
+                    ..Default::default()
+                };
+
+                envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
+            },
+            RouteActionConfig::WeightedClusters { clusters, total_weight } => {
+                let weighted_clusters: Vec<envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight> = clusters
+                    .iter()
+                    .map(|wc| envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight {
+                        name: wc.name.clone(),
+                        weight: Some(envoy_types::pb::google::protobuf::UInt32Value { value: wc.weight }),
+                        ..Default::default()
+                    })
+                    .collect();
+
+                let route_action = RouteAction {
+                    cluster_specifier: Some(ClusterSpecifier::WeightedClusters(
+                        envoy_types::pb::envoy::config::route::v3::WeightedCluster {
+                            clusters: weighted_clusters,
+                            total_weight: total_weight.map(|w| envoy_types::pb::google::protobuf::UInt32Value { value: w }),
+                            ..Default::default()
+                        }
+                    )),
+                    ..Default::default()
+                };
+
+                envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
+            },
+            RouteActionConfig::Redirect { host_redirect, path_redirect, response_code } => {
+                let redirect_action = envoy_types::pb::envoy::config::route::v3::RedirectAction {
+                    host_redirect: host_redirect.clone().unwrap_or_default(),
+                    path_rewrite_specifier: path_redirect.clone().map(|p|
+                        envoy_types::pb::envoy::config::route::v3::redirect_action::PathRewriteSpecifier::PathRedirect(p)
+                    ),
+                    response_code: response_code.map(|c|
+                        envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::try_from(c as i32)
+                            .unwrap_or(envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::MovedPermanently) as i32
+                    ),
+                    ..Default::default()
+                };
+
+                envoy_types::pb::envoy::config::route::v3::route::Action::Redirect(redirect_action)
+            },
+        };
+
+        Ok(action)
+    }
+}
+
+/// Route manager for handling route operations
+#[derive(Debug)]
+pub struct RouteManager {
+    routes: HashMap<String, RouteConfiguration>,
+}
+
+impl RouteManager {
+    /// Create a new route manager
+    pub fn new() -> Self {
+        Self {
+            routes: HashMap::new(),
+        }
+    }
+
+    /// Add or update a route configuration
+    pub fn upsert_route(&mut self, config: RouteConfig) -> Result<(), crate::Error> {
+        let route_config = config.to_envoy_route_configuration()?;
+        self.routes.insert(route_config.name.clone(), route_config);
+        Ok(())
+    }
+
+    /// Remove a route configuration
+    pub fn remove_route(&mut self, name: &str) -> Option<RouteConfiguration> {
+        self.routes.remove(name)
+    }
+
+    /// Get a route configuration by name
+    pub fn get_route(&self, name: &str) -> Option<&RouteConfiguration> {
+        self.routes.get(name)
+    }
+
+    /// Get all route configurations
+    pub fn get_all_routes(&self) -> Vec<RouteConfiguration> {
+        self.routes.values().cloned().collect()
+    }
+
+    /// List route configuration names
+    pub fn list_route_names(&self) -> Vec<String> {
+        self.routes.keys().cloned().collect()
+    }
+}
+
+impl Default for RouteManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_route_config_conversion() {
+        let config = RouteConfig {
+            name: "test-route".to_string(),
+            virtual_hosts: vec![
+                VirtualHostConfig {
+                    name: "test-vhost".to_string(),
+                    domains: vec!["example.com".to_string(), "*.example.com".to_string()],
+                    routes: vec![
+                        RouteRule {
+                            name: Some("api-route".to_string()),
+                            r#match: RouteMatchConfig {
+                                path: PathMatch::Prefix("/api".to_string()),
+                                headers: None,
+                                query_parameters: None,
+                            },
+                            action: RouteActionConfig::Cluster {
+                                name: "api-cluster".to_string(),
+                                timeout: Some(30),
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let route_config = config.to_envoy_route_configuration().expect("Failed to convert route config");
+
+        assert_eq!(route_config.name, "test-route");
+        assert_eq!(route_config.virtual_hosts.len(), 1);
+
+        let vhost = &route_config.virtual_hosts[0];
+        assert_eq!(vhost.name, "test-vhost");
+        assert_eq!(vhost.domains.len(), 2);
+        assert_eq!(vhost.routes.len(), 1);
+
+        let route = &vhost.routes[0];
+        assert_eq!(route.name, "api-route");
+        assert!(route.r#match.is_some());
+        assert!(route.action.is_some());
+    }
+
+    #[test]
+    fn test_route_manager() {
+        let mut manager = RouteManager::new();
+
+        let config = RouteConfig {
+            name: "test-route".to_string(),
+            virtual_hosts: vec![
+                VirtualHostConfig {
+                    name: "test-vhost".to_string(),
+                    domains: vec!["test.com".to_string()],
+                    routes: vec![
+                        RouteRule {
+                            name: None,
+                            r#match: RouteMatchConfig {
+                                path: PathMatch::Exact("/health".to_string()),
+                                headers: None,
+                                query_parameters: None,
+                            },
+                            action: RouteActionConfig::Cluster {
+                                name: "health-cluster".to_string(),
+                                timeout: None,
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        manager.upsert_route(config).expect("Failed to add route");
+
+        assert!(manager.get_route("test-route").is_some());
+        assert_eq!(manager.list_route_names().len(), 1);
+
+        let removed = manager.remove_route("test-route");
+        assert!(removed.is_some());
+        assert_eq!(manager.list_route_names().len(), 0);
+    }
+
+    #[test]
+    fn test_path_matching() {
+        let exact_match = RouteMatchConfig {
+            path: PathMatch::Exact("/exact".to_string()),
+            headers: None,
+            query_parameters: None,
+        };
+
+        let prefix_match = RouteMatchConfig {
+            path: PathMatch::Prefix("/prefix".to_string()),
+            headers: None,
+            query_parameters: None,
+        };
+
+        let regex_match = RouteMatchConfig {
+            path: PathMatch::Regex(r"^/api/v\d+/.*".to_string()),
+            headers: None,
+            query_parameters: None,
+        };
+
+        let exact_envoy = exact_match.to_envoy_route_match().expect("Failed to convert exact match");
+        let prefix_envoy = prefix_match.to_envoy_route_match().expect("Failed to convert prefix match");
+        let regex_envoy = regex_match.to_envoy_route_match().expect("Failed to convert regex match");
+
+        assert!(matches!(exact_envoy.path_specifier, Some(PathSpecifier::Path(_))));
+        assert!(matches!(prefix_envoy.path_specifier, Some(PathSpecifier::Prefix(_))));
+        assert!(matches!(regex_envoy.path_specifier, Some(PathSpecifier::SafeRegex(_))));
+    }
+}
