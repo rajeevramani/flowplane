@@ -6,7 +6,8 @@
 //! - RDS (Route Discovery Service)
 //! - LDS (Listener Discovery Service)
 
-use crate::Result;
+use crate::{config::XdsConfig, Result};
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -22,22 +23,6 @@ use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
 use envoy_types::pb::google::protobuf::Any;
-
-/// Minimal XDS server configuration
-#[derive(Debug, Clone)]
-pub struct XdsConfig {
-    pub bind_address: String,
-    pub port: u16,
-}
-
-impl Default for XdsConfig {
-    fn default() -> Self {
-        Self {
-            bind_address: "0.0.0.0".to_string(),
-            port: 18000,
-        }
-    }
-}
 
 /// Minimal XDS server state
 #[derive(Debug)]
@@ -187,19 +172,24 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
     }
 }
 
-/// Start the minimal xDS gRPC server
+/// Start the minimal xDS gRPC server with configuration and graceful shutdown
 /// This implements a basic ADS server that responds with empty resources
-pub async fn start_minimal_xds_server() -> Result<()> {
-    let xds_config = XdsConfig::default();
+pub async fn start_minimal_xds_server_with_config<F>(
+    xds_config: XdsConfig,
+    shutdown_signal: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let addr = format!("{}:{}", xds_config.bind_address, xds_config.port)
         .parse()
-        .map_err(|e| crate::Error::Config(format!("Invalid xDS address: {}", e)))?;
+        .map_err(|e| crate::Error::config(format!("Invalid xDS address: {}", e)))?;
 
     let state = Arc::new(XdsState::new(xds_config));
 
     info!(
         address = %addr,
-        "Starting minimal Envoy xDS server (Checkpoint 1)"
+        "Starting minimal Envoy xDS server (Checkpoint 2)"
     );
 
     // Create ADS service implementation
@@ -209,16 +199,28 @@ pub async fn start_minimal_xds_server() -> Result<()> {
     // This is sufficient for Envoy to connect and receive empty responses
     let server = Server::builder()
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
-        .serve(addr);
+        .serve_with_shutdown(addr, shutdown_signal);
 
     info!("XDS server listening on {}", addr);
 
-    // Start the server
+    // Start the server with graceful shutdown
     server
         .await
-        .map_err(|e| crate::Error::Transport(format!("XDS server failed: {}", e)))?;
+        .map_err(|e| crate::Error::transport(format!("XDS server failed: {}", e)))?;
 
     Ok(())
+}
+
+/// Legacy function for backward compatibility - kept for existing tests
+/// This will be removed in future checkpoints
+pub async fn start_minimal_xds_server() -> Result<()> {
+    let xds_config = XdsConfig::default();
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C signal handler");
+    };
+    start_minimal_xds_server_with_config(xds_config, shutdown_signal).await
 }
 
 #[cfg(test)]

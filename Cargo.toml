@@ -62,3 +62,4 @@ regex = "1.10"
 [dev-dependencies]
 tokio-test = "0.4"
 axum-test = "16.4.0"
+tracing-test = "0.2.5"
