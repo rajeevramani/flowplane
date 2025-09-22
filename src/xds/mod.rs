@@ -24,6 +24,17 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 };
 use envoy_types::pb::google::protobuf::Any;
 
+// Import Envoy resource types for actual configurations
+use envoy_types::pb::envoy::config::cluster::v3::Cluster;
+use envoy_types::pb::envoy::config::core::v3::{socket_address, Address, SocketAddress};
+use envoy_types::pb::envoy::config::endpoint::v3::{
+    lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
+};
+use envoy_types::pb::envoy::config::listener::v3::Listener;
+use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
+use envoy_types::pb::google::protobuf::Duration;
+use prost::Message;
+
 /// Minimal XDS server state
 #[derive(Debug)]
 pub struct XdsState {
@@ -63,20 +74,235 @@ impl MinimalAggregatedDiscoveryService {
         Self { state }
     }
 
-    /// Create an empty discovery response for any resource type
-    fn create_empty_response(&self, request: &DiscoveryRequest) -> DiscoveryResponse {
+    /// Create discovery response with actual Envoy resources based on request type
+    fn create_resource_response(&self, request: &DiscoveryRequest) -> Result<DiscoveryResponse> {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
-        DiscoveryResponse {
+        let resources = match request.type_url.as_str() {
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
+                self.create_cluster_resources()?
+            }
+            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
+                self.create_route_resources()?
+            }
+            "type.googleapis.com/envoy.config.listener.v3.Listener" => {
+                self.create_listener_resources()?
+            }
+            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
+                self.create_endpoint_resources()?
+            }
+            _ => {
+                warn!("Unknown resource type requested: {}", request.type_url);
+                Vec::new() // Return empty for unknown types
+            }
+        };
+
+        Ok(DiscoveryResponse {
             version_info: version.clone(),
-            resources: Vec::<Any>::new(), // Empty resources for minimal implementation
+            resources,
             canary: false,
             type_url: request.type_url.clone(),
             nonce: nonce.clone(),
             control_plane: None,
-            resource_errors: Vec::new(), // No resource errors for empty responses
-        }
+            resource_errors: Vec::new(),
+        })
+    }
+
+    /// Create basic cluster resources for testing
+    fn create_cluster_resources(&self) -> Result<Vec<Any>> {
+        let cluster = Cluster {
+            name: "test_cluster".to_string(),
+            connect_timeout: Some(Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            // Cluster discovery type is set implicitly based on load_assignment
+            load_assignment: Some(ClusterLoadAssignment {
+                cluster_name: "test_cluster".to_string(),
+                endpoints: vec![LocalityLbEndpoints {
+                    lb_endpoints: vec![LbEndpoint {
+                        host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                            address: Some(Address {
+                                address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                                    SocketAddress {
+                                        address: "127.0.0.1".to_string(),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(8080)),
+                                        protocol: 0, // TCP protocol
+                                        ..Default::default()
+                                    }
+                                )),
+                            }),
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Validate by encoding - this ensures Envoy compatibility
+        let encoded = cluster.encode_to_vec();
+        info!(
+            "Created cluster resource, encoded size: {} bytes",
+            encoded.len()
+        );
+
+        let any_resource = Any {
+            type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster".to_string(),
+            value: encoded,
+        };
+
+        Ok(vec![any_resource])
+    }
+
+    /// Create basic route configuration resources
+    fn create_route_resources(&self) -> Result<Vec<Any>> {
+        let route_config = RouteConfiguration {
+            name: "test_route".to_string(),
+            virtual_hosts: vec![envoy_types::pb::envoy::config::route::v3::VirtualHost {
+                name: "test_virtual_host".to_string(),
+                domains: vec!["*".to_string()],
+                routes: vec![envoy_types::pb::envoy::config::route::v3::Route {
+                    name: "test_route_match".to_string(),
+                    r#match: Some(envoy_types::pb::envoy::config::route::v3::RouteMatch {
+                        path_specifier: Some(envoy_types::pb::envoy::config::route::v3::route_match::PathSpecifier::Prefix("/".to_string())),
+                        ..Default::default()
+                    }),
+                    action: Some(envoy_types::pb::envoy::config::route::v3::route::Action::Route(
+                        envoy_types::pb::envoy::config::route::v3::RouteAction {
+                            cluster_specifier: Some(envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::Cluster("test_cluster".to_string())),
+                            ..Default::default()
+                        }
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Validate by encoding
+        let encoded = route_config.encode_to_vec();
+        info!(
+            "Created route resource, encoded size: {} bytes",
+            encoded.len()
+        );
+
+        let any_resource = Any {
+            type_url: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_string(),
+            value: encoded,
+        };
+
+        Ok(vec![any_resource])
+    }
+
+    /// Create basic listener resources
+    fn create_listener_resources(&self) -> Result<Vec<Any>> {
+        use envoy_types::pb::envoy::config::listener::v3::Filter;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+
+        let http_conn_manager = HttpConnectionManager {
+            stat_prefix: "ingress_http".to_string(),
+            route_specifier: Some(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::RouteSpecifier::Rds(
+                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::Rds {
+                    config_source: Some(envoy_types::pb::envoy::config::core::v3::ConfigSource {
+                        config_source_specifier: Some(envoy_types::pb::envoy::config::core::v3::config_source::ConfigSourceSpecifier::Ads(
+                            envoy_types::pb::envoy::config::core::v3::AggregatedConfigSource::default()
+                        )),
+                        ..Default::default()
+                    }),
+                    route_config_name: "test_route".to_string(),
+                }
+            )),
+            ..Default::default()
+        };
+
+        let listener = Listener {
+            name: "test_listener".to_string(),
+            address: Some(Address {
+                address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                    SocketAddress {
+                        address: "0.0.0.0".to_string(),
+                        port_specifier: Some(socket_address::PortSpecifier::PortValue(10000)),
+                        protocol: 0, // TCP protocol
+                        ..Default::default()
+                    }
+                )),
+            }),
+            filter_chains: vec![envoy_types::pb::envoy::config::listener::v3::FilterChain {
+                filters: vec![Filter {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    config_type: Some(envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(
+                        Any {
+                            type_url: "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager".to_string(),
+                            value: http_conn_manager.encode_to_vec(),
+                        }
+                    )),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Validate by encoding
+        let encoded = listener.encode_to_vec();
+        info!(
+            "Created listener resource, encoded size: {} bytes",
+            encoded.len()
+        );
+
+        let any_resource = Any {
+            type_url: "type.googleapis.com/envoy.config.listener.v3.Listener".to_string(),
+            value: encoded,
+        };
+
+        Ok(vec![any_resource])
+    }
+
+    /// Create basic endpoint resources
+    fn create_endpoint_resources(&self) -> Result<Vec<Any>> {
+        let cluster_load_assignment = ClusterLoadAssignment {
+            cluster_name: "test_cluster".to_string(),
+            endpoints: vec![LocalityLbEndpoints {
+                lb_endpoints: vec![LbEndpoint {
+                    host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                        address: Some(Address {
+                            address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                                SocketAddress {
+                                    address: "127.0.0.1".to_string(),
+                                    port_specifier: Some(socket_address::PortSpecifier::PortValue(8080)),
+                                    protocol: 0, // TCP protocol
+                                    ..Default::default()
+                                }
+                            )),
+                        }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Validate by encoding
+        let encoded = cluster_load_assignment.encode_to_vec();
+        info!(
+            "Created endpoint resource, encoded size: {} bytes",
+            encoded.len()
+        );
+
+        let any_resource = Any {
+            type_url: "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment"
+                .to_string(),
+            value: encoded,
+        };
+
+        Ok(vec![any_resource])
     }
 }
 
@@ -112,9 +338,15 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
                                     "Received discovery request"
                                 );
 
-                                // Create empty response for this request
-                                let response = MinimalAggregatedDiscoveryService { state: state.clone() }
-                                    .create_empty_response(&discovery_request);
+                                // Create response with actual Envoy resources
+                                let service = MinimalAggregatedDiscoveryService { state: state.clone() };
+                                let response = match service.create_resource_response(&discovery_request) {
+                                    Ok(resp) => resp,
+                                    Err(e) => {
+                                        error!("Failed to create resource response: {}", e);
+                                        continue;
+                                    }
+                                };
 
                                 info!(
                                     type_url = %response.type_url,
@@ -173,7 +405,7 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
 }
 
 /// Start the minimal xDS gRPC server with configuration and graceful shutdown
-/// This implements a basic ADS server that responds with empty resources
+/// This implements a basic ADS server that responds with actual Envoy resources
 pub async fn start_minimal_xds_server_with_config<F>(
     xds_config: XdsConfig,
     shutdown_signal: F,
@@ -189,14 +421,14 @@ where
 
     info!(
         address = %addr,
-        "Starting minimal Envoy xDS server (Checkpoint 2)"
+        "Starting minimal Envoy xDS server (Checkpoint 3)"
     );
 
     // Create ADS service implementation
     let ads_service = MinimalAggregatedDiscoveryService::new(state);
 
     // Build and start the gRPC server with ADS service only
-    // This is sufficient for Envoy to connect and receive empty responses
+    // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
     let server = Server::builder()
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .serve_with_shutdown(addr, shutdown_signal);
@@ -206,7 +438,18 @@ where
     // Start the server with graceful shutdown
     server
         .await
-        .map_err(|e| crate::Error::transport(format!("XDS server failed: {}", e)))?;
+        .map_err(|e| {
+            // Check if this is a port binding error
+            let error_msg = e.to_string();
+            if error_msg.contains("Address already in use") || error_msg.contains("bind") {
+                crate::Error::transport(format!(
+                    "XDS server failed to bind to {}: Port {} is already in use. Please use a different port or stop the existing service.",
+                    addr, addr.port()
+                ))
+            } else {
+                crate::Error::transport(format!("XDS server failed: {}", e))
+            }
+        })?;
 
     Ok(())
 }
