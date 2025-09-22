@@ -1,8 +1,14 @@
+use std::sync::Arc;
+
 use magaya::{
-    config::DatabaseConfig, storage::create_pool, xds::start_database_xds_server_with_config,
+    api::start_api_server,
+    config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig},
+    storage::create_pool,
+    xds::{start_database_xds_server_with_state, XdsState},
     Config, Result, APP_NAME, VERSION,
 };
 use tokio::signal;
+use tokio::try_join;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -40,19 +46,30 @@ async fn main() -> Result<()> {
     let pool = create_pool(&db_config).await?;
 
     // Create shutdown signal handler
-    let shutdown_signal = async {
-        signal::ctrl_c()
-            .await
-            .expect("Failed to install CTRL+C signal handler");
-        info!("Shutdown signal received");
+    let simple_xds_config: SimpleXdsConfig = config.xds.clone();
+    let api_config: ApiServerConfig = config.api.clone();
+
+    let state = Arc::new(XdsState::with_database(simple_xds_config.clone(), pool));
+
+    let xds_state = state.clone();
+    let xds_task = async move {
+        start_database_xds_server_with_state(xds_state, async {
+            signal::ctrl_c()
+                .await
+                .expect("Failed to install CTRL+C signal handler");
+            info!("Shutdown signal received for xDS server");
+        })
+        .await
     };
 
-    // Start the XDS server with configuration and graceful shutdown
-    if let Err(e) = start_database_xds_server_with_config(config.xds, pool, shutdown_signal).await {
-        error!("Failed to start XDS server: {}", e);
+    let api_state = state.clone();
+    let api_task = async move { start_api_server(api_config, api_state).await };
+
+    if let Err(e) = try_join!(xds_task, api_task) {
+        error!("Control plane services terminated with error: {}", e);
         std::process::exit(1);
     }
 
-    info!("XDS server shutdown completed");
+    info!("Control plane shutdown completed");
     Ok(())
 }

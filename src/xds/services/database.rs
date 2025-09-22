@@ -13,14 +13,17 @@ use envoy_types::pb::envoy::config::endpoint::v3::{
 };
 use envoy_types::pb::envoy::service::discovery::v3::{
     aggregated_discovery_service_server::AggregatedDiscoveryService, DeltaDiscoveryRequest,
-    DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
+    DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, Resource,
 };
 use envoy_types::pb::google::protobuf::{Any, Duration};
 use prost::Message;
 
-use crate::Result;
+use crate::{storage::ClusterRepository, Result};
 
-use super::super::{resources, XdsState};
+use super::super::{
+    resources::{self, BuiltResource},
+    XdsState,
+};
 
 /// Database-enabled Aggregated Discovery Service implementation
 /// Returns resources from database when available, falls back to config-based resources
@@ -31,6 +34,10 @@ pub struct DatabaseAggregatedDiscoveryService {
 
 impl DatabaseAggregatedDiscoveryService {
     pub fn new(state: Arc<XdsState>) -> Self {
+        if let Some(repo) = &state.cluster_repository {
+            spawn_database_watcher(state.clone(), repo.clone());
+        }
+
         Self { state }
     }
 
@@ -42,24 +49,8 @@ impl DatabaseAggregatedDiscoveryService {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
-        let resources = match request.type_url.as_str() {
-            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
-                self.create_cluster_resources_from_db().await?
-            }
-            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
-                resources::routes_from_config(&self.state.config)? // Still use config-based for now
-            }
-            "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                resources::listeners_from_config(&self.state.config)? // Still use config-based for now
-            }
-            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
-                resources::endpoints_from_config(&self.state.config)? // Still use config-based for now
-            }
-            _ => {
-                warn!("Unknown resource type requested: {}", request.type_url);
-                Vec::new()
-            }
-        };
+        let built = self.build_resources(request.type_url.as_str()).await?;
+        let resources = built.iter().map(|r| r.resource.clone()).collect();
 
         Ok(DiscoveryResponse {
             version_info: version.clone(),
@@ -73,7 +64,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create cluster resources from database
-    async fn create_cluster_resources_from_db(&self) -> Result<Vec<Any>> {
+    async fn create_cluster_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
         if let Some(repo) = &self.state.cluster_repository {
             // Try to get clusters from database
             match repo.list(Some(100), None).await {
@@ -115,12 +106,14 @@ impl DatabaseAggregatedDiscoveryService {
                             "Created cluster resource from database"
                         );
 
-                        let any_resource = Any {
-                            type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
-                                .to_string(),
-                            value: encoded,
-                        };
-                        resources.push(any_resource);
+                        resources.push(BuiltResource {
+                            name: cluster_data.name.clone(),
+                            resource: Any {
+                                type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+                                    .to_string(),
+                                value: encoded,
+                            },
+                        });
                     }
 
                     Ok(resources)
@@ -140,8 +133,60 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create fallback cluster resources from config
-    fn create_fallback_cluster_resources(&self) -> Result<Vec<Any>> {
+    fn create_fallback_cluster_resources(&self) -> Result<Vec<BuiltResource>> {
         resources::clusters_from_config(&self.state.config)
+    }
+
+    async fn build_resources(&self, type_url: &str) -> Result<Vec<BuiltResource>> {
+        match type_url {
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
+                self.create_cluster_resources_from_db().await
+            }
+            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
+                resources::routes_from_config(&self.state.config)
+            }
+            "type.googleapis.com/envoy.config.listener.v3.Listener" => {
+                resources::listeners_from_config(&self.state.config)
+            }
+            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
+                resources::endpoints_from_config(&self.state.config)
+            }
+            _ => {
+                warn!("Unknown resource type requested: {}", type_url);
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn create_delta_response(
+        &self,
+        request: &DeltaDiscoveryRequest,
+    ) -> Result<DeltaDiscoveryResponse> {
+        let version = self.state.get_version();
+        let nonce = uuid::Uuid::new_v4().to_string();
+
+        // Build all available resources for this type
+        // The stream logic will handle proper delta filtering and ACK detection
+        let built = self.build_resources(&request.type_url).await?;
+
+        let resources: Vec<Resource> = built
+            .into_iter()
+            .map(|r| Resource {
+                name: r.name,
+                version: version.clone(),
+                resource: Some(r.resource),
+                ..Default::default()
+            })
+            .collect();
+
+        Ok(DeltaDiscoveryResponse {
+            system_version_info: version.clone(),
+            type_url: request.type_url.clone(),
+            nonce,
+            resources,
+            removed_resources: request.resource_names_unsubscribe.clone(),
+            ..Default::default()
+        })
     }
 
     /// Create Envoy cluster from JSON configuration
@@ -219,6 +264,38 @@ impl DatabaseAggregatedDiscoveryService {
     }
 }
 
+fn spawn_database_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        let mut last_version: Option<i64> = None;
+
+        loop {
+            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
+                .fetch_one(repository.pool())
+                .await;
+
+            match poll_result {
+                Ok(version) => match last_version {
+                    Some(previous) if previous == version => {}
+                    Some(_) => {
+                        last_version = Some(version);
+                        state.increment_version();
+                    }
+                    None => {
+                        last_version = Some(version);
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to poll SQLite data_version for changes");
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
 #[tonic::async_trait]
 impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     type StreamAggregatedResourcesStream =
@@ -251,13 +328,23 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
 
     async fn delta_aggregated_resources(
         &self,
-        _request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
+        request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> std::result::Result<Response<Self::DeltaAggregatedResourcesStream>, Status> {
         info!("Delta ADS stream connection established (database-enabled)");
 
-        let stream = crate::xds::services::stream::empty_delta_stream();
-        Ok(Response::new(
-            Box::pin(stream) as Self::DeltaAggregatedResourcesStream
-        ))
+        let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
+            let service = DatabaseAggregatedDiscoveryService { state };
+            Box::pin(async move { service.create_delta_response(&request).await })
+                as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
+        };
+
+        let stream = crate::xds::services::stream::run_delta_loop(
+            self.state.clone(),
+            request.into_inner(),
+            responder,
+            "database-enabled",
+        );
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }

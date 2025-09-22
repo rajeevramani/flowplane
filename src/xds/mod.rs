@@ -80,32 +80,41 @@ pub async fn start_database_xds_server_with_config<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let addr = format!("{}:{}", simple_config.bind_address, simple_config.port)
-        .parse()
-        .map_err(|e| crate::Error::config(format!("Invalid xDS address: {}", e)))?;
-
     let state = Arc::new(XdsState::with_database(simple_config, pool));
+    start_database_xds_server_with_state(state, shutdown_signal).await
+}
+
+/// Start database-enabled xDS server with a pre-built shared state
+pub async fn start_database_xds_server_with_state<F>(
+    state: Arc<XdsState>,
+    shutdown_signal: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let addr = {
+        let cfg = &state.config;
+        format!("{}:{}", cfg.bind_address, cfg.port)
+            .parse()
+            .map_err(|e| crate::Error::config(format!("Invalid xDS address: {}", e)))?
+    };
 
     info!(
         address = %addr,
         "Starting database-enabled Envoy xDS server (Checkpoint 5)"
     );
 
-    // Create database-enabled ADS service implementation
-    let ads_service = DatabaseAggregatedDiscoveryService::new(state);
+    let ads_service = DatabaseAggregatedDiscoveryService::new(state.clone());
 
-    // Build and start the gRPC server with database-backed ADS service
     let server = Server::builder()
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
     info!("Database-enabled XDS server listening on {}", addr);
 
-    // Start the server with graceful shutdown
     server
         .await
         .map_err(|e| {
-            // Check if this is a port binding error
             let error_msg = e.to_string();
             if error_msg.contains("Address already in use") || error_msg.contains("bind") {
                 crate::Error::transport(format!(

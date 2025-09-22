@@ -6,13 +6,25 @@ use envoy_types::pb::envoy::config::endpoint::v3::{
 };
 use envoy_types::pb::envoy::config::listener::v3::Listener;
 use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
-use envoy_types::pb::google::protobuf::Any;
-use envoy_types::pb::google::protobuf::Duration;
+use envoy_types::pb::google::protobuf::{Any, Duration};
 use prost::Message;
 use tracing::info;
 
+/// Wrapper for a built Envoy resource along with its name.
+#[derive(Clone, Debug)]
+pub struct BuiltResource {
+    pub name: String,
+    pub resource: Any,
+}
+
+impl BuiltResource {
+    pub fn into_any(self) -> Any {
+        self.resource
+    }
+}
+
 /// Build cluster resources using the static configuration
-pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
+pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>> {
     let resources = &config.resources;
     let cluster = Cluster {
         name: resources.cluster_name.clone(),
@@ -20,7 +32,6 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
             seconds: 5,
             nanos: 0,
         }),
-        // Cluster discovery type is set implicitly based on load_assignment
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: resources.cluster_name.clone(),
             endpoints: vec![LocalityLbEndpoints {
@@ -36,7 +47,7 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
                                                 resources.backend_port.into(),
                                             ),
                                         ),
-                                        protocol: 0, // TCP protocol
+                                        protocol: 0,
                                         ..Default::default()
                                     },
                                 ),
@@ -53,23 +64,24 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
         ..Default::default()
     };
 
-    // Validate by encoding - this ensures Envoy compatibility
     let encoded = cluster.encode_to_vec();
     info!(
-        "Created cluster resource, encoded size: {} bytes",
-        encoded.len()
+        resource = %cluster.name,
+        bytes = encoded.len(),
+        "Created cluster resource"
     );
 
-    let any_resource = Any {
-        type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster".to_string(),
-        value: encoded,
-    };
-
-    Ok(vec![any_resource])
+    Ok(vec![BuiltResource {
+        name: cluster.name.clone(),
+        resource: Any {
+            type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster".to_string(),
+            value: encoded,
+        },
+    }])
 }
 
 /// Build route configuration resources from the static configuration
-pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
+pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>> {
     let resources = &config.resources;
     let route_config = RouteConfiguration {
         name: resources.route_name.clone(),
@@ -107,23 +119,20 @@ pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
         ..Default::default()
     };
 
-    // Validate by encoding
     let encoded = route_config.encode_to_vec();
-    info!(
-        "Created route resource, encoded size: {} bytes",
-        encoded.len()
-    );
+    info!(resource = %route_config.name, bytes = encoded.len(), "Created route resource");
 
-    let any_resource = Any {
-        type_url: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_string(),
-        value: encoded,
-    };
-
-    Ok(vec![any_resource])
+    Ok(vec![BuiltResource {
+        name: route_config.name.clone(),
+        resource: Any {
+            type_url: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_string(),
+            value: encoded,
+        },
+    }])
 }
 
 /// Build listener resources from the static configuration
-pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
+pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>> {
     use envoy_types::pb::envoy::config::listener::v3::Filter;
     use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
 
@@ -159,7 +168,7 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
                         port_specifier: Some(socket_address::PortSpecifier::PortValue(
                             resources.listener_port.into(),
                         )),
-                        protocol: 0, // TCP protocol
+                        protocol: 0,
                         ..Default::default()
                     },
                 ),
@@ -183,23 +192,20 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
         ..Default::default()
     };
 
-    // Validate by encoding
     let encoded = listener.encode_to_vec();
-    info!(
-        "Created listener resource, encoded size: {} bytes",
-        encoded.len()
-    );
+    info!(resource = %listener.name, bytes = encoded.len(), "Created listener resource");
 
-    let any_resource = Any {
-        type_url: "type.googleapis.com/envoy.config.listener.v3.Listener".to_string(),
-        value: encoded,
-    };
-
-    Ok(vec![any_resource])
+    Ok(vec![BuiltResource {
+        name: listener.name.clone(),
+        resource: Any {
+            type_url: "type.googleapis.com/envoy.config.listener.v3.Listener".to_string(),
+            value: encoded,
+        },
+    }])
 }
 
 /// Build endpoint resources from the static configuration
-pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
+pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>> {
     let resources = &config.resources;
     let cluster_load_assignment = ClusterLoadAssignment {
         cluster_name: resources.cluster_name.clone(),
@@ -216,12 +222,12 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
                                             resources.backend_port.into(),
                                         ),
                                     ),
-                                    protocol: 0, // TCP protocol
+                                    protocol: 0,
                                     ..Default::default()
                                 },
                             ),
                         ),
-                        //..Default::default()
+                        ..Default::default()
                     }),
                     ..Default::default()
                 })),
@@ -232,17 +238,19 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<Any>> {
         ..Default::default()
     };
 
-    // Validate by encoding
     let encoded = cluster_load_assignment.encode_to_vec();
     info!(
-        "Created endpoint resource, encoded size: {} bytes",
-        encoded.len()
+        resource = %cluster_load_assignment.cluster_name,
+        bytes = encoded.len(),
+        "Created endpoint resource"
     );
 
-    let any_resource = Any {
-        type_url: "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment".to_string(),
-        value: encoded,
-    };
-
-    Ok(vec![any_resource])
+    Ok(vec![BuiltResource {
+        name: cluster_load_assignment.cluster_name.clone(),
+        resource: Any {
+            type_url: "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment"
+                .to_string(),
+            value: encoded,
+        },
+    }])
 }

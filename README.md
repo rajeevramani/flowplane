@@ -14,6 +14,6 @@ MAGAYA_CLUSTER_NAME=my_cluster \
 MAGAYA_BACKEND_PORT=9090 \
 MAGAYA_LISTENER_PORT=8080 \
 MAGAYA_DATABASE_URL=sqlite://./data/magaya.db \
-cargo run
+cargo run --bin magaya
 ```
 

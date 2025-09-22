@@ -4,10 +4,16 @@
 
 use crate::config::DatabaseConfig;
 use crate::errors::{MagayaError, Result};
-use sqlx::{Pool, Sqlite};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+    Pool, Sqlite,
+};
+use std::{str::FromStr, time::Duration};
 
 /// Type alias for the database connection pool
 pub type DbPool = Pool<Sqlite>;
+
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Create a database connection pool with the specified configuration
 pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
@@ -26,16 +32,49 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
         pool_options
     };
 
-    let pool = pool_options.connect(&config.url).await.map_err(|e| {
-        tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
-        MagayaError::Database {
-            source: e,
-            context: format!(
-                "Failed to connect to database: {}",
-                sanitize_url(&config.url)
-            ),
-        }
-    })?;
+    let pool = if config.is_sqlite() {
+        let connect_options = SqliteConnectOptions::from_str(&config.url)
+            .map_err(|e| MagayaError::Database {
+                source: e,
+                context: format!(
+                    "Invalid SQLite connection string: {}",
+                    sanitize_url(&config.url)
+                ),
+            })?
+            .create_if_missing(true)
+            .busy_timeout(SQLITE_BUSY_TIMEOUT)
+            .journal_mode(SqliteJournalMode::Wal);
+
+        pool_options
+            .connect_with(connect_options)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    url = %config.url,
+                    busy_timeout_ms = SQLITE_BUSY_TIMEOUT.as_millis(),
+                    "Failed to create SQLite database pool"
+                );
+                MagayaError::Database {
+                    source: e,
+                    context: format!(
+                        "Failed to connect to database: {}",
+                        sanitize_url(&config.url)
+                    ),
+                }
+            })?
+    } else {
+        pool_options.connect(&config.url).await.map_err(|e| {
+            tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
+            MagayaError::Database {
+                source: e,
+                context: format!(
+                    "Failed to connect to database: {}",
+                    sanitize_url(&config.url)
+                ),
+            }
+        })?
+    };
 
     tracing::info!(
         database_type = if config.is_sqlite() {

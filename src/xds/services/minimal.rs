@@ -8,12 +8,15 @@ use tracing::{info, warn};
 
 use envoy_types::pb::envoy::service::discovery::v3::{
     aggregated_discovery_service_server::AggregatedDiscoveryService, DeltaDiscoveryRequest,
-    DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
+    DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, Resource,
 };
 
 use crate::Result;
 
-use super::super::{resources, XdsState};
+use super::super::{
+    resources::{self, BuiltResource},
+    XdsState,
+};
 
 /// Minimal implementation for config-only scenarios
 #[derive(Debug)]
@@ -31,24 +34,8 @@ impl MinimalAggregatedDiscoveryService {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
-        let resources = match request.type_url.as_str() {
-            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
-                resources::clusters_from_config(&self.state.config)?
-            }
-            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
-                resources::routes_from_config(&self.state.config)?
-            }
-            "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                resources::listeners_from_config(&self.state.config)?
-            }
-            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
-                resources::endpoints_from_config(&self.state.config)?
-            }
-            _ => {
-                warn!("Unknown resource type requested: {}", request.type_url);
-                Vec::new() // Return empty for unknown types
-            }
-        };
+        let built = self.build_resources(request.type_url.as_str())?;
+        let resources = built.into_iter().map(BuiltResource::into_any).collect();
 
         Ok(DiscoveryResponse {
             version_info: version.clone(),
@@ -58,6 +45,60 @@ impl MinimalAggregatedDiscoveryService {
             nonce: nonce.clone(),
             control_plane: None,
             resource_errors: Vec::new(),
+        })
+    }
+}
+
+impl MinimalAggregatedDiscoveryService {
+    fn build_resources(&self, type_url: &str) -> Result<Vec<BuiltResource>> {
+        match type_url {
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
+                resources::clusters_from_config(&self.state.config)
+            }
+            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
+                resources::routes_from_config(&self.state.config)
+            }
+            "type.googleapis.com/envoy.config.listener.v3.Listener" => {
+                resources::listeners_from_config(&self.state.config)
+            }
+            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
+                resources::endpoints_from_config(&self.state.config)
+            }
+            _ => {
+                warn!("Unknown resource type requested: {}", type_url);
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn create_delta_response(
+        &self,
+        request: &DeltaDiscoveryRequest,
+    ) -> Result<DeltaDiscoveryResponse> {
+        let version = self.state.get_version();
+        let nonce = uuid::Uuid::new_v4().to_string();
+
+        // Build all available resources for this type
+        // The stream logic will handle proper delta filtering and ACK detection
+        let built = self.build_resources(&request.type_url)?;
+
+        let resources: Vec<Resource> = built
+            .into_iter()
+            .map(|r| Resource {
+                name: r.name,
+                version: version.clone(),
+                resource: Some(r.resource),
+                ..Default::default()
+            })
+            .collect();
+
+        Ok(DeltaDiscoveryResponse {
+            system_version_info: version.clone(),
+            type_url: request.type_url.clone(),
+            nonce,
+            resources,
+            removed_resources: request.resource_names_unsubscribe.clone(),
+            ..Default::default()
         })
     }
 }
@@ -93,13 +134,23 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
 
     async fn delta_aggregated_resources(
         &self,
-        _request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
+        request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> std::result::Result<Response<Self::DeltaAggregatedResourcesStream>, Status> {
         info!("Delta ADS stream connection established");
 
-        let stream = crate::xds::services::stream::empty_delta_stream();
-        Ok(Response::new(
-            Box::pin(stream) as Self::DeltaAggregatedResourcesStream
-        ))
+        let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
+            let service = MinimalAggregatedDiscoveryService { state };
+            Box::pin(async move { service.create_delta_response(&request) })
+                as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
+        };
+
+        let stream = crate::xds::services::stream::run_delta_loop(
+            self.state.clone(),
+            request.into_inner(),
+            responder,
+            "minimal",
+        );
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
