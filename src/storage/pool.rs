@@ -4,14 +4,17 @@
 
 use crate::config::DatabaseConfig;
 use crate::errors::{MagayaError, Result};
-use sqlx::{Any, Pool};
+use sqlx::{Pool, Sqlite};
+
+/// Type alias for the database connection pool
+pub type DbPool = Pool<Sqlite>;
 
 /// Create a database connection pool with the specified configuration
-pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Any>> {
+pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
     // Validate configuration
     validate_config(config)?;
 
-    let pool_options = sqlx::any::AnyPoolOptions::new()
+    let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(config.max_connections)
         .min_connections(config.min_connections)
         .acquire_timeout(config.connect_timeout())
@@ -23,19 +26,23 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Any>> {
         pool_options
     };
 
-    let pool = pool_options
-        .connect(&config.url)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
-            MagayaError::Database {
-                source: e,
-                context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
-            }
-        })?;
+    let pool = pool_options.connect(&config.url).await.map_err(|e| {
+        tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
+        MagayaError::Database {
+            source: e,
+            context: format!(
+                "Failed to connect to database: {}",
+                sanitize_url(&config.url)
+            ),
+        }
+    })?;
 
     tracing::info!(
-        database_type = if config.is_sqlite() { "sqlite" } else { "postgresql" },
+        database_type = if config.is_sqlite() {
+            "sqlite"
+        } else {
+            "postgresql"
+        },
         max_connections = config.max_connections,
         min_connections = config.min_connections,
         connect_timeout_ms = config.connect_timeout().as_millis(),
@@ -43,18 +50,26 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Any>> {
         "Database connection pool created"
     );
 
+    // Run migrations if auto_migrate is enabled
+    if config.auto_migrate {
+        tracing::info!("Auto-migration enabled, running database migrations");
+        crate::storage::migrations::run_migrations(&pool).await?;
+    }
+
     Ok(pool)
 }
 
 /// Validate database configuration
 fn validate_config(config: &DatabaseConfig) -> Result<()> {
     if config.max_connections == 0 {
-        return Err(MagayaError::validation("max_connections must be greater than 0"));
+        return Err(MagayaError::validation(
+            "max_connections must be greater than 0",
+        ));
     }
 
     if config.min_connections > config.max_connections {
         return Err(MagayaError::validation(
-            "min_connections cannot be greater than max_connections"
+            "min_connections cannot be greater than max_connections",
         ));
     }
 
@@ -65,7 +80,7 @@ fn validate_config(config: &DatabaseConfig) -> Result<()> {
     // Validate URL format
     if !config.url.starts_with("sqlite://") && !config.url.starts_with("postgresql://") {
         return Err(MagayaError::validation(
-            "database URL must start with 'sqlite://' or 'postgresql://'"
+            "database URL must start with 'sqlite://' or 'postgresql://'",
         ));
     }
 
@@ -77,7 +92,8 @@ fn sanitize_url(url: &str) -> String {
     if let Ok(parsed) = url::Url::parse(url) {
         if parsed.password().is_some() || !parsed.username().is_empty() {
             // Hide credentials in logs
-            format!("{}://***:***@{}{}",
+            format!(
+                "{}://***:***@{}{}",
                 parsed.scheme(),
                 parsed.host_str().unwrap_or("unknown"),
                 parsed.path()
@@ -91,7 +107,7 @@ fn sanitize_url(url: &str) -> String {
 }
 
 /// Get pool statistics for monitoring
-pub fn get_pool_stats(pool: &Pool<Any>) -> PoolStats {
+pub fn get_pool_stats(pool: &Pool<Sqlite>) -> PoolStats {
     PoolStats {
         size: pool.size(),
         idle: pool.num_idle(),
@@ -185,31 +201,19 @@ mod tests {
             "postgresql://***:***@localhost/db"
         );
 
-        assert_eq!(
-            sanitize_url("sqlite://./test.db"),
-            "sqlite://./test.db"
-        );
+        assert_eq!(sanitize_url("sqlite://./test.db"), "sqlite://./test.db");
 
-        assert_eq!(
-            sanitize_url("invalid-url"),
-            "invalid-url"
-        );
+        assert_eq!(sanitize_url("invalid-url"), "invalid-url");
     }
 
     #[test]
     fn test_pool_stats() {
-        let stats = PoolStats {
-            size: 10,
-            idle: 3,
-        };
+        let stats = PoolStats { size: 10, idle: 3 };
 
         assert_eq!(stats.active(), 7);
         assert!(stats.is_healthy());
 
-        let empty_stats = PoolStats {
-            size: 0,
-            idle: 0,
-        };
+        let empty_stats = PoolStats { size: 0, idle: 0 };
 
         assert_eq!(empty_stats.active(), 0);
         assert!(!empty_stats.is_healthy());
@@ -218,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_pool_success() {
         let config = DatabaseConfig {
-            url: "sqlite::memory:".to_string(),
+            url: "sqlite://:memory:".to_string(),
             max_connections: 3,
             min_connections: 1,
             auto_migrate: false,
@@ -233,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_pool_invalid_config() {
         let config = DatabaseConfig {
-            url: "sqlite::memory:".to_string(),
+            url: "sqlite://:memory:".to_string(),
             max_connections: 0, // Invalid
             ..Default::default()
         };

@@ -24,7 +24,26 @@ pub enum Error {
     /// Internal server errors
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Database errors
+    #[error("Database error: {context}")]
+    Database {
+        #[source]
+        source: sqlx::Error,
+        context: String,
+    },
+
+    /// Validation errors
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    /// Resource not found errors
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
+
+/// Alias for compatibility with storage layer
+pub type MagayaError = Error;
 
 impl Error {
     /// Create a new configuration error
@@ -40,5 +59,27 @@ impl Error {
     /// Create a new internal error
     pub fn internal<S: Into<String>>(message: S) -> Self {
         Self::Internal(message.into())
+    }
+
+    /// Create a new validation error
+    pub fn validation<S: Into<String>>(message: S) -> Self {
+        Self::Validation(message.into())
+    }
+
+    /// Create a new not found error
+    pub fn not_found<S: Into<String>>(message: S) -> Self {
+        Self::NotFound(message.into())
+    }
+
+    /// Create a new database error
+    pub fn database(source: sqlx::Error, context: String) -> Self {
+        Self::Database { source, context }
+    }
+}
+
+// Conversion from validator errors
+impl From<validator::ValidationErrors> for Error {
+    fn from(err: validator::ValidationErrors) -> Self {
+        Self::Validation(format!("Validation failed: {}", err))
     }
 }

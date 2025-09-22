@@ -1,19 +1,25 @@
 //! # Configuration Management
 //!
-//! This module provides minimal configuration management for the Magaya control plane.
-//! For Checkpoint 1, we only need basic configuration support.
+//! This module provides configuration management for the Magaya control plane,
+//! integrating both simple and comprehensive configuration approaches.
 
 use crate::Result;
 
-/// Minimal application configuration for Checkpoint 1
+pub mod settings;
+
+pub use settings::{
+    AppConfig, AuthConfig, DatabaseConfig, ObservabilityConfig, ServerConfig, XdsConfig,
+};
+
+/// Simplified configuration for backwards compatibility and development
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    pub xds: XdsConfig,
+    pub xds: SimpleXdsConfig,
 }
 
-/// XDS server configuration
+/// Simple XDS server configuration for development
 #[derive(Debug, Clone)]
-pub struct XdsConfig {
+pub struct SimpleXdsConfig {
     pub bind_address: String,
     pub port: u16,
     pub resources: XdsResourceConfig,
@@ -43,7 +49,7 @@ impl Default for XdsResourceConfig {
     }
 }
 
-impl Default for XdsConfig {
+impl Default for SimpleXdsConfig {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0".to_string(),
@@ -112,7 +118,7 @@ impl Config {
         }
 
         Ok(Self {
-            xds: XdsConfig {
+            xds: SimpleXdsConfig {
                 bind_address: xds_bind_address,
                 port: xds_port,
                 resources: XdsResourceConfig {
@@ -125,6 +131,18 @@ impl Config {
                 },
             },
         })
+    }
+
+    /// Convert to comprehensive AppConfig with database support
+    pub fn to_app_config(&self) -> AppConfig {
+        AppConfig {
+            xds: XdsConfig {
+                host: self.xds.bind_address.clone(),
+                port: self.xds.port,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 }
 

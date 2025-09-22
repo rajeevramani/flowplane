@@ -24,11 +24,12 @@
 
 pub mod config;
 pub mod errors;
+pub mod storage;
 pub mod xds;
 
 // Re-export commonly used types and traits
 pub use config::Config;
-pub use errors::{Error, Result};
+pub use errors::{Error, MagayaError, Result};
 
 /// Application version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
