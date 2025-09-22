@@ -8,47 +8,46 @@ use std::time::Duration;
 use validator::Validate;
 
 /// Main application configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, Default)]
 pub struct AppConfig {
     /// Server configuration
-    #[validate]
+    #[validate(nested)]
     pub server: ServerConfig,
 
     /// Database configuration
-    #[validate]
+    #[validate(nested)]
     pub database: DatabaseConfig,
 
     /// Observability configuration
-    #[validate]
+    #[validate(nested)]
     pub observability: ObservabilityConfig,
 
     /// Authentication configuration
-    #[validate]
+    #[validate(nested)]
     pub auth: AuthConfig,
 
     /// xDS server configuration
-    #[validate]
+    #[validate(nested)]
     pub xds: XdsConfig,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            observability: ObservabilityConfig::default(),
-            auth: AuthConfig::default(),
-            xds: XdsConfig::default(),
-        }
-    }
-}
+// impl Default for AppConfig {
+//     fn default() -> Self {
+//         Self {
+//             server: ServerConfig::default(),
+//             database: DatabaseConfig::default(),
+//             observability: ObservabilityConfig::default(),
+//             auth: AuthConfig::default(),
+//             xds: XdsConfig::default(),
+//         }
+//     }
+// }
 
 impl AppConfig {
     /// Validate the entire configuration
     pub fn validate(&self) -> Result<()> {
         // Use validator crate for basic validation
-        self.validate()
-            .map_err(MagayaError::from)?;
+        Validate::validate(self).map_err(MagayaError::from)?;
 
         // Custom validation logic
         self.validate_custom()?;
@@ -61,21 +60,23 @@ impl AppConfig {
         // Validate that ports don't conflict
         if self.server.port == self.xds.port {
             return Err(MagayaError::validation(
-                "Server and xDS ports cannot be the same"
+                "Server and xDS ports cannot be the same",
             ));
         }
 
         // Validate database URL format
-        if !self.database.url.starts_with("postgresql://") && !self.database.url.starts_with("sqlite://") {
+        if !self.database.url.starts_with("postgresql://")
+            && !self.database.url.starts_with("sqlite://")
+        {
             return Err(MagayaError::validation(
-                "Database URL must start with 'postgresql://' or 'sqlite://'"
+                "Database URL must start with 'postgresql://' or 'sqlite://'",
             ));
         }
 
         // Validate JWT secret length
         if self.auth.jwt_secret.len() < 32 {
             return Err(MagayaError::validation(
-                "JWT secret must be at least 32 characters long"
+                "JWT secret must be at least 32 characters long",
             ));
         }
 
@@ -95,7 +96,11 @@ pub struct ServerConfig {
     pub port: u16,
 
     /// Request timeout in seconds
-    #[validate(range(min = 1, max = 300, message = "Timeout must be between 1 and 300 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 300,
+        message = "Timeout must be between 1 and 300 seconds"
+    ))]
     pub timeout_seconds: u64,
 
     /// Maximum request body size in bytes
@@ -142,15 +147,27 @@ pub struct DatabaseConfig {
     pub url: String,
 
     /// Maximum number of connections in the pool
-    #[validate(range(min = 1, max = 100, message = "Max connections must be between 1 and 100"))]
+    #[validate(range(
+        min = 1,
+        max = 100,
+        message = "Max connections must be between 1 and 100"
+    ))]
     pub max_connections: u32,
 
     /// Minimum number of connections in the pool
-    #[validate(range(min = 0, max = 50, message = "Min connections must be between 0 and 50"))]
+    #[validate(range(
+        min = 0,
+        max = 50,
+        message = "Min connections must be between 0 and 50"
+    ))]
     pub min_connections: u32,
 
     /// Connection timeout in seconds
-    #[validate(range(min = 1, max = 60, message = "Connect timeout must be between 1 and 60 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 60,
+        message = "Connect timeout must be between 1 and 60 seconds"
+    ))]
     pub connect_timeout_seconds: u64,
 
     /// Idle timeout in seconds (0 = no timeout)
@@ -197,6 +214,45 @@ impl DatabaseConfig {
     pub fn is_postgresql(&self) -> bool {
         self.url.starts_with("postgresql://")
     }
+
+    /// Create DatabaseConfig from environment variables
+    pub fn from_env() -> Self {
+        let url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "sqlite://./data/magaya.db".to_string());
+
+        let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(10);
+
+        let min_connections = std::env::var("DATABASE_MIN_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        let connect_timeout_seconds = std::env::var("DATABASE_CONNECT_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(10);
+
+        let idle_timeout_seconds = std::env::var("DATABASE_IDLE_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(600);
+
+        let auto_migrate = std::env::var("DATABASE_AUTO_MIGRATE")
+            .map(|s| s.to_lowercase() == "true" || s == "1")
+            .unwrap_or(true);
+
+        Self {
+            url,
+            max_connections,
+            min_connections,
+            connect_timeout_seconds,
+            idle_timeout_seconds,
+            auto_migrate,
+        }
+    }
 }
 
 /// Observability configuration for metrics, tracing, and health checks
@@ -227,7 +283,11 @@ pub struct ObservabilityConfig {
     pub json_logging: bool,
 
     /// Health check interval in seconds
-    #[validate(range(min = 1, max = 300, message = "Health check interval must be between 1 and 300 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 300,
+        message = "Health check interval must be between 1 and 300 seconds"
+    ))]
     pub health_check_interval_seconds: u64,
 }
 
@@ -273,7 +333,11 @@ pub struct AuthConfig {
     pub jwt_secret: String,
 
     /// JWT token expiry in seconds
-    #[validate(range(min = 300, max = 86400, message = "Token expiry must be between 5 minutes and 24 hours"))]
+    #[validate(range(
+        min = 300,
+        max = 86400,
+        message = "Token expiry must be between 5 minutes and 24 hours"
+    ))]
     pub token_expiry_seconds: u64,
 
     /// JWT issuer
@@ -337,11 +401,19 @@ pub struct XdsConfig {
     pub ca_file: Option<String>,
 
     /// Node discovery cache TTL in seconds
-    #[validate(range(min = 1, max = 3600, message = "Cache TTL must be between 1 and 3600 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 3600,
+        message = "Cache TTL must be between 1 and 3600 seconds"
+    ))]
     pub cache_ttl_seconds: u64,
 
     /// Maximum concurrent xDS streams
-    #[validate(range(min = 1, max = 10000, message = "Max streams must be between 1 and 10000"))]
+    #[validate(range(
+        min = 1,
+        max = 10000,
+        message = "Max streams must be between 1 and 10000"
+    ))]
     pub max_concurrent_streams: u32,
 }
 
@@ -446,7 +518,10 @@ mod tests {
             metrics_port: 9090,
             ..Default::default()
         };
-        assert_eq!(config.metrics_bind_address(), Some("0.0.0.0:9090".to_string()));
+        assert_eq!(
+            config.metrics_bind_address(),
+            Some("0.0.0.0:9090".to_string())
+        );
 
         let disabled_config = ObservabilityConfig {
             metrics_port: 0,
@@ -508,8 +583,8 @@ mod tests {
         config.server.port = 0;
         assert!(config.validate().is_err());
 
-        config.server.port = 70000;
-        assert!(config.validate().is_err());
+        // config.server.port = 70000;
+        // assert!(config.validate().is_err());
 
         // Test invalid max connections
         config = AppConfig::default();
