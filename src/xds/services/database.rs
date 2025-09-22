@@ -1,10 +1,10 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use envoy_types::pb::envoy::config::cluster::v3::Cluster;
 use envoy_types::pb::envoy::config::core::v3::{socket_address, Address, SocketAddress};
@@ -232,73 +232,21 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     ) -> std::result::Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
         info!("New database-enabled ADS stream connection established");
 
-        let mut in_stream = request.into_inner();
-        let (tx, rx) = mpsc::channel(100);
         let state = self.state.clone();
+        let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
+            let service = DatabaseAggregatedDiscoveryService { state };
+            Box::pin(async move { service.create_resource_response(&request).await })
+                as Pin<Box<dyn Future<Output = Result<DiscoveryResponse>> + Send>>
+        };
 
-        // Spawn task to handle the bidirectional stream
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    // Handle incoming requests from Envoy
-                    result = in_stream.next() => {
-                        match result {
-                            Some(Ok(discovery_request)) => {
-                                info!(
-                                    type_url = %discovery_request.type_url,
-                                    version_info = %discovery_request.version_info,
-                                    node_id = ?discovery_request.node.as_ref().map(|n| &n.id),
-                                    "Received discovery request (database-enabled)"
-                                );
+        let stream = crate::xds::services::stream::run_stream_loop(
+            state,
+            request.into_inner(),
+            responder,
+            "database-enabled",
+        );
 
-                                // Create response with database-backed resources
-                                let service = DatabaseAggregatedDiscoveryService { state: state.clone() };
-                                let response = match service.create_resource_response(&discovery_request).await {
-                                    Ok(resp) => resp,
-                                    Err(e) => {
-                                        error!("Failed to create resource response: {}", e);
-                                        continue;
-                                    }
-                                };
-
-                                info!(
-                                    type_url = %response.type_url,
-                                    version = %response.version_info,
-                                    nonce = %response.nonce,
-                                    resource_count = response.resources.len(),
-                                    "Sending discovery response with database-backed resources"
-                                );
-
-                                if let Err(e) = tx.send(Ok(response)).await {
-                                    error!("Failed to send discovery response: {}", e);
-                                    break;
-                                }
-                            }
-                            Some(Err(e)) => {
-                                warn!("Error receiving discovery request: {}", e);
-                                let _ = tx.send(Err(e)).await;
-                                break;
-                            }
-                            None => {
-                                info!("ADS stream ended by client");
-                                break;
-                            }
-                        }
-                    }
-
-                    // Handle graceful shutdown
-                    _ = tokio::signal::ctrl_c() => {
-                        info!("Shutting down ADS stream");
-                        break;
-                    }
-                }
-            }
-        });
-
-        let out_stream = ReceiverStream::new(rx);
-        Ok(Response::new(
-            Box::pin(out_stream) as Self::StreamAggregatedResourcesStream
-        ))
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn delta_aggregated_resources(
@@ -307,12 +255,9 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     ) -> std::result::Result<Response<Self::DeltaAggregatedResourcesStream>, Status> {
         info!("Delta ADS stream connection established (database-enabled)");
 
-        // For minimal implementation, just return empty stream
-        let (_tx, rx) = mpsc::channel(1);
-        let out_stream = ReceiverStream::new(rx);
-
+        let stream = crate::xds::services::stream::empty_delta_stream();
         Ok(Response::new(
-            Box::pin(out_stream) as Self::DeltaAggregatedResourcesStream
+            Box::pin(stream) as Self::DeltaAggregatedResourcesStream
         ))
     }
 }
