@@ -1,4 +1,7 @@
-use magaya::{Config, Result, APP_NAME, VERSION};
+use magaya::{
+    config::DatabaseConfig, storage::create_pool, xds::start_database_xds_server_with_config,
+    Config, Result, APP_NAME, VERSION,
+};
 use tokio::signal;
 use tracing::{error, info};
 
@@ -15,7 +18,7 @@ async fn main() -> Result<()> {
     info!(
         app_name = APP_NAME,
         version = VERSION,
-        "Starting Magaya Envoy Control Plane - Checkpoint 3: Basic Envoy Resource Types"
+        "Starting Magaya Envoy Control Plane - Checkpoint 5: Storage Foundation"
     );
 
     // Load configuration from environment variables
@@ -26,6 +29,16 @@ async fn main() -> Result<()> {
         "Loaded configuration from environment"
     );
 
+    // Initialize database configuration and pool
+    let db_config = DatabaseConfig::from_env();
+    let db_kind = if db_config.is_sqlite() {
+        "sqlite"
+    } else {
+        "database"
+    };
+    info!(database = db_kind, "Creating database connection pool");
+    let pool = create_pool(&db_config).await?;
+
     // Create shutdown signal handler
     let shutdown_signal = async {
         signal::ctrl_c()
@@ -35,9 +48,7 @@ async fn main() -> Result<()> {
     };
 
     // Start the XDS server with configuration and graceful shutdown
-    if let Err(e) =
-        magaya::xds::start_minimal_xds_server_with_config(config.xds, shutdown_signal).await
-    {
+    if let Err(e) = start_database_xds_server_with_config(config.xds, pool, shutdown_signal).await {
         error!("Failed to start XDS server: {}", e);
         std::process::exit(1);
     }
