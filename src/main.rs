@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
     info!(
         app_name = APP_NAME,
         version = VERSION,
-        "Starting Magaya Envoy Control Plane - Checkpoint 2: Configuration Integration + Transport Reliability"
+        "Starting Magaya Envoy Control Plane - Checkpoint 3: Basic Envoy Resource Types"
     );
 
     // Load configuration from environment variables

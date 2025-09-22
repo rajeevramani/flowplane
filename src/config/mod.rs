@@ -16,6 +16,31 @@ pub struct Config {
 pub struct XdsConfig {
     pub bind_address: String,
     pub port: u16,
+    pub resources: XdsResourceConfig,
+}
+
+/// Configuration for Envoy resources served by XDS
+#[derive(Debug, Clone)]
+pub struct XdsResourceConfig {
+    pub cluster_name: String,
+    pub route_name: String,
+    pub listener_name: String,
+    pub backend_address: String,
+    pub backend_port: u16,
+    pub listener_port: u16,
+}
+
+impl Default for XdsResourceConfig {
+    fn default() -> Self {
+        Self {
+            cluster_name: "demo_cluster".to_string(),
+            route_name: "demo_route".to_string(),
+            listener_name: "demo_listener".to_string(),
+            backend_address: "127.0.0.1".to_string(),
+            backend_port: 8080,
+            listener_port: 10000,
+        }
+    }
 }
 
 impl Default for XdsConfig {
@@ -23,6 +48,7 @@ impl Default for XdsConfig {
         Self {
             bind_address: "0.0.0.0".to_string(),
             port: 18000,
+            resources: XdsResourceConfig::default(),
         }
     }
 }
@@ -44,10 +70,59 @@ impl Config {
         let xds_bind_address =
             std::env::var("MAGAYA_XDS_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
 
+        // Load resource configuration from environment variables
+        let cluster_name =
+            std::env::var("MAGAYA_CLUSTER_NAME").unwrap_or_else(|_| "demo_cluster".to_string());
+
+        let route_name =
+            std::env::var("MAGAYA_ROUTE_NAME").unwrap_or_else(|_| "demo_route".to_string());
+
+        let listener_name =
+            std::env::var("MAGAYA_LISTENER_NAME").unwrap_or_else(|_| "demo_listener".to_string());
+
+        let backend_address =
+            std::env::var("MAGAYA_BACKEND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        let backend_port_str =
+            std::env::var("MAGAYA_BACKEND_PORT").unwrap_or_else(|_| "8080".to_string());
+        let backend_port: u16 = backend_port_str.parse().map_err(|e| {
+            crate::Error::config(format!(
+                "Invalid backend port '{}': {}",
+                backend_port_str, e
+            ))
+        })?;
+
+        let listener_port_str =
+            std::env::var("MAGAYA_LISTENER_PORT").unwrap_or_else(|_| "10000".to_string());
+        let listener_port: u16 = listener_port_str.parse().map_err(|e| {
+            crate::Error::config(format!(
+                "Invalid listener port '{}': {}",
+                listener_port_str, e
+            ))
+        })?;
+
+        // Validate port ranges
+        if backend_port == 0 {
+            return Err(crate::Error::config("Backend port cannot be 0".to_string()));
+        }
+        if listener_port == 0 {
+            return Err(crate::Error::config(
+                "Listener port cannot be 0".to_string(),
+            ));
+        }
+
         Ok(Self {
             xds: XdsConfig {
                 bind_address: xds_bind_address,
                 port: xds_port,
+                resources: XdsResourceConfig {
+                    cluster_name,
+                    route_name,
+                    listener_name,
+                    backend_address,
+                    backend_port,
+                    listener_port,
+                },
             },
         })
     }

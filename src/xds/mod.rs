@@ -111,23 +111,24 @@ impl MinimalAggregatedDiscoveryService {
 
     /// Create basic cluster resources for testing
     fn create_cluster_resources(&self) -> Result<Vec<Any>> {
+        let resources = &self.state.config.resources;
         let cluster = Cluster {
-            name: "test_cluster".to_string(),
+            name: resources.cluster_name.clone(),
             connect_timeout: Some(Duration {
                 seconds: 5,
                 nanos: 0,
             }),
             // Cluster discovery type is set implicitly based on load_assignment
             load_assignment: Some(ClusterLoadAssignment {
-                cluster_name: "test_cluster".to_string(),
+                cluster_name: resources.cluster_name.clone(),
                 endpoints: vec![LocalityLbEndpoints {
                     lb_endpoints: vec![LbEndpoint {
                         host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
                             address: Some(Address {
                                 address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
                                     SocketAddress {
-                                        address: "127.0.0.1".to_string(),
-                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(8080)),
+                                        address: resources.backend_address.clone(),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(resources.backend_port.into())),
                                         protocol: 0, // TCP protocol
                                         ..Default::default()
                                     }
@@ -161,8 +162,9 @@ impl MinimalAggregatedDiscoveryService {
 
     /// Create basic route configuration resources
     fn create_route_resources(&self) -> Result<Vec<Any>> {
+        let resources = &self.state.config.resources;
         let route_config = RouteConfiguration {
-            name: "test_route".to_string(),
+            name: resources.route_name.clone(),
             virtual_hosts: vec![envoy_types::pb::envoy::config::route::v3::VirtualHost {
                 name: "test_virtual_host".to_string(),
                 domains: vec!["*".to_string()],
@@ -174,7 +176,7 @@ impl MinimalAggregatedDiscoveryService {
                     }),
                     action: Some(envoy_types::pb::envoy::config::route::v3::route::Action::Route(
                         envoy_types::pb::envoy::config::route::v3::RouteAction {
-                            cluster_specifier: Some(envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::Cluster("test_cluster".to_string())),
+                            cluster_specifier: Some(envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::Cluster(resources.cluster_name.clone())),
                             ..Default::default()
                         }
                     )),
@@ -205,6 +207,8 @@ impl MinimalAggregatedDiscoveryService {
         use envoy_types::pb::envoy::config::listener::v3::Filter;
         use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
 
+        let resources = &self.state.config.resources;
+
         let http_conn_manager = HttpConnectionManager {
             stat_prefix: "ingress_http".to_string(),
             route_specifier: Some(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::RouteSpecifier::Rds(
@@ -215,19 +219,19 @@ impl MinimalAggregatedDiscoveryService {
                         )),
                         ..Default::default()
                     }),
-                    route_config_name: "test_route".to_string(),
+                    route_config_name: resources.route_name.clone(),
                 }
             )),
             ..Default::default()
         };
 
         let listener = Listener {
-            name: "test_listener".to_string(),
+            name: resources.listener_name.clone(),
             address: Some(Address {
                 address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
                     SocketAddress {
                         address: "0.0.0.0".to_string(),
-                        port_specifier: Some(socket_address::PortSpecifier::PortValue(10000)),
+                        port_specifier: Some(socket_address::PortSpecifier::PortValue(resources.listener_port.into())),
                         protocol: 0, // TCP protocol
                         ..Default::default()
                     }
@@ -265,16 +269,17 @@ impl MinimalAggregatedDiscoveryService {
 
     /// Create basic endpoint resources
     fn create_endpoint_resources(&self) -> Result<Vec<Any>> {
+        let resources = &self.state.config.resources;
         let cluster_load_assignment = ClusterLoadAssignment {
-            cluster_name: "test_cluster".to_string(),
+            cluster_name: resources.cluster_name.clone(),
             endpoints: vec![LocalityLbEndpoints {
                 lb_endpoints: vec![LbEndpoint {
                     host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
                         address: Some(Address {
                             address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
                                 SocketAddress {
-                                    address: "127.0.0.1".to_string(),
-                                    port_specifier: Some(socket_address::PortSpecifier::PortValue(8080)),
+                                    address: resources.backend_address.clone(),
+                                    port_specifier: Some(socket_address::PortSpecifier::PortValue(resources.backend_port.into())),
                                     protocol: 0, // TCP protocol
                                     ..Default::default()
                                 }
