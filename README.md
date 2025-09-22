@@ -6,3 +6,13 @@ When you see the ocean lying still, and everything is quiet and still, that is l
 
 The Aim of the CP is initially to provide a resultful interface for Envoy. We will then try to extend this capability to support A2A and MCP protocols.
 
+## Running the server
+
+```
+MAGAYA_XDS_PORT=18003 \
+  MAGAYA_CLUSTER_NAME=my_cluster \
+  MAGAYA_BACKEND_PORT=9090 \
+  MAGAYA_LISTENER_PORT=8080 \
+  cargo run
+```
+
