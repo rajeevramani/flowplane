@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
-    clusters_from_config, clusters_from_database_entries, BuiltResource, CLUSTER_TYPE_URL,
+    clusters_from_config, clusters_from_database_entries, routes_from_config,
+    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterRepository, DbPool},
+    storage::{ClusterRepository, DbPool, RouteRepository},
     Result,
 };
 use envoy_types::pb::google::protobuf::Any;
@@ -55,6 +56,7 @@ pub struct XdsState {
     pub config: SimpleXdsConfig,
     pub version: Arc<std::sync::atomic::AtomicU64>,
     pub cluster_repository: Option<ClusterRepository>,
+    pub route_repository: Option<RouteRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -66,6 +68,7 @@ impl XdsState {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: None,
+            route_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -73,10 +76,13 @@ impl XdsState {
 
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
+        let cluster_repository = ClusterRepository::new(pool.clone());
+        let route_repository = RouteRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            cluster_repository: Some(ClusterRepository::new(pool)),
+            cluster_repository: Some(cluster_repository),
+            route_repository: Some(route_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -219,6 +225,49 @@ impl XdsState {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Refresh the route cache from the backing repository (if available).
+    pub async fn refresh_routes_from_repository(&self) -> Result<()> {
+        let repository = match &self.route_repository {
+            Some(repo) => repo.clone(),
+            None => return Ok(()),
+        };
+
+        let route_rows = repository.list(Some(1000), None).await?;
+
+        let built = if route_rows.is_empty() {
+            routes_from_config(&self.config)?
+        } else {
+            routes_from_database_entries(route_rows, "cache_refresh")?
+        };
+
+        let total_resources = built.len();
+        match self.apply_built_resources(ROUTE_TYPE_URL, built) {
+            Some(update) => {
+                for delta in &update.deltas {
+                    info!(
+                        phase = "cache_refresh",
+                        type_url = %delta.type_url,
+                        added = delta.added_or_updated.len(),
+                        removed = delta.removed.len(),
+                        version = update.version,
+                        total_resources,
+                        "Route cache refresh produced delta"
+                    );
+                }
+            }
+            None => {
+                info!(
+                    phase = "cache_refresh",
+                    type_url = ROUTE_TYPE_URL,
+                    total_resources,
+                    "Route cache refresh detected no changes"
+                );
+            }
+        }
+
         Ok(())
     }
 }

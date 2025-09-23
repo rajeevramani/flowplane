@@ -24,6 +24,8 @@ impl From<ValidatedCreateRouteRequest> for route::RouteConfig {
                 action: route::RouteActionConfig::Cluster {
                     name: validated.cluster_name,
                     timeout: validated.timeout_seconds,
+                    prefix_rewrite: validated.prefix_rewrite,
+                    path_template_rewrite: validated.uri_template_rewrite,
                 },
             }],
         };
@@ -98,6 +100,8 @@ impl From<ValidatedRouteActionRequest> for route::RouteActionConfig {
             } => route::RouteActionConfig::Cluster {
                 name: cluster_name,
                 timeout: timeout_seconds,
+                prefix_rewrite: None,
+                path_template_rewrite: None,
             },
             ValidatedRouteActionType::WeightedClusters {
                 clusters,
@@ -208,7 +212,11 @@ impl From<route::QueryParameterMatchConfig> for ValidatedQueryParameterMatchRequ
 impl From<route::RouteActionConfig> for ValidatedRouteActionRequest {
     fn from(route_action_config: route::RouteActionConfig) -> Self {
         let action_type = match route_action_config {
-            route::RouteActionConfig::Cluster { name, timeout } => ValidatedRouteActionType::Cluster {
+            route::RouteActionConfig::Cluster {
+                name,
+                timeout,
+                ..
+            } => ValidatedRouteActionType::Cluster {
                 cluster_name: name,
                 timeout_seconds: timeout,
             },
@@ -248,7 +256,7 @@ fn convert_path_match(path: &str, match_type: &PathMatchType) -> route::PathMatc
         PathMatchType::Exact => route::PathMatch::Exact(path.to_string()),
         PathMatchType::Prefix => route::PathMatch::Prefix(path.to_string()),
         PathMatchType::Regex => route::PathMatch::Regex(path.to_string()),
-        PathMatchType::UriTemplate => route::PathMatch::Regex(path.to_string()),
+        PathMatchType::UriTemplate => route::PathMatch::Template(path.to_string()),
     }
 }
 
@@ -257,5 +265,6 @@ fn convert_path_match_reverse(path_match: &route::PathMatch) -> (String, PathMat
         route::PathMatch::Exact(path) => (path.clone(), PathMatchType::Exact),
         route::PathMatch::Prefix(path) => (path.clone(), PathMatchType::Prefix),
         route::PathMatch::Regex(path) => (path.clone(), PathMatchType::Regex),
+        route::PathMatch::Template(path) => (path.clone(), PathMatchType::UriTemplate),
     }
 }

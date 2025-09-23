@@ -323,6 +323,8 @@ mod tests {
                             action: RouteActionConfig::Cluster {
                                 name: "backend-cluster".to_string(),
                                 timeout: None,
+                                prefix_rewrite: None,
+                                path_template_rewrite: None,
                             },
                         },
                     ],

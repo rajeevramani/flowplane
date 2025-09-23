@@ -8,6 +8,7 @@
 
 mod cluster_spec;
 pub(crate) mod resources;
+pub mod route;
 mod services;
 mod state;
 

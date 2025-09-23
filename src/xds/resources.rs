@@ -4,7 +4,11 @@ use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, HealthCheckSpec,
     OutlierDetectionSpec,
 };
-use crate::{config::SimpleXdsConfig, storage::ClusterData, Error, Result};
+use crate::{
+    config::SimpleXdsConfig,
+    storage::{ClusterData, RouteData},
+    Error, Result,
+};
 use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
 use envoy_types::pb::envoy::config::cluster::v3::cluster::{
     self, ring_hash_lb_config::HashFunction as RingHashFunction, ClusterDiscoveryType,
@@ -32,7 +36,10 @@ use prost::Message;
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::xds::route::RouteConfig;
+
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
+pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 
 /// Wrapper for a built Envoy resource along with its name.
 #[derive(Clone, Debug)]
@@ -147,10 +154,54 @@ pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>
     Ok(vec![BuiltResource {
         name: route_config.name.clone(),
         resource: Any {
-            type_url: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_string(),
+            type_url: ROUTE_TYPE_URL.to_string(),
             value: encoded,
         },
     }])
+}
+
+/// Build route configuration resources from database entries
+pub fn routes_from_database_entries(
+    routes: Vec<RouteData>,
+    phase: &str,
+) -> Result<Vec<BuiltResource>> {
+    let mut built = Vec::with_capacity(routes.len());
+
+    for route_row in routes {
+        let value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
+            Error::internal(format!(
+                "Failed to parse stored route configuration for '{}': {}",
+                route_row.name, err
+            ))
+        })?;
+
+        let route_config: RouteConfig = serde_json::from_value(value).map_err(|err| {
+            Error::internal(format!(
+                "Failed to deserialize route configuration for '{}': {}",
+                route_row.name, err
+            ))
+        })?;
+
+        let envoy_route = route_config.to_envoy_route_configuration()?;
+        let encoded = envoy_route.encode_to_vec();
+
+        info!(
+            phase,
+            resource = %envoy_route.name,
+            bytes = encoded.len(),
+            "Built route configuration from repository"
+        );
+
+        built.push(BuiltResource {
+            name: envoy_route.name.clone(),
+            resource: Any {
+                type_url: ROUTE_TYPE_URL.to_string(),
+                value: encoded,
+            },
+        });
+    }
+
+    Ok(built)
 }
 
 /// Build listener resources from the static configuration

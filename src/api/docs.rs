@@ -18,7 +18,12 @@ use crate::xds::{
         crate::api::handlers::list_clusters_handler,
         crate::api::handlers::get_cluster_handler,
         crate::api::handlers::update_cluster_handler,
-        crate::api::handlers::delete_cluster_handler
+        crate::api::handlers::delete_cluster_handler,
+        crate::api::route_handlers::create_route_handler,
+        crate::api::route_handlers::list_routes_handler,
+        crate::api::route_handlers::get_route_handler,
+        crate::api::route_handlers::update_route_handler,
+        crate::api::route_handlers::delete_route_handler
     ),
     components(
         schemas(
@@ -34,7 +39,15 @@ use crate::xds::{
             CircuitBreakersSpec,
             CircuitBreakerThresholdsSpec,
             HealthCheckSpec,
-            OutlierDetectionSpec
+            OutlierDetectionSpec,
+            crate::api::route_handlers::RouteDefinition,
+            crate::api::route_handlers::VirtualHostDefinition,
+            crate::api::route_handlers::RouteRuleDefinition,
+            crate::api::route_handlers::RouteMatchDefinition,
+            crate::api::route_handlers::PathMatchDefinition,
+            crate::api::route_handlers::RouteActionDefinition,
+            crate::api::route_handlers::WeightedClusterDefinition,
+            crate::api::route_handlers::RouteResponse
         )
     ),
     tags(
@@ -83,5 +96,7 @@ mod tests {
         // Ensure clusters endpoint is documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters"));
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/routes"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/routes/{name}"));
     }
 }
