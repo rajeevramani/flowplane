@@ -6,6 +6,7 @@
 //! - RDS (Route Discovery Service)
 //! - LDS (Listener Discovery Service)
 
+mod cluster_spec;
 pub(crate) mod resources;
 mod services;
 mod state;
@@ -18,6 +19,7 @@ use tracing::info;
 
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
 
+pub use cluster_spec::*;
 pub use services::{DatabaseAggregatedDiscoveryService, MinimalAggregatedDiscoveryService};
 pub use state::XdsState;
 

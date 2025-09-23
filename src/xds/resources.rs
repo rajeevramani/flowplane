@@ -1,14 +1,22 @@
 use std::net::IpAddr;
 
-use crate::{config::SimpleXdsConfig, storage::ClusterData, Error, Result};
-use envoy_types::pb::envoy::config::cluster::v3::cluster::{
-    ClusterDiscoveryType, DiscoveryType, DnsLookupFamily, LbPolicy,
+use crate::xds::{
+    CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, HealthCheckSpec,
+    OutlierDetectionSpec,
 };
-use envoy_types::pb::envoy::config::cluster::v3::Cluster;
+use crate::{config::SimpleXdsConfig, storage::ClusterData, Error, Result};
+use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
+use envoy_types::pb::envoy::config::cluster::v3::cluster::{
+    self, ring_hash_lb_config::HashFunction as RingHashFunction, ClusterDiscoveryType,
+    DiscoveryType, DnsLookupFamily, LbPolicy, LeastRequestLbConfig, MaglevLbConfig,
+    RingHashLbConfig,
+};
+use envoy_types::pb::envoy::config::cluster::v3::{CircuitBreakers, Cluster, OutlierDetection};
 use envoy_types::pb::envoy::config::core::v3::transport_socket::ConfigType as TransportSocketConfigType;
 use envoy_types::pb::envoy::config::core::v3::{
+    health_check::{self, HttpHealthCheck, TcpHealthCheck},
     socket_address::{self, Protocol},
-    Address, SocketAddress, TransportSocket,
+    Address, HealthCheck, RequestMethod, RoutingPriority, SocketAddress, TransportSocket,
 };
 use envoy_types::pb::envoy::config::endpoint::v3::{
     lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
@@ -18,8 +26,10 @@ use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
     CommonTlsContext, UpstreamTlsContext,
 };
-use envoy_types::pb::google::protobuf::{Any, Duration};
+use envoy_types::pb::envoy::r#type::v3::Int64Range;
+use envoy_types::pb::google::protobuf::{Any, Duration, UInt32Value, UInt64Value};
 use prost::Message;
+use serde_json::Value;
 use tracing::{info, warn};
 
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
@@ -56,11 +66,9 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResourc
                                 envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
                                     SocketAddress {
                                         address: resources.backend_address.clone(),
-                                        port_specifier: Some(
-                                            socket_address::PortSpecifier::PortValue(
-                                                resources.backend_port.into(),
-                                            ),
-                                        ),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(
+                                            resources.backend_port.into(),
+                                        )),
                                         protocol: 0,
                                         ..Default::default()
                                     },
@@ -226,15 +234,15 @@ pub fn clusters_from_database_entries(
     let mut resources = Vec::new();
 
     for entry in entries {
-        let config: serde_json::Value =
-            serde_json::from_str(&entry.configuration).map_err(|e| {
-                Error::config(format!(
-                    "Invalid cluster configuration JSON for '{}': {}",
-                    entry.name, e
-                ))
-            })?;
+        let raw_config: Value = serde_json::from_str(&entry.configuration).map_err(|e| {
+            Error::config(format!(
+                "Invalid cluster configuration JSON for '{}': {}",
+                entry.name, e
+            ))
+        })?;
 
-        let cluster = cluster_from_json(&entry.name, &config)?;
+        let spec = ClusterSpec::from_value(raw_config.clone())?;
+        let cluster = cluster_from_spec(&entry.name, &spec)?;
         let encoded = cluster.encode_to_vec();
 
         info!(
@@ -258,59 +266,50 @@ pub fn clusters_from_database_entries(
     Ok(resources)
 }
 
-fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> {
-    // Parse endpoints from configuration
-    let endpoints = config
-        .get("endpoints")
-        .and_then(|e| e.as_array())
-        .ok_or_else(|| {
-            Error::config("Cluster configuration missing 'endpoints' array".to_string())
-        })?;
-
+fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
     let mut lb_endpoints = Vec::new();
     let mut has_hostname = false;
     let mut first_hostname: Option<String> = None;
     let mut tls_candidate_host: Option<String> = None;
     let mut has_tls_port = false;
 
-    for endpoint in endpoints {
-        if let Some((host, port)) = parse_endpoint(endpoint) {
-            let is_ip = host.parse::<IpAddr>().is_ok();
-            if !is_ip {
-                has_hostname = true;
-                if first_hostname.is_none() {
-                    first_hostname = Some(host.clone());
-                }
+    for endpoint in &spec.endpoints {
+        let (host, port) = endpoint.host_port_or_error()?;
+        let is_ip = host.parse::<IpAddr>().is_ok();
+        if !is_ip {
+            has_hostname = true;
+            if first_hostname.is_none() {
+                first_hostname = Some(host.clone());
             }
-
-            if port == 443 {
-                has_tls_port = true;
-                if !is_ip && tls_candidate_host.is_none() {
-                    tls_candidate_host = Some(host.clone());
-                }
-            }
-
-            lb_endpoints.push(LbEndpoint {
-                host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
-                    address: Some(Address {
-                        address: Some(
-                            envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
-                                SocketAddress {
-                                    address: host,
-                                    port_specifier: Some(socket_address::PortSpecifier::PortValue(port)),
-                                    protocol: Protocol::Tcp as i32,
-                                    ..Default::default()
-                                },
-                            ),
-                        ),
-                    }),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            });
-        } else {
-            warn!(cluster = %name, ?endpoint, "Skipping invalid endpoint entry");
         }
+
+        if port == 443 {
+            has_tls_port = true;
+            if !is_ip && tls_candidate_host.is_none() {
+                tls_candidate_host = Some(host.clone());
+            }
+        }
+
+        lb_endpoints.push(LbEndpoint {
+            host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                address: Some(Address {
+                    address: Some(
+                        envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                            SocketAddress {
+                                address: host,
+                                port_specifier: Some(socket_address::PortSpecifier::PortValue(
+                                    port,
+                                )),
+                                protocol: Protocol::Tcp as i32,
+                                ..Default::default()
+                            },
+                        ),
+                    ),
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        });
     }
 
     if lb_endpoints.is_empty() {
@@ -319,15 +318,10 @@ fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> 
         ));
     }
 
+    let connect_timeout = spec.connect_timeout_seconds.unwrap_or(5);
     let mut cluster = Cluster {
         name: name.to_string(),
-        connect_timeout: Some(Duration {
-            seconds: config
-                .get("connect_timeout_seconds")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5) as i64,
-            nanos: 0,
-        }),
+        connect_timeout: Some(seconds_to_duration(connect_timeout)),
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: name.to_string(),
             endpoints: vec![LocalityLbEndpoints {
@@ -339,27 +333,10 @@ fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> 
         ..Default::default()
     };
 
-    // Load balancing policy
-    if let Some(lb_policy_value) = config
-        .get("lb_policy")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        cluster.lb_policy = match lb_policy_value.to_uppercase().as_str() {
-            "ROUND_ROBIN" => LbPolicy::RoundRobin as i32,
-            "LEAST_REQUEST" => LbPolicy::LeastRequest as i32,
-            "RING_HASH" => LbPolicy::RingHash as i32,
-            "RANDOM" => LbPolicy::Random as i32,
-            "MAGLEV" => LbPolicy::Maglev as i32,
-            "CLUSTER_PROVIDED" => LbPolicy::ClusterProvided as i32,
-            other => {
-                warn!(cluster = %name, policy = other, "Unknown lb_policy value; defaulting to round robin");
-                LbPolicy::RoundRobin as i32
-            }
-        };
-    } else {
-        cluster.lb_policy = LbPolicy::RoundRobin as i32;
+    let (lb_policy, lb_config) = map_lb_policy(name, spec);
+    cluster.lb_policy = lb_policy;
+    if let Some(config) = lb_config {
+        cluster.lb_config = Some(config);
     }
 
     if has_hostname {
@@ -376,45 +353,25 @@ fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> 
             ClusterDiscoveryType::Type(DiscoveryType::StrictDns as i32)
         });
 
-        cluster.dns_lookup_family =
-            parse_dns_lookup_family(config).unwrap_or(DnsLookupFamily::Auto as i32);
+        if let Some(family) = map_dns_lookup_family(name, spec.dns_lookup_family.as_deref()) {
+            cluster.dns_lookup_family = family;
+        }
     } else {
         cluster.cluster_discovery_type =
             Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32));
     }
 
-    let mut use_tls = config
-        .get("use_tls")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if !use_tls {
-        use_tls = config
-            .get("tls")
-            .and_then(|v| v.get("enabled"))
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false);
-    }
-
+    let mut use_tls = spec.use_tls();
     if !use_tls && has_tls_port {
         use_tls = true;
     }
 
-    let mut sni = config
-        .get("tls_server_name")
-        .and_then(|v| v.as_str())
+    let mut sni = spec
+        .tls_server_name
+        .as_ref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            config
-                .get("tls")
-                .and_then(|v| v.get("server_name"))
-                .and_then(|s| s.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
+        .map(|s| s.to_string());
 
     if sni.is_none() {
         if let Some(host) = first_hostname.clone() {
@@ -432,8 +389,11 @@ fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> 
 
         if let Some(ref server_name) = sni {
             tls_context.sni = server_name.clone();
-        } else {
-            warn!(cluster = %name, "TLS enabled but no SNI server name provided; upstream certificate verification may fail");
+        } else if has_hostname {
+            warn!(
+                cluster = %name,
+                "TLS enabled but no SNI server name provided; upstream certificate verification may fail"
+            );
         }
 
         let tls_any = Any {
@@ -449,131 +409,272 @@ fn cluster_from_json(name: &str, config: &serde_json::Value) -> Result<Cluster> 
         });
     }
 
+    if let Some(cb) = &spec.circuit_breakers {
+        let built = build_circuit_breakers(cb);
+        if !built.thresholds.is_empty() {
+            cluster.circuit_breakers = Some(built);
+        }
+    }
+
+    if !spec.health_checks.is_empty() {
+        let mut checks = Vec::new();
+        for check in &spec.health_checks {
+            checks.push(build_health_check(name, check)?);
+        }
+        cluster.health_checks = checks;
+    }
+
+    if let Some(outlier) = &spec.outlier_detection {
+        cluster.outlier_detection = Some(build_outlier_detection(outlier));
+    }
+
     Ok(cluster)
 }
 
-pub(crate) fn parse_endpoint(value: &serde_json::Value) -> Option<(String, u32)> {
-    if let Some(endpoint_str) = value.as_str() {
-        let parts: Vec<&str> = endpoint_str.split(':').collect();
-        if parts.len() == 2 {
-            let host = parts[0].trim();
-            let port = parts[1].trim().parse::<u32>().ok()?;
-            if host.is_empty() {
-                return None;
-            }
-            return Some((host.to_string(), port));
-        }
-    }
-
-    if let Some(obj) = value.as_object() {
-        let host = obj
-            .get("host")
-            .or_else(|| obj.get("address"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|h| !h.is_empty())?
-            .to_string();
-
-        let port_value = obj
-            .get("port")
-            .or_else(|| obj.get("port_value"))
-            .and_then(|v| {
-                if let Some(p) = v.as_u64() {
-                    Some(p)
-                } else if let Some(p_str) = v.as_str() {
-                    p_str.trim().parse::<u64>().ok()
-                } else {
-                    None
-                }
-            })?;
-
-        if port_value == 0 || port_value > u32::MAX as u64 {
-            return None;
-        }
-
-        return Some((host, port_value as u32));
-    }
-
-    None
-}
-
-fn parse_dns_lookup_family(config: &serde_json::Value) -> Option<i32> {
-    let family_value = config
-        .get("dns_lookup_family")
-        .and_then(|v| v.as_str())
+fn map_lb_policy(name: &str, spec: &ClusterSpec) -> (i32, Option<cluster::LbConfig>) {
+    let default_policy = LbPolicy::RoundRobin as i32;
+    let policy = match spec
+        .lb_policy
+        .as_ref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_uppercase());
+    {
+        Some(value) => value.to_uppercase(),
+        None => return (default_policy, None),
+    };
 
-    match family_value.as_deref() {
-        Some("AUTO") => Some(DnsLookupFamily::Auto as i32),
-        Some("V4_ONLY") | Some("V4ONLY") => Some(DnsLookupFamily::V4Only as i32),
-        Some("V6_ONLY") | Some("V6ONLY") => Some(DnsLookupFamily::V6Only as i32),
-        Some("V4_PREFERRED") | Some("V4PREFERRED") => Some(DnsLookupFamily::V4Preferred as i32),
-        Some("ALL") => Some(DnsLookupFamily::All as i32),
-        Some(other) => {
-            warn!(
-                family = other,
-                "Unknown dns_lookup_family value; defaulting to AUTO"
-            );
-            Some(DnsLookupFamily::Auto as i32)
+    match policy.as_str() {
+        "ROUND_ROBIN" => (LbPolicy::RoundRobin as i32, None),
+        "LEAST_REQUEST" => {
+            let lb_config = spec.least_request.as_ref().map(|cfg| {
+                let mut config = LeastRequestLbConfig::default();
+                if let Some(choice) = cfg.choice_count {
+                    config.choice_count = Some(UInt32Value { value: choice });
+                }
+                cluster::LbConfig::LeastRequestLbConfig(config)
+            });
+            (LbPolicy::LeastRequest as i32, lb_config)
         }
-        None => None,
+        "RING_HASH" => {
+            let lb_config = spec.ring_hash.as_ref().map(|cfg| {
+                let mut config = RingHashLbConfig::default();
+                if let Some(min) = cfg.minimum_ring_size {
+                    config.minimum_ring_size = uint64(Some(min));
+                }
+                if let Some(max) = cfg.maximum_ring_size {
+                    config.maximum_ring_size = uint64(Some(max));
+                }
+                if let Some(function) = cfg.hash_function.as_ref() {
+                    let hash_enum = match function.to_uppercase().as_str() {
+                        "XX_HASH" | "XXHASH" => Some(RingHashFunction::XxHash as i32),
+                        "MURMUR_HASH_2" | "MURMURHASH2" | "MURMUR_HASH2" => {
+                            Some(RingHashFunction::MurmurHash2 as i32)
+                        }
+                        other => {
+                            warn!(cluster = %name, hash = other, "Unknown ring hash function; defaulting to xxHash");
+                            None
+                        }
+                    };
+                    if let Some(hash_enum) = hash_enum {
+                        config.hash_function = hash_enum;
+                    }
+                }
+                cluster::LbConfig::RingHashLbConfig(config)
+            });
+            (LbPolicy::RingHash as i32, lb_config)
+        }
+        "MAGLEV" => {
+            let lb_config = spec.maglev.as_ref().map(|cfg| {
+                let mut config = MaglevLbConfig::default();
+                if let Some(size) = cfg.table_size {
+                    config.table_size = uint64(Some(size));
+                }
+                cluster::LbConfig::MaglevLbConfig(config)
+            });
+            (LbPolicy::Maglev as i32, lb_config)
+        }
+        "RANDOM" => (LbPolicy::Random as i32, None),
+        "CLUSTER_PROVIDED" => (LbPolicy::ClusterProvided as i32, None),
+        other => {
+            warn!(cluster = %name, policy = other, "Unknown lb_policy value; defaulting to round robin");
+            (default_policy, None)
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use envoy_types::pb::envoy::config::core::v3::transport_socket::ConfigType;
-    use prost::Message;
-    use serde_json::json;
+fn map_dns_lookup_family(cluster: &str, value: Option<&str>) -> Option<i32> {
+    value.map(|family| match family.to_uppercase().as_str() {
+        "AUTO" => DnsLookupFamily::Auto as i32,
+        "V4_ONLY" | "V4ONLY" => DnsLookupFamily::V4Only as i32,
+        "V6_ONLY" | "V6ONLY" => DnsLookupFamily::V6Only as i32,
+        "V4_PREFERRED" | "V4PREFERRED" => DnsLookupFamily::V4Preferred as i32,
+        "ALL" => DnsLookupFamily::All as i32,
+        other => {
+            warn!(cluster = %cluster, family = other, "Unknown dns_lookup_family value; defaulting to AUTO");
+            DnsLookupFamily::Auto as i32
+        }
+    })
+}
 
-    #[test]
-    fn static_cluster_preserves_ip_endpoints() {
-        let cluster = cluster_from_json(
-            "ip-cluster",
-            &json!({
-                "endpoints": ["10.0.0.1:8080", "10.0.0.2:8080"],
-                "connect_timeout_seconds": 3,
-                "lb_policy": "ROUND_ROBIN"
-            }),
-        )
-        .expect("cluster should build");
+fn seconds_to_duration(value: u64) -> Duration {
+    Duration {
+        seconds: value as i64,
+        nanos: 0,
+    }
+}
 
-        assert_eq!(
-            cluster.cluster_discovery_type,
-            Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32))
-        );
-        assert!(cluster.transport_socket.is_none());
-        assert_eq!(cluster.lb_policy, LbPolicy::RoundRobin as i32);
+fn optional_duration(value: Option<u64>) -> Option<Duration> {
+    value.map(seconds_to_duration)
+}
+
+fn uint32(value: Option<u32>) -> Option<UInt32Value> {
+    value.map(|v| UInt32Value { value: v })
+}
+
+fn uint64(value: Option<u64>) -> Option<UInt64Value> {
+    value.map(|v| UInt64Value { value: v })
+}
+
+fn build_circuit_breakers(spec: &CircuitBreakersSpec) -> CircuitBreakers {
+    let mut thresholds = Vec::new();
+
+    if let Some(default) = &spec.default {
+        thresholds.push(build_threshold(default, RoutingPriority::Default));
     }
 
-    #[test]
-    fn dns_endpoint_auto_enables_tls_and_dns_resolution() {
-        let cluster = cluster_from_json(
-            "dns-cluster",
-            &json!({
-                "endpoints": ["example.com:443"],
-                "lb_policy": "LEAST_REQUEST"
-            }),
-        )
-        .expect("cluster should build");
+    if let Some(high) = &spec.high {
+        thresholds.push(build_threshold(high, RoutingPriority::High));
+    }
 
-        assert_eq!(
-            cluster.cluster_discovery_type,
-            Some(ClusterDiscoveryType::Type(DiscoveryType::LogicalDns as i32))
-        );
-        assert_eq!(cluster.lb_policy, LbPolicy::LeastRequest as i32);
+    CircuitBreakers {
+        thresholds,
+        ..Default::default()
+    }
+}
 
-        let transport_socket = cluster.transport_socket.expect("tls transport socket");
-        let tls_any = match transport_socket.config_type.expect("config type") {
-            ConfigType::TypedConfig(any) => any,
-        };
+fn build_threshold(
+    spec: &CircuitBreakerThresholdsSpec,
+    priority: RoutingPriority,
+) -> CircuitThresholds {
+    CircuitThresholds {
+        priority: priority as i32,
+        max_connections: uint32(spec.max_connections),
+        max_pending_requests: uint32(spec.max_pending_requests),
+        max_requests: uint32(spec.max_requests),
+        max_retries: uint32(spec.max_retries),
+        ..Default::default()
+    }
+}
 
-        let tls_context =
-            UpstreamTlsContext::decode(&*tls_any.value).expect("decode upstream tls context");
-        assert_eq!(tls_context.sni, "example.com");
+fn build_health_check(cluster: &str, spec: &HealthCheckSpec) -> Result<HealthCheck> {
+    let mut check = HealthCheck {
+        timeout: optional_duration(match spec {
+            HealthCheckSpec::Http {
+                timeout_seconds, ..
+            } => *timeout_seconds,
+            HealthCheckSpec::Tcp {
+                timeout_seconds, ..
+            } => *timeout_seconds,
+        })
+        .or_else(|| Some(seconds_to_duration(5))),
+        interval: optional_duration(match spec {
+            HealthCheckSpec::Http {
+                interval_seconds, ..
+            } => *interval_seconds,
+            HealthCheckSpec::Tcp {
+                interval_seconds, ..
+            } => *interval_seconds,
+        })
+        .or_else(|| Some(seconds_to_duration(10))),
+        healthy_threshold: uint32(match spec {
+            HealthCheckSpec::Http {
+                healthy_threshold, ..
+            } => *healthy_threshold,
+            HealthCheckSpec::Tcp {
+                healthy_threshold, ..
+            } => *healthy_threshold,
+        }),
+        unhealthy_threshold: uint32(match spec {
+            HealthCheckSpec::Http {
+                unhealthy_threshold,
+                ..
+            } => *unhealthy_threshold,
+            HealthCheckSpec::Tcp {
+                unhealthy_threshold,
+                ..
+            } => *unhealthy_threshold,
+        }),
+        ..Default::default()
+    };
+
+    match spec {
+        HealthCheckSpec::Http {
+            path,
+            host,
+            method,
+            expected_statuses,
+            ..
+        } => {
+            let mut http_check = HttpHealthCheck {
+                host: host.clone().unwrap_or_default(),
+                path: path.clone(),
+                ..Default::default()
+            };
+
+            if let Some(statuses) = expected_statuses {
+                http_check.expected_statuses = statuses
+                    .iter()
+                    .map(|code| Int64Range {
+                        start: *code as i64,
+                        end: (*code as i64) + 1,
+                    })
+                    .collect();
+            }
+
+            if let Some(request_method) = method.as_deref().and_then(request_method_from_str) {
+                http_check.method = request_method as i32;
+            }
+
+            check.health_checker = Some(health_check::HealthChecker::HttpHealthCheck(http_check));
+        }
+        HealthCheckSpec::Tcp { .. } => {
+            check.health_checker = Some(health_check::HealthChecker::TcpHealthCheck(
+                TcpHealthCheck::default(),
+            ));
+        }
+    }
+
+    if check.health_checker.is_none() {
+        return Err(Error::config(format!(
+            "Unsupported health check configuration for cluster '{}'",
+            cluster
+        )));
+    }
+
+    Ok(check)
+}
+
+fn request_method_from_str(method: &str) -> Option<RequestMethod> {
+    match method.to_uppercase().as_str() {
+        "GET" => Some(RequestMethod::Get),
+        "HEAD" => Some(RequestMethod::Head),
+        "POST" => Some(RequestMethod::Post),
+        "PUT" => Some(RequestMethod::Put),
+        "DELETE" => Some(RequestMethod::Delete),
+        "OPTIONS" => Some(RequestMethod::Options),
+        "TRACE" => Some(RequestMethod::Trace),
+        "PATCH" => Some(RequestMethod::Patch),
+        _ => None,
+    }
+}
+
+fn build_outlier_detection(spec: &OutlierDetectionSpec) -> OutlierDetection {
+    OutlierDetection {
+        consecutive_5xx: uint32(spec.consecutive_5xx),
+        interval: optional_duration(spec.interval_seconds),
+        base_ejection_time: optional_duration(spec.base_ejection_time_seconds),
+        max_ejection_percent: uint32(spec.max_ejection_percent),
+        ..Default::default()
     }
 }
 
@@ -614,7 +715,7 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
     info!(
         resource = %cluster_load_assignment.cluster_name,
         bytes = encoded.len(),
-        "Created endpoint resource"
+        "Created endpoint resources"
     );
 
     Ok(vec![BuiltResource {
@@ -625,4 +726,219 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
             value: encoded,
         },
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xds::{
+        CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec,
+        HealthCheckSpec, LeastRequestPolicy, MaglevPolicy, OutlierDetectionSpec, RingHashPolicy,
+    };
+    use envoy_types::pb::envoy::config::cluster::v3::cluster::LbConfig;
+    use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext;
+    use prost::Message;
+
+    fn decode_tls_context(cluster: &Cluster) -> UpstreamTlsContext {
+        let transport_socket = cluster.transport_socket.as_ref().expect("transport socket");
+        let typed = match transport_socket.config_type.as_ref().expect("typed config") {
+            TransportSocketConfigType::TypedConfig(any) => any,
+        };
+        UpstreamTlsContext::decode(&*typed.value).expect("decode tls context")
+    }
+
+    #[test]
+    fn static_cluster_preserves_ip_endpoints() {
+        let spec = ClusterSpec {
+            endpoints: vec![
+                EndpointSpec::String("10.0.0.1:8080".to_string()),
+                EndpointSpec::String("10.0.0.2:8080".to_string()),
+            ],
+            connect_timeout_seconds: Some(3),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("ip-cluster", &spec).expect("cluster should build");
+
+        assert_eq!(
+            cluster.cluster_discovery_type,
+            Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32))
+        );
+        assert!(cluster.transport_socket.is_none());
+        assert_eq!(cluster.lb_policy, LbPolicy::RoundRobin as i32);
+    }
+
+    #[test]
+    fn dns_endpoint_auto_enables_tls_and_dns_resolution() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("example.com:443".to_string())],
+            use_tls: Some(true),
+            lb_policy: Some("LEAST_REQUEST".to_string()),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("dns-cluster", &spec).expect("cluster should build");
+
+        assert_eq!(
+            cluster.cluster_discovery_type,
+            Some(ClusterDiscoveryType::Type(DiscoveryType::LogicalDns as i32))
+        );
+        assert_eq!(cluster.lb_policy, LbPolicy::LeastRequest as i32);
+
+        let tls = decode_tls_context(&cluster);
+        assert_eq!(tls.sni, "example.com");
+    }
+
+    #[test]
+    fn least_request_policy_sets_lb_config() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            lb_policy: Some("LEAST_REQUEST".to_string()),
+            least_request: Some(LeastRequestPolicy {
+                choice_count: Some(4),
+            }),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("least", &spec).expect("cluster build");
+
+        assert_eq!(cluster.lb_policy, LbPolicy::LeastRequest as i32);
+        match cluster.lb_config.unwrap() {
+            LbConfig::LeastRequestLbConfig(config) => {
+                assert_eq!(config.choice_count.unwrap().value, 4);
+            }
+            other => panic!("unexpected lb config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ring_hash_policy_sets_lb_config() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            lb_policy: Some("RING_HASH".to_string()),
+            ring_hash: Some(RingHashPolicy {
+                minimum_ring_size: Some(1024),
+                maximum_ring_size: Some(2048),
+                hash_function: Some("murmur_hash_2".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("ring", &spec).expect("cluster build");
+
+        match cluster.lb_config.unwrap() {
+            LbConfig::RingHashLbConfig(config) => {
+                assert_eq!(config.minimum_ring_size.unwrap().value, 1024);
+                assert_eq!(config.maximum_ring_size.unwrap().value, 2048);
+                assert_eq!(config.hash_function, RingHashFunction::MurmurHash2 as i32);
+            }
+            other => panic!("unexpected lb config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn maglev_policy_sets_table_size() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            lb_policy: Some("MAGLEV".to_string()),
+            maglev: Some(MaglevPolicy {
+                table_size: Some(65537),
+            }),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("maglev", &spec).expect("cluster build");
+
+        match cluster.lb_config.unwrap() {
+            LbConfig::MaglevLbConfig(config) => {
+                assert_eq!(config.table_size.unwrap().value, 65537);
+            }
+            other => panic!("unexpected lb config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn circuit_breakers_and_health_checks_are_applied() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            circuit_breakers: Some(CircuitBreakersSpec {
+                default: Some(CircuitBreakerThresholdsSpec {
+                    max_connections: Some(100),
+                    max_pending_requests: Some(200),
+                    max_requests: None,
+                    max_retries: None,
+                }),
+                high: Some(CircuitBreakerThresholdsSpec {
+                    max_connections: Some(50),
+                    max_pending_requests: None,
+                    max_requests: Some(150),
+                    max_retries: Some(2),
+                }),
+            }),
+            health_checks: vec![HealthCheckSpec::Http {
+                path: "/healthz".to_string(),
+                host: Some("example.com".to_string()),
+                method: Some("GET".to_string()),
+                interval_seconds: Some(3),
+                timeout_seconds: Some(1),
+                healthy_threshold: Some(2),
+                unhealthy_threshold: Some(3),
+                expected_statuses: Some(vec![200]),
+            }],
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("cb-cluster", &spec).expect("cluster should build");
+
+        let breakers = cluster.circuit_breakers.expect("circuit breakers");
+        assert_eq!(breakers.thresholds.len(), 2);
+
+        let http_check = match cluster.health_checks[0].health_checker.as_ref() {
+            Some(health_check::HealthChecker::HttpHealthCheck(h)) => h,
+            other => panic!("expected http health check, got {:?}", other),
+        };
+        assert_eq!(http_check.path, "/healthz");
+        assert_eq!(http_check.host, "example.com");
+    }
+
+    #[test]
+    fn tcp_health_check_is_supported() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            health_checks: vec![HealthCheckSpec::Tcp {
+                interval_seconds: Some(5),
+                timeout_seconds: Some(2),
+                healthy_threshold: Some(1),
+                unhealthy_threshold: Some(3),
+            }],
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("tcp-health", &spec).expect("cluster build");
+
+        match cluster.health_checks[0].health_checker.as_ref() {
+            Some(health_check::HealthChecker::TcpHealthCheck(_)) => {}
+            other => panic!("expected tcp health check, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn outlier_detection_is_applied() {
+        let spec = ClusterSpec {
+            endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
+            outlier_detection: Some(OutlierDetectionSpec {
+                consecutive_5xx: Some(7),
+                interval_seconds: Some(5),
+                base_ejection_time_seconds: Some(30),
+                max_ejection_percent: Some(50),
+            }),
+            ..Default::default()
+        };
+
+        let cluster = cluster_from_spec("outlier", &spec).expect("cluster build");
+
+        let outlier = cluster.outlier_detection.expect("outlier detection");
+        assert_eq!(outlier.consecutive_5xx.unwrap().value, 7);
+        assert_eq!(outlier.max_ejection_percent.unwrap().value, 50);
+    }
 }
