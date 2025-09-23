@@ -10,9 +10,10 @@ The Aim of the CP is initially to provide a resultful interface for Envoy. We wi
 
 ```
 MAGAYA_XDS_PORT=18003 \
-  MAGAYA_CLUSTER_NAME=my_cluster \
-  MAGAYA_BACKEND_PORT=9090 \
-  MAGAYA_LISTENER_PORT=8080 \
-  cargo run
+MAGAYA_CLUSTER_NAME=my_cluster \
+MAGAYA_BACKEND_PORT=9090 \
+MAGAYA_LISTENER_PORT=8080 \
+MAGAYA_DATABASE_URL=sqlite://./data/magaya.db \
+cargo run --bin magaya
 ```
 

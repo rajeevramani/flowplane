@@ -22,6 +22,7 @@
 //! - **REST API Gateway**: Axum-based HTTP server for configuration management (planned)
 //! - **Persistence Layer**: SQLx with PostgreSQL for configuration storage (planned)
 
+pub mod api;
 pub mod config;
 pub mod errors;
 pub mod storage;
