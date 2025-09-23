@@ -141,12 +141,16 @@ pub struct QueryParameterMatchDefinition {
 pub enum RouteActionDefinition {
     #[serde(rename_all = "camelCase")]
     Forward {
+        #[schema(example = "demo_cluster_api_002")]
         cluster: String,
         #[serde(default)]
+        #[schema(example = 5)]
         timeout_seconds: Option<u64>,
         #[serde(default)]
+        #[schema(example = "/internal/api")]
         prefix_rewrite: Option<String>,
         #[serde(default)]
+        #[schema(example = "/users/{user_id}")]
         template_rewrite: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
