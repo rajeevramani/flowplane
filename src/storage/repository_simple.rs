@@ -307,6 +307,11 @@ impl ClusterRepository {
 
         Ok(count)
     }
+
+    /// Access the underlying pool (used by background watchers)
+    pub fn pool(&self) -> &DbPool {
+        &self.pool
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ pub use settings::{
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub xds: SimpleXdsConfig,
+    pub api: ApiServerConfig,
 }
 
 /// Simple XDS server configuration for development
@@ -23,6 +24,13 @@ pub struct SimpleXdsConfig {
     pub bind_address: String,
     pub port: u16,
     pub resources: XdsResourceConfig,
+}
+
+/// Configuration for HTTP API server
+#[derive(Debug, Clone)]
+pub struct ApiServerConfig {
+    pub bind_address: String,
+    pub port: u16,
 }
 
 /// Configuration for Envoy resources served by XDS
@@ -55,6 +63,15 @@ impl Default for SimpleXdsConfig {
             bind_address: "0.0.0.0".to_string(),
             port: 18000,
             resources: XdsResourceConfig::default(),
+        }
+    }
+}
+
+impl Default for ApiServerConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: "127.0.0.1".to_string(),
+            port: 8080,
         }
     }
 }
@@ -117,6 +134,19 @@ impl Config {
             ));
         }
 
+        // API server configuration
+        let api_port_str = std::env::var("MAGAYA_API_PORT").unwrap_or_else(|_| "8080".to_string());
+        let api_port: u16 = api_port_str.parse().map_err(|e| {
+            crate::Error::config(format!("Invalid API port '{}': {}", api_port_str, e))
+        })?;
+
+        if api_port == 0 {
+            return Err(crate::Error::config("API port cannot be 0".to_string()));
+        }
+
+        let api_bind_address =
+            std::env::var("MAGAYA_API_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
+
         Ok(Self {
             xds: SimpleXdsConfig {
                 bind_address: xds_bind_address,
@@ -129,6 +159,10 @@ impl Config {
                     backend_port,
                     listener_port,
                 },
+            },
+            api: ApiServerConfig {
+                bind_address: api_bind_address,
+                port: api_port,
             },
         })
     }
@@ -160,6 +194,8 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.xds.bind_address, "0.0.0.0");
         assert_eq!(config.xds.port, 18000);
+        assert_eq!(config.api.bind_address, "127.0.0.1");
+        assert_eq!(config.api.port, 8080);
     }
 
     #[test]
@@ -169,14 +205,20 @@ mod tests {
         // Save original values to restore later
         let original_port = env::var("MAGAYA_XDS_PORT").ok();
         let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
+        let original_api_port = env::var("MAGAYA_API_PORT").ok();
+        let original_api_bind = env::var("MAGAYA_API_BIND_ADDRESS").ok();
 
         // Set environment variables
         env::set_var("MAGAYA_XDS_PORT", "9090");
         env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
+        env::set_var("MAGAYA_API_PORT", "7070");
+        env::set_var("MAGAYA_API_BIND_ADDRESS", "0.0.0.0");
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.xds.port, 9090);
         assert_eq!(config.xds.bind_address, "127.0.0.1");
+        assert_eq!(config.api.port, 7070);
+        assert_eq!(config.api.bind_address, "0.0.0.0");
 
         // Restore original environment
         match original_port {
@@ -186,6 +228,14 @@ mod tests {
         match original_bind {
             Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
             None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+        }
+        match original_api_port {
+            Some(port) => env::set_var("MAGAYA_API_PORT", port),
+            None => env::remove_var("MAGAYA_API_PORT"),
+        }
+        match original_api_bind {
+            Some(bind) => env::set_var("MAGAYA_API_BIND_ADDRESS", bind),
+            None => env::remove_var("MAGAYA_API_BIND_ADDRESS"),
         }
     }
 
