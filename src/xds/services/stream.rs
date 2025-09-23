@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -7,10 +8,12 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
 use tracing::{error, info, warn};
 
-use crate::xds::state::XdsState;
+use crate::xds::state::{ResourceDelta, XdsState};
+use envoy_types::pb::envoy::service::discovery::v3::Resource;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
+use uuid::Uuid;
 
 // Removed complex delta state tracking - using PoC-style approach instead
 
@@ -120,8 +123,7 @@ where
     let mut update_rx = state.subscribe_updates();
 
     tokio::spawn(async move {
-        let mut last_sent_version = 0u64;
-        let mut pending_types: Vec<String> = Vec::new();
+        let mut pending_types: HashSet<String> = HashSet::new();
 
         loop {
             tokio::select! {
@@ -161,19 +163,13 @@ where
                             }
 
                             // Track what type this client is interested in
-                            if !pending_types.contains(&delta_request.type_url) {
-                                pending_types.push(delta_request.type_url.clone());
-                            }
+                            pending_types.insert(delta_request.type_url.clone());
 
                             info!(
                                 type_url = %delta_request.type_url,
                                 stream = %label,
                                 "Processing initial delta request, preparing response"
                             );
-
-                            // Get current version and send response for initial request
-                            let current_version_num = state_clone.get_version_number();
-                            last_sent_version = current_version_num;
 
                             let state_for_task = state_clone.clone();
                             let responder_for_task = responder.clone();
@@ -214,68 +210,38 @@ where
                 }
                 update = update_rx.recv() => {
                     match update {
-                        Ok(_version) => {
-                            let current_version_num = state_clone.get_version_number();
+                        Ok(update) => {
+                            if pending_types.is_empty() {
+                                continue;
+                            }
 
-                            // Only send updates if version has changed and we have types to update
-                            if current_version_num > last_sent_version && !pending_types.is_empty() {
-                                info!(
-                                    current_version = current_version_num,
-                                    last_version = last_sent_version,
-                                    type_count = pending_types.len(),
-                                    stream = %label,
-                                    "Pushing delta resource updates to client"
-                                );
-
-                                // Send updates for all types this client is interested in
-                                for type_url in &pending_types {
-                                    let state_for_task = state_clone.clone();
-                                    let responder_for_task = responder.clone();
-                                    let tx_for_task = tx.clone();
-                                    let label_for_task = label.clone();
-                                    let type_url_for_task = type_url.clone();
-
-                                    tokio::spawn(async move {
-                                        // Create a delta request for this type
-                                        let push_request = DeltaDiscoveryRequest {
-                                            type_url: type_url_for_task.clone(),
-                                            response_nonce: String::new(), // Empty for push updates
-                                            ..Default::default()
-                                        };
-
-                                        match responder_for_task(state_for_task, push_request).await {
-                                            Ok(response) => {
-                                                info!(
-                                                    type_url = %response.type_url,
-                                                    nonce = %response.nonce,
-                                                    version = %response.system_version_info,
-                                                    resource_count = response.resources.len(),
-                                                    stream = %label_for_task,
-                                                    "Sending push update to client"
-                                                );
-                                                if tx_for_task.send(Ok(response)).await.is_err() {
-                                                    error!(stream = %label_for_task, "Push update receiver dropped");
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    type_url = %type_url_for_task,
-                                                    stream = %label_for_task,
-                                                    error = %e,
-                                                    "Failed to create push update"
-                                                );
-                                            }
-                                        }
-                                    });
+                            for delta in &update.deltas {
+                                if !pending_types.contains(&delta.type_url) {
+                                    continue;
                                 }
 
-                                last_sent_version = current_version_num;
+                                if delta.added_or_updated.is_empty() && delta.removed.is_empty() {
+                                    continue;
+                                }
+
+                                let response = build_delta_response(update.version, delta);
+                                let tx_for_task = tx.clone();
+                                let label_for_task = label.clone();
+
                                 info!(
-                                    version = current_version_num,
-                                    type_count = pending_types.len(),
+                                    type_url = %delta.type_url,
+                                    added = delta.added_or_updated.len(),
+                                    removed = delta.removed.len(),
+                                    version = update.version,
                                     stream = %label,
-                                    "All delta push updates sent successfully"
+                                    "Sending delta push update to client"
                                 );
+
+                                tokio::spawn(async move {
+                                    if tx_for_task.send(Ok(response)).await.is_err() {
+                                        error!(stream = %label_for_task, "Delta response receiver dropped");
+                                    }
+                                });
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -304,3 +270,25 @@ where
 }
 
 // Removed complex process_delta_request function - using PoC-style direct response pattern
+
+fn build_delta_response(update_version: u64, delta: &ResourceDelta) -> DeltaDiscoveryResponse {
+    let resources: Vec<Resource> = delta
+        .added_or_updated
+        .iter()
+        .map(|cached| Resource {
+            name: cached.name.clone(),
+            version: cached.version.to_string(),
+            resource: Some(cached.body.clone()),
+            ..Default::default()
+        })
+        .collect();
+
+    DeltaDiscoveryResponse {
+        system_version_info: update_version.to_string(),
+        type_url: delta.type_url.clone(),
+        nonce: Uuid::new_v4().to_string(),
+        resources,
+        removed_resources: delta.removed.clone(),
+        ..Default::default()
+    }
+}

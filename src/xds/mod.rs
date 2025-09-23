@@ -6,7 +6,7 @@
 //! - RDS (Route Discovery Service)
 //! - LDS (Listener Discovery Service)
 
-mod resources;
+pub(crate) mod resources;
 mod services;
 mod state;
 
@@ -158,7 +158,19 @@ mod tests {
         let state = XdsState::new(SimpleXdsConfig::default());
         assert_eq!(state.get_version(), "1");
 
-        state.increment_version();
+        use crate::xds::resources::BuiltResource;
+        use envoy_types::pb::google::protobuf::Any;
+
+        let _ = state.apply_built_resources(
+            crate::xds::resources::CLUSTER_TYPE_URL,
+            vec![BuiltResource {
+                name: "test".to_string(),
+                resource: Any {
+                    type_url: crate::xds::resources::CLUSTER_TYPE_URL.to_string(),
+                    value: vec![1, 2, 3],
+                },
+            }],
+        );
         assert_eq!(state.get_version(), "2");
     }
 

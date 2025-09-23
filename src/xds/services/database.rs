@@ -6,19 +6,11 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use envoy_types::pb::envoy::config::cluster::v3::Cluster;
-use envoy_types::pb::envoy::config::core::v3::{socket_address, Address, SocketAddress};
-use envoy_types::pb::envoy::config::endpoint::v3::{
-    lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
-};
+use crate::{storage::ClusterRepository, Result};
 use envoy_types::pb::envoy::service::discovery::v3::{
     aggregated_discovery_service_server::AggregatedDiscoveryService, DeltaDiscoveryRequest,
     DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, Resource,
 };
-use envoy_types::pb::google::protobuf::{Any, Duration};
-use prost::Message;
-
-use crate::{storage::ClusterRepository, Result};
 
 use super::super::{
     resources::{self, BuiltResource},
@@ -77,46 +69,12 @@ impl DatabaseAggregatedDiscoveryService {
                     }
 
                     info!(
-                        "Creating {} cluster resources from database",
-                        cluster_data_list.len()
+                        phase = "ads_response",
+                        cluster_count = cluster_data_list.len(),
+                        "Building cluster resources from database for ADS response"
                     );
-                    let mut resources = Vec::new();
 
-                    for cluster_data in cluster_data_list {
-                        // Parse the stored JSON configuration
-                        let config: serde_json::Value =
-                            serde_json::from_str(&cluster_data.configuration).map_err(|e| {
-                                crate::Error::config(format!(
-                                    "Invalid cluster configuration JSON: {}",
-                                    e
-                                ))
-                            })?;
-
-                        // Create Envoy cluster from stored configuration
-                        let cluster = self
-                            .create_envoy_cluster_from_config(&cluster_data.name, &config)
-                            .await?;
-
-                        let encoded = cluster.encode_to_vec();
-                        info!(
-                            cluster_name = %cluster_data.name,
-                            service_name = %cluster_data.service_name,
-                            version = cluster_data.version,
-                            encoded_size = encoded.len(),
-                            "Created cluster resource from database"
-                        );
-
-                        resources.push(BuiltResource {
-                            name: cluster_data.name.clone(),
-                            resource: Any {
-                                type_url: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
-                                    .to_string(),
-                                value: encoded,
-                            },
-                        });
-                    }
-
-                    Ok(resources)
+                    resources::clusters_from_database_entries(cluster_data_list, "ads_response")
                 }
                 Err(e) => {
                     warn!(
@@ -188,85 +146,15 @@ impl DatabaseAggregatedDiscoveryService {
             ..Default::default()
         })
     }
-
-    /// Create Envoy cluster from JSON configuration
-    async fn create_envoy_cluster_from_config(
-        &self,
-        name: &str,
-        config: &serde_json::Value,
-    ) -> Result<Cluster> {
-        // Parse endpoints from configuration
-        let endpoints = config
-            .get("endpoints")
-            .and_then(|e| e.as_array())
-            .ok_or_else(|| {
-                crate::Error::config("Cluster configuration missing 'endpoints' array".to_string())
-            })?;
-
-        let mut lb_endpoints = Vec::new();
-        for endpoint in endpoints {
-            if let Some(endpoint_str) = endpoint.as_str() {
-                // Parse "host:port" format
-                let parts: Vec<&str> = endpoint_str.split(':').collect();
-                if parts.len() == 2 {
-                    let host = parts[0].to_string();
-                    if let Ok(port) = parts[1].parse::<u32>() {
-                        lb_endpoints.push(LbEndpoint {
-                            host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
-                                address: Some(Address {
-                                    address: Some(
-                                        envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
-                                            SocketAddress {
-                                                address: host,
-                                                port_specifier: Some(
-                                                    socket_address::PortSpecifier::PortValue(port),
-                                                ),
-                                                protocol: 0,
-                                                ..Default::default()
-                                            },
-                                        ),
-                                    ),
-                                }),
-                                ..Default::default()
-                            })),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-
-        if lb_endpoints.is_empty() {
-            return Err(crate::Error::config(
-                "No valid endpoints found in cluster configuration".to_string(),
-            ));
-        }
-
-        Ok(Cluster {
-            name: name.to_string(),
-            connect_timeout: Some(Duration {
-                seconds: config
-                    .get("connect_timeout_seconds")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(5) as i64,
-                nanos: 0,
-            }),
-            load_assignment: Some(ClusterLoadAssignment {
-                cluster_name: name.to_string(),
-                endpoints: vec![LocalityLbEndpoints {
-                    lb_endpoints,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        })
-    }
 }
 
 fn spawn_database_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
+
+        if let Err(error) = state.refresh_clusters_from_repository().await {
+            warn!(%error, "Failed to initialize cluster cache from repository");
+        }
 
         let mut last_version: Option<i64> = None;
 
@@ -280,7 +168,9 @@ fn spawn_database_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
                     Some(previous) if previous == version => {}
                     Some(_) => {
                         last_version = Some(version);
-                        state.increment_version();
+                        if let Err(error) = state.refresh_clusters_from_repository().await {
+                            warn!(%error, "Failed to refresh cluster cache from repository");
+                        }
                     }
                     None => {
                         last_version = Some(version);
