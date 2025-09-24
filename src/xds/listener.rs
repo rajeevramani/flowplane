@@ -3,16 +3,30 @@
 //! This module provides functionality for creating and managing Envoy listener configurations
 //! using the proper envoy-types protobuf definitions.
 
+use envoy_types::pb::envoy::config::trace::v3::tracing::{self, Http as HttpTracing};
 use envoy_types::pb::envoy::config::{
-    core::v3::{address::Address as AddressType, Address, SocketAddress},
+    accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog},
+    core::v3::{
+        address::Address as AddressType, transport_socket::ConfigType as TransportSocketConfigType,
+        Address, DataSource, SocketAddress, SubstitutionFormatString, TransportSocket,
+    },
     listener::v3::{Filter, FilterChain, Listener},
 };
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
-    http_connection_manager::RouteSpecifier, http_filter::ConfigType as HttpFilterConfigType,
+    http_connection_manager::{self, RouteSpecifier},
+    http_filter::ConfigType as HttpFilterConfigType,
     HttpConnectionManager, HttpFilter,
 };
-use envoy_types::pb::google::protobuf::Any as EnvoyAny;
+use envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy;
+use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
+    common_tls_context, CertificateValidationContext, CommonTlsContext, DownstreamTlsContext,
+    TlsCertificate,
+};
+use envoy_types::pb::google::protobuf::{
+    Any as EnvoyAny, BoolValue, Struct as ProstStruct, Value as ProstValue,
+};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -120,7 +134,10 @@ impl FilterChainConfig {
 
         let filter_chain = FilterChain {
             filters: filters?,
-            // TODO: Add TLS context support
+            transport_socket: match &self.tls_context {
+                Some(cfg) => Some(build_transport_socket(cfg)?),
+                None => None,
+            },
             ..Default::default()
         };
 
@@ -135,8 +152,8 @@ impl FilterConfig {
             FilterType::HttpConnectionManager {
                 route_config_name,
                 inline_route_config,
-                access_log: _,
-                tracing: _,
+                access_log,
+                tracing,
             } => {
                 let route_specifier = if let Some(route_name) = route_config_name {
                     RouteSpecifier::Rds(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::Rds {
@@ -162,14 +179,22 @@ impl FilterConfig {
                     stat_prefix: "ingress_http".to_string(),
                     http_filters: vec![HttpFilter {
                         name: "envoy.filters.http.router".to_string(),
+                        is_optional: false,
+                        disabled: false,
                         config_type: Some(HttpFilterConfigType::TypedConfig(EnvoyAny {
                             type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
                                 .to_string(),
-                            value: prost::Message::encode_to_vec(&RouterFilter::default()),
+                            value: RouterFilter::default().encode_to_vec(),
                         })),
-                        ..Default::default()
                     }],
-                    // TODO: Add access log and tracing configuration
+                    access_log: match access_log {
+                        Some(cfg) => vec![build_access_log(cfg)?],
+                        None => Vec::new(),
+                    },
+                    tracing: tracing
+                        .as_ref()
+                        .map(build_tracing)
+                        .transpose()?,
                     ..Default::default()
                 };
 
@@ -180,14 +205,17 @@ impl FilterConfig {
             }
             FilterType::TcpProxy {
                 cluster,
-                access_log: _,
+                access_log,
             } => {
-                let tcp_proxy = envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy {
+                let tcp_proxy = TcpProxy {
                     cluster_specifier: Some(
                         envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::tcp_proxy::ClusterSpecifier::Cluster(cluster.clone())
                     ),
                     stat_prefix: "ingress_tcp".to_string(),
-                    // TODO: Add access log configuration
+                    access_log: match access_log {
+                        Some(cfg) => vec![build_access_log(cfg)?],
+                        None => Vec::new(),
+                    },
                     ..Default::default()
                 };
 
@@ -210,6 +238,152 @@ impl FilterConfig {
         };
 
         Ok(filter)
+    }
+}
+
+fn build_transport_socket(cfg: &TlsContextConfig) -> Result<TransportSocket, crate::Error> {
+    let cert_chain = cfg
+        .cert_chain_file
+        .as_ref()
+        .ok_or_else(|| crate::Error::config("Listener TLS requires cert_chain_file"))?;
+    let private_key = cfg
+        .private_key_file
+        .as_ref()
+        .ok_or_else(|| crate::Error::config("Listener TLS requires private_key_file"))?;
+
+    let validation_context_type = cfg.ca_cert_file.as_ref().map(|ca_file| {
+        common_tls_context::ValidationContextType::ValidationContext(CertificateValidationContext {
+            trusted_ca: Some(data_source_from_path(ca_file)),
+            ..Default::default()
+        })
+    });
+
+    let common = CommonTlsContext {
+        tls_certificates: vec![TlsCertificate {
+            certificate_chain: Some(data_source_from_path(cert_chain)),
+            private_key: Some(data_source_from_path(private_key)),
+            ..Default::default()
+        }],
+        validation_context_type,
+        ..Default::default()
+    };
+
+    let mut downstream = DownstreamTlsContext {
+        common_tls_context: Some(common),
+        ..Default::default()
+    };
+
+    if let Some(require) = cfg.require_client_certificate {
+        downstream.require_client_certificate = Some(BoolValue { value: require });
+    }
+
+    let any = EnvoyAny {
+        type_url:
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+                .to_string(),
+        value: downstream.encode_to_vec(),
+    };
+
+    Ok(TransportSocket {
+        name: "envoy.transport_sockets.tls".to_string(),
+        config_type: Some(TransportSocketConfigType::TypedConfig(any)),
+    })
+}
+
+fn build_access_log(cfg: &AccessLogConfig) -> Result<AccessLog, crate::Error> {
+    let path = cfg
+        .path
+        .as_ref()
+        .ok_or_else(|| crate::Error::config("Access log config requires a path"))?
+        .to_string();
+
+    let mut file_log =
+        envoy_types::pb::envoy::extensions::access_loggers::file::v3::FileAccessLog {
+            path,
+            access_log_format: None,
+        };
+
+    if let Some(format) = &cfg.format {
+        let substitution = SubstitutionFormatString {
+            omit_empty_values: false,
+            content_type: String::new(),
+            formatters: Vec::new(),
+            json_format_options: None,
+            format: Some(
+                envoy_types::pb::envoy::config::core::v3::substitution_format_string::Format::TextFormat(
+                    format.clone(),
+                ),
+            ),
+        };
+
+        file_log.access_log_format = Some(
+            envoy_types::pb::envoy::extensions::access_loggers::file::v3::file_access_log::AccessLogFormat::LogFormat(
+                substitution,
+            ),
+        );
+    }
+
+    let access_log_any = EnvoyAny {
+        type_url: "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog"
+            .to_string(),
+        value: file_log.encode_to_vec(),
+    };
+
+    Ok(AccessLog {
+        name: "envoy.access_loggers.file".to_string(),
+        filter: None,
+        config_type: Some(AccessLogConfigType::TypedConfig(access_log_any)),
+    })
+}
+
+fn build_tracing(cfg: &TracingConfig) -> Result<http_connection_manager::Tracing, crate::Error> {
+    if cfg.provider.trim().is_empty() {
+        return Err(crate::Error::config(
+            "Tracing provider name cannot be empty",
+        ));
+    }
+
+    let provider_struct = ProstStruct {
+        fields: cfg
+            .config
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    ProstValue {
+                        kind: Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(
+                            value.clone(),
+                        )),
+                    },
+                )
+            })
+            .collect(),
+    };
+
+    let provider_any = EnvoyAny {
+        type_url: "type.googleapis.com/google.protobuf.Struct".to_string(),
+        value: provider_struct.encode_to_vec(),
+    };
+
+    let http_provider = HttpTracing {
+        name: cfg.provider.clone(),
+        config_type: Some(tracing::http::ConfigType::TypedConfig(provider_any)),
+    };
+
+    Ok(http_connection_manager::Tracing {
+        provider: Some(http_provider),
+        ..Default::default()
+    })
+}
+
+fn data_source_from_path(path: &str) -> DataSource {
+    DataSource {
+        watched_directory: None,
+        specifier: Some(
+            envoy_types::pb::envoy::config::core::v3::data_source::Specifier::Filename(
+                path.to_string(),
+            ),
+        ),
     }
 }
 
