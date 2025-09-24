@@ -339,8 +339,10 @@ mod tests {
                                 prefix_rewrite: None,
                                 path_template_rewrite: None,
                             },
+                            typed_per_filter_config: HashMap::new(),
                         },
                     ],
+                    typed_per_filter_config: HashMap::new(),
                 },
             ],
         };

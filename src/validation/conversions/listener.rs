@@ -54,11 +54,13 @@ impl From<ValidatedFilterType> for listener::FilterType {
                 inline_route_config,
                 access_log,
                 tracing,
+                http_filters,
             } => listener::FilterType::HttpConnectionManager {
                 route_config_name,
                 inline_route_config: inline_route_config.map(Into::into),
                 access_log: access_log.map(Into::into),
                 tracing: tracing.map(Into::into),
+                http_filters,
             },
             ValidatedFilterType::TcpProxy { cluster, access_log } => listener::FilterType::TcpProxy {
                 cluster,
@@ -135,11 +137,13 @@ impl From<listener::FilterType> for ValidatedFilterType {
                 inline_route_config,
                 access_log,
                 tracing,
+                http_filters,
             } => ValidatedFilterType::HttpConnectionManager {
                 route_config_name,
                 inline_route_config: inline_route_config.map(Into::into),
                 access_log: access_log.map(Into::into),
                 tracing: tracing.map(Into::into),
+                http_filters,
             },
             listener::FilterType::TcpProxy { cluster, access_log } => ValidatedFilterType::TcpProxy {
                 cluster,
@@ -197,6 +201,7 @@ mod tests {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,

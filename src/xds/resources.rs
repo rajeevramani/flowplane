@@ -36,7 +36,7 @@ use prost::Message;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::xds::{listener::ListenerConfig, route::RouteConfig};
+use crate::xds::{filters::http::build_http_filters, listener::ListenerConfig, route::RouteConfig};
 
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
@@ -212,6 +212,8 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
 
     let resources = &config.resources;
 
+    let http_filters = build_http_filters(&[])?;
+
     let http_conn_manager = HttpConnectionManager {
         stat_prefix: "ingress_http".to_string(),
         route_specifier: Some(
@@ -229,6 +231,7 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
                 },
             ),
         ),
+        http_filters,
         ..Default::default()
     };
 

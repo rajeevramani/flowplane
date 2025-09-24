@@ -8,6 +8,7 @@
 
 pub mod cluster;
 mod cluster_spec;
+pub mod filters;
 pub mod listener;
 pub(crate) mod resources;
 pub mod route;

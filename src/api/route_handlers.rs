@@ -5,8 +5,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use tracing::{error, info};
 use utoipa::ToSchema;
+
 use validator::Validate;
 
 use envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig;
@@ -17,6 +19,7 @@ use crate::{
     storage::{
         CreateRouteRepositoryRequest, RouteData, RouteRepository, UpdateRouteRepositoryRequest,
     },
+    xds::filters::http::HttpScopedConfig,
     xds::route::{
         HeaderMatchConfig as XdsHeaderMatchConfig, PathMatch as XdsPathMatch,
         QueryParameterMatchConfig as XdsQueryParameterMatchConfig,
@@ -71,6 +74,10 @@ pub struct VirtualHostDefinition {
     #[validate(length(min = 1))]
     #[schema(min_items = 1, value_type = Vec<RouteRuleDefinition>)]
     pub routes: Vec<RouteRuleDefinition>,
+
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
@@ -83,6 +90,10 @@ pub struct RouteRuleDefinition {
     pub r#match: RouteMatchDefinition,
 
     pub action: RouteActionDefinition,
+
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
@@ -177,6 +188,10 @@ pub struct WeightedClusterDefinition {
     pub name: String,
     #[schema(example = 80)]
     pub weight: u32,
+
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -466,6 +481,7 @@ impl VirtualHostDefinition {
             name: self.name.clone(),
             domains: self.domains.clone(),
             routes,
+            typed_per_filter_config: self.typed_per_filter_config.clone(),
         })
     }
 
@@ -478,6 +494,7 @@ impl VirtualHostDefinition {
                 .iter()
                 .map(RouteRuleDefinition::from_xds_config)
                 .collect(),
+            typed_per_filter_config: config.typed_per_filter_config.clone(),
         }
     }
 }
@@ -488,6 +505,7 @@ impl RouteRuleDefinition {
             name: self.name.clone(),
             r#match: self.r#match.to_xds_config()?,
             action: self.action.to_xds_config()?,
+            typed_per_filter_config: self.typed_per_filter_config.clone(),
         })
     }
 
@@ -496,6 +514,7 @@ impl RouteRuleDefinition {
             name: config.name.clone(),
             r#match: RouteMatchDefinition::from_xds_config(&config.r#match),
             action: RouteActionDefinition::from_xds_config(&config.action),
+            typed_per_filter_config: config.typed_per_filter_config.clone(),
         }
     }
 }
@@ -649,6 +668,7 @@ impl RouteActionDefinition {
                     .map(|cluster| XdsWeightedClusterConfig {
                         name: cluster.name.clone(),
                         weight: cluster.weight,
+                        typed_per_filter_config: cluster.typed_per_filter_config.clone(),
                     })
                     .collect();
 
@@ -691,6 +711,7 @@ impl RouteActionDefinition {
                     .map(|cluster| WeightedClusterDefinition {
                         name: cluster.name.clone(),
                         weight: cluster.weight,
+                        typed_per_filter_config: cluster.typed_per_filter_config.clone(),
                     })
                     .collect(),
                 total_weight: *total_weight,
@@ -996,6 +1017,13 @@ mod tests {
 
     use crate::config::SimpleXdsConfig;
     use crate::storage::{create_pool, CreateClusterRequest, DatabaseConfig};
+    use crate::xds::filters::http::{
+        local_rate_limit::{
+            FractionalPercentDenominator, LocalRateLimitConfig, RuntimeFractionalPercentConfig,
+            TokenBucketConfig,
+        },
+        HttpScopedConfig,
+    };
     use crate::xds::XdsState;
 
     async fn setup_state() -> ApiState {
@@ -1095,7 +1123,9 @@ mod tests {
                         prefix_rewrite: None,
                         template_rewrite: None,
                     },
+                    typed_per_filter_config: HashMap::new(),
                 }],
+                typed_per_filter_config: HashMap::new(),
             }],
         }
     }
@@ -1177,14 +1207,44 @@ mod tests {
                 WeightedClusterDefinition {
                     name: "api-cluster".into(),
                     weight: 60,
+                    typed_per_filter_config: HashMap::new(),
                 },
                 WeightedClusterDefinition {
                     name: "shadow".into(),
                     weight: 40,
+                    typed_per_filter_config: HashMap::new(),
                 },
             ],
             total_weight: Some(100),
         };
+        payload.virtual_hosts[0].routes[0]
+            .typed_per_filter_config
+            .insert(
+                "envoy.filters.http.local_ratelimit".into(),
+                HttpScopedConfig::LocalRateLimit(LocalRateLimitConfig {
+                    stat_prefix: "per_route".into(),
+                    token_bucket: Some(TokenBucketConfig {
+                        max_tokens: 10,
+                        tokens_per_fill: Some(10),
+                        fill_interval_ms: 60_000,
+                    }),
+                    status_code: Some(429),
+                    filter_enabled: Some(RuntimeFractionalPercentConfig {
+                        runtime_key: None,
+                        numerator: 100,
+                        denominator: FractionalPercentDenominator::Hundred,
+                    }),
+                    filter_enforced: Some(RuntimeFractionalPercentConfig {
+                        runtime_key: None,
+                        numerator: 100,
+                        denominator: FractionalPercentDenominator::Hundred,
+                    }),
+                    per_downstream_connection: Some(false),
+                    rate_limited_as_resource_exhausted: None,
+                    max_dynamic_descriptors: None,
+                    always_consume_default_token_bucket: Some(false),
+                }),
+            );
 
         let response = update_route_handler(
             State(state.clone()),
@@ -1195,6 +1255,20 @@ mod tests {
         .expect("update route");
 
         assert!(response.0.cluster_targets.contains("api-cluster"));
+        if let Some(HttpScopedConfig::LocalRateLimit(cfg)) = response.0.config.virtual_hosts[0]
+            .routes[0]
+            .typed_per_filter_config
+            .get("envoy.filters.http.local_ratelimit")
+        {
+            let bucket = cfg
+                .token_bucket
+                .as_ref()
+                .expect("route-level token bucket present");
+            assert_eq!(bucket.max_tokens, 10);
+            assert_eq!(bucket.tokens_per_fill, Some(10));
+        } else {
+            panic!("expected local rate limit override in response");
+        }
 
         let repo = state
             .xds_state
@@ -1206,6 +1280,10 @@ mod tests {
             .get_by_name("primary-routes")
             .await
             .expect("stored route");
+        let stored_config: XdsRouteConfig = serde_json::from_str(&stored.configuration).unwrap();
+        assert!(stored_config.virtual_hosts[0].routes[0]
+            .typed_per_filter_config
+            .contains_key("envoy.filters.http.local_ratelimit"));
         assert_eq!(stored.version, 2);
     }
 
