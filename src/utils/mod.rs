@@ -1,15 +1,14 @@
 //! Utility functions and helpers
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use regex::Regex;
 
 /// Regex for validating Envoy resource names
 /// Names must start with a letter or underscore, followed by letters, numbers, underscores, or hyphens
-pub static VALID_NAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_-]*$").unwrap()
-});
+pub static VALID_NAME_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_-]*$").unwrap());
 
 /// Generate a new UUID v4 as a string
 pub fn generate_id() -> String {
@@ -141,6 +140,12 @@ impl<T> PaginatedResponse<T> {
 /// Correlation ID for request tracing
 #[derive(Debug, Clone)]
 pub struct CorrelationId(String);
+
+impl Default for CorrelationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CorrelationId {
     /// Generate a new correlation ID

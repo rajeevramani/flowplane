@@ -3,13 +3,15 @@
 //! This module provides functionality for creating and managing Envoy route configurations
 //! using the proper envoy-types protobuf definitions.
 
-use envoy_types::pb::envoy::config::{
-    route::v3::{
-        RouteConfiguration, VirtualHost, Route, RouteMatch, RouteAction,
-        route_match::PathSpecifier, route_action::ClusterSpecifier,
-    },
-    core::v3::HeaderValueOption,
+use envoy_types::pb::envoy::config::core::v3::TypedExtensionConfig;
+use envoy_types::pb::envoy::config::route::v3::{
+    route_action::ClusterSpecifier, route_match::PathSpecifier, Route, RouteAction,
+    RouteConfiguration, RouteMatch, VirtualHost,
 };
+use envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig;
+use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3::UriTemplateRewriteConfig;
+use envoy_types::pb::google::protobuf::Any;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -50,6 +52,7 @@ pub enum PathMatch {
     Exact(String),
     Prefix(String),
     Regex(String),
+    Template(String),
 }
 
 /// REST API representation of header matching
@@ -76,6 +79,8 @@ pub enum RouteActionConfig {
     Cluster {
         name: String,
         timeout: Option<u64>, // seconds
+        prefix_rewrite: Option<String>,
+        path_template_rewrite: Option<String>,
     },
     WeightedClusters {
         clusters: Vec<WeightedClusterConfig>,
@@ -98,7 +103,8 @@ pub struct WeightedClusterConfig {
 impl RouteConfig {
     /// Convert REST API RouteConfig to envoy-types RouteConfiguration
     pub fn to_envoy_route_configuration(&self) -> Result<RouteConfiguration, crate::Error> {
-        let virtual_hosts: Result<Vec<VirtualHost>, crate::Error> = self.virtual_hosts
+        let virtual_hosts: Result<Vec<VirtualHost>, crate::Error> = self
+            .virtual_hosts
             .iter()
             .map(|vh| vh.to_envoy_virtual_host())
             .collect();
@@ -116,10 +122,8 @@ impl RouteConfig {
 impl VirtualHostConfig {
     /// Convert REST API VirtualHostConfig to envoy-types VirtualHost
     fn to_envoy_virtual_host(&self) -> Result<VirtualHost, crate::Error> {
-        let routes: Result<Vec<Route>, crate::Error> = self.routes
-            .iter()
-            .map(|r| r.to_envoy_route())
-            .collect();
+        let routes: Result<Vec<Route>, crate::Error> =
+            self.routes.iter().map(|r| r.to_envoy_route()).collect();
 
         let virtual_host = VirtualHost {
             name: self.name.clone(),
@@ -156,8 +160,25 @@ impl RouteMatchConfig {
                 envoy_types::pb::envoy::r#type::matcher::v3::RegexMatcher {
                     regex: regex.clone(),
                     ..Default::default()
-                }
+                },
             ),
+            PathMatch::Template(template) => {
+                let config = UriTemplateMatchConfig {
+                    path_template: template.clone(),
+                };
+
+                let typed_config = TypedExtensionConfig {
+                    name: "envoy.path.match.uri_template".to_string(),
+                    typed_config: Some(Any {
+                        type_url:
+                            "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig"
+                                .to_string(),
+                        value: config.encode_to_vec(),
+                    }),
+                };
+
+                PathSpecifier::PathMatchPolicy(typed_config)
+            }
         };
 
         let route_match = RouteMatch {
@@ -172,60 +193,112 @@ impl RouteMatchConfig {
 
 impl RouteActionConfig {
     /// Convert REST API RouteActionConfig to envoy-types route action
-    fn to_envoy_route_action(&self) -> Result<envoy_types::pb::envoy::config::route::v3::route::Action, crate::Error> {
+    fn to_envoy_route_action(
+        &self,
+    ) -> Result<envoy_types::pb::envoy::config::route::v3::route::Action, crate::Error> {
         let action = match self {
-            RouteActionConfig::Cluster { name, timeout } => {
-                let route_action = RouteAction {
+            RouteActionConfig::Cluster {
+                name,
+                timeout,
+                prefix_rewrite,
+                path_template_rewrite,
+            } => {
+                #[allow(deprecated)]
+                let mut route_action = RouteAction {
                     cluster_specifier: Some(ClusterSpecifier::Cluster(name.clone())),
-                    timeout: timeout.map(|t|
-                        envoy_types::pb::google::protobuf::Duration {
-                            seconds: t as i64,
-                            nanos: 0,
-                        }
-                    ),
+                    timeout: timeout.map(|t| envoy_types::pb::google::protobuf::Duration {
+                        seconds: t as i64,
+                        nanos: 0,
+                    }),
                     ..Default::default()
                 };
 
+                if let Some(prefix) = prefix_rewrite {
+                    route_action.prefix_rewrite = prefix.clone();
+                }
+
+                if let Some(template) = path_template_rewrite {
+                    let rewrite_config = UriTemplateRewriteConfig {
+                        path_template_rewrite: template.clone(),
+                    };
+
+                    let typed_config = TypedExtensionConfig {
+                        name: "envoy.path.rewrite.uri_template".to_string(),
+                        typed_config: Some(Any {
+                            type_url:
+                                "type.googleapis.com/envoy.extensions.path.rewrite.uri_template.v3.UriTemplateRewriteConfig"
+                                    .to_string(),
+                            value: rewrite_config.encode_to_vec(),
+                        }),
+                    };
+
+                    route_action.path_rewrite_policy = Some(typed_config);
+                }
+
                 envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
-            },
-            RouteActionConfig::WeightedClusters { clusters, total_weight } => {
-                let weighted_clusters: Vec<envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight> = clusters
+            }
+            RouteActionConfig::WeightedClusters {
+                clusters,
+                total_weight,
+            } => {
+                let weighted_clusters: Vec<
+                    envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight,
+                > = clusters
                     .iter()
-                    .map(|wc| envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight {
-                        name: wc.name.clone(),
-                        weight: Some(envoy_types::pb::google::protobuf::UInt32Value { value: wc.weight }),
-                        ..Default::default()
+                    .map(|wc| {
+                        envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight {
+                            name: wc.name.clone(),
+                            weight: Some(envoy_types::pb::google::protobuf::UInt32Value {
+                                value: wc.weight,
+                            }),
+                            ..Default::default()
+                        }
                     })
                     .collect();
 
-                let route_action = RouteAction {
-                    cluster_specifier: Some(ClusterSpecifier::WeightedClusters(
-                        envoy_types::pb::envoy::config::route::v3::WeightedCluster {
-                            clusters: weighted_clusters,
-                            total_weight: total_weight.map(|w| envoy_types::pb::google::protobuf::UInt32Value { value: w }),
-                            ..Default::default()
-                        }
-                    )),
-                    ..Default::default()
+                let route_action = {
+                    #[allow(deprecated)]
+                    RouteAction {
+                        cluster_specifier: Some(ClusterSpecifier::WeightedClusters(
+                            envoy_types::pb::envoy::config::route::v3::WeightedCluster {
+                                clusters: weighted_clusters,
+                                total_weight: total_weight.map(|w| {
+                                    envoy_types::pb::google::protobuf::UInt32Value { value: w }
+                                }),
+                                ..Default::default()
+                            },
+                        )),
+                        ..Default::default()
+                    }
                 };
 
                 envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
-            },
-            RouteActionConfig::Redirect { host_redirect, path_redirect, response_code } => {
+            }
+            RouteActionConfig::Redirect {
+                host_redirect,
+                path_redirect,
+                response_code,
+            } => {
+                let redirect_code = response_code
+                    .and_then(|c| {
+                        envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::try_from(c as i32)
+                            .ok()
+                    })
+                    .unwrap_or(
+                        envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::MovedPermanently,
+                    );
+
                 let redirect_action = envoy_types::pb::envoy::config::route::v3::RedirectAction {
                     host_redirect: host_redirect.clone().unwrap_or_default(),
-                    path_rewrite_specifier: path_redirect.clone().map(|p|
-                        envoy_types::pb::envoy::config::route::v3::redirect_action::PathRewriteSpecifier::PathRedirect(p)
-                    ),
-                    response_code: response_code.map(|c|
-                        envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::try_from(c as i32)
-                            .unwrap_or(envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::MovedPermanently) as i32
-                    ),
+                    path_rewrite_specifier: path_redirect
+                        .clone()
+                        .map(envoy_types::pb::envoy::config::route::v3::redirect_action::PathRewriteSpecifier::PathRedirect),
+                    response_code: redirect_code as i32,
                     ..Default::default()
                 };
 
                 envoy_types::pb::envoy::config::route::v3::route::Action::Redirect(redirect_action)
-            },
+            }
         };
 
         Ok(action)
@@ -288,29 +361,29 @@ mod tests {
     fn test_route_config_conversion() {
         let config = RouteConfig {
             name: "test-route".to_string(),
-            virtual_hosts: vec![
-                VirtualHostConfig {
-                    name: "test-vhost".to_string(),
-                    domains: vec!["example.com".to_string(), "*.example.com".to_string()],
-                    routes: vec![
-                        RouteRule {
-                            name: Some("api-route".to_string()),
-                            r#match: RouteMatchConfig {
-                                path: PathMatch::Prefix("/api".to_string()),
-                                headers: None,
-                                query_parameters: None,
-                            },
-                            action: RouteActionConfig::Cluster {
-                                name: "api-cluster".to_string(),
-                                timeout: Some(30),
-                            },
-                        },
-                    ],
-                },
-            ],
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string(), "*.example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("api-route".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/api".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "api-cluster".to_string(),
+                        timeout: Some(30),
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                }],
+            }],
         };
 
-        let route_config = config.to_envoy_route_configuration().expect("Failed to convert route config");
+        let route_config = config
+            .to_envoy_route_configuration()
+            .expect("Failed to convert route config");
 
         assert_eq!(route_config.name, "test-route");
         assert_eq!(route_config.virtual_hosts.len(), 1);
@@ -332,26 +405,24 @@ mod tests {
 
         let config = RouteConfig {
             name: "test-route".to_string(),
-            virtual_hosts: vec![
-                VirtualHostConfig {
-                    name: "test-vhost".to_string(),
-                    domains: vec!["test.com".to_string()],
-                    routes: vec![
-                        RouteRule {
-                            name: None,
-                            r#match: RouteMatchConfig {
-                                path: PathMatch::Exact("/health".to_string()),
-                                headers: None,
-                                query_parameters: None,
-                            },
-                            action: RouteActionConfig::Cluster {
-                                name: "health-cluster".to_string(),
-                                timeout: None,
-                            },
-                        },
-                    ],
-                },
-            ],
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["test.com".to_string()],
+                routes: vec![RouteRule {
+                    name: None,
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Exact("/health".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "health-cluster".to_string(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                }],
+            }],
         };
 
         manager.upsert_route(config).expect("Failed to add route");
@@ -384,12 +455,27 @@ mod tests {
             query_parameters: None,
         };
 
-        let exact_envoy = exact_match.to_envoy_route_match().expect("Failed to convert exact match");
-        let prefix_envoy = prefix_match.to_envoy_route_match().expect("Failed to convert prefix match");
-        let regex_envoy = regex_match.to_envoy_route_match().expect("Failed to convert regex match");
+        let exact_envoy = exact_match
+            .to_envoy_route_match()
+            .expect("Failed to convert exact match");
+        let prefix_envoy = prefix_match
+            .to_envoy_route_match()
+            .expect("Failed to convert prefix match");
+        let regex_envoy = regex_match
+            .to_envoy_route_match()
+            .expect("Failed to convert regex match");
 
-        assert!(matches!(exact_envoy.path_specifier, Some(PathSpecifier::Path(_))));
-        assert!(matches!(prefix_envoy.path_specifier, Some(PathSpecifier::Prefix(_))));
-        assert!(matches!(regex_envoy.path_specifier, Some(PathSpecifier::SafeRegex(_))));
+        assert!(matches!(
+            exact_envoy.path_specifier,
+            Some(PathSpecifier::Path(_))
+        ));
+        assert!(matches!(
+            prefix_envoy.path_specifier,
+            Some(PathSpecifier::Prefix(_))
+        ));
+        assert!(matches!(
+            regex_envoy.path_specifier,
+            Some(PathSpecifier::SafeRegex(_))
+        ));
     }
 }

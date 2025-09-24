@@ -4,32 +4,39 @@
 //! using the proper envoy-types protobuf definitions.
 
 use envoy_types::pb::envoy::config::{
-    cluster::v3::{Cluster, cluster::LbPolicy},
-    core::v3::{Address, SocketAddress, address::Address as AddressType},
+    cluster::v3::{cluster::LbPolicy, Cluster},
+    core::v3::{address::Address as AddressType, Address, SocketAddress},
     endpoint::v3::{Endpoint, LbEndpoint, LocalityLbEndpoints},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 /// REST API representation of a cluster configuration
 /// This will be converted to the proper envoy-types Cluster
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct ClusterConfig {
     #[validate(length(min = 1, message = "Cluster name cannot be empty"))]
-    #[validate(regex(path = "crate::utils::VALID_NAME_REGEX", message = "Cluster name must be a valid identifier"))]
+    #[validate(regex(
+        path = "crate::utils::VALID_NAME_REGEX",
+        message = "Cluster name must be a valid identifier"
+    ))]
     pub name: String,
 
     #[validate(length(min = 1, message = "At least one endpoint is required"))]
-    #[validate]
+    #[validate(nested)]
     pub endpoints: Vec<EndpointConfig>,
 
     pub load_balancing_policy: LoadBalancingPolicy,
 
-    #[validate(range(min = 1, max = 300, message = "Connect timeout must be between 1 and 300 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 300,
+        message = "Connect timeout must be between 1 and 300 seconds"
+    ))]
     pub connect_timeout: Option<u64>, // seconds
 
-    #[validate]
+    #[validate(nested)]
     pub health_checks: Option<Vec<HealthCheckConfig>>,
 }
 
@@ -52,22 +59,37 @@ pub enum LoadBalancingPolicy {
     RoundRobin,
     LeastRequest,
     Random,
-    PassThrough,
 }
 
 /// REST API representation of health check configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct HealthCheckConfig {
-    #[validate(range(min = 1, max = 60, message = "Health check timeout must be between 1 and 60 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 60,
+        message = "Health check timeout must be between 1 and 60 seconds"
+    ))]
     pub timeout: u64,
 
-    #[validate(range(min = 1, max = 300, message = "Health check interval must be between 1 and 300 seconds"))]
+    #[validate(range(
+        min = 1,
+        max = 300,
+        message = "Health check interval must be between 1 and 300 seconds"
+    ))]
     pub interval: u64,
 
-    #[validate(range(min = 1, max = 10, message = "Healthy threshold must be between 1 and 10"))]
+    #[validate(range(
+        min = 1,
+        max = 10,
+        message = "Healthy threshold must be between 1 and 10"
+    ))]
     pub healthy_threshold: u32,
 
-    #[validate(range(min = 1, max = 10, message = "Unhealthy threshold must be between 1 and 10"))]
+    #[validate(range(
+        min = 1,
+        max = 10,
+        message = "Unhealthy threshold must be between 1 and 10"
+    ))]
     pub unhealthy_threshold: u32,
 
     #[validate(length(min = 1, message = "Health check path cannot be empty if specified"))]
@@ -90,12 +112,12 @@ impl ClusterConfig {
             name: self.name.clone(),
             lb_policy: self.load_balancing_policy.to_envoy_lb_policy() as i32,
             load_assignment: Some(self.create_cluster_load_assignment()?),
-            connect_timeout: self.connect_timeout.map(|t|
+            connect_timeout: self.connect_timeout.map(|t| {
                 envoy_types::pb::google::protobuf::Duration {
                     seconds: t as i64,
                     nanos: 0,
                 }
-            ),
+            }),
             // TODO: Add health checks, circuit breakers, etc.
             ..Default::default()
         };
@@ -104,8 +126,12 @@ impl ClusterConfig {
     }
 
     /// Create cluster load assignment from endpoints
-    fn create_cluster_load_assignment(&self) -> Result<envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment, crate::Error> {
-        let lb_endpoints: Vec<LbEndpoint> = self.endpoints
+    fn create_cluster_load_assignment(
+        &self,
+    ) -> Result<envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment, crate::Error>
+    {
+        let lb_endpoints: Vec<LbEndpoint> = self
+            .endpoints
             .iter()
             .map(|endpoint| endpoint.to_envoy_lb_endpoint())
             .collect::<Result<Vec<_>, _>>()?;
@@ -115,11 +141,13 @@ impl ClusterConfig {
             ..Default::default()
         };
 
-        Ok(envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment {
-            cluster_name: self.name.clone(),
-            endpoints: vec![locality_lb_endpoints],
-            ..Default::default()
-        })
+        Ok(
+            envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment {
+                cluster_name: self.name.clone(),
+                endpoints: vec![locality_lb_endpoints],
+                ..Default::default()
+            },
+        )
     }
 }
 
@@ -128,7 +156,11 @@ impl EndpointConfig {
     fn to_envoy_lb_endpoint(&self) -> Result<LbEndpoint, crate::Error> {
         let socket_address = SocketAddress {
             address: self.address.clone(),
-            port_specifier: Some(envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(self.port)),
+            port_specifier: Some(
+                envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(
+                    self.port,
+                ),
+            ),
             ..Default::default()
         };
 
@@ -142,8 +174,14 @@ impl EndpointConfig {
         };
 
         let lb_endpoint = LbEndpoint {
-            host_identifier: Some(envoy_types::pb::envoy::config::endpoint::v3::lb_endpoint::HostIdentifier::Endpoint(endpoint)),
-            load_balancing_weight: self.weight.map(|w| envoy_types::pb::google::protobuf::UInt32Value { value: w }),
+            host_identifier: Some(
+                envoy_types::pb::envoy::config::endpoint::v3::lb_endpoint::HostIdentifier::Endpoint(
+                    endpoint,
+                ),
+            ),
+            load_balancing_weight: self
+                .weight
+                .map(|w| envoy_types::pb::google::protobuf::UInt32Value { value: w }),
             ..Default::default()
         };
 
@@ -158,7 +196,6 @@ impl LoadBalancingPolicy {
             LoadBalancingPolicy::RoundRobin => LbPolicy::RoundRobin,
             LoadBalancingPolicy::LeastRequest => LbPolicy::LeastRequest,
             LoadBalancingPolicy::Random => LbPolicy::Random,
-            LoadBalancingPolicy::PassThrough => LbPolicy::PassThrough,
         }
     }
 }
@@ -236,7 +273,9 @@ mod tests {
             health_checks: None,
         };
 
-        let cluster = config.to_envoy_cluster().expect("Failed to convert cluster config");
+        let cluster = config
+            .to_envoy_cluster()
+            .expect("Failed to convert cluster config");
 
         assert_eq!(cluster.name, "test-cluster");
         assert_eq!(cluster.lb_policy, LbPolicy::RoundRobin as i32);
@@ -254,19 +293,19 @@ mod tests {
 
         let config = ClusterConfig {
             name: "test-cluster".to_string(),
-            endpoints: vec![
-                EndpointConfig {
-                    address: "127.0.0.1".to_string(),
-                    port: 8080,
-                    weight: None,
-                },
-            ],
+            endpoints: vec![EndpointConfig {
+                address: "127.0.0.1".to_string(),
+                port: 8080,
+                weight: None,
+            }],
             load_balancing_policy: LoadBalancingPolicy::Random,
             connect_timeout: None,
             health_checks: None,
         };
 
-        manager.upsert_cluster(config).expect("Failed to add cluster");
+        manager
+            .upsert_cluster(config)
+            .expect("Failed to add cluster");
 
         assert!(manager.get_cluster("test-cluster").is_some());
         assert_eq!(manager.list_cluster_names().len(), 1);
@@ -284,7 +323,9 @@ mod tests {
             weight: Some(50),
         };
 
-        let lb_endpoint = endpoint.to_envoy_lb_endpoint().expect("Failed to convert endpoint");
+        let lb_endpoint = endpoint
+            .to_envoy_lb_endpoint()
+            .expect("Failed to convert endpoint");
 
         assert!(lb_endpoint.host_identifier.is_some());
         assert!(lb_endpoint.load_balancing_weight.is_some());

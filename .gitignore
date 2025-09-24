@@ -55,3 +55,8 @@ coverage/
 .claude/
 CLAUDE.md
 
+Database
+data/
+magaya.db-shm
+magaya.db-wal
+

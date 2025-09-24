@@ -59,8 +59,12 @@ chrono = { version = "0.4.41", features = ["serde"] }
 time = "0.3.41"
 regex = "1.10"
 url = "2.5"
+# API documentation
+utoipa = { version = "5.4.0", features = ["macros"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
 axum-test = "16.4.0"
 tracing-test = "0.2.5"
+reserve-port = "2.3"
