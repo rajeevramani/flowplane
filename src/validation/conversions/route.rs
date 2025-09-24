@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::validation::{
     requests::{
         ValidatedCreateRouteRequest, ValidatedHeaderMatchRequest, ValidatedInlineRouteConfigRequest,
@@ -27,7 +29,9 @@ impl From<ValidatedCreateRouteRequest> for route::RouteConfig {
                     prefix_rewrite: validated.prefix_rewrite,
                     path_template_rewrite: validated.uri_template_rewrite,
                 },
+                typed_per_filter_config: HashMap::new(),
             }],
+            typed_per_filter_config: HashMap::new(),
         };
 
         route::RouteConfig {
@@ -43,6 +47,7 @@ impl From<ValidatedVirtualHostRequest> for route::VirtualHostConfig {
             name: validated.name,
             domains: validated.domains,
             routes: validated.routes.into_iter().map(Into::into).collect(),
+            typed_per_filter_config: HashMap::new(),
         }
     }
 }
@@ -53,6 +58,7 @@ impl From<ValidatedRouteRuleRequest> for route::RouteRule {
             name: validated.name,
             r#match: validated.r#match.into(),
             action: validated.action.into(),
+            typed_per_filter_config: HashMap::new(),
         }
     }
 }
@@ -128,6 +134,7 @@ impl From<ValidatedWeightedClusterRequest> for route::WeightedClusterConfig {
         Self {
             name: validated.name,
             weight: validated.weight,
+            typed_per_filter_config: HashMap::new(),
         }
     }
 }

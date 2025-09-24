@@ -14,6 +14,7 @@ use utoipa::ToSchema;
 use crate::{
     errors::Error,
     storage::{CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest},
+    xds::filters::http::HttpFilterConfigEntry,
     xds::listener::{
         AccessLogConfig, FilterChainConfig, FilterConfig, FilterType, ListenerConfig,
         TlsContextConfig, TracingConfig,
@@ -91,6 +92,9 @@ pub enum ListenerFilterTypeInput {
         access_log: Option<ListenerAccessLogInput>,
         #[serde(default)]
         tracing: Option<ListenerTracingInput>,
+        #[serde(default)]
+        #[schema(value_type = Vec<Object>)]
+        http_filters: Vec<HttpFilterConfigEntry>,
     },
     #[serde(rename_all = "camelCase")]
     TcpProxy {
@@ -420,6 +424,7 @@ fn convert_filter_type(input: &ListenerFilterTypeInput) -> Result<FilterType, Ap
             inline_route_config,
             access_log,
             tracing,
+            http_filters,
         } => {
             let inline_route_config = match inline_route_config {
                 Some(value) => Some(parse_route_config(value)?),
@@ -442,6 +447,7 @@ fn convert_filter_type(input: &ListenerFilterTypeInput) -> Result<FilterType, Ap
                 inline_route_config,
                 access_log: access_log.as_ref().map(convert_access_log),
                 tracing: tracing.as_ref().map(convert_tracing).transpose()?,
+                http_filters: http_filters.clone(),
             })
         }
         ListenerFilterTypeInput::TcpProxy {
@@ -698,6 +704,7 @@ mod tests {
             inline_route_config: None,
             access_log: None,
             tracing: None,
+            http_filters: Vec::new(),
         });
 
         assert!(result.is_err());
@@ -723,7 +730,9 @@ mod tests {
                         prefix_rewrite: None,
                         path_template_rewrite: None,
                     },
+                    typed_per_filter_config: HashMap::new(),
                 }],
+                typed_per_filter_config: HashMap::new(),
             }],
         };
         let inline_route = serde_json::to_value(&route_config).unwrap();
@@ -733,6 +742,7 @@ mod tests {
             inline_route_config: Some(inline_route),
             access_log: None,
             tracing: None,
+            http_filters: Vec::new(),
         });
 
         assert!(result.is_ok());
@@ -765,6 +775,7 @@ mod tests {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,
@@ -805,6 +816,7 @@ mod tests {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,
@@ -828,6 +840,7 @@ mod tests {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,
