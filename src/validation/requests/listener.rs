@@ -11,6 +11,7 @@ use crate::validation::{
 };
 
 use super::route::ValidatedInlineRouteConfigRequest;
+use crate::xds::filters::http::HttpFilterConfigEntry;
 
 /// Validated request for creating a listener
 #[derive(Debug, Serialize, Deserialize, Validate)]
@@ -84,6 +85,9 @@ pub enum ValidatedFilterType {
 
         #[validate]
         tracing: Option<ValidatedTracingRequest>,
+
+        #[serde(default)]
+        http_filters: Vec<HttpFilterConfigEntry>,
     },
     #[serde(rename = "tcp_proxy")]
     TcpProxy {
@@ -165,6 +169,7 @@ mod tests {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,

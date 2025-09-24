@@ -15,6 +15,8 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::xds::filters::http::HttpScopedConfig;
+
 /// REST API representation of a route configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteConfig {
@@ -28,6 +30,8 @@ pub struct VirtualHostConfig {
     pub name: String,
     pub domains: Vec<String>,
     pub routes: Vec<RouteRule>,
+    #[serde(default)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 /// REST API representation of a route rule
@@ -36,6 +40,8 @@ pub struct RouteRule {
     pub name: Option<String>,
     pub r#match: RouteMatchConfig,
     pub action: RouteActionConfig,
+    #[serde(default)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 /// REST API representation of route matching criteria
@@ -98,6 +104,8 @@ pub enum RouteActionConfig {
 pub struct WeightedClusterConfig {
     pub name: String,
     pub weight: u32,
+    #[serde(default)]
+    pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
 }
 
 impl RouteConfig {
@@ -125,12 +133,20 @@ impl VirtualHostConfig {
         let routes: Result<Vec<Route>, crate::Error> =
             self.routes.iter().map(|r| r.to_envoy_route()).collect();
 
-        let virtual_host = VirtualHost {
+        let mut virtual_host = VirtualHost {
             name: self.name.clone(),
             domains: self.domains.clone(),
             routes: routes?,
             ..Default::default()
         };
+
+        if !self.typed_per_filter_config.is_empty() {
+            virtual_host.typed_per_filter_config = self
+                .typed_per_filter_config
+                .iter()
+                .map(|(name, config)| config.to_any().map(|any| (name.clone(), any)))
+                .collect::<Result<_, crate::Error>>()?;
+        }
 
         Ok(virtual_host)
     }
@@ -139,12 +155,20 @@ impl VirtualHostConfig {
 impl RouteRule {
     /// Convert REST API RouteRule to envoy-types Route
     fn to_envoy_route(&self) -> Result<Route, crate::Error> {
-        let route = Route {
+        let mut route = Route {
             name: self.name.clone().unwrap_or_default(),
             r#match: Some(self.r#match.to_envoy_route_match()?),
             action: Some(self.action.to_envoy_route_action()?),
             ..Default::default()
         };
+
+        if !self.typed_per_filter_config.is_empty() {
+            route.typed_per_filter_config = self
+                .typed_per_filter_config
+                .iter()
+                .map(|(name, config)| config.to_any().map(|any| (name.clone(), any)))
+                .collect::<Result<_, crate::Error>>()?;
+        }
 
         Ok(route)
     }
@@ -245,16 +269,27 @@ impl RouteActionConfig {
                     envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight,
                 > = clusters
                     .iter()
-                    .map(|wc| {
-                        envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight {
-                            name: wc.name.clone(),
-                            weight: Some(envoy_types::pb::google::protobuf::UInt32Value {
-                                value: wc.weight,
-                            }),
-                            ..Default::default()
+                    .map(|wc| -> Result<_, crate::Error> {
+                        let mut cluster_weight =
+                            envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight {
+                                name: wc.name.clone(),
+                                weight: Some(envoy_types::pb::google::protobuf::UInt32Value {
+                                    value: wc.weight,
+                                }),
+                                ..Default::default()
+                            };
+
+                        if !wc.typed_per_filter_config.is_empty() {
+                            cluster_weight.typed_per_filter_config = wc
+                                .typed_per_filter_config
+                                .iter()
+                                .map(|(name, config)| config.to_any().map(|any| (name.clone(), any)))
+                                .collect::<Result<_, crate::Error>>()?;
                         }
+
+                        Ok(cluster_weight)
                     })
-                    .collect();
+                    .collect::<Result<_, crate::Error>>()?;
 
                 let route_action = {
                     #[allow(deprecated)]
@@ -356,6 +391,18 @@ impl Default for RouteManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xds::filters::http::{
+        local_rate_limit::{
+            FractionalPercentDenominator, LocalRateLimitConfig, RuntimeFractionalPercentConfig,
+            TokenBucketConfig,
+        },
+        HttpScopedConfig,
+    };
+    use crate::xds::filters::TypedConfig;
+    use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit;
+    use envoy_types::pb::envoy::r#type::v3::TokenBucket;
+    use envoy_types::pb::google::protobuf::{Duration, UInt32Value};
+    use std::collections::HashMap;
 
     #[test]
     fn test_route_config_conversion() {
@@ -377,7 +424,9 @@ mod tests {
                         prefix_rewrite: None,
                         path_template_rewrite: None,
                     },
+                    typed_per_filter_config: HashMap::new(),
                 }],
+                typed_per_filter_config: HashMap::new(),
             }],
         };
 
@@ -421,7 +470,9 @@ mod tests {
                         prefix_rewrite: None,
                         path_template_rewrite: None,
                     },
+                    typed_per_filter_config: HashMap::new(),
                 }],
+                typed_per_filter_config: HashMap::new(),
             }],
         };
 
@@ -477,5 +528,94 @@ mod tests {
             regex_envoy.path_specifier,
             Some(PathSpecifier::SafeRegex(_))
         ));
+    }
+
+    #[test]
+    fn test_typed_per_filter_config_conversion() {
+        let rate_limit_proto = LocalRateLimit {
+            stat_prefix: "vh".into(),
+            token_bucket: Some(TokenBucket {
+                max_tokens: 5,
+                tokens_per_fill: Some(UInt32Value { value: 5 }),
+                fill_interval: Some(Duration {
+                    seconds: 1,
+                    nanos: 0,
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let typed_config = TypedConfig::from_message(
+            "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+            &rate_limit_proto,
+        );
+
+        let structured_override = HttpScopedConfig::LocalRateLimit(LocalRateLimitConfig {
+            stat_prefix: "route".into(),
+            token_bucket: Some(TokenBucketConfig {
+                max_tokens: 10,
+                tokens_per_fill: Some(10),
+                fill_interval_ms: 60_000,
+            }),
+            status_code: Some(429),
+            filter_enabled: Some(RuntimeFractionalPercentConfig {
+                runtime_key: None,
+                numerator: 100,
+                denominator: FractionalPercentDenominator::Hundred,
+            }),
+            filter_enforced: Some(RuntimeFractionalPercentConfig {
+                runtime_key: None,
+                numerator: 100,
+                denominator: FractionalPercentDenominator::Hundred,
+            }),
+            per_downstream_connection: Some(false),
+            rate_limited_as_resource_exhausted: None,
+            max_dynamic_descriptors: None,
+            always_consume_default_token_bucket: Some(false),
+        });
+
+        let route_config = RouteConfig {
+            name: "rate-limited".into(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "vh".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: None,
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".into()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "backend".into(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                    typed_per_filter_config: HashMap::from([(
+                        "envoy.filters.http.local_ratelimit".into(),
+                        structured_override,
+                    )]),
+                }],
+                typed_per_filter_config: HashMap::from([(
+                    "envoy.filters.http.local_ratelimit".into(),
+                    HttpScopedConfig::Typed(typed_config.clone()),
+                )]),
+            }],
+        };
+
+        let envoy_route = route_config
+            .to_envoy_route_configuration()
+            .expect("route to envoy");
+
+        let vhost = &envoy_route.virtual_hosts[0];
+        assert!(vhost
+            .typed_per_filter_config
+            .contains_key("envoy.filters.http.local_ratelimit"));
+
+        let route = &vhost.routes[0];
+        assert!(route
+            .typed_per_filter_config
+            .contains_key("envoy.filters.http.local_ratelimit"));
     }
 }

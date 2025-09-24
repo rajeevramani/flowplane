@@ -12,11 +12,9 @@ use envoy_types::pb::envoy::config::{
     },
     listener::v3::{Filter, FilterChain, Listener},
 };
-use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
     http_connection_manager::{self, RouteSpecifier},
-    http_filter::ConfigType as HttpFilterConfigType,
-    HttpConnectionManager, HttpFilter,
+    HttpConnectionManager,
 };
 use envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
@@ -29,6 +27,8 @@ use envoy_types::pb::google::protobuf::{
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use crate::xds::filters::http::{build_http_filters, HttpFilterConfigEntry};
 
 /// REST API representation of a listener configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +62,8 @@ pub enum FilterType {
         inline_route_config: Option<crate::xds::route::RouteConfig>,
         access_log: Option<AccessLogConfig>,
         tracing: Option<TracingConfig>,
+        #[serde(default)]
+        http_filters: Vec<HttpFilterConfigEntry>,
     },
     TcpProxy {
         cluster: String,
@@ -154,6 +156,7 @@ impl FilterConfig {
                 inline_route_config,
                 access_log,
                 tracing,
+                http_filters,
             } => {
                 let route_specifier = if let Some(route_name) = route_config_name {
                     RouteSpecifier::Rds(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::Rds {
@@ -173,20 +176,13 @@ impl FilterConfig {
                     return Err(crate::Error::Config("HttpConnectionManager requires either route_config_name or inline_route_config".to_string()));
                 };
 
+                let http_filters = build_http_filters(http_filters.as_slice())?;
+
                 let hcm = HttpConnectionManager {
                     route_specifier: Some(route_specifier),
                     codec_type: envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::CodecType::Auto as i32,
                     stat_prefix: "ingress_http".to_string(),
-                    http_filters: vec![HttpFilter {
-                        name: "envoy.filters.http.router".to_string(),
-                        is_optional: false,
-                        disabled: false,
-                        config_type: Some(HttpFilterConfigType::TypedConfig(EnvoyAny {
-                            type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
-                                .to_string(),
-                            value: RouterFilter::default().encode_to_vec(),
-                        })),
-                    }],
+                    http_filters,
                     access_log: match access_log {
                         Some(cfg) => vec![build_access_log(cfg)?],
                         None => Vec::new(),
@@ -448,6 +444,7 @@ impl ListenerManager {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,
@@ -490,9 +487,14 @@ impl Default for ListenerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xds::filters::http::local_rate_limit::{LocalRateLimitConfig, TokenBucketConfig};
+    use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind, ROUTER_FILTER_NAME};
     use crate::xds::route::{
         PathMatch, RouteActionConfig, RouteConfig, RouteMatchConfig, RouteRule, VirtualHostConfig,
     };
+    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager as ProtoHttpConnectionManager;
+    use prost::Message;
+    use std::collections::HashMap;
 
     #[test]
     fn test_listener_config_conversion() {
@@ -514,7 +516,9 @@ mod tests {
                         prefix_rewrite: None,
                         path_template_rewrite: None,
                     },
+                    typed_per_filter_config: HashMap::new(),
                 }],
+                typed_per_filter_config: HashMap::new(),
             }],
         };
 
@@ -531,6 +535,7 @@ mod tests {
                         inline_route_config: Some(route_config),
                         access_log: None,
                         tracing: None,
+                        http_filters: Vec::new(),
                     },
                 }],
                 tls_context: None,
@@ -596,5 +601,95 @@ mod tests {
         let filter = &filter_chain.filters[0];
         assert_eq!(filter.name, "envoy.filters.network.tcp_proxy");
         assert!(matches!(filter.filter_type, FilterType::TcpProxy { .. }));
+    }
+
+    #[test]
+    fn http_connection_manager_supports_local_rate_limit_filter() {
+        let route_config = RouteConfig {
+            name: "test-route".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "vh".to_string(),
+                domains: vec!["*".to_string()],
+                routes: vec![RouteRule {
+                    name: None,
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".into()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "backend".into(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        let listener = ListenerConfig {
+            name: "test-listener".into(),
+            address: "0.0.0.0".into(),
+            port: 8080,
+            filter_chains: vec![FilterChainConfig {
+                name: None,
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".into(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: None,
+                        inline_route_config: Some(route_config),
+                        access_log: None,
+                        tracing: None,
+                        http_filters: vec![HttpFilterConfigEntry {
+                            name: None,
+                            is_optional: false,
+                            disabled: false,
+                            filter: HttpFilterKind::LocalRateLimit(LocalRateLimitConfig {
+                                stat_prefix: "ingress_http_ratelimit".into(),
+                                token_bucket: Some(TokenBucketConfig {
+                                    max_tokens: 10,
+                                    tokens_per_fill: Some(10),
+                                    fill_interval_ms: 1000,
+                                }),
+                                status_code: Some(429),
+                                filter_enabled: None,
+                                filter_enforced: None,
+                                per_downstream_connection: Some(false),
+                                rate_limited_as_resource_exhausted: Some(false),
+                                max_dynamic_descriptors: None,
+                                always_consume_default_token_bucket: Some(false),
+                            }),
+                        }],
+                    },
+                }],
+                tls_context: None,
+            }],
+        };
+
+        let envoy_listener = listener.to_envoy_listener().expect("listener conversion");
+
+        let filter = &envoy_listener.filter_chains[0].filters[0];
+        let config = filter
+            .config_type
+            .as_ref()
+            .expect("filter missing config type");
+        let any = match config {
+            envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(any) => {
+                any
+            }
+            other => panic!("unsupported config type in test: {:?}", other),
+        };
+
+        let hcm = ProtoHttpConnectionManager::decode(any.value.as_slice())
+            .expect("decode http connection manager");
+
+        assert_eq!(hcm.http_filters.len(), 2);
+        assert_eq!(
+            hcm.http_filters[0].name,
+            "envoy.filters.http.local_ratelimit"
+        );
+        assert_eq!(hcm.http_filters[1].name, ROUTER_FILTER_NAME);
     }
 }
