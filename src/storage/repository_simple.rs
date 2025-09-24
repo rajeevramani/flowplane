@@ -21,6 +21,50 @@ struct ClusterRow {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Database row structure for listeners
+#[derive(Debug, Clone, FromRow)]
+struct ListenerRow {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub port: Option<i64>,
+    pub protocol: String,
+    pub configuration: String,
+    pub version: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Listener configuration data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenerData {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub port: Option<i64>,
+    pub protocol: String,
+    pub configuration: String,
+    pub version: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<ListenerRow> for ListenerData {
+    fn from(row: ListenerRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            address: row.address,
+            port: row.port,
+            protocol: row.protocol,
+            configuration: row.configuration,
+            version: row.version,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// Cluster configuration data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterData {
@@ -117,6 +161,25 @@ pub struct CreateClusterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateClusterRequest {
     pub service_name: Option<String>,
+    pub configuration: Option<serde_json::Value>,
+}
+
+/// Create listener request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateListenerRequest {
+    pub name: String,
+    pub address: String,
+    pub port: Option<i64>,
+    pub protocol: Option<String>,
+    pub configuration: serde_json::Value,
+}
+
+/// Update listener request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateListenerRequest {
+    pub address: Option<String>,
+    pub port: Option<Option<i64>>,
+    pub protocol: Option<String>,
     pub configuration: Option<serde_json::Value>,
 }
 
@@ -372,6 +435,245 @@ impl ClusterRepository {
     }
 }
 
+/// Repository for listener data access
+#[derive(Debug, Clone)]
+pub struct ListenerRepository {
+    pool: DbPool,
+}
+
+impl ListenerRepository {
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
+        let id = Uuid::new_v4().to_string();
+        let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
+            MagayaError::validation(format!("Invalid listener configuration JSON: {}", e))
+        })?;
+        let now = chrono::Utc::now();
+        let protocol = request.protocol.unwrap_or_else(|| "HTTP".to_string());
+
+        let result = sqlx::query(
+            "INSERT INTO listeners (id, name, address, port, protocol, configuration, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)"
+        )
+        .bind(&id)
+        .bind(&request.name)
+        .bind(&request.address)
+        .bind(request.port)
+        .bind(&protocol)
+        .bind(&configuration_json)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_name = %request.name, "Failed to create listener");
+            MagayaError::Database {
+                source: e,
+                context: format!("Failed to create listener '{}'", request.name),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(MagayaError::validation("Failed to create listener"));
+        }
+
+        tracing::info!(listener_id = %id, listener_name = %request.name, "Created new listener");
+
+        self.get_by_id(&id).await
+    }
+
+    pub async fn get_by_id(&self, id: &str) -> Result<ListenerData> {
+        let row = sqlx::query_as::<Sqlite, ListenerRow>(
+            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %id, "Failed to get listener by ID");
+            MagayaError::Database {
+                source: e,
+                context: format!("Failed to get listener with ID '{}'", id),
+            }
+        })?;
+
+        match row {
+            Some(row) => Ok(ListenerData::from(row)),
+            None => Err(MagayaError::not_found(format!(
+                "Listener with ID '{}' not found",
+                id
+            ))),
+        }
+    }
+
+    pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
+        let row = sqlx::query_as::<Sqlite, ListenerRow>(
+            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_name = %name, "Failed to get listener by name");
+            MagayaError::Database {
+                source: e,
+                context: format!("Failed to get listener with name '{}'", name),
+            }
+        })?;
+
+        match row {
+            Some(row) => Ok(ListenerData::from(row)),
+            None => Err(MagayaError::not_found(format!(
+                "Listener with name '{}' not found",
+                name
+            ))),
+        }
+    }
+
+    pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<ListenerData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<Sqlite, ListenerRow>(
+            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list listeners");
+            MagayaError::Database {
+                source: e,
+                context: "Failed to list listeners".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(ListenerData::from).collect())
+    }
+
+    pub async fn update(&self, id: &str, request: UpdateListenerRequest) -> Result<ListenerData> {
+        let current = self.get_by_id(id).await?;
+
+        let current_address = current.address.clone();
+        let current_protocol = current.protocol.clone();
+        let current_configuration = current.configuration.clone();
+        let current_name = current.name.clone();
+
+        let new_address = request.address.unwrap_or(current_address);
+        let new_port = match request.port {
+            Some(value) => value,
+            None => current.port,
+        };
+        let new_protocol = request.protocol.unwrap_or(current_protocol);
+        let new_configuration = if let Some(config) = request.configuration {
+            serde_json::to_string(&config).map_err(|e| {
+                MagayaError::validation(format!("Invalid listener configuration JSON: {}", e))
+            })?
+        } else {
+            current_configuration
+        };
+
+        let now = chrono::Utc::now();
+        let new_version = current.version + 1;
+
+        let result = sqlx::query(
+            "UPDATE listeners SET address = $1, port = $2, protocol = $3, configuration = $4, version = $5, updated_at = $6 WHERE id = $7"
+        )
+        .bind(&new_address)
+        .bind(new_port)
+        .bind(&new_protocol)
+        .bind(&new_configuration)
+        .bind(new_version)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %id, "Failed to update listener");
+            MagayaError::Database {
+                source: e,
+                context: format!("Failed to update listener with ID '{}'", id),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(MagayaError::not_found(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(listener_id = %id, listener_name = %current_name, new_version = new_version, "Updated listener");
+
+        self.get_by_id(id).await
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let listener = self.get_by_id(id).await?;
+
+        let result = sqlx::query("DELETE FROM listeners WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, listener_id = %id, "Failed to delete listener");
+                MagayaError::Database {
+                    source: e,
+                    context: format!("Failed to delete listener with ID '{}'", id),
+                }
+            })?;
+
+        if result.rows_affected() == 0 {
+            return Err(MagayaError::not_found(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(listener_id = %id, listener_name = %listener.name, "Deleted listener");
+
+        Ok(())
+    }
+
+    pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
+        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, listener_name = %name, "Failed to check listener existence");
+                MagayaError::Database {
+                    source: e,
+                    context: format!("Failed to check existence of listener '{}'", name),
+                }
+            })?;
+
+        Ok(count > 0)
+    }
+
+    pub async fn count(&self) -> Result<i64> {
+        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to get listener count");
+                MagayaError::Database {
+                    source: e,
+                    context: "Failed to get listener count".to_string(),
+                }
+            })?;
+
+        Ok(count)
+    }
+
+    pub fn pool(&self) -> &DbPool {
+        &self.pool
+    }
+}
+
 /// Repository for route data access
 #[derive(Debug, Clone)]
 pub struct RouteRepository {
@@ -620,6 +922,26 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS listeners (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                address TEXT NOT NULL,
+                port INTEGER,
+                protocol TEXT NOT NULL DEFAULT 'HTTP',
+                configuration TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(name, version)
+            )
+        "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
         pool
     }
 
@@ -782,5 +1104,64 @@ mod tests {
 
         repo.delete(&created.id).await.unwrap();
         assert!(repo.get_by_id(&created.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_listener_crud_operations() {
+        let pool = create_test_pool().await;
+        let repo = ListenerRepository::new(pool);
+
+        let create_request = CreateListenerRequest {
+            name: "test-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: Some(8080),
+            protocol: Some("HTTP".to_string()),
+            configuration: serde_json::json!({
+                "name": "test-listener",
+                "address": "0.0.0.0",
+                "port": 8080
+            }),
+        };
+
+        let created = repo.create(create_request).await.unwrap();
+        assert_eq!(created.name, "test-listener");
+        assert_eq!(created.port, Some(8080));
+        assert_eq!(created.protocol, "HTTP");
+        assert_eq!(created.version, 1);
+
+        let fetched = repo.get_by_id(&created.id).await.unwrap();
+        assert_eq!(fetched.id, created.id);
+
+        let fetched_by_name = repo.get_by_name("test-listener").await.unwrap();
+        assert_eq!(fetched_by_name.id, created.id);
+
+        let update_request = UpdateListenerRequest {
+            address: Some("127.0.0.1".to_string()),
+            port: Some(Some(9090)),
+            protocol: Some("TCP".to_string()),
+            configuration: Some(serde_json::json!({
+                "name": "test-listener",
+                "address": "127.0.0.1",
+                "port": 9090
+            })),
+        };
+
+        let updated = repo.update(&created.id, update_request).await.unwrap();
+        assert_eq!(updated.address, "127.0.0.1");
+        assert_eq!(updated.port, Some(9090));
+        assert_eq!(updated.protocol, "TCP");
+        assert_eq!(updated.version, 2);
+
+        let listeners = repo.list(None, None).await.unwrap();
+        assert_eq!(listeners.len(), 1);
+
+        assert!(repo.exists_by_name("test-listener").await.unwrap());
+        assert!(!repo.exists_by_name("missing").await.unwrap());
+
+        assert_eq!(repo.count().await.unwrap(), 1);
+
+        repo.delete(&created.id).await.unwrap();
+        assert!(repo.get_by_id(&created.id).await.is_err());
+        assert_eq!(repo.count().await.unwrap(), 0);
     }
 }

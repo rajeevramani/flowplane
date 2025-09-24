@@ -6,7 +6,7 @@ use crate::xds::{
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterData, RouteData},
+    storage::{ClusterData, ListenerData, RouteData},
     Error, Result,
 };
 use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
@@ -36,10 +36,11 @@ use prost::Message;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::xds::route::RouteConfig;
+use crate::xds::{listener::ListenerConfig, route::RouteConfig};
 
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
+pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
 
 /// Wrapper for a built Envoy resource along with its name.
 #[derive(Clone, Debug)]
@@ -271,10 +272,49 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
     Ok(vec![BuiltResource {
         name: listener.name.clone(),
         resource: Any {
-            type_url: "type.googleapis.com/envoy.config.listener.v3.Listener".to_string(),
+            type_url: LISTENER_TYPE_URL.to_string(),
             value: encoded,
         },
     }])
+}
+
+/// Build listener resources from database entries
+pub fn listeners_from_database_entries(
+    entries: Vec<ListenerData>,
+    context: &str,
+) -> Result<Vec<BuiltResource>> {
+    let mut resources = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let config: ListenerConfig = serde_json::from_str(&entry.configuration).map_err(|err| {
+            Error::internal(format!(
+                "Failed to parse stored listener configuration for '{}': {}",
+                entry.name, err
+            ))
+        })?;
+
+        let envoy_listener = config.to_envoy_listener()?;
+        let encoded = envoy_listener.encode_to_vec();
+
+        info!(
+            phase = context,
+            listener_name = %entry.name,
+            protocol = %entry.protocol,
+            version = entry.version,
+            encoded_size = encoded.len(),
+            "Built listener resource from database entry"
+        );
+
+        resources.push(BuiltResource {
+            name: envoy_listener.name.clone(),
+            resource: Any {
+                type_url: LISTENER_TYPE_URL.to_string(),
+                value: encoded,
+            },
+        });
+    }
+
+    Ok(resources)
 }
 
 /// Build cluster resources from database entries (JSON stored in `ClusterData`).
@@ -782,10 +822,13 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::ListenerData;
     use crate::xds::{
+        listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec,
         HealthCheckSpec, LeastRequestPolicy, MaglevPolicy, OutlierDetectionSpec, RingHashPolicy,
     };
+    use chrono::Utc;
     use envoy_types::pb::envoy::config::cluster::v3::cluster::LbConfig;
     use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext;
     use prost::Message;
@@ -991,5 +1034,45 @@ mod tests {
         let outlier = cluster.outlier_detection.expect("outlier detection");
         assert_eq!(outlier.consecutive_5xx.unwrap().value, 7);
         assert_eq!(outlier.max_ejection_percent.unwrap().value, 50);
+    }
+
+    #[test]
+    fn listeners_from_database_entries_build_listener_resource() {
+        let listener_config = ListenerConfig {
+            name: "test-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: 8080,
+            filter_chains: vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.tcp_proxy".to_string(),
+                    filter_type: FilterType::TcpProxy {
+                        cluster: "backend".to_string(),
+                        access_log: None,
+                    },
+                }],
+                tls_context: None,
+            }],
+        };
+
+        let listener_data = ListenerData {
+            id: "listener-1".to_string(),
+            name: listener_config.name.clone(),
+            address: listener_config.address.clone(),
+            port: Some(listener_config.port as i64),
+            protocol: "TCP".to_string(),
+            configuration: serde_json::to_string(&listener_config).unwrap(),
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let built = listeners_from_database_entries(vec![listener_data], "test")
+            .expect("listener resource build");
+
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].name, "test-listener");
+        assert_eq!(built[0].resource.type_url, LISTENER_TYPE_URL);
+        assert!(!built[0].resource.value.is_empty());
     }
 }

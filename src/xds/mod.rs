@@ -6,7 +6,9 @@
 //! - RDS (Route Discovery Service)
 //! - LDS (Listener Discovery Service)
 
+pub mod cluster;
 mod cluster_spec;
+pub mod listener;
 pub(crate) mod resources;
 pub mod route;
 mod services;

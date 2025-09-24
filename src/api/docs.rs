@@ -23,7 +23,12 @@ use crate::xds::{
         crate::api::route_handlers::list_routes_handler,
         crate::api::route_handlers::get_route_handler,
         crate::api::route_handlers::update_route_handler,
-        crate::api::route_handlers::delete_route_handler
+        crate::api::route_handlers::delete_route_handler,
+        crate::api::listener_handlers::create_listener_handler,
+        crate::api::listener_handlers::list_listeners_handler,
+        crate::api::listener_handlers::get_listener_handler,
+        crate::api::listener_handlers::update_listener_handler,
+        crate::api::listener_handlers::delete_listener_handler
     ),
     components(
         schemas(
@@ -47,11 +52,15 @@ use crate::xds::{
             crate::api::route_handlers::PathMatchDefinition,
             crate::api::route_handlers::RouteActionDefinition,
             crate::api::route_handlers::WeightedClusterDefinition,
-            crate::api::route_handlers::RouteResponse
+            crate::api::route_handlers::RouteResponse,
+            crate::api::listener_handlers::ListenerResponse,
+            crate::api::listener_handlers::CreateListenerBody,
+            crate::api::listener_handlers::UpdateListenerBody
         )
     ),
     tags(
-        (name = "clusters", description = "Operations for managing Envoy clusters")
+        (name = "clusters", description = "Operations for managing Envoy clusters"),
+        (name = "listeners", description = "Operations for managing Envoy listeners")
     )
 )]
 pub struct ApiDoc;

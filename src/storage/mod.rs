@@ -15,9 +15,10 @@ pub use migrations::{
 };
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
 pub use repository_simple::{
-    ClusterData, ClusterRepository, CreateClusterRequest,
-    CreateRouteRequest as CreateRouteRepositoryRequest, RouteData, RouteRepository,
-    UpdateClusterRequest, UpdateRouteRequest as UpdateRouteRepositoryRequest,
+    ClusterData, ClusterRepository, CreateClusterRequest, CreateListenerRequest,
+    CreateRouteRequest as CreateRouteRepositoryRequest, ListenerData, ListenerRepository,
+    RouteData, RouteRepository, UpdateClusterRequest, UpdateListenerRequest,
+    UpdateRouteRequest as UpdateRouteRepositoryRequest,
 };
 
 use crate::errors::{MagayaError, Result};

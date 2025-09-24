@@ -4,12 +4,15 @@
 //! using the proper envoy-types protobuf definitions.
 
 use envoy_types::pb::envoy::config::{
-    listener::v3::{Listener, Filter, FilterChain, listener::ListenerSpecifier},
-    core::v3::{Address, SocketAddress, address::Address as AddressType},
+    core::v3::{address::Address as AddressType, Address, SocketAddress},
+    listener::v3::{Filter, FilterChain, Listener},
 };
+use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
-    HttpConnectionManager, http_connection_manager::RouteSpecifier,
+    http_connection_manager::RouteSpecifier, http_filter::ConfigType as HttpFilterConfigType,
+    HttpConnectionManager, HttpFilter,
 };
+use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -80,7 +83,11 @@ impl ListenerConfig {
     pub fn to_envoy_listener(&self) -> Result<Listener, crate::Error> {
         let socket_address = SocketAddress {
             address: self.address.clone(),
-            port_specifier: Some(envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(self.port)),
+            port_specifier: Some(
+                envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(
+                    self.port,
+                ),
+            ),
             ..Default::default()
         };
 
@@ -88,7 +95,8 @@ impl ListenerConfig {
             address: Some(AddressType::SocketAddress(socket_address)),
         };
 
-        let filter_chains: Result<Vec<FilterChain>, crate::Error> = self.filter_chains
+        let filter_chains: Result<Vec<FilterChain>, crate::Error> = self
+            .filter_chains
             .iter()
             .map(|fc| fc.to_envoy_filter_chain())
             .collect();
@@ -97,7 +105,6 @@ impl ListenerConfig {
             name: self.name.clone(),
             address: Some(address),
             filter_chains: filter_chains?,
-            listener_specifier: Some(ListenerSpecifier::DefaultFilterChain(FilterChain::default())),
             ..Default::default()
         };
 
@@ -108,10 +115,8 @@ impl ListenerConfig {
 impl FilterChainConfig {
     /// Convert REST API FilterChainConfig to envoy-types FilterChain
     fn to_envoy_filter_chain(&self) -> Result<FilterChain, crate::Error> {
-        let filters: Result<Vec<Filter>, crate::Error> = self.filters
-            .iter()
-            .map(|f| f.to_envoy_filter())
-            .collect();
+        let filters: Result<Vec<Filter>, crate::Error> =
+            self.filters.iter().map(|f| f.to_envoy_filter()).collect();
 
         let filter_chain = FilterChain {
             filters: filters?,
@@ -143,8 +148,7 @@ impl FilterConfig {
                                 )
                             ),
                             ..Default::default()
-                        }),
-                        ..Default::default()
+                        })
                     })
                 } else if let Some(inline_config) = inline_route_config {
                     RouteSpecifier::RouteConfig(inline_config.to_envoy_route_configuration()?)
@@ -156,16 +160,28 @@ impl FilterConfig {
                     route_specifier: Some(route_specifier),
                     codec_type: envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::CodecType::Auto as i32,
                     stat_prefix: "ingress_http".to_string(),
+                    http_filters: vec![HttpFilter {
+                        name: "envoy.filters.http.router".to_string(),
+                        config_type: Some(HttpFilterConfigType::TypedConfig(EnvoyAny {
+                            type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+                                .to_string(),
+                            value: prost::Message::encode_to_vec(&RouterFilter::default()),
+                        })),
+                        ..Default::default()
+                    }],
                     // TODO: Add access log and tracing configuration
                     ..Default::default()
                 };
 
-                prost_types::Any {
+                EnvoyAny {
                     type_url: "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager".to_string(),
                     value: prost::Message::encode_to_vec(&hcm),
                 }
-            },
-            FilterType::TcpProxy { cluster, access_log: _ } => {
+            }
+            FilterType::TcpProxy {
+                cluster,
+                access_log: _,
+            } => {
                 let tcp_proxy = envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy {
                     cluster_specifier: Some(
                         envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::tcp_proxy::ClusterSpecifier::Cluster(cluster.clone())
@@ -175,16 +191,22 @@ impl FilterConfig {
                     ..Default::default()
                 };
 
-                prost_types::Any {
-                    type_url: "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy".to_string(),
+                EnvoyAny {
+                    type_url:
+                        "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy"
+                            .to_string(),
                     value: prost::Message::encode_to_vec(&tcp_proxy),
                 }
-            },
+            }
         };
 
         let filter = Filter {
             name: self.name.clone(),
-            config_type: Some(envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(typed_config)),
+            config_type: Some(
+                envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(
+                    typed_config,
+                ),
+            ),
         };
 
         Ok(filter)
@@ -243,23 +265,19 @@ impl ListenerManager {
             name,
             address,
             port,
-            filter_chains: vec![
-                FilterChainConfig {
-                    name: Some("default".to_string()),
-                    filters: vec![
-                        FilterConfig {
-                            name: "envoy.filters.network.http_connection_manager".to_string(),
-                            filter_type: FilterType::HttpConnectionManager {
-                                route_config_name: Some(route_config_name),
-                                inline_route_config: None,
-                                access_log: None,
-                                tracing: None,
-                            },
-                        },
-                    ],
-                    tls_context: None,
-                },
-            ],
+            filter_chains: vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: Some(route_config_name),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                    },
+                }],
+                tls_context: None,
+            }],
         }
     }
 
@@ -274,21 +292,17 @@ impl ListenerManager {
             name,
             address,
             port,
-            filter_chains: vec![
-                FilterChainConfig {
-                    name: Some("default".to_string()),
-                    filters: vec![
-                        FilterConfig {
-                            name: "envoy.filters.network.tcp_proxy".to_string(),
-                            filter_type: FilterType::TcpProxy {
-                                cluster,
-                                access_log: None,
-                            },
-                        },
-                    ],
-                    tls_context: None,
-                },
-            ],
+            filter_chains: vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.tcp_proxy".to_string(),
+                    filter_type: FilterType::TcpProxy {
+                        cluster,
+                        access_log: None,
+                    },
+                }],
+                tls_context: None,
+            }],
         }
     }
 }
@@ -302,60 +316,56 @@ impl Default for ListenerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xds::route::{RouteConfig, VirtualHostConfig, RouteRule, RouteMatchConfig, RouteActionConfig, PathMatch};
+    use crate::xds::route::{
+        PathMatch, RouteActionConfig, RouteConfig, RouteMatchConfig, RouteRule, VirtualHostConfig,
+    };
 
     #[test]
     fn test_listener_config_conversion() {
         let route_config = RouteConfig {
             name: "test-route".to_string(),
-            virtual_hosts: vec![
-                VirtualHostConfig {
-                    name: "test-vhost".to_string(),
-                    domains: vec!["example.com".to_string()],
-                    routes: vec![
-                        RouteRule {
-                            name: Some("default".to_string()),
-                            r#match: RouteMatchConfig {
-                                path: PathMatch::Prefix("/".to_string()),
-                                headers: None,
-                                query_parameters: None,
-                            },
-                            action: RouteActionConfig::Cluster {
-                                name: "backend-cluster".to_string(),
-                                timeout: None,
-                                prefix_rewrite: None,
-                                path_template_rewrite: None,
-                            },
-                        },
-                    ],
-                },
-            ],
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("default".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "backend-cluster".to_string(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                }],
+            }],
         };
 
         let config = ListenerConfig {
             name: "test-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 8080,
-            filter_chains: vec![
-                FilterChainConfig {
-                    name: Some("default".to_string()),
-                    filters: vec![
-                        FilterConfig {
-                            name: "envoy.filters.network.http_connection_manager".to_string(),
-                            filter_type: FilterType::HttpConnectionManager {
-                                route_config_name: None,
-                                inline_route_config: Some(route_config),
-                                access_log: None,
-                                tracing: None,
-                            },
-                        },
-                    ],
-                    tls_context: None,
-                },
-            ],
+            filter_chains: vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: None,
+                        inline_route_config: Some(route_config),
+                        access_log: None,
+                        tracing: None,
+                    },
+                }],
+                tls_context: None,
+            }],
         };
 
-        let listener = config.to_envoy_listener().expect("Failed to convert listener config");
+        let listener = config
+            .to_envoy_listener()
+            .expect("Failed to convert listener config");
 
         assert_eq!(listener.name, "test-listener");
         assert!(listener.address.is_some());
@@ -380,7 +390,9 @@ mod tests {
             "default-route".to_string(),
         );
 
-        manager.upsert_listener(config).expect("Failed to add listener");
+        manager
+            .upsert_listener(config)
+            .expect("Failed to add listener");
 
         assert!(manager.get_listener("http-listener").is_some());
         assert_eq!(manager.list_listener_names().len(), 1);

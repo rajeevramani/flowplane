@@ -2,12 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
-    clusters_from_config, clusters_from_database_entries, routes_from_config,
-    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, ROUTE_TYPE_URL,
+    clusters_from_config, clusters_from_database_entries, listeners_from_config,
+    listeners_from_database_entries, routes_from_config, routes_from_database_entries,
+    BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterRepository, DbPool, RouteRepository},
+    storage::{ClusterRepository, DbPool, ListenerRepository, RouteRepository},
     Result,
 };
 use envoy_types::pb::google::protobuf::Any;
@@ -57,6 +58,7 @@ pub struct XdsState {
     pub version: Arc<std::sync::atomic::AtomicU64>,
     pub cluster_repository: Option<ClusterRepository>,
     pub route_repository: Option<RouteRepository>,
+    pub listener_repository: Option<ListenerRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -69,6 +71,7 @@ impl XdsState {
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: None,
             route_repository: None,
+            listener_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -77,12 +80,14 @@ impl XdsState {
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
         let cluster_repository = ClusterRepository::new(pool.clone());
-        let route_repository = RouteRepository::new(pool);
+        let route_repository = RouteRepository::new(pool.clone());
+        let listener_repository = ListenerRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: Some(cluster_repository),
             route_repository: Some(route_repository),
+            listener_repository: Some(listener_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -270,6 +275,49 @@ impl XdsState {
 
         Ok(())
     }
+
+    /// Refresh the listener cache from the backing repository (if available).
+    pub async fn refresh_listeners_from_repository(&self) -> Result<()> {
+        let repository = match &self.listener_repository {
+            Some(repo) => repo.clone(),
+            None => return Ok(()),
+        };
+
+        let listener_rows = repository.list(Some(1000), None).await?;
+
+        let built = if listener_rows.is_empty() {
+            listeners_from_config(&self.config)?
+        } else {
+            listeners_from_database_entries(listener_rows, "cache_refresh")?
+        };
+
+        let total_resources = built.len();
+        match self.apply_built_resources(LISTENER_TYPE_URL, built) {
+            Some(update) => {
+                for delta in &update.deltas {
+                    info!(
+                        phase = "cache_refresh",
+                        type_url = %delta.type_url,
+                        added = delta.added_or_updated.len(),
+                        removed = delta.removed.len(),
+                        version = update.version,
+                        total_resources,
+                        "Listener cache refresh produced delta"
+                    );
+                }
+            }
+            None => {
+                info!(
+                    phase = "cache_refresh",
+                    type_url = LISTENER_TYPE_URL,
+                    total_resources,
+                    "Listener cache refresh detected no changes"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -365,5 +413,11 @@ mod tests {
         assert_eq!(update1.version, update2.version);
         assert_eq!(update1.deltas[0].added_or_updated.len(), 1);
         assert_eq!(update2.deltas[0].added_or_updated.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_listeners_without_repository_is_noop() {
+        let state = build_state();
+        assert!(state.refresh_listeners_from_repository().await.is_ok());
     }
 }

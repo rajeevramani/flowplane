@@ -67,3 +67,4 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 tokio-test = "0.4"
 axum-test = "16.4.0"
 tracing-test = "0.2.5"
+reserve-port = "2.3"

@@ -17,3 +17,4 @@ MAGAYA_DATABASE_URL=sqlite://./data/magaya.db \
 cargo run --bin magaya
 ```
 
+

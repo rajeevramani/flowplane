@@ -26,6 +26,7 @@ pub mod api;
 pub mod config;
 pub mod errors;
 pub mod storage;
+pub mod utils;
 pub mod xds;
 
 // Re-export commonly used types and traits

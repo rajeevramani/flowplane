@@ -10,6 +10,10 @@ use super::{
         create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
         update_cluster_handler,
     },
+    listener_handlers::{
+        create_listener_handler, delete_listener_handler, get_listener_handler,
+        list_listeners_handler, update_listener_handler,
+    },
     route_handlers::{
         create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
         update_route_handler,
@@ -46,6 +50,16 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
             get(get_route_handler)
                 .put(update_route_handler)
                 .delete(delete_route_handler),
+        )
+        .route(
+            "/api/v1/listeners",
+            get(list_listeners_handler).post(create_listener_handler),
+        )
+        .route(
+            "/api/v1/listeners/{name}",
+            get(get_listener_handler)
+                .put(update_listener_handler)
+                .delete(delete_listener_handler),
         )
         .with_state(api_state);
 
