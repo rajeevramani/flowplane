@@ -56,7 +56,7 @@ coverage/
 CLAUDE.md
 
 Database
-./data
+data/
 magaya.db-shm
 magaya.db-wal
 
