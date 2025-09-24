@@ -14,6 +14,7 @@ use envoy_types::pb::google::protobuf::Any;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 use crate::xds::filters::http::HttpScopedConfig;
 
@@ -45,7 +46,7 @@ pub struct RouteRule {
 }
 
 /// REST API representation of route matching criteria
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RouteMatchConfig {
     pub path: PathMatch,
     pub headers: Option<Vec<HeaderMatchConfig>>,
@@ -53,7 +54,7 @@ pub struct RouteMatchConfig {
 }
 
 /// REST API representation of path matching
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum PathMatch {
     Exact(String),
     Prefix(String),
@@ -62,7 +63,7 @@ pub enum PathMatch {
 }
 
 /// REST API representation of header matching
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HeaderMatchConfig {
     pub name: String,
     pub value: Option<String>,
@@ -71,7 +72,7 @@ pub struct HeaderMatchConfig {
 }
 
 /// REST API representation of query parameter matching
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueryParameterMatchConfig {
     pub name: String,
     pub value: Option<String>,
@@ -176,7 +177,7 @@ impl RouteRule {
 
 impl RouteMatchConfig {
     /// Convert REST API RouteMatchConfig to envoy-types RouteMatch
-    fn to_envoy_route_match(&self) -> Result<RouteMatch, crate::Error> {
+    pub fn to_envoy_route_match(&self) -> Result<RouteMatch, crate::Error> {
         let path_specifier = match &self.path {
             PathMatch::Exact(path) => PathSpecifier::Path(path.clone()),
             PathMatch::Prefix(prefix) => PathSpecifier::Prefix(prefix.clone()),

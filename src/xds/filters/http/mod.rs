@@ -5,14 +5,17 @@
 //! messages. Individual filters (e.g. Local Rate Limit) live in dedicated
 //! submodules and register their configuration structs here.
 
+pub mod jwt_auth;
 pub mod local_rate_limit;
 
 use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
+use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
+use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
 use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,8 @@ use utoipa::ToSchema;
 pub const ROUTER_FILTER_NAME: &str = "envoy.filters.http.router";
 const LOCAL_RATE_LIMIT_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit";
+const JWT_AUTHN_PER_ROUTE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig";
 
 /// REST representation of an HTTP filter entry
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -47,6 +52,8 @@ pub enum HttpFilterKind {
     Router,
     /// Envoy Local Rate Limit filter
     LocalRateLimit(local_rate_limit::LocalRateLimitConfig),
+    /// Envoy JWT authentication filter
+    JwtAuthn(jwt_auth::JwtAuthenticationConfig),
     /// Arbitrary filter expressed as a typed config payload
     Custom {
         #[serde(flatten)]
@@ -63,6 +70,7 @@ impl HttpFilterKind {
         match self {
             Self::Router => ROUTER_FILTER_NAME,
             Self::LocalRateLimit(_) => "envoy.filters.http.local_ratelimit",
+            Self::JwtAuthn(_) => "envoy.filters.http.jwt_authn",
             Self::Custom { .. } => "custom.http.filter",
         }
     }
@@ -74,6 +82,7 @@ impl HttpFilterKind {
                 &RouterFilter::default(),
             ))),
             Self::LocalRateLimit(cfg) => cfg.to_any().map(Some),
+            Self::JwtAuthn(cfg) => cfg.to_any().map(Some),
             Self::Custom { config } => Ok(Some(config.to_any())),
         }
     }
@@ -85,6 +94,8 @@ impl HttpFilterKind {
 pub enum HttpScopedConfig {
     /// Local Rate Limit config expressed in structured form
     LocalRateLimit(LocalRateLimitConfig),
+    /// JWT auth per-route overrides
+    JwtAuthn(JwtPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -95,6 +106,10 @@ impl HttpScopedConfig {
         match self {
             Self::Typed(config) => Ok(config.to_any()),
             Self::LocalRateLimit(cfg) => cfg.to_any(),
+            Self::JwtAuthn(cfg) => {
+                let proto = cfg.to_proto()?;
+                Ok(any_from_message(JWT_AUTHN_PER_ROUTE_TYPE_URL, &proto))
+            }
         }
     }
 
@@ -106,6 +121,14 @@ impl HttpScopedConfig {
             })?;
             let cfg = LocalRateLimitConfig::from_proto(&proto)?;
             return Ok(HttpScopedConfig::LocalRateLimit(cfg));
+        }
+
+        if any.type_url == JWT_AUTHN_PER_ROUTE_TYPE_URL {
+            let proto = JwtPerRouteProto::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!("Failed to decode JWT per-route config: {}", err))
+            })?;
+            let cfg = JwtPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::JwtAuthn(cfg));
         }
 
         Ok(HttpScopedConfig::Typed(TypedConfig {
@@ -215,5 +238,23 @@ mod tests {
         assert_eq!(filters[0].name, "envoy.filters.http.custom");
         assert!(filters[0].is_optional);
         assert_eq!(filters[1].name, ROUTER_FILTER_NAME);
+    }
+
+    #[test]
+    fn jwt_per_route_round_trip() {
+        let scoped = HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::RequirementName {
+            requirement_name: "primary".into(),
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, JWT_AUTHN_PER_ROUTE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::RequirementName { requirement_name }) => {
+                assert_eq!(requirement_name, "primary");
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
     }
 }
