@@ -6,7 +6,10 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use crate::{storage::ClusterRepository, Result};
+use crate::{
+    storage::{ClusterRepository, ListenerRepository, RouteRepository},
+    Result,
+};
 use envoy_types::pb::envoy::service::discovery::v3::{
     aggregated_discovery_service_server::AggregatedDiscoveryService, DeltaDiscoveryRequest,
     DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, Resource,
@@ -27,7 +30,15 @@ pub struct DatabaseAggregatedDiscoveryService {
 impl DatabaseAggregatedDiscoveryService {
     pub fn new(state: Arc<XdsState>) -> Self {
         if let Some(repo) = &state.cluster_repository {
-            spawn_database_watcher(state.clone(), repo.clone());
+            spawn_cluster_watcher(state.clone(), repo.clone());
+        }
+
+        if let Some(repo) = &state.route_repository {
+            spawn_route_watcher(state.clone(), repo.clone());
+        }
+
+        if let Some(repo) = &state.listener_repository {
+            spawn_listener_watcher(state.clone(), repo.clone());
         }
 
         Self { state }
@@ -95,16 +106,88 @@ impl DatabaseAggregatedDiscoveryService {
         resources::clusters_from_config(&self.state.config)
     }
 
+    async fn create_route_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+        if let Some(repo) = &self.state.route_repository {
+            match repo.list(Some(100), None).await {
+                Ok(route_data_list) => {
+                    if route_data_list.is_empty() {
+                        info!("No routes found in database, falling back to config-based routes");
+                        return self.create_fallback_route_resources();
+                    }
+
+                    info!(
+                        phase = "ads_response",
+                        route_count = route_data_list.len(),
+                        "Building route resources from database for ADS response"
+                    );
+
+                    resources::routes_from_database_entries(route_data_list, "ads_response")
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to load routes from database: {}, falling back to config",
+                        e
+                    );
+                    self.create_fallback_route_resources()
+                }
+            }
+        } else {
+            info!("No database repository available, using config-based routes");
+            self.create_fallback_route_resources()
+        }
+    }
+
+    fn create_fallback_route_resources(&self) -> Result<Vec<BuiltResource>> {
+        resources::routes_from_config(&self.state.config)
+    }
+
+    async fn create_listener_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+        if let Some(repo) = &self.state.listener_repository {
+            match repo.list(Some(100), None).await {
+                Ok(listener_data_list) => {
+                    if listener_data_list.is_empty() {
+                        info!(
+                            "No listeners found in database, falling back to config-based listener"
+                        );
+                        return self.create_fallback_listener_resources();
+                    }
+
+                    info!(
+                        phase = "ads_response",
+                        listener_count = listener_data_list.len(),
+                        "Building listener resources from database for ADS response"
+                    );
+
+                    resources::listeners_from_database_entries(listener_data_list, "ads_response")
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to load listeners from database: {}, falling back to config",
+                        e
+                    );
+                    self.create_fallback_listener_resources()
+                }
+            }
+        } else {
+            info!("No database repository available, using config-based listener");
+            self.create_fallback_listener_resources()
+        }
+    }
+
+    fn create_fallback_listener_resources(&self) -> Result<Vec<BuiltResource>> {
+        resources::listeners_from_config(&self.state.config)
+    }
+
     async fn build_resources(&self, type_url: &str) -> Result<Vec<BuiltResource>> {
         match type_url {
             "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
                 self.create_cluster_resources_from_db().await
             }
             "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
-                resources::routes_from_config(&self.state.config)
+                self.create_route_resources_from_db().await
             }
             "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                resources::listeners_from_config(&self.state.config)
+                self.create_listener_resources_from_db().await
             }
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
@@ -148,7 +231,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 }
 
-fn spawn_database_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
+fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
@@ -178,6 +261,82 @@ fn spawn_database_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
                 },
                 Err(e) => {
                     warn!(error = %e, "Failed to poll SQLite data_version for changes");
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
+fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        if let Err(error) = state.refresh_routes_from_repository().await {
+            warn!(%error, "Failed to initialize route cache from repository");
+        }
+
+        let mut last_version: Option<i64> = None;
+
+        loop {
+            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
+                .fetch_one(repository.pool())
+                .await;
+
+            match poll_result {
+                Ok(version) => match last_version {
+                    Some(previous) if previous == version => {}
+                    Some(_) => {
+                        last_version = Some(version);
+                        if let Err(error) = state.refresh_routes_from_repository().await {
+                            warn!(%error, "Failed to refresh route cache from repository");
+                        }
+                    }
+                    None => {
+                        last_version = Some(version);
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to poll SQLite data_version for route changes");
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
+fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) {
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        if let Err(error) = state.refresh_listeners_from_repository().await {
+            warn!(%error, "Failed to initialize listener cache from repository");
+        }
+
+        let mut last_version: Option<i64> = None;
+
+        loop {
+            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
+                .fetch_one(repository.pool())
+                .await;
+
+            match poll_result {
+                Ok(version) => match last_version {
+                    Some(previous) if previous == version => {}
+                    Some(_) => {
+                        last_version = Some(version);
+                        if let Err(error) = state.refresh_listeners_from_repository().await {
+                            warn!(%error, "Failed to refresh listener cache from repository");
+                        }
+                    }
+                    None => {
+                        last_version = Some(version);
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to poll SQLite data_version for listener changes");
                 }
             }
 
