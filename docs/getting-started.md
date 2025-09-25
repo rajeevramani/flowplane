@@ -2,6 +2,8 @@
 
 This walkthrough takes you from an empty database to a working Envoy listener that enforces global and per-route rate limits. All API calls use `curl`, and the examples assume the control plane is running on `http://127.0.0.1:8080` (see the [README](../README.md) for the launch command).
 
+> **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/gateways/openapi?name=<gateway>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
+
 ## 1. Explore the API Reference
 Open `http://127.0.0.1:8080/swagger-ui` in your browser. The Swagger UI lists every endpoint, schema, and example. You can execute requests directly from the UI or copy the `curl` commands shown below.
 
