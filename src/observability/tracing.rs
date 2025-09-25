@@ -3,7 +3,7 @@
 //! Provides distributed tracing setup using OpenTelemetry and Jaeger.
 
 use crate::config::ObservabilityConfig;
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 
 /// Initialize distributed tracing with OpenTelemetry and Jaeger
 pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
@@ -158,9 +158,9 @@ pub fn inject_trace_context(
 
     for (key, value) in context_headers {
         let header_name = key.parse::<axum::http::HeaderName>()
-            .map_err(|e| MagayaError::internal(format!("Invalid header name '{}': {}", key, e)))?;
+            .map_err(|e| FlowplaneError::internal(format!("Invalid header name '{}': {}", key, e)))?;
         let header_value = value.parse::<axum::http::HeaderValue>()
-            .map_err(|e| MagayaError::internal(format!("Invalid header value '{}': {}", value, e)))?;
+            .map_err(|e| FlowplaneError::internal(format!("Invalid header value '{}': {}", value, e)))?;
 
         headers.insert(header_name, header_value);
     }

@@ -1,6 +1,6 @@
 //! # Validation Module
 //!
-//! Comprehensive validation system for Magaya control plane following proven PoC patterns.
+//! Comprehensive validation system for Flowplane control plane following proven PoC patterns.
 //! This module provides three-layer validation:
 //! 1. Basic validation using validator crate
 //! 2. Envoy-types protocol validation via `.encode_to_vec()` test
@@ -29,7 +29,7 @@ use envoy_types::pb::envoy::{
     extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig,
 };
 
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 
 pub mod requests;
 pub mod envoy_validation;
@@ -280,8 +280,8 @@ pub fn validate_http_methods(methods: &Vec<String>) -> Result<(), ValidationErro
     Ok(())
 }
 
-/// Convert validation errors to MagayaError
-pub fn validation_error_to_magaya_error(errors: validator::ValidationErrors) -> MagayaError {
+/// Convert validation errors to FlowplaneError
+pub fn validation_error_to_flowplane_error(errors: validator::ValidationErrors) -> FlowplaneError {
     let message = errors
         .field_errors()
         .iter()
@@ -299,14 +299,14 @@ pub fn validation_error_to_magaya_error(errors: validator::ValidationErrors) -> 
         .collect::<Vec<_>>()
         .join("; ");
 
-    MagayaError::validation(format!("Validation failed: {}", message))
+    FlowplaneError::validation(format!("Validation failed: {}", message))
 }
 
 /// Validate any structure that implements Validate trait
 pub fn validate_request<T: Validate>(request: &T) -> Result<()> {
     request
         .validate()
-        .map_err(validation_error_to_magaya_error)?;
+        .map_err(validation_error_to_flowplane_error)?;
     Ok(())
 }
 

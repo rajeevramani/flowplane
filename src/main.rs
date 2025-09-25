@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use magaya::{
+use flowplane::{
     api::start_api_server,
     config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig},
     storage::create_pool,
@@ -17,14 +17,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "magaya=info,tonic=info".into()),
+                .unwrap_or_else(|_| "flowplane=info,tonic=info".into()),
         )
         .init();
 
     info!(
         app_name = APP_NAME,
         version = VERSION,
-        "Starting Magaya Envoy Control Plane - Checkpoint 5: Storage Foundation"
+        "Starting Flowplane Envoy Control Plane - Checkpoint 5: Storage Foundation"
     );
 
     // Load configuration from environment variables

@@ -1,4 +1,4 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::listener::v3::{
     filter::ConfigType, Filter, FilterChain, Listener,
 };
@@ -9,7 +9,7 @@ pub fn validate_envoy_listener(listener: &Listener) -> Result<()> {
     encode_check(listener, "Invalid listener configuration")?;
 
     if listener.name.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Listener name cannot be empty",
             "name",
         ));
@@ -18,7 +18,7 @@ pub fn validate_envoy_listener(listener: &Listener) -> Result<()> {
     match &listener.address {
         Some(address) => validate_address(address)?,
         None => {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Listener address is required",
                 "address",
             ))
@@ -26,7 +26,7 @@ pub fn validate_envoy_listener(listener: &Listener) -> Result<()> {
     }
 
     if listener.filter_chains.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "At least one filter chain is required",
             "filter_chains",
         ));
@@ -34,7 +34,7 @@ pub fn validate_envoy_listener(listener: &Listener) -> Result<()> {
 
     for (index, filter_chain) in listener.filter_chains.iter().enumerate() {
         validate_filter_chain(filter_chain).map_err(|e| {
-            MagayaError::validation_field(
+            FlowplaneError::validation_field(
                 format!("Filter chain {} validation failed: {}", index, e),
                 "filter_chains",
             )
@@ -46,12 +46,12 @@ pub fn validate_envoy_listener(listener: &Listener) -> Result<()> {
 
 fn validate_filter_chain(filter_chain: &FilterChain) -> Result<()> {
     if filter_chain.filters.is_empty() {
-        return Err(MagayaError::validation("At least one filter is required"));
+        return Err(FlowplaneError::validation("At least one filter is required"));
     }
 
     for (index, filter) in filter_chain.filters.iter().enumerate() {
         validate_filter(filter).map_err(|e| {
-            MagayaError::validation(format!("Filter {} validation failed: {}", index, e))
+            FlowplaneError::validation(format!("Filter {} validation failed: {}", index, e))
         })?;
     }
 
@@ -60,13 +60,13 @@ fn validate_filter_chain(filter_chain: &FilterChain) -> Result<()> {
 
 fn validate_filter(filter: &Filter) -> Result<()> {
     if filter.name.is_empty() {
-        return Err(MagayaError::validation("Filter name cannot be empty"));
+        return Err(FlowplaneError::validation("Filter name cannot be empty"));
     }
 
     match &filter.config_type {
         Some(ConfigType::TypedConfig(_)) | Some(ConfigType::ConfigDiscovery()) => Ok(()),
         Some(ConfigType::HiddenEnvoyDeprecatedConfig(_)) | Some(ConfigType::None(_)) | None => Err(
-            MagayaError::validation("Filter configuration is required"),
+            FlowplaneError::validation("Filter configuration is required"),
         ),
     }
 }

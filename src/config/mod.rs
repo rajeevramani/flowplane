@@ -1,6 +1,6 @@
 //! # Configuration Management
 //!
-//! This module provides configuration management for the Magaya control plane,
+//! This module provides configuration management for the Flowplane control plane,
 //! integrating both simple and comprehensive configuration approaches.
 
 use crate::Result;
@@ -79,7 +79,8 @@ impl Default for ApiServerConfig {
 impl Config {
     /// Create configuration from environment variables
     pub fn from_env() -> Result<Self> {
-        let xds_port_str = std::env::var("MAGAYA_XDS_PORT").unwrap_or_else(|_| "18000".to_string());
+        let xds_port_str =
+            std::env::var("FLOWPLANE_XDS_PORT").unwrap_or_else(|_| "18000".to_string());
 
         let xds_port: u16 = xds_port_str.parse().map_err(|e| {
             crate::Error::config(format!("Invalid XDS port '{}': {}", xds_port_str, e))
@@ -91,23 +92,23 @@ impl Config {
         }
 
         let xds_bind_address =
-            std::env::var("MAGAYA_XDS_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+            std::env::var("FLOWPLANE_XDS_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
 
         // Load resource configuration from environment variables
         let cluster_name =
-            std::env::var("MAGAYA_CLUSTER_NAME").unwrap_or_else(|_| "demo_cluster".to_string());
+            std::env::var("FLOWPLANE_CLUSTER_NAME").unwrap_or_else(|_| "demo_cluster".to_string());
 
         let route_name =
-            std::env::var("MAGAYA_ROUTE_NAME").unwrap_or_else(|_| "demo_route".to_string());
+            std::env::var("FLOWPLANE_ROUTE_NAME").unwrap_or_else(|_| "demo_route".to_string());
 
-        let listener_name =
-            std::env::var("MAGAYA_LISTENER_NAME").unwrap_or_else(|_| "demo_listener".to_string());
+        let listener_name = std::env::var("FLOWPLANE_LISTENER_NAME")
+            .unwrap_or_else(|_| "demo_listener".to_string());
 
         let backend_address =
-            std::env::var("MAGAYA_BACKEND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
+            std::env::var("FLOWPLANE_BACKEND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
 
         let backend_port_str =
-            std::env::var("MAGAYA_BACKEND_PORT").unwrap_or_else(|_| "8080".to_string());
+            std::env::var("FLOWPLANE_BACKEND_PORT").unwrap_or_else(|_| "8080".to_string());
         let backend_port: u16 = backend_port_str.parse().map_err(|e| {
             crate::Error::config(format!(
                 "Invalid backend port '{}': {}",
@@ -116,7 +117,7 @@ impl Config {
         })?;
 
         let listener_port_str =
-            std::env::var("MAGAYA_LISTENER_PORT").unwrap_or_else(|_| "10000".to_string());
+            std::env::var("FLOWPLANE_LISTENER_PORT").unwrap_or_else(|_| "10000".to_string());
         let listener_port: u16 = listener_port_str.parse().map_err(|e| {
             crate::Error::config(format!(
                 "Invalid listener port '{}': {}",
@@ -135,7 +136,8 @@ impl Config {
         }
 
         // API server configuration
-        let api_port_str = std::env::var("MAGAYA_API_PORT").unwrap_or_else(|_| "8080".to_string());
+        let api_port_str =
+            std::env::var("FLOWPLANE_API_PORT").unwrap_or_else(|_| "8080".to_string());
         let api_port: u16 = api_port_str.parse().map_err(|e| {
             crate::Error::config(format!("Invalid API port '{}': {}", api_port_str, e))
         })?;
@@ -145,7 +147,7 @@ impl Config {
         }
 
         let api_bind_address =
-            std::env::var("MAGAYA_API_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
+            std::env::var("FLOWPLANE_API_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
 
         Ok(Self {
             xds: SimpleXdsConfig {
@@ -203,16 +205,16 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
 
         // Save original values to restore later
-        let original_port = env::var("MAGAYA_XDS_PORT").ok();
-        let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
-        let original_api_port = env::var("MAGAYA_API_PORT").ok();
-        let original_api_bind = env::var("MAGAYA_API_BIND_ADDRESS").ok();
+        let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+        let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
+        let original_api_port = env::var("FLOWPLANE_API_PORT").ok();
+        let original_api_bind = env::var("FLOWPLANE_API_BIND_ADDRESS").ok();
 
         // Set environment variables
-        env::set_var("MAGAYA_XDS_PORT", "9090");
-        env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
-        env::set_var("MAGAYA_API_PORT", "7070");
-        env::set_var("MAGAYA_API_BIND_ADDRESS", "0.0.0.0");
+        env::set_var("FLOWPLANE_XDS_PORT", "9090");
+        env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", "127.0.0.1");
+        env::set_var("FLOWPLANE_API_PORT", "7070");
+        env::set_var("FLOWPLANE_API_BIND_ADDRESS", "0.0.0.0");
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.xds.port, 9090);
@@ -222,20 +224,20 @@ mod tests {
 
         // Restore original environment
         match original_port {
-            Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-            None => env::remove_var("MAGAYA_XDS_PORT"),
+            Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+            None => env::remove_var("FLOWPLANE_XDS_PORT"),
         }
         match original_bind {
-            Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
-            None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+            Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+            None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
         }
         match original_api_port {
-            Some(port) => env::set_var("MAGAYA_API_PORT", port),
-            None => env::remove_var("MAGAYA_API_PORT"),
+            Some(port) => env::set_var("FLOWPLANE_API_PORT", port),
+            None => env::remove_var("FLOWPLANE_API_PORT"),
         }
         match original_api_bind {
-            Some(bind) => env::set_var("MAGAYA_API_BIND_ADDRESS", bind),
-            None => env::remove_var("MAGAYA_API_BIND_ADDRESS"),
+            Some(bind) => env::set_var("FLOWPLANE_API_BIND_ADDRESS", bind),
+            None => env::remove_var("FLOWPLANE_API_BIND_ADDRESS"),
         }
     }
 
@@ -244,12 +246,12 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
 
         // Save original values
-        let original_port = env::var("MAGAYA_XDS_PORT").ok();
-        let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
+        let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+        let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
 
         // Ensure no env vars are set
-        env::remove_var("MAGAYA_XDS_PORT");
-        env::remove_var("MAGAYA_XDS_BIND_ADDRESS");
+        env::remove_var("FLOWPLANE_XDS_PORT");
+        env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS");
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.xds.port, 18000);
@@ -257,12 +259,12 @@ mod tests {
 
         // Restore original environment
         match original_port {
-            Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-            None => env::remove_var("MAGAYA_XDS_PORT"),
+            Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+            None => env::remove_var("FLOWPLANE_XDS_PORT"),
         }
         match original_bind {
-            Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
-            None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+            Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+            None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
         }
     }
 }

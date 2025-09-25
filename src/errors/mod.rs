@@ -1,12 +1,12 @@
 //! # Error Handling
 //!
-//! This module provides error handling for the Magaya control plane.
+//! This module provides error handling for the Flowplane control plane.
 //! It defines custom error types using `thiserror` for the minimal XDS server.
 
-/// Custom result type for Magaya operations
+/// Custom result type for Flowplane operations
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Main error type for the Magaya control plane
+/// Main error type for the Flowplane control plane
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// Configuration errors
@@ -43,7 +43,7 @@ pub enum Error {
 }
 
 /// Alias for compatibility with storage layer
-pub type MagayaError = Error;
+pub type FlowplaneError = Error;
 
 impl Error {
     /// Create a new configuration error

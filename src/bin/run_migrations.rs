@@ -1,7 +1,7 @@
 //! Simple migration runner that executes SQL files manually
 //! This bypasses SQLx compile-time issues while enabling real database schema
 
-use magaya::{config::DatabaseConfig, storage::create_pool};
+use flowplane::{config::DatabaseConfig, storage::create_pool};
 use std::fs;
 use tracing::info;
 
@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create database pool
     let db_config = DatabaseConfig {
-        url: "sqlite://./test_magaya.db".to_string(), // Use file-based SQLite for persistence
+        url: "sqlite://./test_flowplane.db".to_string(), // Use file-based SQLite for persistence
         max_connections: 5,
         auto_migrate: false, // We'll do it manually
         ..Default::default()
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("✅ Database test complete! Clusters in DB: {}", count);
     info!("🎉 Migration completed successfully!");
-    info!("💡 You can now use this database with: DATABASE_URL=sqlite:./test_magaya.db");
+    info!("💡 You can now use this database with: DATABASE_URL=sqlite:./test_flowplane.db");
 
     Ok(())
 }

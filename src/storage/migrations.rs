@@ -4,7 +4,7 @@
 //! Migrations are embedded in the binary for production deployment and executed automatically
 //! on application startup when auto_migrate is enabled.
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 use tracing::{error, info, warn};
@@ -42,7 +42,7 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
     let migrations_dir = get_migrations_dir();
 
     if !migrations_dir.exists() {
-        return Err(MagayaError::validation(format!(
+        return Err(FlowplaneError::validation(format!(
             "Migrations directory not found: {}",
             migrations_dir.display()
         )));
@@ -50,7 +50,7 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
 
     let mut migrations = Vec::new();
     let entries = std::fs::read_dir(&migrations_dir).map_err(|e| {
-        MagayaError::validation(format!(
+        FlowplaneError::validation(format!(
             "Failed to read migrations directory {}: {}",
             migrations_dir.display(),
             e
@@ -59,17 +59,20 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
 
     for entry in entries {
         let entry = entry.map_err(|e| {
-            MagayaError::validation(format!("Failed to read migration file entry: {}", e))
+            FlowplaneError::validation(format!("Failed to read migration file entry: {}", e))
         })?;
 
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("sql") {
             let filename = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
-                MagayaError::validation(format!("Invalid migration filename: {}", path.display()))
+                FlowplaneError::validation(format!(
+                    "Invalid migration filename: {}",
+                    path.display()
+                ))
             })?;
 
             let content = std::fs::read_to_string(&path).map_err(|e| {
-                MagayaError::validation(format!(
+                FlowplaneError::validation(format!(
                     "Failed to read migration file {}: {}",
                     path.display(),
                     e
@@ -84,7 +87,7 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
     migrations.sort_by(|a, b| a.0.cmp(&b.0));
 
     if migrations.is_empty() {
-        return Err(MagayaError::validation(format!(
+        return Err(FlowplaneError::validation(format!(
             "No migration files found in {}",
             migrations_dir.display()
         )));
@@ -126,13 +129,13 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
 
         // Execute migration in a transaction
         let mut tx = pool.begin().await.map_err(|e| {
-            MagayaError::database(e, "Failed to start migration transaction".to_string())
+            FlowplaneError::database(e, "Failed to start migration transaction".to_string())
         })?;
 
         // Run the migration SQL
         sqlx::query(sql).execute(&mut *tx).await.map_err(|e| {
             error!(error = %e, migration = filename, "Migration failed");
-            MagayaError::database(e, format!("Migration failed: {}", filename))
+            FlowplaneError::database(e, format!("Migration failed: {}", filename))
         })?;
 
         // Record migration
@@ -141,7 +144,7 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         sqlx::query(
-            "INSERT INTO _magaya_migrations (version, description, checksum, execution_time, installed_on) VALUES ($1, $2, $3, $4, $5)"
+            "INSERT INTO _flowplane_migrations (version, description, checksum, execution_time, installed_on) VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(version)
         .bind(filename)
@@ -152,11 +155,11 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .map_err(|e| {
             error!(error = %e, migration = filename, "Failed to record migration");
-            MagayaError::database(e, format!("Failed to record migration: {}", filename))
+            FlowplaneError::database(e, format!("Failed to record migration: {}", filename))
         })?;
 
         tx.commit().await.map_err(|e| {
-            MagayaError::database(e, "Failed to commit migration transaction".to_string())
+            FlowplaneError::database(e, "Failed to commit migration transaction".to_string())
         })?;
 
         migrations_run += 1;
@@ -181,7 +184,7 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
 async fn create_migration_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS _magaya_migrations (
+        CREATE TABLE IF NOT EXISTS _flowplane_migrations (
             version BIGINT PRIMARY KEY,
             description TEXT NOT NULL,
             checksum BLOB NOT NULL,
@@ -193,7 +196,7 @@ async fn create_migration_table(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .map_err(|e| {
-        MagayaError::database(e, "Failed to create migration tracking table".to_string())
+        FlowplaneError::database(e, "Failed to create migration tracking table".to_string())
     })?;
 
     Ok(())
@@ -201,7 +204,7 @@ async fn create_migration_table(pool: &Pool<Sqlite>) -> Result<()> {
 
 /// Get list of applied migration versions
 async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>> {
-    let rows = sqlx::query("SELECT version FROM _magaya_migrations ORDER BY version")
+    let rows = sqlx::query("SELECT version FROM _flowplane_migrations ORDER BY version")
         .fetch_all(pool)
         .await;
 
@@ -213,11 +216,11 @@ async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>>
         Err(sqlx::Error::Database(db_err))
             if db_err
                 .message()
-                .contains("no such table: _magaya_migrations") =>
+                .contains("no such table: _flowplane_migrations") =>
         {
             Ok(Vec::new())
         }
-        Err(e) => Err(MagayaError::database(
+        Err(e) => Err(FlowplaneError::database(
             e,
             "Failed to get applied migrations".to_string(),
         )),
@@ -227,12 +230,12 @@ async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>>
 /// Extract version number from migration filename
 fn extract_version_from_filename(filename: &str) -> Result<i64> {
     let version_str = filename.split('_').next().ok_or_else(|| {
-        MagayaError::validation(format!("Invalid migration filename: {}", filename))
+        FlowplaneError::validation(format!("Invalid migration filename: {}", filename))
     })?;
 
-    version_str
-        .parse::<i64>()
-        .map_err(|_| MagayaError::validation(format!("Invalid version in filename: {}", filename)))
+    version_str.parse::<i64>().map_err(|_| {
+        FlowplaneError::validation(format!("Invalid version in filename: {}", filename))
+    })
 }
 
 /// Calculate checksum for migration content
@@ -284,7 +287,7 @@ pub async fn get_migration_version(pool: &Pool<Sqlite>) -> Result<i64> {
 
 /// List all applied migrations
 pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<MigrationInfo>> {
-    let rows = sqlx::query("SELECT version, description, checksum, execution_time, installed_on FROM _magaya_migrations ORDER BY version")
+    let rows = sqlx::query("SELECT version, description, checksum, execution_time, installed_on FROM _flowplane_migrations ORDER BY version")
         .fetch_all(pool)
         .await;
 
@@ -305,11 +308,11 @@ pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<Migratio
         Err(sqlx::Error::Database(db_err))
             if db_err
                 .message()
-                .contains("no such table: _magaya_migrations") =>
+                .contains("no such table: _flowplane_migrations") =>
         {
             Ok(Vec::new())
         }
-        Err(e) => Err(MagayaError::database(
+        Err(e) => Err(FlowplaneError::database(
             e,
             "Failed to list applied migrations".to_string(),
         )),

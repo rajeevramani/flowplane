@@ -1,4 +1,4 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 
 /// Circuit breaker configuration validation
 pub fn validate_circuit_breaker_config(
@@ -9,7 +9,7 @@ pub fn validate_circuit_breaker_config(
 ) -> Result<()> {
     if let Some(max_conn) = max_connections {
         if max_conn == 0 || max_conn > 10000 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Max connections must be between 1 and 10000",
                 "max_connections",
             ));
@@ -18,7 +18,7 @@ pub fn validate_circuit_breaker_config(
 
     if let Some(max_pending) = max_pending_requests {
         if max_pending == 0 || max_pending > 10000 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Max pending requests must be between 1 and 10000",
                 "max_pending_requests",
             ));
@@ -27,7 +27,7 @@ pub fn validate_circuit_breaker_config(
 
     if let Some(max_req) = max_requests {
         if max_req == 0 || max_req > 10000 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Max requests must be between 1 and 10000",
                 "max_requests",
             ));
@@ -36,7 +36,7 @@ pub fn validate_circuit_breaker_config(
 
     if let Some(max_ret) = max_retries {
         if max_ret > 10 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Max retries must be 10 or less",
                 "max_retries",
             ));
@@ -56,12 +56,12 @@ pub fn validate_endpoint_weights(weights: &[Option<u32>]) -> Result<()> {
         match weight_opt {
             Some(weight) => {
                 if *weight == 0 {
-                    return Err(MagayaError::validation(
+                    return Err(FlowplaneError::validation(
                         "Endpoint weight must be greater than 0 when specified",
                     ));
                 }
                 if *weight > 1000 {
-                    return Err(MagayaError::validation(
+                    return Err(FlowplaneError::validation(
                         "Endpoint weight must be 1000 or less",
                     ));
                 }
@@ -75,13 +75,13 @@ pub fn validate_endpoint_weights(weights: &[Option<u32>]) -> Result<()> {
     }
 
     if has_weighted && has_unweighted {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Cannot mix weighted and unweighted endpoints in the same cluster",
         ));
     }
 
     if has_weighted && total_weight > 10000 {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Total endpoint weights exceed maximum of 10000",
         ));
     }
@@ -98,34 +98,34 @@ pub fn validate_health_check_config(
     path: &Option<String>,
 ) -> Result<()> {
     if timeout_seconds >= interval_seconds {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Health check timeout must be less than interval",
         ));
     }
 
     if timeout_seconds == 0 || timeout_seconds > 60 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Health check timeout must be between 1 and 60 seconds",
             "timeout",
         ));
     }
 
     if interval_seconds == 0 || interval_seconds > 300 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Health check interval must be between 1 and 300 seconds",
             "interval",
         ));
     }
 
     if healthy_threshold == 0 || healthy_threshold > 10 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Healthy threshold must be between 1 and 10",
             "healthy_threshold",
         ));
     }
 
     if unhealthy_threshold == 0 || unhealthy_threshold > 10 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Unhealthy threshold must be between 1 and 10",
             "unhealthy_threshold",
         ));
@@ -133,19 +133,19 @@ pub fn validate_health_check_config(
 
     if let Some(hc_path) = path {
         if !hc_path.starts_with('/') {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Health check path must start with '/'",
                 "path",
             ));
         }
         if hc_path.contains("..") {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Health check path cannot contain '..' (path traversal)",
                 "path",
             ));
         }
         if hc_path.len() > 200 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 "Health check path cannot exceed 200 characters",
                 "path",
             ));
@@ -160,7 +160,7 @@ pub fn validate_cluster_naming_rules(name: &str, existing_names: &[String]) -> R
     let reserved_prefixes = ["envoy.", "xds.", "internal.", "system."];
     for prefix in &reserved_prefixes {
         if name.starts_with(prefix) {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 format!("Cluster name cannot start with reserved prefix '{}'", prefix),
                 "name",
             ));
@@ -171,7 +171,7 @@ pub fn validate_cluster_naming_rules(name: &str, existing_names: &[String]) -> R
         .iter()
         .any(|existing| existing.eq_ignore_ascii_case(name))
     {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Cluster name conflicts with existing cluster (case-insensitive)",
             "name",
         ));

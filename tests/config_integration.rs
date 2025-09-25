@@ -3,7 +3,7 @@
 //! These tests validate that the configuration system properly reads
 //! environment variables and that the XDS server binds to the configured port.
 
-use magaya::{Config, Result};
+use flowplane::{Config, Result};
 use reserve_port::find_unused_port;
 use std::env;
 use std::net::TcpListener;
@@ -21,36 +21,36 @@ fn test_config_environment_integration() -> Result<()> {
     let _guard = ENV_MUTEX.lock().unwrap();
 
     // Save original values to restore later
-    let original_port = env::var("MAGAYA_XDS_PORT").ok();
-    let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
+    let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+    let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
 
     // Test with custom environment variables
-    env::set_var("MAGAYA_XDS_PORT", "18001");
-    env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
+    env::set_var("FLOWPLANE_XDS_PORT", "18001");
+    env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", "127.0.0.1");
 
     let config = Config::from_env()?;
     assert_eq!(config.xds.port, 18001);
     assert_eq!(config.xds.bind_address, "127.0.0.1");
 
     // Test with different port
-    env::set_var("MAGAYA_XDS_PORT", "19999");
+    env::set_var("FLOWPLANE_XDS_PORT", "19999");
     let config = Config::from_env()?;
     assert_eq!(config.xds.port, 19999);
     assert_eq!(config.xds.bind_address, "127.0.0.1");
 
     // Test with invalid port
-    env::set_var("MAGAYA_XDS_PORT", "invalid");
+    env::set_var("FLOWPLANE_XDS_PORT", "invalid");
     let result = Config::from_env();
     assert!(result.is_err());
 
     // Restore original environment
     match original_port {
-        Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-        None => env::remove_var("MAGAYA_XDS_PORT"),
+        Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+        None => env::remove_var("FLOWPLANE_XDS_PORT"),
     }
     match original_bind {
-        Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
-        None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+        Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+        None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
     }
 
     Ok(())
@@ -62,12 +62,12 @@ fn test_config_defaults_integration() -> Result<()> {
     let _guard = ENV_MUTEX.lock().unwrap();
 
     // Save original values
-    let original_port = env::var("MAGAYA_XDS_PORT").ok();
-    let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
+    let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+    let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
 
     // Remove environment variables
-    env::remove_var("MAGAYA_XDS_PORT");
-    env::remove_var("MAGAYA_XDS_BIND_ADDRESS");
+    env::remove_var("FLOWPLANE_XDS_PORT");
+    env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS");
 
     let config = Config::from_env()?;
     assert_eq!(config.xds.port, 18000);
@@ -75,12 +75,12 @@ fn test_config_defaults_integration() -> Result<()> {
 
     // Restore original environment
     match original_port {
-        Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-        None => env::remove_var("MAGAYA_XDS_PORT"),
+        Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+        None => env::remove_var("FLOWPLANE_XDS_PORT"),
     }
     match original_bind {
-        Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
-        None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+        Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+        None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
     }
 
     Ok(())
@@ -122,12 +122,12 @@ async fn test_xds_server_binds_to_configured_port() -> Result<()> {
     };
 
     // Save original environment
-    let original_port = env::var("MAGAYA_XDS_PORT").ok();
-    let original_bind = env::var("MAGAYA_XDS_BIND_ADDRESS").ok();
+    let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+    let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
 
     // Set test environment
-    env::set_var("MAGAYA_XDS_PORT", test_port.to_string());
-    env::set_var("MAGAYA_XDS_BIND_ADDRESS", "127.0.0.1");
+    env::set_var("FLOWPLANE_XDS_PORT", test_port.to_string());
+    env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", "127.0.0.1");
 
     let config = Config::from_env()?;
     assert_eq!(config.xds.port, test_port);
@@ -139,19 +139,19 @@ async fn test_xds_server_binds_to_configured_port() -> Result<()> {
 
     // Test that the server starts and binds to the correct port
     let server_task =
-        magaya::xds::start_minimal_xds_server_with_config(config.xds, shutdown_signal);
+        flowplane::xds::start_minimal_xds_server_with_config(config.xds, shutdown_signal);
 
     // The server should start and then shutdown cleanly within a reasonable time
     let result = timeout(Duration::from_secs(5), server_task).await;
 
     // Restore original environment
     match original_port {
-        Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-        None => env::remove_var("MAGAYA_XDS_PORT"),
+        Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+        None => env::remove_var("FLOWPLANE_XDS_PORT"),
     }
     match original_bind {
-        Some(bind) => env::set_var("MAGAYA_XDS_BIND_ADDRESS", bind),
-        None => env::remove_var("MAGAYA_XDS_BIND_ADDRESS"),
+        Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+        None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
     }
 
     // Verify the server completed without timeout
@@ -173,13 +173,13 @@ fn test_invalid_config_handling() {
     let _guard = ENV_MUTEX.lock().unwrap();
 
     // Save original values
-    let original_port = env::var("MAGAYA_XDS_PORT").ok();
+    let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
 
     // Test invalid port values
     let invalid_ports = vec!["", "abc", "-1", "99999", "0"];
 
     for invalid_port in invalid_ports {
-        env::set_var("MAGAYA_XDS_PORT", invalid_port);
+        env::set_var("FLOWPLANE_XDS_PORT", invalid_port);
         let result = Config::from_env();
         assert!(
             result.is_err(),
@@ -190,7 +190,7 @@ fn test_invalid_config_handling() {
 
     // Restore original environment
     match original_port {
-        Some(port) => env::set_var("MAGAYA_XDS_PORT", port),
-        None => env::remove_var("MAGAYA_XDS_PORT"),
+        Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+        None => env::remove_var("FLOWPLANE_XDS_PORT"),
     }
 }

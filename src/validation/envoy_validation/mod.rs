@@ -9,13 +9,13 @@ pub use cluster::validate_envoy_cluster;
 pub use listener::validate_envoy_listener;
 pub use route::validate_envoy_route_configuration;
 
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 use prost::Message;
 
 /// Convenience function to validate any envoy-types `Message` via encoding.
 pub fn validate_envoy_message<T: Message>(message: &T) -> Result<()> {
     if message.encode_to_vec().is_empty() {
-        Err(MagayaError::validation(
+        Err(FlowplaneError::validation(
             "Invalid configuration: failed envoy-types encoding",
         ))
     } else {

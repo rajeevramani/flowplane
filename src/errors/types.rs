@@ -1,15 +1,15 @@
 //! # Error Types
 //!
-//! Comprehensive error types for the Magaya control plane using `thiserror`.
+//! Comprehensive error types for the Flowplane control plane using `thiserror`.
 
 use std::fmt;
 
-/// Custom result type for Magaya operations
-pub type Result<T> = std::result::Result<T, MagayaError>;
+/// Custom result type for Flowplane operations
+pub type Result<T> = std::result::Result<T, FlowplaneError>;
 
-/// Main error type for the Magaya control plane
+/// Main error type for the Flowplane control plane
 #[derive(thiserror::Error, Debug)]
-pub enum MagayaError {
+pub enum FlowplaneError {
     /// Configuration errors
     #[error("Configuration error: {message}")]
     Config {
@@ -129,7 +129,7 @@ impl fmt::Display for AuthErrorType {
     }
 }
 
-impl MagayaError {
+impl FlowplaneError {
     /// Create a new configuration error
     pub fn config<S: Into<String>>(message: S) -> Self {
         Self::Config {
@@ -240,13 +240,13 @@ impl MagayaError {
     /// Add context to an error (used by ErrorContext trait)
     pub(crate) fn add_context(&mut self, context: String) {
         match self {
-            MagayaError::Io { context: ref mut ctx, .. } => {
+            FlowplaneError::Io { context: ref mut ctx, .. } => {
                 *ctx = format!("{}: {}", context, ctx);
             }
-            MagayaError::Database { context: ref mut ctx, .. } => {
+            FlowplaneError::Database { context: ref mut ctx, .. } => {
                 *ctx = format!("{}: {}", context, ctx);
             }
-            MagayaError::Serialization { context: ref mut ctx, .. } => {
+            FlowplaneError::Serialization { context: ref mut ctx, .. } => {
                 *ctx = format!("{}: {}", context, ctx);
             }
             _ => {
@@ -259,36 +259,36 @@ impl MagayaError {
     /// Get the HTTP status code that should be returned for this error
     pub fn status_code(&self) -> u16 {
         match self {
-            MagayaError::Config { .. } => 500,
-            MagayaError::Database { .. } => 500,
-            MagayaError::Io { .. } => 500,
-            MagayaError::Serialization { .. } => 400,
-            MagayaError::Validation { .. } => 400,
-            MagayaError::Auth { .. } => 401,
-            MagayaError::Xds { .. } => 500,
-            MagayaError::Http { status, .. } => *status,
-            MagayaError::Internal { .. } => 500,
-            MagayaError::NotFound { .. } => 404,
-            MagayaError::Conflict { .. } => 409,
-            MagayaError::RateLimit { .. } => 429,
-            MagayaError::Timeout { .. } => 408,
+            FlowplaneError::Config { .. } => 500,
+            FlowplaneError::Database { .. } => 500,
+            FlowplaneError::Io { .. } => 500,
+            FlowplaneError::Serialization { .. } => 400,
+            FlowplaneError::Validation { .. } => 400,
+            FlowplaneError::Auth { .. } => 401,
+            FlowplaneError::Xds { .. } => 500,
+            FlowplaneError::Http { status, .. } => *status,
+            FlowplaneError::Internal { .. } => 500,
+            FlowplaneError::NotFound { .. } => 404,
+            FlowplaneError::Conflict { .. } => 409,
+            FlowplaneError::RateLimit { .. } => 429,
+            FlowplaneError::Timeout { .. } => 408,
         }
     }
 
     /// Check if this error should be retried
     pub fn is_retryable(&self) -> bool {
         match self {
-            MagayaError::Database { .. } => true,
-            MagayaError::Io { .. } => true,
-            MagayaError::Timeout { .. } => true,
-            MagayaError::RateLimit { .. } => true,
+            FlowplaneError::Database { .. } => true,
+            FlowplaneError::Io { .. } => true,
+            FlowplaneError::Timeout { .. } => true,
+            FlowplaneError::RateLimit { .. } => true,
             _ => false,
         }
     }
 }
 
 // Error conversions for common external error types
-impl From<sqlx::Error> for MagayaError {
+impl From<sqlx::Error> for FlowplaneError {
     fn from(error: sqlx::Error) -> Self {
         Self::Database {
             source: error,
@@ -297,7 +297,7 @@ impl From<sqlx::Error> for MagayaError {
     }
 }
 
-impl From<std::io::Error> for MagayaError {
+impl From<std::io::Error> for FlowplaneError {
     fn from(error: std::io::Error) -> Self {
         Self::Io {
             source: error,
@@ -306,7 +306,7 @@ impl From<std::io::Error> for MagayaError {
     }
 }
 
-impl From<serde_json::Error> for MagayaError {
+impl From<serde_json::Error> for FlowplaneError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization {
             source: error,
@@ -315,13 +315,13 @@ impl From<serde_json::Error> for MagayaError {
     }
 }
 
-impl From<config::ConfigError> for MagayaError {
+impl From<config::ConfigError> for FlowplaneError {
     fn from(error: config::ConfigError) -> Self {
         Self::config_with_source("Configuration loading failed", Box::new(error))
     }
 }
 
-impl From<validator::ValidationErrors> for MagayaError {
+impl From<validator::ValidationErrors> for FlowplaneError {
     fn from(errors: validator::ValidationErrors) -> Self {
         let message = errors
             .field_errors()
@@ -346,56 +346,56 @@ mod tests {
 
     #[test]
     fn test_error_creation() {
-        let error = MagayaError::config("Test configuration error");
-        assert!(matches!(error, MagayaError::Config { .. }));
+        let error = FlowplaneError::config("Test configuration error");
+        assert!(matches!(error, FlowplaneError::Config { .. }));
         assert_eq!(error.to_string(), "Configuration error: Test configuration error");
     }
 
     #[test]
     fn test_validation_error() {
-        let error = MagayaError::validation_field("Invalid email format", "email");
-        assert!(matches!(error, MagayaError::Validation { .. }));
-        if let MagayaError::Validation { field, .. } = error {
+        let error = FlowplaneError::validation_field("Invalid email format", "email");
+        assert!(matches!(error, FlowplaneError::Validation { .. }));
+        if let FlowplaneError::Validation { field, .. } = error {
             assert_eq!(field, Some("email".to_string()));
         }
     }
 
     #[test]
     fn test_auth_error() {
-        let error = MagayaError::auth("Invalid token", AuthErrorType::InvalidToken);
-        assert!(matches!(error, MagayaError::Auth { .. }));
-        if let MagayaError::Auth { error_type, .. } = error {
+        let error = FlowplaneError::auth("Invalid token", AuthErrorType::InvalidToken);
+        assert!(matches!(error, FlowplaneError::Auth { .. }));
+        if let FlowplaneError::Auth { error_type, .. } = error {
             assert_eq!(error_type, AuthErrorType::InvalidToken);
         }
     }
 
     #[test]
     fn test_status_codes() {
-        assert_eq!(MagayaError::validation("test").status_code(), 400);
-        assert_eq!(MagayaError::auth("test", AuthErrorType::InvalidToken).status_code(), 401);
-        assert_eq!(MagayaError::not_found("cluster", "test").status_code(), 404);
-        assert_eq!(MagayaError::conflict("test", "cluster").status_code(), 409);
-        assert_eq!(MagayaError::rate_limit("test").status_code(), 429);
-        assert_eq!(MagayaError::internal("test").status_code(), 500);
+        assert_eq!(FlowplaneError::validation("test").status_code(), 400);
+        assert_eq!(FlowplaneError::auth("test", AuthErrorType::InvalidToken).status_code(), 401);
+        assert_eq!(FlowplaneError::not_found("cluster", "test").status_code(), 404);
+        assert_eq!(FlowplaneError::conflict("test", "cluster").status_code(), 409);
+        assert_eq!(FlowplaneError::rate_limit("test").status_code(), 429);
+        assert_eq!(FlowplaneError::internal("test").status_code(), 500);
     }
 
     #[test]
     fn test_retryable_errors() {
-        assert!(MagayaError::timeout("test", 1000).is_retryable());
-        assert!(MagayaError::rate_limit("test").is_retryable());
-        assert!(!MagayaError::validation("test").is_retryable());
-        assert!(!MagayaError::not_found("cluster", "test").is_retryable());
+        assert!(FlowplaneError::timeout("test", 1000).is_retryable());
+        assert!(FlowplaneError::rate_limit("test").is_retryable());
+        assert!(!FlowplaneError::validation("test").is_retryable());
+        assert!(!FlowplaneError::not_found("cluster", "test").is_retryable());
     }
 
     #[test]
     fn test_error_conversions() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let magaya_error: MagayaError = io_error.into();
-        assert!(matches!(magaya_error, MagayaError::Io { .. }));
+        let flowplane_error: FlowplaneError = io_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Io { .. }));
 
         let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
-        let magaya_error: MagayaError = json_error.into();
-        assert!(matches!(magaya_error, MagayaError::Serialization { .. }));
+        let flowplane_error: FlowplaneError = json_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Serialization { .. }));
     }
 
     #[test]
