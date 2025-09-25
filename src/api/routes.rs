@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 
 use crate::xds::XdsState;
 
 use super::{
     docs,
+    gateway_handlers::create_gateway_from_openapi_handler,
     handlers::{
         create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
         update_cluster_handler,
@@ -60,6 +64,10 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
             get(get_listener_handler)
                 .put(update_listener_handler)
                 .delete(delete_listener_handler),
+        )
+        .route(
+            "/api/v1/gateways/openapi",
+            post(create_gateway_from_openapi_handler),
         )
         .with_state(api_state);
 

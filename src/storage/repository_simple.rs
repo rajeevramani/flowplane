@@ -414,6 +414,22 @@ impl ClusterRepository {
         Ok(count > 0)
     }
 
+    pub async fn delete_by_name(&self, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM clusters WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, cluster_name = %name, "Failed to delete cluster by name");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to delete cluster '{}'", name),
+                }
+            })?;
+
+        Ok(())
+    }
+
     /// Get cluster count
     pub async fn count(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clusters")
@@ -639,6 +655,22 @@ impl ListenerRepository {
         Ok(())
     }
 
+    pub async fn delete_by_name(&self, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM listeners WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, listener_name = %name, "Failed to delete listener by name");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to delete listener '{}'", name),
+                }
+            })?;
+
+        Ok(())
+    }
+
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
             .bind(name)
@@ -770,6 +802,24 @@ impl RouteRepository {
         }
     }
 
+    pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
+        let count = sqlx::query_scalar::<Sqlite, i64>(
+            "SELECT COUNT(*) FROM routes WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_name = %name, "Failed to check route existence");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to check existence of route '{}'", name),
+            }
+        })?;
+
+        Ok(count > 0)
+    }
+
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<RouteData>> {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
@@ -862,6 +912,22 @@ impl RouteRepository {
         }
 
         tracing::info!(route_id = %id, route_name = %route.name, "Deleted route");
+
+        Ok(())
+    }
+
+    pub async fn delete_by_name(&self, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM routes WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, route_name = %name, "Failed to delete route by name");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to delete route '{}'", name),
+                }
+            })?;
 
         Ok(())
     }

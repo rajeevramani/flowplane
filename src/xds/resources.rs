@@ -42,6 +42,23 @@ pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
 
+fn strip_gateway_tags(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("flowplaneGateway");
+            for child in map.values_mut() {
+                strip_gateway_tags(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_gateway_tags(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Wrapper for a built Envoy resource along with its name.
 #[derive(Clone, Debug)]
 pub struct BuiltResource {
@@ -169,12 +186,14 @@ pub fn routes_from_database_entries(
     let mut built = Vec::with_capacity(routes.len());
 
     for route_row in routes {
-        let value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
+        let mut value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
             Error::internal(format!(
                 "Failed to parse stored route configuration for '{}': {}",
                 route_row.name, err
             ))
         })?;
+
+        strip_gateway_tags(&mut value);
 
         let route_config: RouteConfig = serde_json::from_value(value).map_err(|err| {
             Error::internal(format!(
@@ -289,9 +308,18 @@ pub fn listeners_from_database_entries(
     let mut resources = Vec::with_capacity(entries.len());
 
     for entry in entries {
-        let config: ListenerConfig = serde_json::from_str(&entry.configuration).map_err(|err| {
+        let mut value: Value = serde_json::from_str(&entry.configuration).map_err(|err| {
             Error::internal(format!(
                 "Failed to parse stored listener configuration for '{}': {}",
+                entry.name, err
+            ))
+        })?;
+
+        strip_gateway_tags(&mut value);
+
+        let config: ListenerConfig = serde_json::from_value(value).map_err(|err| {
+            Error::internal(format!(
+                "Failed to deserialize listener configuration for '{}': {}",
                 entry.name, err
             ))
         })?;
@@ -835,6 +863,7 @@ mod tests {
     use envoy_types::pb::envoy::config::cluster::v3::cluster::LbConfig;
     use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext;
     use prost::Message;
+    use serde_json::json;
 
     fn decode_tls_context(cluster: &Cluster) -> UpstreamTlsContext {
         let transport_socket = cluster.transport_socket.as_ref().expect("transport socket");
@@ -1077,5 +1106,43 @@ mod tests {
         assert_eq!(built[0].name, "test-listener");
         assert_eq!(built[0].resource.type_url, LISTENER_TYPE_URL);
         assert!(!built[0].resource.value.is_empty());
+    }
+
+    fn contains_gateway_tag(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("flowplaneGateway") {
+                    return true;
+                }
+                map.values().any(contains_gateway_tag)
+            }
+            Value::Array(items) => items.iter().any(contains_gateway_tag),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn strip_gateway_tags_removes_tags_recursively() {
+        let mut value = json!({
+            "flowplaneGateway": "example",
+            "Template": {
+                "flowplaneGateway": "example",
+                "child": {
+                    "flowplaneGateway": "example"
+                }
+            },
+            "array": [
+                {
+                    "flowplaneGateway": "example",
+                    "Cluster": {
+                        "flowplaneGateway": "example"
+                    }
+                }
+            ]
+        });
+
+        strip_gateway_tags(&mut value);
+
+        assert!(!contains_gateway_tag(&value));
     }
 }
