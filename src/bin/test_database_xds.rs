@@ -6,7 +6,7 @@
 //! 3. Basic repository operations
 //! 4. XDS resource generation from database
 
-use magaya::{
+use flowplane::{
     config::{DatabaseConfig, SimpleXdsConfig, XdsResourceConfig},
     storage::{create_pool, ClusterRepository, CreateClusterRequest},
     xds::start_database_xds_server_with_config,

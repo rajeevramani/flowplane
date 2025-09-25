@@ -3,7 +3,7 @@
 //! Provides database connection pool creation and management utilities.
 
 use crate::config::DatabaseConfig;
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
     Pool, Sqlite,
@@ -34,7 +34,7 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
 
     let pool = if config.is_sqlite() {
         let connect_options = SqliteConnectOptions::from_str(&config.url)
-            .map_err(|e| MagayaError::Database {
+            .map_err(|e| FlowplaneError::Database {
                 source: e,
                 context: format!(
                     "Invalid SQLite connection string: {}",
@@ -55,7 +55,7 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
                     busy_timeout_ms = SQLITE_BUSY_TIMEOUT.as_millis(),
                     "Failed to create SQLite database pool"
                 );
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!(
                         "Failed to connect to database: {}",
@@ -66,7 +66,7 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
     } else {
         pool_options.connect(&config.url).await.map_err(|e| {
             tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!(
                     "Failed to connect to database: {}",
@@ -101,24 +101,24 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
 /// Validate database configuration
 fn validate_config(config: &DatabaseConfig) -> Result<()> {
     if config.max_connections == 0 {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "max_connections must be greater than 0",
         ));
     }
 
     if config.min_connections > config.max_connections {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "min_connections cannot be greater than max_connections",
         ));
     }
 
     if config.url.is_empty() {
-        return Err(MagayaError::validation("database URL cannot be empty"));
+        return Err(FlowplaneError::validation("database URL cannot be empty"));
     }
 
     // Validate URL format
     if !config.url.starts_with("sqlite://") && !config.url.starts_with("postgresql://") {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "database URL must start with 'sqlite://' or 'postgresql://'",
         ));
     }

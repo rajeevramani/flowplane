@@ -1,9 +1,9 @@
 #!/bin/bash
-# Checkpoint Validation Script for Magaya Control Plane
+# Checkpoint Validation Script for Flowplane Control Plane
 
 set -e
 
-echo "🔍 Running Magaya Checkpoint Validation..."
+echo "🔍 Running Flowplane Checkpoint Validation..."
 echo "==============================================="
 
 # Change to project directory

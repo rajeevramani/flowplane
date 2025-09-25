@@ -1,32 +1,32 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 
 use super::helpers::is_valid_address_format;
 
 /// Validate listener port and address constraints
 pub fn validate_listener_address_port(address: &str, port: u32) -> Result<()> {
     if address.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Listener address cannot be empty",
             "address",
         ));
     }
 
     if port == 0 || port > 65535 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Listener port must be between 1 and 65535",
             "port",
         ));
     }
 
     if port < 1024 {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Ports below 1024 are reserved and cannot be used",
             "port",
         ));
     }
 
     if !is_valid_address_format(address) {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Invalid address format",
             "address",
         ));

@@ -1,4 +1,4 @@
-//! Business-specific validation rules for Magaya control plane resources.
+//! Business-specific validation rules for Flowplane control plane resources.
 
 mod cluster;
 mod helpers;

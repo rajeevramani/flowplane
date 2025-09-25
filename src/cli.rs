@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 use std::process;
 
 #[derive(Parser)]
-#[command(name = "magaya")]
-#[command(about = "Magaya Envoy Control Plane")]
+#[command(name = "flowplane")]
+#[command(about = "Flowplane Envoy Control Plane")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 pub struct Cli {
     #[command(subcommand)]
@@ -100,7 +100,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
             tracing::info!(
                 addr = %addr,
                 port = port,
-                "Starting Magaya control plane server"
+                "Starting Flowplane control plane server"
             );
 
             // Start the server (this would be implemented in your main server module)
@@ -113,7 +113,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
 
         None => {
             // Default action - start the server
-            tracing::info!("Starting Magaya control plane server with default configuration");
+            tracing::info!("Starting Flowplane control plane server with default configuration");
             crate::run_server(config, "127.0.0.1:8080").await?;
         }
     }
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_cli_parsing() {
-        let cli = Cli::try_parse_from(&["magaya", "database", "status"]).unwrap();
+        let cli = Cli::try_parse_from(&["flowplane", "database", "status"]).unwrap();
 
         match cli.command {
             Some(Commands::Database { command: DatabaseCommands::Status }) => {

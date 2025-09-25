@@ -3,7 +3,7 @@
 //! Provides repository implementations using runtime queries with structured types
 //! for development velocity while maintaining type safety.
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
@@ -198,8 +198,9 @@ impl ClusterRepository {
     /// Create a new cluster
     pub async fn create(&self, request: CreateClusterRequest) -> Result<ClusterData> {
         let id = Uuid::new_v4().to_string();
-        let configuration_json = serde_json::to_string(&request.configuration)
-            .map_err(|e| MagayaError::validation(format!("Invalid configuration JSON: {}", e)))?;
+        let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
+            FlowplaneError::validation(format!("Invalid configuration JSON: {}", e))
+        })?;
         let now = chrono::Utc::now();
 
         // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
@@ -216,14 +217,14 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %request.name, "Failed to create cluster");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to create cluster '{}'", request.name),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::validation("Failed to create cluster"));
+            return Err(FlowplaneError::validation("Failed to create cluster"));
         }
 
         tracing::info!(
@@ -247,7 +248,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_id = %id, "Failed to get cluster by ID");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get cluster with ID '{}'", id),
             }
@@ -255,7 +256,7 @@ impl ClusterRepository {
 
         match row {
             Some(row) => Ok(ClusterData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Cluster with ID '{}' not found",
                 id
             ))),
@@ -272,7 +273,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %name, "Failed to get cluster by name");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get cluster with name '{}'", name),
             }
@@ -280,7 +281,7 @@ impl ClusterRepository {
 
         match row {
             Some(row) => Ok(ClusterData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Cluster with name '{}' not found",
                 name
             ))),
@@ -301,7 +302,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to list clusters");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: "Failed to list clusters".to_string(),
             }
@@ -318,7 +319,7 @@ impl ClusterRepository {
         let new_service_name = request.service_name.unwrap_or(current.service_name);
         let new_configuration = if let Some(config) = request.configuration {
             serde_json::to_string(&config).map_err(|e| {
-                MagayaError::validation(format!("Invalid configuration JSON: {}", e))
+                FlowplaneError::validation(format!("Invalid configuration JSON: {}", e))
             })?
         } else {
             current.configuration
@@ -339,14 +340,14 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_id = %id, "Failed to update cluster");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to update cluster with ID '{}'", id),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Cluster with ID '{}' not found",
                 id
             )));
@@ -374,14 +375,14 @@ impl ClusterRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, cluster_id = %id, "Failed to delete cluster");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!("Failed to delete cluster with ID '{}'", id),
                 }
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Cluster with ID '{}' not found",
                 id
             )));
@@ -404,7 +405,7 @@ impl ClusterRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, cluster_name = %name, "Failed to check cluster existence");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!("Failed to check existence of cluster '{}'", name),
                 }
@@ -420,7 +421,7 @@ impl ClusterRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "Failed to get cluster count");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: "Failed to get cluster count".to_string(),
                 }
@@ -449,7 +450,7 @@ impl ListenerRepository {
     pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
         let id = Uuid::new_v4().to_string();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
-            MagayaError::validation(format!("Invalid listener configuration JSON: {}", e))
+            FlowplaneError::validation(format!("Invalid listener configuration JSON: {}", e))
         })?;
         let now = chrono::Utc::now();
         let protocol = request.protocol.unwrap_or_else(|| "HTTP".to_string());
@@ -469,14 +470,14 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, listener_name = %request.name, "Failed to create listener");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to create listener '{}'", request.name),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::validation("Failed to create listener"));
+            return Err(FlowplaneError::validation("Failed to create listener"));
         }
 
         tracing::info!(listener_id = %id, listener_name = %request.name, "Created new listener");
@@ -493,7 +494,7 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, listener_id = %id, "Failed to get listener by ID");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get listener with ID '{}'", id),
             }
@@ -501,7 +502,7 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Listener with ID '{}' not found",
                 id
             ))),
@@ -517,7 +518,7 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, listener_name = %name, "Failed to get listener by name");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get listener with name '{}'", name),
             }
@@ -525,7 +526,7 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Listener with name '{}' not found",
                 name
             ))),
@@ -545,7 +546,7 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to list listeners");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: "Failed to list listeners".to_string(),
             }
@@ -570,7 +571,7 @@ impl ListenerRepository {
         let new_protocol = request.protocol.unwrap_or(current_protocol);
         let new_configuration = if let Some(config) = request.configuration {
             serde_json::to_string(&config).map_err(|e| {
-                MagayaError::validation(format!("Invalid listener configuration JSON: {}", e))
+                FlowplaneError::validation(format!("Invalid listener configuration JSON: {}", e))
             })?
         } else {
             current_configuration
@@ -593,14 +594,14 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, listener_id = %id, "Failed to update listener");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to update listener with ID '{}'", id),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Listener with ID '{}' not found",
                 id
             )));
@@ -620,14 +621,14 @@ impl ListenerRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, listener_id = %id, "Failed to delete listener");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!("Failed to delete listener with ID '{}'", id),
                 }
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Listener with ID '{}' not found",
                 id
             )));
@@ -645,7 +646,7 @@ impl ListenerRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, listener_name = %name, "Failed to check listener existence");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!("Failed to check existence of listener '{}'", name),
                 }
@@ -660,7 +661,7 @@ impl ListenerRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "Failed to get listener count");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: "Failed to get listener count".to_string(),
                 }
@@ -688,7 +689,7 @@ impl RouteRepository {
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
         let id = Uuid::new_v4().to_string();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
-            MagayaError::validation(format!("Invalid route configuration JSON: {}", e))
+            FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
         })?;
         let now = chrono::Utc::now();
 
@@ -706,14 +707,14 @@ impl RouteRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, route_name = %request.name, "Failed to create route");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to create route '{}'", request.name),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::validation("Failed to create route"));
+            return Err(FlowplaneError::validation("Failed to create route"));
         }
 
         tracing::info!(route_id = %id, route_name = %request.name, "Created new route");
@@ -730,7 +731,7 @@ impl RouteRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, route_id = %id, "Failed to get route by ID");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get route with ID '{}'", id),
             }
@@ -738,7 +739,7 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Route with ID '{}' not found",
                 id
             ))),
@@ -754,7 +755,7 @@ impl RouteRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, route_name = %name, "Failed to get route by name");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get route with name '{}'", name),
             }
@@ -762,7 +763,7 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(MagayaError::not_found(format!(
+            None => Err(FlowplaneError::not_found(format!(
                 "Route with name '{}' not found",
                 name
             ))),
@@ -782,7 +783,7 @@ impl RouteRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to list routes");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: "Failed to list routes".to_string(),
             }
@@ -798,7 +799,7 @@ impl RouteRepository {
         let new_cluster_name = request.cluster_name.unwrap_or(current.cluster_name);
         let new_configuration = if let Some(config) = request.configuration {
             serde_json::to_string(&config).map_err(|e| {
-                MagayaError::validation(format!("Invalid route configuration JSON: {}", e))
+                FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
             })?
         } else {
             current.configuration
@@ -820,14 +821,14 @@ impl RouteRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, route_id = %id, "Failed to update route");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to update route with ID '{}'", id),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Route with ID '{}' not found",
                 id
             )));
@@ -847,14 +848,14 @@ impl RouteRepository {
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, route_id = %id, "Failed to delete route");
-                MagayaError::Database {
+                FlowplaneError::Database {
                     source: e,
                     context: format!("Failed to delete route with ID '{}'", id),
                 }
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!(
+            return Err(FlowplaneError::not_found(format!(
                 "Route with ID '{}' not found",
                 id
             )));

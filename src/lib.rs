@@ -1,9 +1,9 @@
-//! # Magaya
+//! # Flowplane
 //!
-//! Magaya (mägaya rom - "still/quiet" in Gupapuyngu) is an infrastructure-agnostic
-//! Envoy proxy control plane that provides RESTful interfaces for Envoy configuration
-//! management, with planned extensions for A2A (Agent-to-Agent) protocols and MCP
-//! (Model Context Protocol) integration.
+//! Flowplane is an infrastructure-agnostic Envoy proxy control plane inspired by the
+//! Sanskrit word *Pravāha* (प्रवाह), meaning "stream" or "steady flow." It provides
+//! RESTful interfaces for Envoy configuration management, with planned extensions for
+//! A2A (Agent-to-Agent) protocols and MCP (Model Context Protocol) integration.
 //!
 //! ## Architecture
 //!
@@ -19,8 +19,8 @@
 //!
 //! - **xDS Server**: Tonic-based gRPC server implementing Envoy discovery protocols
 //! - **Configuration Manager**: Translates REST API calls to Envoy xDS configurations
-//! - **REST API Gateway**: Axum-based HTTP server for configuration management (planned)
-//! - **Persistence Layer**: SQLx with PostgreSQL for configuration storage (planned)
+//! - **REST API Gateway**: Axum-based HTTP server for configuration management
+//! - **Persistence Layer**: SQLx repositories (SQLite by default, PostgreSQL planned)
 
 pub mod api;
 pub mod config;
@@ -31,7 +31,7 @@ pub mod xds;
 
 // Re-export commonly used types and traits
 pub use config::Config;
-pub use errors::{Error, MagayaError, Result};
+pub use errors::{Error, FlowplaneError, Result};
 
 /// Application version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -46,6 +46,6 @@ mod tests {
     #[test]
     fn test_version_available() {
         assert!(!VERSION.is_empty());
-        assert_eq!(APP_NAME, "magaya");
+        assert_eq!(APP_NAME, "flowplane");
     }
 }

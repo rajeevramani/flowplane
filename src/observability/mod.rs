@@ -1,6 +1,6 @@
 //! # Observability Infrastructure
 //!
-//! This module provides comprehensive observability for the Magaya control plane,
+//! This module provides comprehensive observability for the Flowplane control plane,
 //! including structured logging, distributed tracing, metrics collection, and
 //! health checking.
 

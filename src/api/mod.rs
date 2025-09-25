@@ -1,4 +1,4 @@
-//! HTTP API facade for the Magaya control plane.
+//! HTTP API facade for the Flowplane control plane.
 //!
 //! This module wires together the API router, handlers, and server boot logic.
 
