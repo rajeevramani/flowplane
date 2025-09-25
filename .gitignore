@@ -60,5 +60,8 @@ data/
 flowplane.db-shm
 flowplane.db-wal
 
+test_flowplane.db-shm
+test_flowplane.db-wal
+
 bruno/
 
