@@ -35,6 +35,18 @@ Follow the [step-by-step guide](docs/getting-started.md) to:
 
 Each step includes `curl` examples and the JSON payloads the API expects.
 
+### Bootstrap From OpenAPI
+If you already have an OpenAPI 3.0 spec, Flowplane can generate clusters, routes, and a listener in one call:
+
+```bash
+curl -sS \
+  -X POST "http://127.0.0.1:8080/api/v1/gateways/openapi?name=example" \
+  -H 'Content-Type: application/json' \
+  --data-binary @openapi.json
+```
+
+The endpoint accepts either JSON or YAML documents. Flowplane derives upstream clusters from the spec’s `servers` section, builds route matches from `paths`, and publishes a listener on the port you choose (override with `address` / `port` query parameters).
+
 ### Rate Limiting at a Glance
 Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
 

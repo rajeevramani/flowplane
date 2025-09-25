@@ -28,7 +28,8 @@ use crate::xds::{
         crate::api::listener_handlers::list_listeners_handler,
         crate::api::listener_handlers::get_listener_handler,
         crate::api::listener_handlers::update_listener_handler,
-        crate::api::listener_handlers::delete_listener_handler
+        crate::api::listener_handlers::delete_listener_handler,
+        crate::api::gateway_handlers::create_gateway_from_openapi_handler
     ),
     components(
         schemas(
@@ -55,12 +56,16 @@ use crate::xds::{
             crate::api::route_handlers::RouteResponse,
             crate::api::listener_handlers::ListenerResponse,
             crate::api::listener_handlers::CreateListenerBody,
-            crate::api::listener_handlers::UpdateListenerBody
+            crate::api::listener_handlers::UpdateListenerBody,
+            crate::api::gateway_handlers::GatewayQuery,
+            crate::api::gateway_handlers::OpenApiSpecBody,
+            crate::openapi::GatewaySummary
         )
     ),
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
-        (name = "listeners", description = "Operations for managing Envoy listeners")
+        (name = "listeners", description = "Operations for managing Envoy listeners"),
+        (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications")
     )
 )]
 pub struct ApiDoc;

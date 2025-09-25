@@ -25,6 +25,7 @@
 pub mod api;
 pub mod config;
 pub mod errors;
+pub mod openapi;
 pub mod storage;
 pub mod utils;
 pub mod xds;
