@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Magaya Release Script
+# Flowplane Release Script
 # Usage: ./scripts/release.sh [patch|minor|major]
 
 RELEASE_TYPE="${1:-patch}"

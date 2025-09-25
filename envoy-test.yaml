@@ -1,11 +1,11 @@
 ---
-# Envoy configuration for testing Magaya XDS server
+# Envoy configuration for testing Flowplane XDS server
 # This configuration uses ADS (Aggregated Discovery Service) to get all resources from our control plane
 
 node:
   # Unique identifier for this Envoy instance
-  id: "magaya-test-envoy"
-  cluster: "magaya-test-cluster"
+  id: "flowplane-test-envoy"
+  cluster: "flowplane-test-cluster"
 
 dynamic_resources:
   # Use ADS for all dynamic resource discovery
@@ -14,7 +14,7 @@ dynamic_resources:
     transport_api_version: V3
     grpc_services:
       - envoy_grpc:
-          cluster_name: magaya_xds_cluster
+          cluster_name: flowplane_xds_cluster
   cds_config:
     ads: {}
     resource_api_version: V3
@@ -25,13 +25,13 @@ dynamic_resources:
 static_resources:
   # Static cluster definition for connecting to our XDS server
   clusters:
-  - name: magaya_xds_cluster
+  - name: flowplane_xds_cluster
     type: STRICT_DNS
     connect_timeout: 5s
     lb_policy: ROUND_ROBIN
     http2_protocol_options: {}
     load_assignment:
-      cluster_name: magaya_xds_cluster
+      cluster_name: flowplane_xds_cluster
       endpoints:
       - lb_endpoints:
         - endpoint:

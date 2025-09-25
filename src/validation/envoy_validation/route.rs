@@ -1,4 +1,4 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::route::v3::{
     route::Action as RouteActionEnum, route_match::PathSpecifier, Route, RouteAction, RouteConfiguration,
     RouteMatch, VirtualHost,
@@ -10,14 +10,14 @@ pub fn validate_envoy_route_configuration(route_config: &RouteConfiguration) -> 
     encode_check(route_config, "Invalid route configuration")?;
 
     if route_config.name.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Route configuration name cannot be empty",
             "name",
         ));
     }
 
     if route_config.virtual_hosts.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "At least one virtual host is required",
             "virtual_hosts",
         ));
@@ -25,7 +25,7 @@ pub fn validate_envoy_route_configuration(route_config: &RouteConfiguration) -> 
 
     for (index, vhost) in route_config.virtual_hosts.iter().enumerate() {
         validate_virtual_host(vhost).map_err(|e| {
-            MagayaError::validation_field(
+            FlowplaneError::validation_field(
                 format!("Virtual host {} validation failed: {}", index, e),
                 "virtual_hosts",
             )
@@ -37,26 +37,26 @@ pub fn validate_envoy_route_configuration(route_config: &RouteConfiguration) -> 
 
 fn validate_virtual_host(vhost: &VirtualHost) -> Result<()> {
     if vhost.name.is_empty() {
-        return Err(MagayaError::validation("Virtual host name cannot be empty"));
+        return Err(FlowplaneError::validation("Virtual host name cannot be empty"));
     }
 
     if vhost.domains.is_empty() {
-        return Err(MagayaError::validation("At least one domain is required"));
+        return Err(FlowplaneError::validation("At least one domain is required"));
     }
 
     for domain in &vhost.domains {
         if domain.is_empty() {
-            return Err(MagayaError::validation("Domain cannot be empty"));
+            return Err(FlowplaneError::validation("Domain cannot be empty"));
         }
     }
 
     if vhost.routes.is_empty() {
-        return Err(MagayaError::validation("At least one route is required"));
+        return Err(FlowplaneError::validation("At least one route is required"));
     }
 
     for (index, route) in vhost.routes.iter().enumerate() {
         validate_route(route).map_err(|e| {
-            MagayaError::validation(format!("Route {} validation failed: {}", index, e))
+            FlowplaneError::validation(format!("Route {} validation failed: {}", index, e))
         })?;
     }
 
@@ -66,19 +66,19 @@ fn validate_virtual_host(vhost: &VirtualHost) -> Result<()> {
 fn validate_route(route: &Route) -> Result<()> {
     match &route.r#match {
         Some(route_match) => validate_route_match(route_match)?,
-        None => return Err(MagayaError::validation("Route match is required")),
+        None => return Err(FlowplaneError::validation("Route match is required")),
     }
 
     match &route.action {
         Some(RouteActionEnum::Route(route_action)) => validate_route_action(route_action),
         Some(_) => Ok(()),
-        None => Err(MagayaError::validation("Route action is required")),
+        None => Err(FlowplaneError::validation("Route action is required")),
     }
 }
 
 fn validate_route_match(route_match: &RouteMatch) -> Result<()> {
     if route_match.path_specifier.is_none() {
-        return Err(MagayaError::validation("Path specifier is required"));
+        return Err(FlowplaneError::validation("Path specifier is required"));
     }
 
     Ok(())
@@ -88,7 +88,7 @@ fn validate_route_action(route_action: &RouteAction) -> Result<()> {
     match &route_action.cluster_specifier {
         Some(envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::Cluster(name)) => {
             if name.is_empty() {
-                Err(MagayaError::validation("Cluster name cannot be empty"))
+                Err(FlowplaneError::validation("Cluster name cannot be empty"))
             } else {
                 Ok(())
             }
@@ -97,7 +97,7 @@ fn validate_route_action(route_action: &RouteAction) -> Result<()> {
             envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::ClusterHeader(header),
         ) => {
             if header.is_empty() {
-                Err(MagayaError::validation("Cluster header cannot be empty"))
+                Err(FlowplaneError::validation("Cluster header cannot be empty"))
             } else {
                 Ok(())
             }
@@ -106,11 +106,11 @@ fn validate_route_action(route_action: &RouteAction) -> Result<()> {
             envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::WeightedClusters(weighted),
         ) => {
             if weighted.clusters.is_empty() {
-                return Err(MagayaError::validation("At least one weighted cluster is required"));
+                return Err(FlowplaneError::validation("At least one weighted cluster is required"));
             }
             Ok(())
         }
-        None => Err(MagayaError::validation("Cluster specifier is required")),
+        None => Err(FlowplaneError::validation("Cluster specifier is required")),
     }
 }
 

@@ -3,7 +3,7 @@
 //! Provides structured logging setup using the tracing ecosystem.
 
 use crate::config::ObservabilityConfig;
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use tracing_subscriber::{
     fmt::{self, format::JsonFields},
     layer::SubscriberExt,
@@ -15,7 +15,7 @@ use tracing_subscriber::{
 pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
     // Parse log level
     let env_filter = EnvFilter::try_new(&config.log_level)
-        .map_err(|e| MagayaError::config(format!("Invalid log level '{}': {}", config.log_level, e)))?;
+        .map_err(|e| FlowplaneError::config(format!("Invalid log level '{}': {}", config.log_level, e)))?;
 
     let registry = tracing_subscriber::registry().with(env_filter);
 
@@ -116,7 +116,7 @@ pub fn log_config_info(config: &crate::config::AppConfig) {
         auth_enabled = %config.auth.enable_auth,
         metrics_enabled = %config.observability.enable_metrics,
         tracing_enabled = %config.observability.enable_tracing,
-        "Magaya control plane configuration"
+        "Flowplane control plane configuration"
     );
 }
 

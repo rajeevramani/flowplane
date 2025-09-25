@@ -3,7 +3,7 @@
 //! Provides Prometheus metrics collection for the control plane.
 
 use crate::config::ObservabilityConfig;
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
@@ -173,7 +173,7 @@ pub fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
 
     let socket_addr: SocketAddr = metrics_addr
         .parse()
-        .map_err(|e| MagayaError::config(format!("Invalid metrics bind address '{}': {}", metrics_addr, e)))?;
+        .map_err(|e| FlowplaneError::config(format!("Invalid metrics bind address '{}': {}", metrics_addr, e)))?;
 
     // Initialize Prometheus exporter
     let builder = PrometheusBuilder::new()
@@ -182,7 +182,7 @@ pub fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
 
     builder
         .install()
-        .map_err(|e| MagayaError::config(format!("Failed to initialize metrics exporter: {}", e)))?;
+        .map_err(|e| FlowplaneError::config(format!("Failed to initialize metrics exporter: {}", e)))?;
 
     // Create and store global metrics recorder
     let recorder = MetricsRecorder::new();

@@ -1,7 +1,7 @@
 //! # Storage and Persistence
 //!
 //! This module provides database connectivity and persistence layer for the
-//! Magaya control plane configuration data.
+//! Flowplane control plane configuration data.
 
 pub mod migrations;
 pub mod pool;
@@ -21,7 +21,7 @@ pub use repository_simple::{
     UpdateRouteRequest as UpdateRouteRepositoryRequest,
 };
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 
 /// Run database migrations
 pub async fn run_migrations(pool: &DbPool) -> Result<()> {
@@ -33,7 +33,7 @@ pub async fn check_connection(pool: &DbPool) -> Result<()> {
     sqlx::query("SELECT 1")
         .fetch_one(pool)
         .await
-        .map_err(|e| MagayaError::Database {
+        .map_err(|e| FlowplaneError::Database {
             source: e,
             context: "Database connectivity check failed".to_string(),
         })?;

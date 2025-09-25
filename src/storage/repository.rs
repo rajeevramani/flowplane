@@ -2,7 +2,7 @@
 //!
 //! Provides repository implementations for CRUD operations on Envoy configuration data.
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -51,7 +51,7 @@ impl ClusterRepository {
     pub async fn create(&self, request: CreateClusterRequest) -> Result<ClusterData> {
         let id = Uuid::new_v4().to_string();
         let configuration_json = serde_json::to_string(&request.configuration)
-            .map_err(|e| MagayaError::validation(format!("Invalid configuration JSON: {}", e)))?;
+            .map_err(|e| FlowplaneError::validation(format!("Invalid configuration JSON: {}", e)))?;
 
         let now = chrono::Utc::now();
 
@@ -71,14 +71,14 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %request.name, "Failed to create cluster");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to create cluster '{}'", request.name),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::validation("Failed to create cluster"));
+            return Err(FlowplaneError::validation("Failed to create cluster"));
         }
 
         tracing::info!(
@@ -102,7 +102,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_id = %id, "Failed to get cluster by ID");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get cluster with ID '{}'", id),
             }
@@ -118,7 +118,7 @@ impl ClusterRepository {
                 created_at: row.created_at,
                 updated_at: row.updated_at,
             }),
-            None => Err(MagayaError::not_found(format!("Cluster with ID '{}' not found", id))),
+            None => Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id))),
         }
     }
 
@@ -132,7 +132,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %name, "Failed to get cluster by name");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to get cluster with name '{}'", name),
             }
@@ -148,7 +148,7 @@ impl ClusterRepository {
                 created_at: row.created_at,
                 updated_at: row.updated_at,
             }),
-            None => Err(MagayaError::not_found(format!("Cluster with name '{}' not found", name))),
+            None => Err(FlowplaneError::not_found(format!("Cluster with name '{}' not found", name))),
         }
     }
 
@@ -171,7 +171,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to list clusters");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: "Failed to list clusters".to_string(),
             }
@@ -199,7 +199,7 @@ impl ClusterRepository {
         let new_service_name = request.service_name.unwrap_or(current.service_name);
         let new_configuration = if let Some(config) = request.configuration {
             serde_json::to_string(&config)
-                .map_err(|e| MagayaError::validation(format!("Invalid configuration JSON: {}", e)))?
+                .map_err(|e| FlowplaneError::validation(format!("Invalid configuration JSON: {}", e)))?
         } else {
             current.configuration
         };
@@ -223,14 +223,14 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_id = %id, "Failed to update cluster");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to update cluster with ID '{}'", id),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!("Cluster with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id)));
         }
 
         tracing::info!(
@@ -257,14 +257,14 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_id = %id, "Failed to delete cluster");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to delete cluster with ID '{}'", id),
             }
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(MagayaError::not_found(format!("Cluster with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id)));
         }
 
         tracing::info!(
@@ -286,7 +286,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %name, "Failed to check cluster existence");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to check existence of cluster '{}'", name),
             }
@@ -304,7 +304,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to get cluster count");
-            MagayaError::Database {
+            FlowplaneError::Database {
                 source: e,
                 context: "Failed to get cluster count".to_string(),
             }

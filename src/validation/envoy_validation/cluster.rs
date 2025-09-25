@@ -1,4 +1,4 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::{
     cluster::v3::{cluster::LbPolicy, Cluster},
     core::v3::{address::Address as AddressType, Address, SocketAddress},
@@ -11,14 +11,14 @@ pub fn validate_envoy_cluster(cluster: &Cluster) -> Result<()> {
     encode_check(cluster, "Invalid cluster configuration")?;
 
     if cluster.name.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Cluster name cannot be empty",
             "name",
         ));
     }
 
     if !is_valid_lb_policy(cluster.lb_policy) {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Invalid load balancing policy",
             "lb_policy",
         ));
@@ -33,14 +33,14 @@ pub fn validate_envoy_cluster(cluster: &Cluster) -> Result<()> {
 
 fn validate_cluster_load_assignment(load_assignment: &ClusterLoadAssignment) -> Result<()> {
     if load_assignment.cluster_name.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "Cluster name cannot be empty",
             "cluster_name",
         ));
     }
 
     if load_assignment.endpoints.is_empty() {
-        return Err(MagayaError::validation_field(
+        return Err(FlowplaneError::validation_field(
             "At least one endpoint is required",
             "endpoints",
         ));
@@ -48,7 +48,7 @@ fn validate_cluster_load_assignment(load_assignment: &ClusterLoadAssignment) -> 
 
     for (index, locality_endpoints) in load_assignment.endpoints.iter().enumerate() {
         validate_locality_lb_endpoints(locality_endpoints).map_err(|e| {
-            MagayaError::validation_field(
+            FlowplaneError::validation_field(
                 format!("Locality endpoints {} validation failed: {}", index, e),
                 "endpoints",
             )
@@ -60,14 +60,14 @@ fn validate_cluster_load_assignment(load_assignment: &ClusterLoadAssignment) -> 
 
 fn validate_locality_lb_endpoints(locality_endpoints: &LocalityLbEndpoints) -> Result<()> {
     if locality_endpoints.lb_endpoints.is_empty() {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "At least one load balancing endpoint is required",
         ));
     }
 
     for (index, lb_endpoint) in locality_endpoints.lb_endpoints.iter().enumerate() {
         validate_lb_endpoint(lb_endpoint).map_err(|e| {
-            MagayaError::validation(format!(
+            FlowplaneError::validation(format!(
                 "Load balancing endpoint {} validation failed: {}",
                 index, e
             ))
@@ -82,12 +82,12 @@ fn validate_lb_endpoint(lb_endpoint: &LbEndpoint) -> Result<()> {
         Some(lb_endpoint::HostIdentifier::Endpoint(endpoint)) => validate_endpoint(endpoint),
         Some(lb_endpoint::HostIdentifier::EndpointName(name)) => {
             if name.is_empty() {
-                Err(MagayaError::validation("Endpoint name cannot be empty"))
+                Err(FlowplaneError::validation("Endpoint name cannot be empty"))
             } else {
                 Ok(())
             }
         }
-        None => Err(MagayaError::validation("Host identifier is required")),
+        None => Err(FlowplaneError::validation("Host identifier is required")),
     }
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn validate_endpoint(endpoint: &Endpoint) -> Result<()> {
     if let Some(address) = &endpoint.address {
         validate_address(address)
     } else {
-        Err(MagayaError::validation("Endpoint address is required"))
+        Err(FlowplaneError::validation("Endpoint address is required"))
     }
 }
 
@@ -104,33 +104,33 @@ pub(crate) fn validate_address(address: &Address) -> Result<()> {
         Some(AddressType::SocketAddress(socket_addr)) => validate_socket_address(socket_addr),
         Some(AddressType::Pipe(pipe)) => {
             if pipe.path.is_empty() {
-                Err(MagayaError::validation("Pipe path cannot be empty"))
+                Err(FlowplaneError::validation("Pipe path cannot be empty"))
             } else {
                 Ok(())
             }
         }
         Some(AddressType::EnvoyInternalAddress(_)) => Ok(()),
-        None => Err(MagayaError::validation("Address type is required")),
+        None => Err(FlowplaneError::validation("Address type is required")),
     }
 }
 
 pub(crate) fn validate_socket_address(socket_addr: &SocketAddress) -> Result<()> {
     if socket_addr.address.is_empty() {
-        return Err(MagayaError::validation("Socket address cannot be empty"));
+        return Err(FlowplaneError::validation("Socket address cannot be empty"));
     }
 
     match &socket_addr.port_specifier {
         Some(envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(port)) => {
             if *port == 0 || *port > 65535 {
-                return Err(MagayaError::validation("Port must be between 1 and 65535"));
+                return Err(FlowplaneError::validation("Port must be between 1 and 65535"));
             }
         }
         Some(envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::NamedPort(name)) => {
             if name.is_empty() {
-                return Err(MagayaError::validation("Named port cannot be empty"));
+                return Err(FlowplaneError::validation("Named port cannot be empty"));
             }
         }
-        None => return Err(MagayaError::validation("Port specifier is required")),
+        None => return Err(FlowplaneError::validation("Port specifier is required")),
     }
 
     Ok(())

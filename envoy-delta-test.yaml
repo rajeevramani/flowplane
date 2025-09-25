@@ -1,6 +1,6 @@
 node:
-  id: "magaya-test-envoy"
-  cluster: "magaya-test-cluster"
+  id: "flowplane-test-envoy"
+  cluster: "flowplane-test-cluster"
 
 dynamic_resources:
   ads_config:
@@ -8,7 +8,7 @@ dynamic_resources:
     transport_api_version: V3
     grpc_services:
       - envoy_grpc:
-          cluster_name: magaya_xds_cluster
+          cluster_name: flowplane_xds_cluster
   cds_config:
     ads: {}
     resource_api_version: V3
@@ -18,13 +18,13 @@ dynamic_resources:
 
 static_resources:
   clusters:
-  - name: magaya_xds_cluster
+  - name: flowplane_xds_cluster
     type: LOGICAL_DNS
     connect_timeout: 5s
     lb_policy: ROUND_ROBIN
     http2_protocol_options: {}
     load_assignment:
-      cluster_name: magaya_xds_cluster
+      cluster_name: flowplane_xds_cluster
       endpoints:
       - lb_endpoints:
         - endpoint:

@@ -57,6 +57,8 @@ CLAUDE.md
 
 Database
 data/
-magaya.db-shm
-magaya.db-wal
+flowplane.db-shm
+flowplane.db-wal
+
+bruno/
 

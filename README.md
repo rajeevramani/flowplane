@@ -1,40 +1,66 @@
-## Magaya Envoy Control Plane
-This project is named `mägaya rom`. The Gupapuyngu word mägaya rom, meaning still/quiet, pronounced `**Mah-gi-ya rom**`.
+## Flowplane Envoy Control Plane
 
-When you see the ocean lying still, and everything is quiet and still, that is like `**magaya rom**`.
-`Rom` is the `Yolŋu` word for law or way or lore. When everything is in a state of balance according to the law, you have mägaya rom. Another way of looking at it is like the Japanese concept of Ying/Yang, with these two elements being in balance.
+### The name
+Flowplane takes its cue from the Sanskrit word *Pravāha* (प्रवाह), meaning “stream” or “steady flow.” We use the term with respect, as a way to evoke the idea of guiding traffic smoothly through the control plane while honoring its linguistic roots.
 
-The Aim of the CP is initially to provide a resultful interface for Envoy. We will then try to extend this capability to support A2A and MCP protocols.
+The Aim of the CP is initially to provide a resultful interface for Envoy. We will then try to extend this capability to support A2A and MCP protocols
 
-## Running the server
+### Overview
+Flowplane is an Envoy control plane that keeps listener, route, and cluster configuration in structured Rust/JSON models. Each payload is validated and then translated into Envoy protobufs through `envoy-types`, so you can assemble advanced filter chains—JWT auth, rate limiting, TLS, tracing—without hand-crafting `Any` blobs.
 
-```
-MAGAYA_XDS_PORT=18003 \
-MAGAYA_CLUSTER_NAME=my_cluster \
-MAGAYA_BACKEND_PORT=9090 \
-MAGAYA_LISTENER_PORT=8080 \
-MAGAYA_DATABASE_URL=sqlite://./data/magaya.db \
-cargo run --bin magaya
-```
+### Before You Start
+- Rust toolchain (1.75+ recommended)
+- SQLite (for the default embedded database)
+- Envoy proxy (when you are ready to point a data-plane instance at the control plane)
 
-
-## Working with listeners
-
-- Create listeners via `POST /api/v1/listeners` using camelCase fields (see `scripts/smoke-listener.sh` for a ready-made example). The control plane automatically injects Envoy's router filter, so you only need to supply route/cluster information.
-- Optional listener features are supported:
-  * `tlsContext` populates Envoy's downstream TLS context (certificate chain, private key, CA bundle, and client-auth requirement).
-  * `accessLog` maps to Envoy's file access logger (with an optional text format string).
-  * `tracing` configures the HTTP connection manager tracing provider (name plus key/value options).
-- Lists of listeners: `GET /api/v1/listeners`
-- Delete a listener: `DELETE /api/v1/listeners/{name}`
-
-### Smoke test
-
-With the server running locally:
-
-```
-scripts/smoke-listener.sh
+### Launch the Control Plane
+```bash
+FLOWPLANE_XDS_PORT=18003 \
+FLOWPLANE_CLUSTER_NAME=my_cluster \
+FLOWPLANE_BACKEND_PORT=9090 \
+FLOWPLANE_LISTENER_PORT=8080 \
+FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
+cargo run --bin flowplane
 ```
 
-The script provisions a TLS-enabled cluster pointing at `httpbin.org`, registers a listener, publishes a simple route, and curls Envoy at `http://localhost:10000/status/200`.
+The REST API is available on `http://127.0.0.1:8080`. Open the interactive API reference at **`http://127.0.0.1:8080/swagger-ui`** (OpenAPI JSON is served at `/api-docs/openapi.json`).
 
+### Build Your First Gateway
+Follow the [step-by-step guide](docs/getting-started.md) to:
+
+1. Register a cluster with upstream endpoints
+2. Publish a route configuration with optional per-route rate limiting
+3. Create a listener that wires in global filters (JWT auth, Local Rate Limit, tracing)
+4. Verify requests flowing through Envoy
+
+Each step includes `curl` examples and the JSON payloads the API expects.
+
+### Rate Limiting at a Glance
+Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
+
+- **Listener-wide** limits: add a `local_rate_limit` entry to the HTTP filter chain when you create/update a listener. All requests passing through that connection manager share the token bucket.
+- **Route-specific** limits: attach a Local Rate Limit scoped config via `typedPerFilterConfig` on routes, virtual hosts, or weighted clusters to tailor traffic policies.
+
+See [docs/filters.md](docs/filters.md#local-rate-limit) for detailed examples of both patterns, including how to combine Local Rate Limit with JWT authentication.
+
+### Documentation Map
+- [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
+- [`docs/cluster-cookbook.md`](docs/cluster-cookbook.md) – Common cluster patterns (TLS, health checks, circuit breakers, DNS).
+- [`docs/routing-cookbook.md`](docs/routing-cookbook.md) – Route action recipes (forward, weighted, redirects), matcher combinations, and scoped filters.
+- [`docs/listener-cookbook.md`](docs/listener-cookbook.md) – Listener setups covering global filters, JWT auth, TLS termination, and TCP proxying.
+- [`docs/gateway-recipes.md`](docs/gateway-recipes.md) – End-to-end API gateway scenarios combining clusters, routes, and listeners.
+- [`docs/filters.md`](docs/filters.md) – HTTP filter registry, Local Rate Limit usage, JWT auth providers and scoped overrides, plus extension guidelines.
+- [`docs/config-model.md`](docs/config-model.md) – Listener, route, and cluster schema reference and how scoped configs attach to Envoy resources.
+- [`docs/testing.md`](docs/testing.md) – Test suite commands, smoke scripts, and manual validation tips.
+- [`docs/architecture.md`](docs/architecture.md) – Module layout and design principles.
+- [`docs/contributing.md`](docs/contributing.md) – Coding standards and PR expectations.
+
+### Staying Productive
+- `GET /api/v1/clusters`, `GET /api/v1/routes`, `GET /api/v1/listeners` show what is currently stored.
+- `scripts/smoke-listener.sh` provisions a demo stack against `httpbin.org`; use it as a reference or a sanity check after changes.
+- Bruno workspace under `bruno/` bundles HTTP requests (create cluster/route/listener, add rate limits, enable JWT) for quick testing. Import the folder directly into the Bruno app.
+
+### Contributing & Roadmap
+We welcome issues and pull requests. Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before submitting changes. See [`docs/contributing.md`](docs/contributing.md) for more details.
+
+Upcoming areas of exploration include extending the HTTP filter catalog, MCP protocol support, and richer observability hooks. Contributions that keep the configuration surface consistent and testable are especially appreciated.

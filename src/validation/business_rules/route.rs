@@ -1,4 +1,4 @@
-use crate::errors::types::{MagayaError, Result};
+use crate::errors::types::{FlowplaneError, Result};
 use crate::validation::{validate_path_with_match_type, PathMatchType};
 
 use super::helpers::is_valid_domain_format;
@@ -11,26 +11,26 @@ pub fn validate_route_path_rewrite_compatibility(
     uri_template_rewrite: &Option<String>,
 ) -> Result<()> {
     validate_path_with_match_type(path, path_match_type).map_err(|e| {
-        MagayaError::validation_field(
+        FlowplaneError::validation_field(
             format!("Path validation failed: {}", e.message.unwrap_or_default()),
             "path",
         )
     })?;
 
     if uri_template_rewrite.is_some() && *path_match_type != PathMatchType::UriTemplate {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "URI template rewrite can only be used with URI template path matching",
         ));
     }
 
     if prefix_rewrite.is_some() && *path_match_type == PathMatchType::UriTemplate {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Prefix rewrite cannot be used with URI template path matching",
         ));
     }
 
     if prefix_rewrite.is_some() && uri_template_rewrite.is_some() {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Cannot specify both prefix rewrite and URI template rewrite",
         ));
     }
@@ -41,34 +41,34 @@ pub fn validate_route_path_rewrite_compatibility(
 /// Validate virtual host domain constraints
 pub fn validate_virtual_host_domains(domains: &[String]) -> Result<()> {
     if domains.is_empty() {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Virtual host must have at least one domain",
         ));
     }
 
     if domains.len() > 50 {
-        return Err(MagayaError::validation(
+        return Err(FlowplaneError::validation(
             "Virtual host cannot have more than 50 domains",
         ));
     }
 
     for (index, domain) in domains.iter().enumerate() {
         if domain.is_empty() {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 format!("Domain {} cannot be empty", index),
                 "domains",
             ));
         }
 
         if domain.len() > 253 {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 format!("Domain {} exceeds maximum length of 253 characters", index),
                 "domains",
             ));
         }
 
         if domain != "*" && !is_valid_domain_format(domain) {
-            return Err(MagayaError::validation_field(
+            return Err(FlowplaneError::validation_field(
                 format!("Domain {} has invalid format", index),
                 "domains",
             ));
@@ -78,7 +78,7 @@ pub fn validate_virtual_host_domains(domains: &[String]) -> Result<()> {
     let mut unique = std::collections::HashSet::new();
     for domain in domains {
         if !unique.insert(domain.to_lowercase()) {
-            return Err(MagayaError::validation(
+            return Err(FlowplaneError::validation(
                 format!("Duplicate domain found: {}", domain),
             ));
         }

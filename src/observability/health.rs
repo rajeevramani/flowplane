@@ -2,7 +2,7 @@
 //!
 //! Provides health checking capabilities for the control plane components.
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

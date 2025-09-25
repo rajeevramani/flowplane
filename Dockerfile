@@ -36,18 +36,18 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
-RUN useradd -r -s /bin/false -m -d /app magaya
+RUN useradd -r -s /bin/false -m -d /app flowplane
 
 WORKDIR /app
 
 # Copy the binary from builder stage
-COPY --from=builder /app/target/release/magaya /usr/local/bin/magaya
+COPY --from=builder /app/target/release/flowplane /usr/local/bin/flowplane
 
 # Change ownership
-RUN chown -R magaya:magaya /app
+RUN chown -R flowplane:flowplane /app
 
 # Switch to app user
-USER magaya
+USER flowplane
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -58,9 +58,9 @@ EXPOSE 8080 9090
 
 # Set environment variables
 ENV RUST_LOG=info
-ENV MAGAYA_HOST=0.0.0.0
-ENV MAGAYA_PORT=8080
-ENV MAGAYA_XDS_PORT=9090
+ENV FLOWPLANE_HOST=0.0.0.0
+ENV FLOWPLANE_PORT=8080
+ENV FLOWPLANE_XDS_PORT=9090
 
 # Run the application
-CMD ["magaya"]
+CMD ["flowplane"]

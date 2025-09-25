@@ -1,8 +1,8 @@
 //! # Configuration Settings
 //!
-//! Defines the configuration structure for the Magaya control plane.
+//! Defines the configuration structure for the Flowplane control plane.
 
-use crate::errors::{MagayaError, Result};
+use crate::errors::{FlowplaneError, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use validator::Validate;
@@ -47,7 +47,7 @@ impl AppConfig {
     /// Validate the entire configuration
     pub fn validate(&self) -> Result<()> {
         // Use validator crate for basic validation
-        Validate::validate(self).map_err(MagayaError::from)?;
+        Validate::validate(self).map_err(FlowplaneError::from)?;
 
         // Custom validation logic
         self.validate_custom()?;
@@ -59,7 +59,7 @@ impl AppConfig {
     fn validate_custom(&self) -> Result<()> {
         // Validate that ports don't conflict
         if self.server.port == self.xds.port {
-            return Err(MagayaError::validation(
+            return Err(FlowplaneError::validation(
                 "Server and xDS ports cannot be the same",
             ));
         }
@@ -68,14 +68,14 @@ impl AppConfig {
         if !self.database.url.starts_with("postgresql://")
             && !self.database.url.starts_with("sqlite://")
         {
-            return Err(MagayaError::validation(
+            return Err(FlowplaneError::validation(
                 "Database URL must start with 'postgresql://' or 'sqlite://'",
             ));
         }
 
         // Validate JWT secret length
         if self.auth.jwt_secret.len() < 32 {
-            return Err(MagayaError::validation(
+            return Err(FlowplaneError::validation(
                 "JWT secret must be at least 32 characters long",
             ));
         }
@@ -180,7 +180,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite://./data/magaya.db".to_string(),
+            url: "sqlite://./data/flowplane.db".to_string(),
             max_connections: 10,
             min_connections: 0,
             connect_timeout_seconds: 10,
@@ -218,7 +218,7 @@ impl DatabaseConfig {
     /// Create DatabaseConfig from environment variables
     pub fn from_env() -> Self {
         let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://./data/magaya.db".to_string());
+            .unwrap_or_else(|_| "sqlite://./data/flowplane.db".to_string());
 
         let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
             .ok()
@@ -298,7 +298,7 @@ impl Default for ObservabilityConfig {
             metrics_port: 9090,
             enable_tracing: true,
             jaeger_endpoint: Some("http://localhost:14268/api/traces".to_string()),
-            service_name: "magaya".to_string(),
+            service_name: "flowplane".to_string(),
             log_level: "info".to_string(),
             json_logging: false,
             health_check_interval_seconds: 30,
@@ -360,10 +360,10 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enable_auth: true,
-            jwt_secret: "magaya-default-secret-please-change-in-production".to_string(),
+            jwt_secret: "flowplane-default-secret-please-change-in-production".to_string(),
             token_expiry_seconds: 3600, // 1 hour
-            jwt_issuer: "magaya".to_string(),
-            jwt_audience: "magaya-api".to_string(),
+            jwt_issuer: "flowplane".to_string(),
+            jwt_audience: "flowplane-api".to_string(),
             enable_rbac: true,
             default_role: "user".to_string(),
         }
