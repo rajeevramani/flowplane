@@ -1,12 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::xds::state::{ResourceDelta, XdsState};
 use envoy_types::pb::envoy::service::discovery::v3::Resource;
@@ -14,6 +14,12 @@ use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
 use uuid::Uuid;
+
+#[derive(Clone, Debug)]
+struct LastDiscoverySnapshot {
+    version: String,
+    nonce: String,
+}
 
 // Removed complex delta state tracking - using PoC-style approach instead
 
@@ -37,6 +43,7 @@ where
     let state_clone = state.clone();
     let responder = Arc::new(responder);
     let label = label.to_string();
+    let last_sent = Arc::new(Mutex::new(HashMap::<String, LastDiscoverySnapshot>::new()));
 
     tokio::spawn(async move {
         loop {
@@ -56,8 +63,58 @@ where
                             let responder = responder.clone();
                             let tx = tx.clone();
                             let label_clone = label.clone();
+                            let tracker = last_sent.clone();
 
                             tokio::spawn(async move {
+                                let node_id = discovery_request
+                                    .node
+                                    .as_ref()
+                                    .map(|n| n.id.clone());
+
+                                let tracker_guard = tracker.lock().await;
+                                let last_snapshot = tracker_guard
+                                    .get(&discovery_request.type_url)
+                                    .cloned();
+
+                                let current_version = state.get_version();
+
+                                let is_ack = last_snapshot
+                                    .as_ref()
+                                    .map(|snapshot| {
+                                        !discovery_request.response_nonce.is_empty()
+                                            && discovery_request.response_nonce == snapshot.nonce
+                                            && discovery_request.version_info == snapshot.version
+                                            && discovery_request.error_detail.is_none()
+                                            && snapshot.version == current_version
+                                    })
+                                    .unwrap_or(false);
+
+                                if is_ack {
+                                    debug!(
+                                        type_url = %discovery_request.type_url,
+                                        version = %discovery_request.version_info,
+                                        nonce = %discovery_request.response_nonce,
+                                        node_id = ?node_id,
+                                        stream = %label_clone,
+                                        "[ACK] Skipping duplicate discovery request"
+                                    );
+                                    return;
+                                }
+
+                                if let Some(error_detail) = discovery_request.error_detail.as_ref() {
+                                    warn!(
+                                        type_url = %discovery_request.type_url,
+                                        nonce = %discovery_request.response_nonce,
+                                        error_code = error_detail.code,
+                                        error_message = %error_detail.message,
+                                        node_id = ?node_id,
+                                        stream = %label_clone,
+                                        "[NACK] Envoy rejected previous response"
+                                    );
+                                }
+
+                                drop(tracker_guard);
+
                                 match responder(state, discovery_request).await {
                                     Ok(response) => {
                                         info!(
@@ -68,6 +125,19 @@ where
                                             stream = %label_clone,
                                             "Sending discovery response"
                                         );
+
+                                        let version = response.version_info.clone();
+                                        let nonce = response.nonce.clone();
+                                        let type_url = response.type_url.clone();
+
+                                        {
+                                            let mut tracker_guard = tracker.lock().await;
+                                            tracker_guard.insert(
+                                                type_url,
+                                                LastDiscoverySnapshot { version, nonce },
+                                            );
+                                        }
+
                                         if tx.send(Ok(response)).await.is_err() {
                                             error!(stream = %label_clone, "Discovery response receiver dropped");
                                         }

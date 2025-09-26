@@ -16,6 +16,7 @@ use prost::Message;
 
 use crate::{
     errors::Error,
+    openapi::{defaults::is_default_gateway_route, strip_gateway_tags},
     storage::{
         CreateRouteRepositoryRequest, RouteData, RouteRepository, UpdateRouteRepositoryRequest,
     },
@@ -416,6 +417,12 @@ pub async fn delete_route_handler(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    if is_default_gateway_route(&name) {
+        return Err(ApiError::Conflict(
+            "The default gateway route configuration cannot be deleted".to_string(),
+        ));
+    }
+
     let repository = require_route_repository(&state)?;
     let existing = repository
         .get_by_name(&name)
@@ -741,12 +748,14 @@ fn require_route_repository(state: &ApiState) -> Result<RouteRepository, ApiErro
 }
 
 fn route_response_from_data(data: RouteData) -> Result<RouteResponse, ApiError> {
-    let value: Value = serde_json::from_str(&data.configuration).map_err(|err| {
+    let mut value: Value = serde_json::from_str(&data.configuration).map_err(|err| {
         ApiError::from(Error::internal(format!(
             "Failed to parse stored route configuration: {}",
             err
         )))
     })?;
+
+    strip_gateway_tags(&mut value);
 
     let xds_config: XdsRouteConfig = serde_json::from_value(value).map_err(|err| {
         ApiError::from(Error::internal(format!(

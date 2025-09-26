@@ -3,6 +3,8 @@
 This walkthrough takes you from an empty database to a working Envoy listener that enforces global and per-route rate limits. All API calls use `curl`, and the examples assume the control plane is running on `http://127.0.0.1:8080` (see the [README](../README.md) for the launch command).
 
 > **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/gateways/openapi?name=<gateway>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
+>
+> Imports join the shared listener `default-gateway-listener` on port `10000`, so multiple teams can onboard specs without thinking about ports. Provide query parameters like `listener`, `port`, `bind_address`, or `protocol` when calling the import endpoint if you prefer a dedicated listener for a gateway.
 
 ## 1. Explore the API Reference
 Open `http://127.0.0.1:8080/swagger-ui` in your browser. The Swagger UI lists every endpoint, schema, and example. You can execute requests directly from the UI or copy the `curl` commands shown below.
@@ -123,9 +125,9 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
 > **Want JWT authentication?** See [docs/filters.md](filters.md#jwt-authentication) for the provider and requirement fields. You can add the `jwt_authn` filter into the same `httpFilters` list before the router entry.
 
 ## 5. Point Envoy at the Control Plane
-Configure an Envoy bootstrap with ADS pointing at `127.0.0.1:18003` (the `FLOWPLANE_XDS_PORT` value). Once Envoy connects, it will receive the cluster, route, and listener we created.
+Configure an Envoy bootstrap with ADS pointing at `127.0.0.1:18003` (the `FLOWPLANE_XDS_PORT` value). If you enabled TLS/mTLS on the control plane, mount the relevant certificates inside the Envoy runtime and reference them below. For plaintext setups, drop the `transport_socket` block.
 
-Minimal snippet:
+Mutual TLS example:
 
 ```yaml
 ads_config:
@@ -138,7 +140,7 @@ static_resources:
   clusters:
     - name: xds_cluster
       connect_timeout: 1s
-      type: STATIC
+      type: STRICT_DNS
       http2_protocol_options: {}
       load_assignment:
         cluster_name: xds_cluster
@@ -149,7 +151,25 @@ static_resources:
                     socket_address:
                       address: 127.0.0.1
                       port_value: 18003
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: flowplane-control-plane
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: /etc/envoy/certs/xds-client.pem
+                private_key:
+                  filename: /etc/envoy/certs/xds-client.key
+            validation_context:
+              trusted_ca:
+                filename: /etc/envoy/certs/xds-ca.pem
+              match_subject_alt_names:
+                - exact: flowplane-control-plane
 ```
+
+(Replace the certificate filenames and subject alternative names with the values used when issuing your certificates. For one-way TLS, omit the `tls_certificates` block and keep only the trusted CA.)
 
 (See Envoy’s documentation for a full bootstrap; this example focuses on the XDS connection.)
 

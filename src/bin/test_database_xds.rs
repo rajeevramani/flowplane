@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             backend_port: 8080,
             listener_port: 10001,
         },
+        tls: None,
     };
 
     // Test 4: Start Database-Enabled XDS Server (with timeout)

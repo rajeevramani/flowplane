@@ -24,6 +24,16 @@ pub struct SimpleXdsConfig {
     pub bind_address: String,
     pub port: u16,
     pub resources: XdsResourceConfig,
+    pub tls: Option<XdsTlsConfig>,
+}
+
+/// TLS configuration for the xDS server
+#[derive(Debug, Clone)]
+pub struct XdsTlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
+    pub client_ca_path: Option<String>,
+    pub require_client_cert: bool,
 }
 
 /// Configuration for HTTP API server
@@ -63,6 +73,7 @@ impl Default for SimpleXdsConfig {
             bind_address: "0.0.0.0".to_string(),
             port: 18000,
             resources: XdsResourceConfig::default(),
+            tls: None,
         }
     }
 }
@@ -161,6 +172,7 @@ impl Config {
                     backend_port,
                     listener_port,
                 },
+                tls: load_xds_tls_config_from_env()?,
             },
             api: ApiServerConfig {
                 bind_address: api_bind_address,
@@ -175,11 +187,61 @@ impl Config {
             xds: XdsConfig {
                 host: self.xds.bind_address.clone(),
                 port: self.xds.port,
+                enable_mtls: self.xds.tls.is_some(),
+                cert_file: self.xds.tls.as_ref().map(|tls| tls.cert_path.clone()),
+                key_file: self.xds.tls.as_ref().map(|tls| tls.key_path.clone()),
+                ca_file: self
+                    .xds
+                    .tls
+                    .as_ref()
+                    .and_then(|tls| tls.client_ca_path.clone()),
                 ..Default::default()
             },
             ..Default::default()
         }
     }
+}
+
+fn load_xds_tls_config_from_env() -> Result<Option<XdsTlsConfig>> {
+    let cert_path = match std::env::var("FLOWPLANE_XDS_TLS_CERT_PATH") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(None),
+    };
+
+    let key_path = std::env::var("FLOWPLANE_XDS_TLS_KEY_PATH").map_err(|_| {
+        crate::Error::config(
+            "FLOWPLANE_XDS_TLS_KEY_PATH must be set when FLOWPLANE_XDS_TLS_CERT_PATH is provided",
+        )
+    })?;
+
+    let client_ca_path = std::env::var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    let require_client_cert = std::env::var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT")
+        .ok()
+        .map(|value| match value.to_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(crate::Error::config(
+                "FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT must be a boolean value",
+            )),
+        })
+        .transpose()? // convert Option<Result<bool>> into Result<Option<bool>>
+        .unwrap_or(true);
+
+    if require_client_cert && client_ca_path.is_none() {
+        return Err(crate::Error::config(
+            "Client certificate verification is enabled but FLOWPLANE_XDS_TLS_CLIENT_CA_PATH is not set",
+        ));
+    }
+
+    Ok(Some(XdsTlsConfig {
+        cert_path,
+        key_path,
+        client_ca_path,
+        require_client_cert,
+    }))
 }
 
 #[cfg(test)]
@@ -252,10 +314,15 @@ mod tests {
         // Ensure no env vars are set
         env::remove_var("FLOWPLANE_XDS_PORT");
         env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS");
+        env::remove_var("FLOWPLANE_XDS_TLS_CERT_PATH");
+        env::remove_var("FLOWPLANE_XDS_TLS_KEY_PATH");
+        env::remove_var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH");
+        env::remove_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT");
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.xds.port, 18000);
         assert_eq!(config.xds.bind_address, "0.0.0.0");
+        assert!(config.xds.tls.is_none());
 
         // Restore original environment
         match original_port {
@@ -265,6 +332,45 @@ mod tests {
         match original_bind {
             Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
             None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_with_tls() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let original_cert = env::var("FLOWPLANE_XDS_TLS_CERT_PATH").ok();
+        let original_key = env::var("FLOWPLANE_XDS_TLS_KEY_PATH").ok();
+        let original_ca = env::var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH").ok();
+        let original_require = env::var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT").ok();
+
+        env::set_var("FLOWPLANE_XDS_TLS_CERT_PATH", "/tmp/server.pem");
+        env::set_var("FLOWPLANE_XDS_TLS_KEY_PATH", "/tmp/server.key");
+        env::set_var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH", "/tmp/ca.pem");
+        env::set_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT", "true");
+
+        let config = Config::from_env().unwrap();
+        let tls = config.xds.tls.expect("TLS config should be populated");
+        assert_eq!(tls.cert_path, "/tmp/server.pem");
+        assert_eq!(tls.key_path, "/tmp/server.key");
+        assert_eq!(tls.client_ca_path.as_deref(), Some("/tmp/ca.pem"));
+        assert!(tls.require_client_cert);
+
+        match original_cert {
+            Some(value) => env::set_var("FLOWPLANE_XDS_TLS_CERT_PATH", value),
+            None => env::remove_var("FLOWPLANE_XDS_TLS_CERT_PATH"),
+        }
+        match original_key {
+            Some(value) => env::set_var("FLOWPLANE_XDS_TLS_KEY_PATH", value),
+            None => env::remove_var("FLOWPLANE_XDS_TLS_KEY_PATH"),
+        }
+        match original_ca {
+            Some(value) => env::set_var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH", value),
+            None => env::remove_var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH"),
+        }
+        match original_require {
+            Some(value) => env::set_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT", value),
+            None => env::remove_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT"),
         }
     }
 }
