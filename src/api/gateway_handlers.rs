@@ -7,13 +7,27 @@ use axum::{
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde::Deserialize;
+use serde_json::Value;
 use tracing::{info, warn};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    openapi::{build_gateway_plan, GatewayOptions, GatewaySummary},
-    storage::{ClusterRepository, ListenerRepository, RouteRepository},
+    openapi::{
+        self, build_gateway_plan,
+        defaults::{
+            DEFAULT_GATEWAY_ADDRESS, DEFAULT_GATEWAY_CLUSTER, DEFAULT_GATEWAY_LISTENER,
+            DEFAULT_GATEWAY_PORT, DEFAULT_GATEWAY_ROUTES,
+        },
+        GatewayOptions, GatewaySummary,
+    },
+    storage::{
+        ClusterRepository, ListenerRepository, RouteRepository, UpdateRouteRepositoryRequest,
+    },
+    xds::route::{
+        PathMatch as XdsPathMatch, RouteActionConfig as XdsRouteActionConfig,
+        RouteConfig as XdsRouteConfig,
+    },
 };
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -21,6 +35,18 @@ use crate::{
 pub struct GatewayQuery {
     /// Unique name for the generated gateway resources.
     pub name: String,
+    /// Optional listener name override; providing this enables dedicated listener mode.
+    #[serde(default)]
+    pub listener: Option<String>,
+    /// Optional listener port (dedicated mode only).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Optional listener bind address (dedicated mode only).
+    #[serde(default)]
+    pub bind_address: Option<String>,
+    /// Optional listener protocol (dedicated mode only).
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 /// Binary OpenAPI payload accepted by the gateway import endpoint.
@@ -87,11 +113,40 @@ pub async fn create_gateway_from_openapi_handler(
 
     let document = parse_openapi_document(&bytes, content_type.as_ref())?;
 
+    let wants_dedicated = params.listener.is_some()
+        || params.port.is_some()
+        || params.bind_address.is_some()
+        || params.protocol.is_some();
+
+    let listener_name = if let Some(name) = params.listener.clone() {
+        name
+    } else if wants_dedicated {
+        format!("{}-listener", params.name)
+    } else {
+        DEFAULT_GATEWAY_LISTENER.to_string()
+    };
+
+    let (bind_address, port, protocol) = if wants_dedicated {
+        (
+            params.bind_address.clone().unwrap_or_else(default_address),
+            params.port.unwrap_or_else(default_port),
+            params.protocol.clone().unwrap_or_else(default_protocol),
+        )
+    } else {
+        (
+            DEFAULT_GATEWAY_ADDRESS.to_string(),
+            DEFAULT_GATEWAY_PORT,
+            "HTTP".to_string(),
+        )
+    };
+
     let options = GatewayOptions {
         name: params.name.clone(),
-        bind_address: default_address(),
-        port: default_port(),
-        protocol: default_protocol(),
+        bind_address,
+        port,
+        protocol,
+        shared_listener: !wants_dedicated,
+        listener_name,
     };
 
     let plan = build_gateway_plan(document, options)
@@ -129,66 +184,173 @@ pub async fn create_gateway_from_openapi_handler(
         }
     }
 
-    if route_repo.exists_by_name(&plan.route_request.name).await? {
-        rollback_import(
-            &listener_repo,
-            &route_repo,
-            &cluster_repo,
-            None,
-            None,
-            &created_clusters,
-        )
-        .await;
-        return Err(ApiError::Conflict(format!(
-            "Route configuration '{}' already exists",
-            plan.route_request.name
-        )));
-    }
+    if let Some(route_request) = plan.route_request.as_ref() {
+        if route_repo.exists_by_name(&route_request.name).await? {
+            rollback_import(
+                &listener_repo,
+                &route_repo,
+                &cluster_repo,
+                None,
+                None,
+                &created_clusters,
+            )
+            .await;
+            return Err(ApiError::Conflict(format!(
+                "Route configuration '{}' already exists",
+                route_request.name
+            )));
+        }
 
-    let route_name = plan.route_request.name.clone();
-    if let Err(err) = route_repo.create(plan.route_request.clone()).await {
-        rollback_import(
-            &listener_repo,
-            &route_repo,
-            &cluster_repo,
-            None,
-            None,
-            &created_clusters,
-        )
-        .await;
-        return Err(ApiError::from(err));
-    }
+        let route_name = route_request.name.clone();
+        if let Err(err) = route_repo.create(route_request.clone()).await {
+            rollback_import(
+                &listener_repo,
+                &route_repo,
+                &cluster_repo,
+                None,
+                None,
+                &created_clusters,
+            )
+            .await;
+            return Err(ApiError::from(err));
+        }
 
-    if listener_repo
-        .exists_by_name(&plan.listener_request.name)
-        .await?
-    {
-        rollback_import(
-            &listener_repo,
-            &route_repo,
-            &cluster_repo,
-            None,
-            Some(&route_name),
-            &created_clusters,
-        )
-        .await;
-        return Err(ApiError::Conflict(format!(
-            "Listener '{}' already exists",
-            plan.listener_request.name
-        )));
-    }
+        if let Some(listener_request) = plan.listener_request.as_ref() {
+            if listener_repo.exists_by_name(&listener_request.name).await? {
+                rollback_import(
+                    &listener_repo,
+                    &route_repo,
+                    &cluster_repo,
+                    None,
+                    Some(&route_name),
+                    &created_clusters,
+                )
+                .await;
+                return Err(ApiError::Conflict(format!(
+                    "Listener '{}' already exists",
+                    listener_request.name
+                )));
+            }
 
-    if let Err(err) = listener_repo.create(plan.listener_request.clone()).await {
-        rollback_import(
-            &listener_repo,
-            &route_repo,
-            &cluster_repo,
-            None,
-            Some(&route_name),
-            &created_clusters,
-        )
-        .await;
-        return Err(ApiError::from(err));
+            if let Err(err) = listener_repo.create(listener_request.clone()).await {
+                rollback_import(
+                    &listener_repo,
+                    &route_repo,
+                    &cluster_repo,
+                    None,
+                    Some(&route_name),
+                    &created_clusters,
+                )
+                .await;
+                return Err(ApiError::from(err));
+            }
+        }
+    } else if let Some(virtual_host) = plan.default_virtual_host.as_ref() {
+        let default_route = route_repo
+            .get_by_name(DEFAULT_GATEWAY_ROUTES)
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut route_value: Value =
+            serde_json::from_str(&default_route.configuration).map_err(|err| {
+                ApiError::Internal(format!(
+                    "Failed to parse default gateway route configuration: {}",
+                    err
+                ))
+            })?;
+
+        openapi::strip_gateway_tags(&mut route_value);
+
+        let mut route_config: XdsRouteConfig =
+            serde_json::from_value(route_value).map_err(|err| {
+                ApiError::Internal(format!(
+                    "Failed to deserialize default gateway route configuration: {}",
+                    err
+                ))
+            })?;
+
+        if route_config
+            .virtual_hosts
+            .iter()
+            .any(|vh| vh.name == virtual_host.name)
+        {
+            rollback_import(
+                &listener_repo,
+                &route_repo,
+                &cluster_repo,
+                None,
+                None,
+                &created_clusters,
+            )
+            .await;
+            return Err(ApiError::Conflict(format!(
+                "Gateway '{}' already exists",
+                plan.summary.gateway
+            )));
+        }
+
+        let mut new_virtual_host = virtual_host.clone();
+        new_virtual_host.domains.retain(|domain| domain != "*");
+        if new_virtual_host.domains.is_empty() {
+            if let Some(domain) = virtual_host.domains.first() {
+                new_virtual_host.domains.push(domain.clone());
+            } else {
+                new_virtual_host.domains.push("*".to_string());
+            }
+        }
+
+        let path_prefix_summary = new_virtual_host
+            .routes
+            .first()
+            .map(|route| match &route.r#match.path {
+                XdsPathMatch::Exact(value) => value.clone(),
+                XdsPathMatch::Prefix(value) => value.clone(),
+                XdsPathMatch::Regex(value) => value.clone(),
+                XdsPathMatch::Template(value) => value.clone(),
+            })
+            .unwrap_or_else(|| "/".to_string());
+
+        let cluster_summary = new_virtual_host
+            .routes
+            .first()
+            .map(|route| match &route.action {
+                XdsRouteActionConfig::Cluster { name, .. } => name.clone(),
+                XdsRouteActionConfig::WeightedClusters { clusters, .. } => clusters
+                    .first()
+                    .map(|cluster| cluster.name.clone())
+                    .unwrap_or_else(|| DEFAULT_GATEWAY_CLUSTER.to_string()),
+                XdsRouteActionConfig::Redirect { .. } => "__redirect__".to_string(),
+            })
+            .unwrap_or_else(|| DEFAULT_GATEWAY_CLUSTER.to_string());
+
+        route_config.virtual_hosts.insert(0, new_virtual_host);
+
+        let mut route_value = serde_json::to_value(&route_config).map_err(|err| {
+            ApiError::Internal(format!(
+                "Failed to serialize default gateway route configuration: {}",
+                err
+            ))
+        })?;
+        openapi::attach_gateway_tag(&mut route_value, &plan.summary.gateway);
+
+        let update_request = UpdateRouteRepositoryRequest {
+            path_prefix: Some(path_prefix_summary),
+            cluster_name: Some(cluster_summary),
+            configuration: Some(route_value),
+        };
+
+        if let Err(err) = route_repo.update(&default_route.id, update_request).await {
+            rollback_import(
+                &listener_repo,
+                &route_repo,
+                &cluster_repo,
+                None,
+                None,
+                &created_clusters,
+            )
+            .await;
+            return Err(ApiError::from(err));
+        }
     }
 
     state.xds_state.refresh_clusters_from_repository().await?;

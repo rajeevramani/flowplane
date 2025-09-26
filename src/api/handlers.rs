@@ -11,6 +11,7 @@ use validator::Validate;
 
 use crate::{
     errors::Error,
+    openapi::defaults::is_default_gateway_cluster,
     storage::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest},
     xds::ClusterSpec,
 };
@@ -609,6 +610,12 @@ pub async fn delete_cluster_handler(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    if is_default_gateway_cluster(&name) {
+        return Err(ApiError::Conflict(
+            "The default gateway cluster cannot be deleted".to_string(),
+        ));
+    }
+
     let repository = require_cluster_repository(&state)?;
     let existing = repository
         .get_by_name(&name)

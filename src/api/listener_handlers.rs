@@ -13,6 +13,7 @@ use utoipa::ToSchema;
 
 use crate::{
     errors::Error,
+    openapi::defaults::is_default_gateway_listener,
     storage::{CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest},
     xds::filters::http::HttpFilterConfigEntry,
     xds::listener::{
@@ -309,6 +310,12 @@ pub async fn delete_listener_handler(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    if is_default_gateway_listener(&name) {
+        return Err(ApiError::Conflict(
+            "The default gateway listener cannot be deleted".to_string(),
+        ));
+    }
+
     let repository = require_listener_repository(&state)?;
     let existing = repository
         .get_by_name(&name)

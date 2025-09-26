@@ -32,6 +32,22 @@ static_resources:
               socket_address:
                 address: 127.0.0.1
                 port_value: 18003
+    transport_socket: # Remove or adjust for plaintext or different certificate layout
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        sni: flowplane-control-plane
+        common_tls_context:
+          tls_certificates:
+            - certificate_chain:
+                filename: /etc/envoy/certs/xds-client.pem
+              private_key:
+                filename: /etc/envoy/certs/xds-client.key
+          validation_context:
+            trusted_ca:
+              filename: /etc/envoy/certs/xds-ca.pem
+            match_subject_alt_names:
+              - exact: flowplane-control-plane
 
 admin:
   address:
