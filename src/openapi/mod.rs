@@ -21,19 +21,24 @@ use crate::{
 
 const EXTENSION_GLOBAL_FILTERS: &str = "x-flowplane-filters";
 
+pub mod defaults;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayOptions {
     pub name: String,
     pub bind_address: String,
     pub port: u16,
     pub protocol: String,
+    pub shared_listener: bool,
+    pub listener_name: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct GatewayPlan {
     pub cluster_requests: Vec<CreateClusterRequest>,
-    pub route_request: CreateRouteRepositoryRequest,
-    pub listener_request: CreateListenerRequest,
+    pub route_request: Option<CreateRouteRepositoryRequest>,
+    pub listener_request: Option<CreateListenerRequest>,
+    pub default_virtual_host: Option<VirtualHostConfig>,
     pub summary: GatewaySummary,
 }
 
@@ -43,6 +48,7 @@ pub struct GatewaySummary {
     pub route_config: String,
     pub listener: String,
     pub clusters: Vec<String>,
+    pub shared_listener: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,8 +75,18 @@ pub fn build_gateway_plan(
         return Err(GatewayError::InvalidGatewayName(options.name));
     }
 
-    let listener_name = format!("{}-listener", &options.name);
-    let route_name = format!("{}-routes", &options.name);
+    let route_name = if options.shared_listener {
+        defaults::DEFAULT_GATEWAY_ROUTES.to_string()
+    } else {
+        format!("{}-routes", &options.name)
+    };
+
+    let listener_name = if options.shared_listener {
+        defaults::DEFAULT_GATEWAY_LISTENER.to_string()
+    } else {
+        options.listener_name.clone()
+    };
+
     let virtual_host_name = format!("{}-vh", &options.name);
 
     let servers = if openapi.servers.is_empty() {
@@ -87,8 +103,12 @@ pub fn build_gateway_plan(
     let cluster_info = cluster_from_server(primary_server, &options.name, &options.name)?;
     let cluster_requests = vec![cluster_info.request.clone()];
     let mut domains: HashSet<String> = HashSet::new();
-    domains.insert("*".to_string());
-    domains.insert(cluster_info.domain.clone());
+    if !options.shared_listener {
+        domains.insert("*".to_string());
+    }
+    if !cluster_info.domain.is_empty() {
+        domains.insert(cluster_info.domain.clone());
+    }
 
     let global_filters = parse_global_filters(&openapi)?;
 
@@ -128,40 +148,24 @@ pub fn build_gateway_plan(
         return Err(GatewayError::NoRoutes);
     }
 
+    let mut domains_vec: Vec<String> = if domains.is_empty() {
+        vec!["*".to_string()]
+    } else {
+        domains.into_iter().collect()
+    };
+
+    if options.shared_listener {
+        domains_vec.retain(|domain| domain != "*");
+        if domains_vec.is_empty() {
+            domains_vec.push(cluster_info.domain.clone());
+        }
+    }
+
     let virtual_host = VirtualHostConfig {
         name: virtual_host_name,
-        domains: if domains.is_empty() {
-            vec!["*".to_string()]
-        } else {
-            domains.into_iter().collect()
-        },
+        domains: domains_vec,
         routes: route_rules,
         typed_per_filter_config: Default::default(),
-    };
-
-    let route_config = XdsRouteConfig {
-        name: route_name.clone(),
-        virtual_hosts: vec![virtual_host],
-    };
-
-    let listener_config = ListenerConfig {
-        name: listener_name.clone(),
-        address: options.bind_address.clone(),
-        port: options.port as u32,
-        filter_chains: vec![FilterChainConfig {
-            name: Some(format!("{}-chain", options.name)),
-            filters: vec![FilterConfig {
-                name: "envoy.filters.network.http_connection_manager".to_string(),
-                filter_type: FilterType::HttpConnectionManager {
-                    route_config_name: Some(route_name.clone()),
-                    inline_route_config: None,
-                    access_log: None,
-                    tracing: None,
-                    http_filters: global_filters,
-                },
-            }],
-            tls_context: None,
-        }],
     };
 
     let summary = GatewaySummary {
@@ -172,6 +176,7 @@ pub fn build_gateway_plan(
             .iter()
             .map(|request| request.name.clone())
             .collect(),
+        shared_listener: options.shared_listener,
     };
 
     let default_cluster_name = summary
@@ -180,35 +185,71 @@ pub fn build_gateway_plan(
         .cloned()
         .unwrap_or_else(|| cluster_info.request.name.clone());
 
-    let mut route_config_value = serde_json::to_value(&route_config)
-        .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
-    attach_gateway_tag(&mut route_config_value, &options.name);
+    if options.shared_listener {
+        Ok(GatewayPlan {
+            cluster_requests,
+            route_request: None,
+            listener_request: None,
+            default_virtual_host: Some(virtual_host),
+            summary,
+        })
+    } else {
+        let route_config = XdsRouteConfig {
+            name: route_name.clone(),
+            virtual_hosts: vec![virtual_host],
+        };
 
-    let route_request = CreateRouteRepositoryRequest {
-        name: route_name,
-        path_prefix: "/".to_string(),
-        cluster_name: default_cluster_name,
-        configuration: route_config_value,
-    };
+        let mut route_config_value = serde_json::to_value(&route_config)
+            .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
+        attach_gateway_tag(&mut route_config_value, &options.name);
 
-    let mut listener_config_value = serde_json::to_value(&listener_config)
-        .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
-    attach_gateway_tag(&mut listener_config_value, &options.name);
+        let route_request = CreateRouteRepositoryRequest {
+            name: route_name,
+            path_prefix: "/".to_string(),
+            cluster_name: default_cluster_name,
+            configuration: route_config_value,
+        };
 
-    let listener_request = CreateListenerRequest {
-        name: listener_name,
-        address: options.bind_address,
-        port: Some(options.port as i64),
-        protocol: Some(options.protocol),
-        configuration: listener_config_value,
-    };
+        let listener_config = ListenerConfig {
+            name: listener_name.clone(),
+            address: options.bind_address.clone(),
+            port: options.port as u32,
+            filter_chains: vec![FilterChainConfig {
+                name: Some(format!("{}-chain", options.name)),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: Some(route_request.name.clone()),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                        http_filters: global_filters,
+                    },
+                }],
+                tls_context: None,
+            }],
+        };
 
-    Ok(GatewayPlan {
-        cluster_requests,
-        route_request,
-        listener_request,
-        summary,
-    })
+        let mut listener_config_value = serde_json::to_value(&listener_config)
+            .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
+        attach_gateway_tag(&mut listener_config_value, &options.name);
+
+        let listener_request = CreateListenerRequest {
+            name: listener_name,
+            address: options.bind_address,
+            port: Some(options.port as i64),
+            protocol: Some(options.protocol),
+            configuration: listener_config_value,
+        };
+
+        Ok(GatewayPlan {
+            cluster_requests,
+            route_request: Some(route_request),
+            listener_request: Some(listener_request),
+            default_virtual_host: None,
+            summary,
+        })
+    }
 }
 
 fn parse_global_filters(openapi: &OpenAPI) -> Result<Vec<HttpFilterConfigEntry>, GatewayError> {
@@ -373,23 +414,41 @@ impl From<GatewayError> for Error {
     }
 }
 
-fn attach_gateway_tag(value: &mut JsonValue, gateway: &str) {
+pub(crate) fn attach_gateway_tag(value: &mut JsonValue, gateway: &str) {
     match value {
         JsonValue::Object(map) => {
             if !is_enum_wrapper(map) {
-                map.insert(
-                    "flowplaneGateway".to_string(),
-                    JsonValue::String(gateway.to_string()),
-                );
+                map.entry("flowplaneGateway".to_string())
+                    .or_insert_with(|| JsonValue::String(gateway.to_string()));
             }
 
-            for child in map.values_mut() {
+            for (key, child) in map.iter_mut() {
+                if key == "flowplaneGateway" || key == "typed_per_filter_config" {
+                    continue;
+                }
                 attach_gateway_tag(child, gateway);
             }
         }
         JsonValue::Array(items) => {
             for item in items {
                 attach_gateway_tag(item, gateway);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn strip_gateway_tags(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(map) => {
+            map.remove("flowplaneGateway");
+            for child in map.values_mut() {
+                strip_gateway_tags(child);
+            }
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                strip_gateway_tags(item);
             }
         }
         _ => {}
@@ -438,6 +497,8 @@ mod tests {
             bind_address: "0.0.0.0".to_string(),
             port: 10000,
             protocol: "HTTP".to_string(),
+            shared_listener: false,
+            listener_name: "example-listener".to_string(),
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -445,10 +506,20 @@ mod tests {
         assert_eq!(plan.summary.gateway, "example");
         assert_eq!(plan.summary.route_config, "example-routes");
         assert_eq!(plan.summary.listener, "example-listener");
+        assert!(!plan.summary.shared_listener);
         assert_eq!(plan.summary.clusters.len(), 1);
         assert_eq!(plan.cluster_requests.len(), 1);
-        assert_eq!(plan.route_request.name, "example-routes");
-        assert_eq!(plan.listener_request.name, "example-listener");
+        let route_request = plan
+            .route_request
+            .as_ref()
+            .expect("route request should exist");
+        assert_eq!(route_request.name, "example-routes");
+        let listener_request = plan
+            .listener_request
+            .as_ref()
+            .expect("listener request should exist");
+        assert_eq!(listener_request.name, "example-listener");
+        assert!(plan.default_virtual_host.is_none());
 
         fn expect_tag(value: &JsonValue, gateway: &str) {
             if let Some(map) = value.as_object() {
@@ -481,7 +552,7 @@ mod tests {
             expect_tag(endpoint, "example");
         }
 
-        let route_config = &plan.route_request.configuration;
+        let route_config = &route_request.configuration;
         expect_tag(route_config, "example");
         if let Some(virtual_host) = route_config
             .get("virtual_hosts")
@@ -498,7 +569,7 @@ mod tests {
             }
         }
 
-        let listener_config = &plan.listener_request.configuration;
+        let listener_config = &listener_request.configuration;
         expect_tag(listener_config, "example");
         if let Some(filter_chain) = listener_config
             .get("filter_chains")
@@ -517,5 +588,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn builds_shared_gateway_plan_from_basic_openapi() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let options = GatewayOptions {
+            name: "example".to_string(),
+            bind_address: defaults::DEFAULT_GATEWAY_ADDRESS.to_string(),
+            port: defaults::DEFAULT_GATEWAY_PORT,
+            protocol: "HTTP".to_string(),
+            shared_listener: true,
+            listener_name: defaults::DEFAULT_GATEWAY_LISTENER.to_string(),
+        };
+
+        let plan = build_gateway_plan(doc, options).expect("plan");
+
+        assert!(plan.route_request.is_none());
+        assert!(plan.listener_request.is_none());
+        assert!(plan.default_virtual_host.is_some());
+        assert!(plan.summary.shared_listener);
+        assert_eq!(plan.summary.listener, defaults::DEFAULT_GATEWAY_LISTENER);
+        assert_eq!(plan.summary.route_config, defaults::DEFAULT_GATEWAY_ROUTES);
     }
 }

@@ -18,7 +18,7 @@ mod state;
 use crate::{config::SimpleXdsConfig, storage::DbPool, Result};
 use std::future::Future;
 use std::sync::Arc;
-use tonic::transport::Server;
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
 
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
@@ -48,11 +48,13 @@ where
     );
 
     // Create ADS service implementation
-    let ads_service = MinimalAggregatedDiscoveryService::new(state);
+    let ads_service = MinimalAggregatedDiscoveryService::new(state.clone());
 
     // Build and start the gRPC server with ADS service only
     // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
-    let server = Server::builder()
+    let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
+
+    let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
@@ -112,7 +114,9 @@ where
 
     let ads_service = DatabaseAggregatedDiscoveryService::new(state.clone());
 
-    let server = Server::builder()
+    let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
+
+    let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
@@ -133,6 +137,72 @@ where
         })?;
 
     Ok(())
+}
+
+fn configure_server_builder(mut builder: Server, config: &SimpleXdsConfig) -> Result<Server> {
+    if let Some(tls_config) = build_server_tls_config(config)? {
+        builder = builder.tls_config(tls_config).map_err(|e| {
+            crate::Error::transport(format!("Failed to apply xDS TLS configuration: {}", e))
+        })?;
+
+        if let Some(tls) = &config.tls {
+            info!(
+                require_client_cert = tls.require_client_cert,
+                has_client_ca = tls.client_ca_path.is_some(),
+                "xDS server TLS enabled"
+            );
+        }
+    }
+
+    Ok(builder)
+}
+
+fn build_server_tls_config(config: &SimpleXdsConfig) -> Result<Option<ServerTlsConfig>> {
+    let tls = match &config.tls {
+        Some(tls) => tls,
+        None => return Ok(None),
+    };
+
+    let cert_bytes = std::fs::read(&tls.cert_path).map_err(|e| {
+        crate::Error::config(format!(
+            "Failed to read xDS TLS certificate from '{}': {}",
+            tls.cert_path, e
+        ))
+    })?;
+
+    let key_bytes = std::fs::read(&tls.key_path).map_err(|e| {
+        crate::Error::config(format!(
+            "Failed to read xDS TLS private key from '{}': {}",
+            tls.key_path, e
+        ))
+    })?;
+
+    let identity = Identity::from_pem(cert_bytes, key_bytes);
+
+    let mut server_tls_config = ServerTlsConfig::new().identity(identity);
+
+    if let Some(ca_path) = &tls.client_ca_path {
+        let ca_bytes = std::fs::read(ca_path).map_err(|e| {
+            crate::Error::config(format!(
+                "Failed to read xDS client CA certificate from '{}': {}",
+                ca_path, e
+            ))
+        })?;
+
+        let client_ca = Certificate::from_pem(ca_bytes);
+
+        server_tls_config = server_tls_config.client_ca_root(client_ca);
+
+        if !tls.require_client_cert {
+            server_tls_config = server_tls_config.client_auth_optional(true);
+        }
+    } else if tls.require_client_cert {
+        return Err(crate::Error::config(
+            "Client certificate verification is enabled but no client CA path is configured",
+        ));
+    }
+
+    Ok(Some(server_tls_config))
 }
 
 /// Legacy function for backward compatibility - kept for existing tests

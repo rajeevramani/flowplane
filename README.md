@@ -25,6 +25,29 @@ cargo run --bin flowplane
 
 The REST API is available on `http://127.0.0.1:8080`. Open the interactive API reference at **`http://127.0.0.1:8080/swagger-ui`** (OpenAPI JSON is served at `/api-docs/openapi.json`).
 
+### Secure the xDS Channel
+Protect Envoy → control plane traffic with TLS or mutual TLS by exporting the following environment variables before starting Flowplane:
+
+- `FLOWPLANE_XDS_TLS_CERT_PATH` – PEM-encoded server certificate chain returned to Envoy.
+- `FLOWPLANE_XDS_TLS_KEY_PATH` – PEM-encoded private key matching the certificate chain.
+- `FLOWPLANE_XDS_TLS_CLIENT_CA_PATH` – (optional) CA bundle used to validate Envoy client certificates.
+- `FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT` – (optional) defaults to `true`; set to `false` to allow TLS without client authentication.
+
+Example launch with mutual TLS:
+
+```bash
+FLOWPLANE_XDS_PORT=18003 \
+FLOWPLANE_XDS_TLS_CERT_PATH=certs/xds-server.pem \
+FLOWPLANE_XDS_TLS_KEY_PATH=certs/xds-server.key \
+FLOWPLANE_XDS_TLS_CLIENT_CA_PATH=certs/xds-ca.pem \
+FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
+cargo run --bin flowplane
+```
+
+Point Envoy at the xDS server using a TLS-enabled cluster and reference the same CA, client certificate, and key inside the Envoy bootstrap (see `envoy-test.yaml` for a full example).
+
+- Flowplane seeds a shared gateway trio (`default-gateway-cluster`, `default-gateway-routes`, `default-gateway-listener`) during startup. They fuel the default OpenAPI import path and are protected from deletion so the shared listener keeps working for every team.
+
 ### Build Your First Gateway
 Follow the [step-by-step guide](docs/getting-started.md) to:
 
@@ -46,6 +69,8 @@ curl -sS \
 ```
 
 The endpoint accepts either JSON or YAML documents. Flowplane derives upstream clusters from the spec’s `servers` section, builds route matches from `paths`, and publishes a listener on the port you choose (override with `address` / `port` query parameters).
+
+By default the generated routes join the shared gateway listener `default-gateway-listener` on port `10000`, so multiple specs can coexist without wrestling over listener names or ports. To provision a dedicated listener instead, supply query parameters such as `listener=<custom-name>` (optionally `port`, `bind_address`, and `protocol`) and Flowplane will create separate route and listener resources for that gateway.
 
 ### Rate Limiting at a Glance
 Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:

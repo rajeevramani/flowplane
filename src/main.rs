@@ -3,6 +3,7 @@ use std::sync::Arc;
 use flowplane::{
     api::start_api_server,
     config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig},
+    openapi::defaults::ensure_default_gateway_resources,
     storage::create_pool,
     xds::{start_database_xds_server_with_state, XdsState},
     Config, Result, APP_NAME, VERSION,
@@ -50,6 +51,8 @@ async fn main() -> Result<()> {
     let api_config: ApiServerConfig = config.api.clone();
 
     let state = Arc::new(XdsState::with_database(simple_xds_config.clone(), pool));
+
+    ensure_default_gateway_resources(&state).await?;
 
     let xds_state = state.clone();
     let xds_task = async move {
