@@ -40,6 +40,8 @@ logs/
 .local/
 .tmp/
 .cache/
+.specify/
+.codex/
 
 # Documentation build artifacts
 book/

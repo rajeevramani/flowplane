@@ -88,10 +88,7 @@ impl DatabaseAggregatedDiscoveryService {
                     resources::clusters_from_database_entries(cluster_data_list, "ads_response")
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to load clusters from database: {}, falling back to config",
-                        e
-                    );
+                    warn!("Failed to load clusters from database: {}, falling back to config", e);
                     self.create_fallback_cluster_resources()
                 }
             }
@@ -124,10 +121,7 @@ impl DatabaseAggregatedDiscoveryService {
                     resources::routes_from_database_entries(route_data_list, "ads_response")
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to load routes from database: {}, falling back to config",
-                        e
-                    );
+                    warn!("Failed to load routes from database: {}, falling back to config", e);
                     self.create_fallback_route_resources()
                 }
             }
@@ -161,10 +155,7 @@ impl DatabaseAggregatedDiscoveryService {
                     resources::listeners_from_database_entries(listener_data_list, "ads_response")
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to load listeners from database: {}, falling back to config",
-                        e
-                    );
+                    warn!("Failed to load listeners from database: {}, falling back to config", e);
                     self.create_fallback_listener_resources()
                 }
             }

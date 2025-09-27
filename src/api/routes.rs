@@ -1,13 +1,23 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
+    middleware,
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
+use crate::auth::{
+    auth_service::AuthService,
+    middleware::{authenticate, ensure_scopes, ScopeState},
+};
+use crate::storage::repository_simple::AuditLogRepository;
 use crate::xds::XdsState;
 
 use super::{
+    auth_handlers::{
+        create_token_handler, get_token_handler, list_tokens_handler, revoke_token_handler,
+        rotate_token_handler, update_token_handler,
+    },
     docs,
     gateway_handlers::create_gateway_from_openapi_handler,
     handlers::{
@@ -30,46 +40,139 @@ pub struct ApiState {
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
-    let api_state = ApiState {
-        xds_state: state.clone(),
+    let api_state = ApiState { xds_state: state.clone() };
+
+    let cluster_repo = match &state.cluster_repository {
+        Some(repo) => repo.clone(),
+        None => return docs::docs_router(),
     };
 
-    let api = Router::new()
-        .route(
-            "/api/v1/clusters",
-            get(list_clusters_handler).post(create_cluster_handler),
-        )
-        .route(
-            "/api/v1/clusters/{name}",
-            get(get_cluster_handler)
-                .put(update_cluster_handler)
-                .delete(delete_cluster_handler),
-        )
-        .route(
-            "/api/v1/routes",
-            get(list_routes_handler).post(create_route_handler),
-        )
-        .route(
-            "/api/v1/routes/{name}",
-            get(get_route_handler)
-                .put(update_route_handler)
-                .delete(delete_route_handler),
-        )
-        .route(
-            "/api/v1/listeners",
-            get(list_listeners_handler).post(create_listener_handler),
-        )
-        .route(
-            "/api/v1/listeners/{name}",
-            get(get_listener_handler)
-                .put(update_listener_handler)
-                .delete(delete_listener_handler),
-        )
-        .route(
-            "/api/v1/gateways/openapi",
-            post(create_gateway_from_openapi_handler),
-        )
-        .with_state(api_state);
+    let auth_layer = {
+        let pool = cluster_repo.pool().clone();
+        let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
+        let auth_service = Arc::new(AuthService::with_sqlx(pool, audit_repository));
+        middleware::from_fn_with_state(auth_service, authenticate)
+    };
 
-    api.merge(docs::docs_router())
+    let scope_layer = |scopes: Vec<&str>| {
+        let required: ScopeState =
+            Arc::new(scopes.into_iter().map(|scope| scope.to_string()).collect());
+        middleware::from_fn_with_state(required, ensure_scopes)
+    };
+
+    let secured_api = Router::new()
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens", get(list_tokens_handler))
+                .route_layer(scope_layer(vec!["tokens:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens", post(create_token_handler))
+                .route_layer(scope_layer(vec!["tokens:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens/{id}", get(get_token_handler))
+                .route_layer(scope_layer(vec!["tokens:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens/{id}", patch(update_token_handler))
+                .route_layer(scope_layer(vec!["tokens:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens/{id}", delete(revoke_token_handler))
+                .route_layer(scope_layer(vec!["tokens:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/tokens/{id}/rotate", post(rotate_token_handler))
+                .route_layer(scope_layer(vec!["tokens:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/clusters", get(list_clusters_handler))
+                .route_layer(scope_layer(vec!["clusters:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/clusters", post(create_cluster_handler))
+                .route_layer(scope_layer(vec!["clusters:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/clusters/{name}", get(get_cluster_handler))
+                .route_layer(scope_layer(vec!["clusters:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/clusters/{name}", put(update_cluster_handler))
+                .route_layer(scope_layer(vec!["clusters:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/clusters/{name}", delete(delete_cluster_handler))
+                .route_layer(scope_layer(vec!["clusters:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/routes", get(list_routes_handler))
+                .route_layer(scope_layer(vec!["routes:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/routes", post(create_route_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/routes/{name}", get(get_route_handler))
+                .route_layer(scope_layer(vec!["routes:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/routes/{name}", put(update_route_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/routes/{name}", delete(delete_route_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/listeners", get(list_listeners_handler))
+                .route_layer(scope_layer(vec!["listeners:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/listeners", post(create_listener_handler))
+                .route_layer(scope_layer(vec!["listeners:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/listeners/{name}", get(get_listener_handler))
+                .route_layer(scope_layer(vec!["listeners:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/listeners/{name}", put(update_listener_handler))
+                .route_layer(scope_layer(vec!["listeners:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
+                .route_layer(scope_layer(vec!["listeners:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/gateways/openapi", post(create_gateway_from_openapi_handler))
+                .route_layer(scope_layer(vec!["gateways:import"])),
+        )
+        .with_state(api_state)
+        .layer(auth_layer);
+
+    secured_api.merge(docs::docs_router())
 }

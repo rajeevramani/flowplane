@@ -23,9 +23,7 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
     info!("🧪 Starting Database-Enabled XDS Server Test");
 
@@ -53,10 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let created_cluster = repo.create(create_request).await?;
-    info!(
-        "✅ Created cluster: {} (version: {})",
-        created_cluster.name, created_cluster.version
-    );
+    info!("✅ Created cluster: {} (version: {})", created_cluster.name, created_cluster.version);
 
     // Test listing clusters
     let clusters = repo.list(Some(10), None).await?;
@@ -79,10 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Test 4: Start Database-Enabled XDS Server (with timeout)
-    info!(
-        "📋 Test 4: Starting database-enabled XDS server on port {}...",
-        xds_config.port
-    );
+    info!("📋 Test 4: Starting database-enabled XDS server on port {}...", xds_config.port);
 
     let server_port = xds_config.port;
     let server_state_pool = pool.clone();
@@ -109,10 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let request_stream = tokio_stream::iter(vec![delta_request]);
-    let mut response_stream = delta_client
-        .delta_aggregated_resources(request_stream)
-        .await?
-        .into_inner();
+    let mut response_stream =
+        delta_client.delta_aggregated_resources(request_stream).await?.into_inner();
 
     match response_stream.next().await {
         Some(Ok(resp)) => {

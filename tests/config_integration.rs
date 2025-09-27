@@ -113,23 +113,28 @@ fn find_available_port() -> Option<u16> {
 #[traced_test]
 #[tokio::test]
 async fn test_xds_server_binds_to_configured_port() -> Result<()> {
-    let _guard = ENV_MUTEX.lock().unwrap();
+    let (config, original_port, original_bind) = {
+        let _guard = ENV_MUTEX.lock().unwrap();
 
-    // Find an available port for testing
-    let Some(test_port) = find_available_port() else {
-        eprintln!("Skipping bind test: unable to allocate a test port in this environment");
-        return Ok(());
+        // Find an available port for testing
+        let Some(test_port) = find_available_port() else {
+            eprintln!("Skipping bind test: unable to allocate a test port in this environment");
+            return Ok(());
+        };
+
+        // Save original environment
+        let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
+        let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
+
+        // Set test environment
+        env::set_var("FLOWPLANE_XDS_PORT", test_port.to_string());
+        env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", "127.0.0.1");
+
+        let config = Config::from_env()?;
+        (config, original_port, original_bind)
     };
 
-    // Save original environment
-    let original_port = env::var("FLOWPLANE_XDS_PORT").ok();
-    let original_bind = env::var("FLOWPLANE_XDS_BIND_ADDRESS").ok();
-
-    // Set test environment
-    env::set_var("FLOWPLANE_XDS_PORT", test_port.to_string());
-    env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", "127.0.0.1");
-
-    let config = Config::from_env()?;
+    let test_port = config.xds.port;
     assert_eq!(config.xds.port, test_port);
 
     // Create a short-lived shutdown signal for testing
@@ -144,14 +149,17 @@ async fn test_xds_server_binds_to_configured_port() -> Result<()> {
     // The server should start and then shutdown cleanly within a reasonable time
     let result = timeout(Duration::from_secs(5), server_task).await;
 
-    // Restore original environment
-    match original_port {
-        Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
-        None => env::remove_var("FLOWPLANE_XDS_PORT"),
-    }
-    match original_bind {
-        Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
-        None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // Restore original environment
+        match original_port {
+            Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
+            None => env::remove_var("FLOWPLANE_XDS_PORT"),
+        }
+        match original_bind {
+            Some(bind) => env::set_var("FLOWPLANE_XDS_BIND_ADDRESS", bind),
+            None => env::remove_var("FLOWPLANE_XDS_BIND_ADDRESS"),
+        }
     }
 
     // Verify the server completed without timeout
@@ -181,11 +189,7 @@ fn test_invalid_config_handling() {
     for invalid_port in invalid_ports {
         env::set_var("FLOWPLANE_XDS_PORT", invalid_port);
         let result = Config::from_env();
-        assert!(
-            result.is_err(),
-            "Config should reject invalid port: {}",
-            invalid_port
-        );
+        assert!(result.is_err(), "Config should reject invalid port: {}", invalid_port);
     }
 
     // Restore original environment

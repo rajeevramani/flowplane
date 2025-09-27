@@ -26,12 +26,7 @@ pub struct CachedResource {
 
 impl CachedResource {
     pub fn new(name: String, type_url: String, version: u64, body: Any) -> Self {
-        Self {
-            name,
-            type_url,
-            version,
-            body,
-        }
+        Self { name, type_url, version, body }
     }
 }
 
@@ -94,9 +89,7 @@ impl XdsState {
     }
 
     pub fn get_version(&self) -> String {
-        self.version
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .to_string()
+        self.version.load(std::sync::atomic::Ordering::Relaxed).to_string()
     }
 
     pub fn get_version_number(&self) -> u64 {
@@ -110,16 +103,11 @@ impl XdsState {
         type_url: &str,
         built_resources: Vec<BuiltResource>,
     ) -> Option<Arc<ResourceUpdate>> {
-        let mut caches = self
-            .resource_caches
-            .write()
-            .expect("resource cache lock poisoned");
+        let mut caches = self.resource_caches.write().expect("resource cache lock poisoned");
         let cache = caches.entry(type_url.to_string()).or_default();
 
-        let incoming_names: HashSet<String> = built_resources
-            .iter()
-            .map(|resource| resource.name.clone())
-            .collect();
+        let incoming_names: HashSet<String> =
+            built_resources.iter().map(|resource| resource.name.clone()).collect();
 
         let removed: Vec<String> = cache
             .keys()
@@ -140,20 +128,14 @@ impl XdsState {
             return None;
         }
 
-        let new_version = self
-            .version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
+        let new_version = self.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
         for name in &removed {
             cache.remove(name);
         }
 
-        let mut delta = ResourceDelta {
-            type_url: type_url.to_string(),
-            added_or_updated: Vec::new(),
-            removed,
-        };
+        let mut delta =
+            ResourceDelta { type_url: type_url.to_string(), added_or_updated: Vec::new(), removed };
 
         for built in pending_updates {
             let cached = CachedResource::new(
@@ -166,10 +148,7 @@ impl XdsState {
             delta.added_or_updated.push(cached);
         }
 
-        let update = Arc::new(ResourceUpdate {
-            version: new_version,
-            deltas: vec![delta],
-        });
+        let update = Arc::new(ResourceUpdate { version: new_version, deltas: vec![delta] });
 
         let _ = self.update_tx.send(update.clone());
         Some(update)
@@ -181,14 +160,8 @@ impl XdsState {
 
     /// Return a clone of the cached resources for the provided type URL.
     pub fn cached_resources(&self, type_url: &str) -> Vec<CachedResource> {
-        let caches = self
-            .resource_caches
-            .read()
-            .expect("resource cache lock poisoned");
-        caches
-            .get(type_url)
-            .map(|cache| cache.values().cloned().collect())
-            .unwrap_or_default()
+        let caches = self.resource_caches.read().expect("resource cache lock poisoned");
+        caches.get(type_url).map(|cache| cache.values().cloned().collect()).unwrap_or_default()
     }
 
     /// Refresh the cluster cache from the backing repository (if available).
@@ -326,14 +299,16 @@ mod tests {
     use crate::config::XdsResourceConfig;
 
     fn build_state() -> XdsState {
-        let mut config = SimpleXdsConfig::default();
-        config.resources = XdsResourceConfig {
-            cluster_name: "test_cluster".into(),
-            route_name: "test_route".into(),
-            listener_name: "test_listener".into(),
-            backend_address: "127.0.0.1".into(),
-            backend_port: 9090,
-            listener_port: 10000,
+        let config = SimpleXdsConfig {
+            resources: XdsResourceConfig {
+                cluster_name: "test_cluster".into(),
+                route_name: "test_route".into(),
+                listener_name: "test_listener".into(),
+                backend_address: "127.0.0.1".into(),
+                backend_port: 9090,
+                listener_port: 10000,
+            },
+            ..Default::default()
         };
         XdsState::new(config)
     }
@@ -341,10 +316,7 @@ mod tests {
     fn fake_resource(name: &str, payload: &[u8]) -> BuiltResource {
         BuiltResource {
             name: name.to_string(),
-            resource: Any {
-                type_url: CLUSTER_TYPE_URL.to_string(),
-                value: payload.to_vec(),
-            },
+            resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: payload.to_vec() },
         }
     }
 
@@ -355,10 +327,7 @@ mod tests {
 
         // Initial add: expect update with single resource
         state
-            .apply_built_resources(
-                CLUSTER_TYPE_URL,
-                vec![fake_resource("cluster-1", b"payload-1")],
-            )
+            .apply_built_resources(CLUSTER_TYPE_URL, vec![fake_resource("cluster-1", b"payload-1")])
             .expect("update expected");
 
         let update = receiver.recv().await.expect("first update");
@@ -369,28 +338,25 @@ mod tests {
         assert!(delta.removed.is_empty());
 
         // Re-applying the same snapshot should produce no new update
-        assert!(state
-            .apply_built_resources(
-                CLUSTER_TYPE_URL,
-                vec![fake_resource("cluster-1", b"payload-1")],
-            )
-            .is_none());
+        assert!(
+            state
+                .apply_built_resources(
+                    CLUSTER_TYPE_URL,
+                    vec![fake_resource("cluster-1", b"payload-1")],
+                )
+                .is_none()
+        );
 
         // Updating payload introduces another delta
         state
-            .apply_built_resources(
-                CLUSTER_TYPE_URL,
-                vec![fake_resource("cluster-1", b"payload-2")],
-            )
+            .apply_built_resources(CLUSTER_TYPE_URL, vec![fake_resource("cluster-1", b"payload-2")])
             .expect("update expected");
 
         let update = receiver.recv().await.expect("second update");
         assert_eq!(update.deltas[0].added_or_updated.len(), 1);
 
         // Removing the resource emits a removal delta
-        state
-            .apply_built_resources(CLUSTER_TYPE_URL, Vec::new())
-            .expect("removal delta expected");
+        state.apply_built_resources(CLUSTER_TYPE_URL, Vec::new()).expect("removal delta expected");
 
         let update = receiver.recv().await.expect("third update");
         assert_eq!(update.deltas[0].removed, vec!["cluster-1".to_string()]);
@@ -402,10 +368,8 @@ mod tests {
         let mut rx1 = state.subscribe_updates();
         let mut rx2 = state.subscribe_updates();
 
-        let _ = state.apply_built_resources(
-            CLUSTER_TYPE_URL,
-            vec![fake_resource("cluster-1", b"payload")],
-        );
+        let _ = state
+            .apply_built_resources(CLUSTER_TYPE_URL, vec![fake_resource("cluster-1", b"payload")]);
 
         let update1 = rx1.recv().await.expect("subscriber one update");
         let update2 = rx2.recv().await.expect("subscriber two update");

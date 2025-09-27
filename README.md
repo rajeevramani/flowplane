@@ -48,6 +48,33 @@ Point Envoy at the xDS server using a TLS-enabled cluster and reference the same
 
 - Flowplane seeds a shared gateway trio (`default-gateway-cluster`, `default-gateway-routes`, `default-gateway-listener`) during startup. They fuel the default OpenAPI import path and are protected from deletion so the shared listener keeps working for every team.
 
+### Authenticate API Calls
+Flowplane now protects every REST endpoint with bearer authentication:
+
+1. Start the control plane. On first launch a bootstrap admin token is emitted once in the logs and
+   recorded as `auth.token.seeded` in the audit log.
+2. Store the value securely (e.g., in a secrets manager) and use it to create scoped tokens via the
+   API or CLI:
+
+   ```bash
+   export FLOWPLANE_ADMIN_TOKEN="fp_pat_..."
+
+   curl -sS \
+     -X POST http://127.0.0.1:8080/api/v1/tokens \
+     -H "Authorization: Bearer $FLOWPLANE_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "name": "ci-pipeline",
+           "scopes": ["clusters:write", "routes:write", "listeners:read"]
+         }'
+   ```
+
+3. Use the returned token for automation and discard the bootstrap credential.
+
+Scopes map one-to-one with API groups (`clusters:*`, `routes:*`, `listeners:*`, `tokens:*`,
+`gateways:import`). See [`docs/authentication.md`](docs/authentication.md) for details and
+[`docs/token-management.md`](docs/token-management.md) for CLI recipes.
+
 ### Build Your First Gateway
 Follow the [step-by-step guide](docs/getting-started.md) to:
 

@@ -2,7 +2,8 @@
 //!
 //! Provides health checking capabilities for the control plane components.
 
-use crate::errors::{FlowplaneError, Result};
+use crate::errors::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -34,7 +35,9 @@ impl HealthStatus {
     pub fn message(&self) -> Option<&str> {
         match self {
             HealthStatus::Healthy => None,
-            HealthStatus::Degraded { message } | HealthStatus::Unhealthy { message } => Some(message),
+            HealthStatus::Degraded { message } | HealthStatus::Unhealthy { message } => {
+                Some(message)
+            }
         }
     }
 }
@@ -55,12 +58,7 @@ pub struct HealthCheck {
 impl HealthCheck {
     /// Create a new health check result
     pub fn new(component: String, status: HealthStatus) -> Self {
-        Self {
-            component,
-            status,
-            last_check: chrono::Utc::now(),
-            metadata: HashMap::new(),
-        }
+        Self { component, status, last_check: chrono::Utc::now(), metadata: HashMap::new() }
     }
 
     /// Create a healthy health check
@@ -70,16 +68,12 @@ impl HealthCheck {
 
     /// Create a degraded health check
     pub fn degraded<S: Into<String>>(component: String, message: S) -> Self {
-        Self::new(component, HealthStatus::Degraded {
-            message: message.into(),
-        })
+        Self::new(component, HealthStatus::Degraded { message: message.into() })
     }
 
     /// Create an unhealthy health check
     pub fn unhealthy<S: Into<String>>(component: String, message: S) -> Self {
-        Self::new(component, HealthStatus::Unhealthy {
-            message: message.into(),
-        })
+        Self::new(component, HealthStatus::Unhealthy { message: message.into() })
     }
 
     /// Add metadata to the health check
@@ -90,13 +84,14 @@ impl HealthCheck {
 }
 
 /// Component that provides health checking functionality
-pub trait HealthProvider {
+#[async_trait]
+pub trait HealthProvider: Send + Sync {
     /// Perform a health check for this component
     async fn health_check(&self) -> Result<HealthCheck>;
 }
 
 /// Central health checker that manages health checks for all components
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HealthChecker {
     /// Registered health providers
     providers: Arc<RwLock<HashMap<String, Box<dyn HealthProvider + Send + Sync>>>>,
@@ -134,10 +129,9 @@ impl HealthChecker {
         for (name, provider) in providers.iter() {
             let check = match provider.health_check().await {
                 Ok(check) => check,
-                Err(e) => HealthCheck::unhealthy(
-                    name.clone(),
-                    format!("Health check failed: {}", e),
-                ),
+                Err(e) => {
+                    HealthCheck::unhealthy(name.clone(), format!("Health check failed: {}", e))
+                }
             };
             results.insert(name.clone(), check.clone());
         }
@@ -188,11 +182,7 @@ impl HealthChecker {
             }
         } else if degraded_count > 0 {
             HealthStatus::Degraded {
-                message: format!(
-                    "{} degraded out of {} components",
-                    degraded_count,
-                    checks.len()
-                ),
+                message: format!("{} degraded out of {} components", degraded_count, checks.len()),
             }
         } else {
             HealthStatus::Healthy
@@ -201,7 +191,7 @@ impl HealthChecker {
 
     /// Check if the system is ready to serve traffic
     pub async fn is_ready(&self) -> bool {
-        self.overall_status().await.is_operational()
+        matches!(self.overall_status().await, HealthStatus::Healthy)
     }
 
     /// Check if the system is alive (basic liveness check)
@@ -269,16 +259,12 @@ mod tests {
         assert!(HealthStatus::Healthy.is_operational());
         assert!(HealthStatus::Healthy.message().is_none());
 
-        let degraded = HealthStatus::Degraded {
-            message: "slow".to_string(),
-        };
+        let degraded = HealthStatus::Degraded { message: "slow".to_string() };
         assert!(!degraded.is_healthy());
         assert!(degraded.is_operational());
         assert_eq!(degraded.message(), Some("slow"));
 
-        let unhealthy = HealthStatus::Unhealthy {
-            message: "down".to_string(),
-        };
+        let unhealthy = HealthStatus::Unhealthy { message: "down".to_string() };
         assert!(!unhealthy.is_healthy());
         assert!(!unhealthy.is_operational());
         assert_eq!(unhealthy.message(), Some("down"));
@@ -342,36 +328,28 @@ mod tests {
         let health_checker = HealthChecker::new();
 
         // Register a healthy provider
-        let healthy_provider = Box::new(MockHealthProvider {
-            status: HealthStatus::Healthy,
-        });
-        health_checker
-            .register_provider("service1", healthy_provider)
-            .await;
+        let healthy_provider = Box::new(MockHealthProvider { status: HealthStatus::Healthy });
+        health_checker.register_provider("service1", healthy_provider).await;
+
+        let status = health_checker.overall_status().await;
+        assert!(matches!(status, HealthStatus::Healthy));
+        assert!(health_checker.is_ready().await);
 
         // Register a degraded provider
         let degraded_provider = Box::new(MockHealthProvider {
-            status: HealthStatus::Degraded {
-                message: "slow".to_string(),
-            },
+            status: HealthStatus::Degraded { message: "slow".to_string() },
         });
-        health_checker
-            .register_provider("service2", degraded_provider)
-            .await;
+        health_checker.register_provider("service2", degraded_provider).await;
 
         let status = health_checker.overall_status().await;
         assert!(matches!(status, HealthStatus::Degraded { .. }));
-        assert!(health_checker.is_ready().await);
+        assert!(!health_checker.is_ready().await);
 
         // Add an unhealthy provider
         let unhealthy_provider = Box::new(MockHealthProvider {
-            status: HealthStatus::Unhealthy {
-                message: "down".to_string(),
-            },
+            status: HealthStatus::Unhealthy { message: "down".to_string() },
         });
-        health_checker
-            .register_provider("service3", unhealthy_provider)
-            .await;
+        health_checker.register_provider("service3", unhealthy_provider).await;
 
         let status = health_checker.overall_status().await;
         assert!(matches!(status, HealthStatus::Unhealthy { .. }));

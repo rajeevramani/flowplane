@@ -16,6 +16,7 @@ pub use tracing::init_tracing;
 
 use crate::config::ObservabilityConfig;
 use crate::errors::Result;
+use ::tracing::info;
 
 /// Initialize all observability components
 pub async fn init_observability(config: &ObservabilityConfig) -> Result<HealthChecker> {
@@ -29,13 +30,13 @@ pub async fn init_observability(config: &ObservabilityConfig) -> Result<HealthCh
 
     // Initialize metrics if enabled
     if config.enable_metrics {
-        init_metrics(config)?;
+        init_metrics(config).await?;
     }
 
     // Create and return health checker
     let health_checker = HealthChecker::new();
 
-    tracing::info!(
+    info!(
         service_name = %config.service_name,
         log_level = %config.log_level,
         metrics_enabled = %config.enable_metrics,
@@ -67,7 +68,7 @@ mod tests {
         let config = ObservabilityConfig {
             enable_metrics: true,
             enable_tracing: true,
-            metrics_port: 0, // Use port 0 to avoid conflicts
+            metrics_port: 0,       // Use port 0 to avoid conflicts
             jaeger_endpoint: None, // Disable Jaeger in tests
             ..Default::default()
         };

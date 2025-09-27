@@ -80,10 +80,7 @@ impl Default for SimpleXdsConfig {
 
 impl Default for ApiServerConfig {
     fn default() -> Self {
-        Self {
-            bind_address: "127.0.0.1".to_string(),
-            port: 8080,
-        }
+        Self { bind_address: "127.0.0.1".to_string(), port: 8080 }
     }
 }
 
@@ -121,19 +118,13 @@ impl Config {
         let backend_port_str =
             std::env::var("FLOWPLANE_BACKEND_PORT").unwrap_or_else(|_| "8080".to_string());
         let backend_port: u16 = backend_port_str.parse().map_err(|e| {
-            crate::Error::config(format!(
-                "Invalid backend port '{}': {}",
-                backend_port_str, e
-            ))
+            crate::Error::config(format!("Invalid backend port '{}': {}", backend_port_str, e))
         })?;
 
         let listener_port_str =
             std::env::var("FLOWPLANE_LISTENER_PORT").unwrap_or_else(|_| "10000".to_string());
         let listener_port: u16 = listener_port_str.parse().map_err(|e| {
-            crate::Error::config(format!(
-                "Invalid listener port '{}': {}",
-                listener_port_str, e
-            ))
+            crate::Error::config(format!("Invalid listener port '{}': {}", listener_port_str, e))
         })?;
 
         // Validate port ranges
@@ -141,9 +132,7 @@ impl Config {
             return Err(crate::Error::config("Backend port cannot be 0".to_string()));
         }
         if listener_port == 0 {
-            return Err(crate::Error::config(
-                "Listener port cannot be 0".to_string(),
-            ));
+            return Err(crate::Error::config("Listener port cannot be 0".to_string()));
         }
 
         // API server configuration
@@ -174,10 +163,7 @@ impl Config {
                 },
                 tls: load_xds_tls_config_from_env()?,
             },
-            api: ApiServerConfig {
-                bind_address: api_bind_address,
-                port: api_port,
-            },
+            api: ApiServerConfig { bind_address: api_bind_address, port: api_port },
         })
     }
 
@@ -190,11 +176,7 @@ impl Config {
                 enable_mtls: self.xds.tls.is_some(),
                 cert_file: self.xds.tls.as_ref().map(|tls| tls.cert_path.clone()),
                 key_file: self.xds.tls.as_ref().map(|tls| tls.key_path.clone()),
-                ca_file: self
-                    .xds
-                    .tls
-                    .as_ref()
-                    .and_then(|tls| tls.client_ca_path.clone()),
+                ca_file: self.xds.tls.as_ref().and_then(|tls| tls.client_ca_path.clone()),
                 ..Default::default()
             },
             ..Default::default()
@@ -236,12 +218,7 @@ fn load_xds_tls_config_from_env() -> Result<Option<XdsTlsConfig>> {
         ));
     }
 
-    Ok(Some(XdsTlsConfig {
-        cert_path,
-        key_path,
-        client_ca_path,
-        require_client_cert,
-    }))
+    Ok(Some(XdsTlsConfig { cert_path, key_path, client_ca_path, require_client_cert }))
 }
 
 #[cfg(test)]

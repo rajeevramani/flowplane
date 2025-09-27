@@ -128,9 +128,7 @@ impl JwtPerRouteConfig {
             }
         };
 
-        Ok(PerRouteConfig {
-            requirement_specifier: specifier,
-        })
+        Ok(PerRouteConfig { requirement_specifier: specifier })
     }
 
     pub fn from_proto(proto: &PerRouteConfig) -> Result<Self, crate::Error> {
@@ -144,9 +142,7 @@ impl JwtPerRouteConfig {
                 Ok(JwtPerRouteConfig::Disabled { disabled: true })
             }
             Some(per_route_config::RequirementSpecifier::RequirementName(name)) => {
-                Ok(JwtPerRouteConfig::RequirementName {
-                    requirement_name: name.clone(),
-                })
+                Ok(JwtPerRouteConfig::RequirementName { requirement_name: name.clone() })
             }
             None => Err(invalid_config(
                 "JwtAuthentication per-route config must specify disabled or requirement_name",
@@ -195,10 +191,7 @@ impl JwtRequirementRuleConfig {
             None => None,
         };
 
-        Ok(RequirementRule {
-            r#match: route_match,
-            requirement_type,
-        })
+        Ok(RequirementRule { r#match: route_match, requirement_type })
     }
 }
 
@@ -209,18 +202,11 @@ pub enum JwtRequirementConfig {
     /// Require a single provider by name
     ProviderName { provider_name: String },
     /// Require a provider and override audiences
-    ProviderWithAudiences {
-        provider_name: String,
-        audiences: Vec<String>,
-    },
+    ProviderWithAudiences { provider_name: String, audiences: Vec<String> },
     /// Logical OR of nested requirements
-    RequiresAny {
-        requirements: Vec<JwtRequirementConfig>,
-    },
+    RequiresAny { requirements: Vec<JwtRequirementConfig> },
     /// Logical AND of nested requirements
-    RequiresAll {
-        requirements: Vec<JwtRequirementConfig>,
-    },
+    RequiresAll { requirements: Vec<JwtRequirementConfig> },
     /// Allow requests with missing JWTs but reject invalid ones
     AllowMissing,
     /// Allow requests even if JWT is missing or invalid
@@ -236,25 +222,18 @@ impl JwtRequirementConfig {
                         "JwtAuthentication requirement provider_name cannot be empty",
                     ));
                 }
-                Some(jwt_requirement::RequiresType::ProviderName(
-                    provider_name.clone(),
-                ))
+                Some(jwt_requirement::RequiresType::ProviderName(provider_name.clone()))
             }
-            JwtRequirementConfig::ProviderWithAudiences {
-                provider_name,
-                audiences,
-            } => {
+            JwtRequirementConfig::ProviderWithAudiences { provider_name, audiences } => {
                 if provider_name.trim().is_empty() {
                     return Err(invalid_config(
                         "JwtAuthentication requirement provider_name cannot be empty",
                     ));
                 }
-                Some(jwt_requirement::RequiresType::ProviderAndAudiences(
-                    ProviderWithAudiences {
-                        provider_name: provider_name.clone(),
-                        audiences: audiences.clone(),
-                    },
-                ))
+                Some(jwt_requirement::RequiresType::ProviderAndAudiences(ProviderWithAudiences {
+                    provider_name: provider_name.clone(),
+                    audiences: audiences.clone(),
+                }))
             }
             JwtRequirementConfig::RequiresAny { requirements } => {
                 if requirements.is_empty() {
@@ -262,14 +241,12 @@ impl JwtRequirementConfig {
                         "JwtAuthentication requires_any must contain at least one requirement",
                     ));
                 }
-                Some(jwt_requirement::RequiresType::RequiresAny(
-                    JwtRequirementOrList {
-                        requirements: requirements
-                            .iter()
-                            .map(JwtRequirementConfig::to_proto)
-                            .collect::<Result<_, _>>()?,
-                    },
-                ))
+                Some(jwt_requirement::RequiresType::RequiresAny(JwtRequirementOrList {
+                    requirements: requirements
+                        .iter()
+                        .map(JwtRequirementConfig::to_proto)
+                        .collect::<Result<_, _>>()?,
+                }))
             }
             JwtRequirementConfig::RequiresAll { requirements } => {
                 if requirements.is_empty() {
@@ -277,21 +254,19 @@ impl JwtRequirementConfig {
                         "JwtAuthentication requires_all must contain at least one requirement",
                     ));
                 }
-                Some(jwt_requirement::RequiresType::RequiresAll(
-                    JwtRequirementAndList {
-                        requirements: requirements
-                            .iter()
-                            .map(JwtRequirementConfig::to_proto)
-                            .collect::<Result<_, _>>()?,
-                    },
-                ))
+                Some(jwt_requirement::RequiresType::RequiresAll(JwtRequirementAndList {
+                    requirements: requirements
+                        .iter()
+                        .map(JwtRequirementConfig::to_proto)
+                        .collect::<Result<_, _>>()?,
+                }))
             }
             JwtRequirementConfig::AllowMissing => {
                 Some(jwt_requirement::RequiresType::AllowMissing(Empty::default()))
             }
-            JwtRequirementConfig::AllowMissingOrFailed => Some(
-                jwt_requirement::RequiresType::AllowMissingOrFailed(Empty::default()),
-            ),
+            JwtRequirementConfig::AllowMissingOrFailed => {
+                Some(jwt_requirement::RequiresType::AllowMissingOrFailed(Empty::default()))
+            }
         };
 
         Ok(JwtRequirement { requires_type })
@@ -367,9 +342,7 @@ impl JwtProviderConfig {
     fn to_proto(&self) -> Result<JwtProvider, crate::Error> {
         for header in &self.from_headers {
             if header.name.trim().is_empty() {
-                return Err(invalid_config(
-                    "JwtAuthentication from_headers.name cannot be empty",
-                ));
+                return Err(invalid_config("JwtAuthentication from_headers.name cannot be empty"));
             }
         }
 
@@ -399,9 +372,7 @@ impl JwtProviderConfig {
 
         let header_in_metadata = if let Some(key) = &self.header_in_metadata {
             if key.trim().is_empty() {
-                return Err(invalid_config(
-                    "JwtAuthentication header_in_metadata cannot be empty",
-                ));
+                return Err(invalid_config("JwtAuthentication header_in_metadata cannot be empty"));
             }
             key.clone()
         } else {
@@ -458,10 +429,8 @@ impl JwtProviderConfig {
         proto.require_expiration = self.require_expiration.unwrap_or(false);
 
         if let Some(max_lifetime_seconds) = self.max_lifetime_seconds {
-            proto.max_lifetime = Some(ProtoDuration {
-                seconds: max_lifetime_seconds as i64,
-                nanos: 0,
-            });
+            proto.max_lifetime =
+                Some(ProtoDuration { seconds: max_lifetime_seconds as i64, nanos: 0 });
         }
 
         match &self.jwks {
@@ -585,22 +554,16 @@ impl RemoteJwksConfig {
         crate::Error,
     > {
         let http_uri = self.http_uri.to_proto()?;
-        let cache_duration = self.cache_duration_seconds.map(|seconds| ProtoDuration {
-            seconds: seconds as i64,
-            nanos: 0,
-        });
+        let cache_duration = self
+            .cache_duration_seconds
+            .map(|seconds| ProtoDuration { seconds: seconds as i64, nanos: 0 });
 
-        Ok(
-            envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::RemoteJwks {
-                http_uri: Some(http_uri),
-                cache_duration,
-                async_fetch: self
-                    .async_fetch
-                    .as_ref()
-                    .map(JwksAsyncFetchConfig::to_proto),
-                retry_policy: self.retry_policy.as_ref().map(|policy| policy.to_proto()),
-            },
-        )
+        Ok(envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::RemoteJwks {
+            http_uri: Some(http_uri),
+            cache_duration,
+            async_fetch: self.async_fetch.as_ref().map(JwksAsyncFetchConfig::to_proto),
+            retry_policy: self.retry_policy.as_ref().map(|policy| policy.to_proto()),
+        })
     }
 }
 
@@ -620,14 +583,10 @@ impl RemoteJwksHttpUriConfig {
 
     fn to_proto(&self) -> Result<HttpUri, crate::Error> {
         if self.uri.trim().is_empty() {
-            return Err(invalid_config(
-                "JwtAuthentication remote_jwks.uri cannot be empty",
-            ));
+            return Err(invalid_config("JwtAuthentication remote_jwks.uri cannot be empty"));
         }
         if self.cluster.trim().is_empty() {
-            return Err(invalid_config(
-                "JwtAuthentication remote_jwks.cluster cannot be empty",
-            ));
+            return Err(invalid_config("JwtAuthentication remote_jwks.cluster cannot be empty"));
         }
 
         Ok(HttpUri {
@@ -658,12 +617,9 @@ impl JwksAsyncFetchConfig {
     fn to_proto(&self) -> JwksAsyncFetch {
         JwksAsyncFetch {
             fast_listener: self.fast_listener.unwrap_or(false),
-            failed_refetch_duration: self.failed_refetch_duration_seconds.map(|seconds| {
-                ProtoDuration {
-                    seconds: seconds as i64,
-                    nanos: 0,
-                }
-            }),
+            failed_refetch_duration: self
+                .failed_refetch_duration_seconds
+                .map(|seconds| ProtoDuration { seconds: seconds as i64, nanos: 0 }),
         }
     }
 }
@@ -680,10 +636,7 @@ pub struct JwksRetryPolicyConfig {
 impl JwksRetryPolicyConfig {
     fn to_proto(&self) -> RetryPolicy {
         RetryPolicy {
-            retry_back_off: self
-                .retry_backoff
-                .as_ref()
-                .map(|backoff| backoff.to_proto()),
+            retry_back_off: self.retry_backoff.as_ref().map(|backoff| backoff.to_proto()),
             num_retries: self.num_retries.map(|value| UInt32Value { value }),
             retry_on: String::new(),
             retry_priority: None,
@@ -766,10 +719,7 @@ impl LocalJwksConfig {
             ));
         }
 
-        Ok(DataSource {
-            specifier,
-            watched_directory: None,
-        })
+        Ok(DataSource { specifier, watched_directory: None })
     }
 }
 
@@ -817,10 +767,7 @@ pub enum StringMatcherConfig {
 
 impl StringMatcherConfig {
     fn to_proto(&self) -> Result<StringMatcher, crate::Error> {
-        let mut matcher = StringMatcher {
-            ignore_case: false,
-            ..Default::default()
-        };
+        let mut matcher = StringMatcher { ignore_case: false, ..Default::default() };
 
         match self {
             StringMatcherConfig::Exact { value } => {
@@ -857,9 +804,7 @@ mod tests {
         JwtProviderConfig {
             issuer: Some("https://issuer.example.com".into()),
             audiences: vec!["aud1".into(), "aud2".into()],
-            subjects: Some(StringMatcherConfig::Prefix {
-                value: "spiffe://example.com/".into(),
-            }),
+            subjects: Some(StringMatcherConfig::Prefix { value: "spiffe://example.com/".into() }),
             require_expiration: Some(true),
             max_lifetime_seconds: Some(3600),
             clock_skew_seconds: Some(30),
@@ -931,14 +876,10 @@ mod tests {
     fn builds_requirement_proto() {
         let requirement = JwtRequirementConfig::RequiresAll {
             requirements: vec![
-                JwtRequirementConfig::ProviderName {
-                    provider_name: "primary".into(),
-                },
+                JwtRequirementConfig::ProviderName { provider_name: "primary".into() },
                 JwtRequirementConfig::RequiresAny {
                     requirements: vec![
-                        JwtRequirementConfig::ProviderName {
-                            provider_name: "secondary".into(),
-                        },
+                        JwtRequirementConfig::ProviderName { provider_name: "secondary".into() },
                         JwtRequirementConfig::AllowMissing,
                     ],
                 },
@@ -946,10 +887,7 @@ mod tests {
         };
 
         let proto = requirement.to_proto().expect("to_proto");
-        assert!(matches!(
-            proto.requires_type,
-            Some(jwt_requirement::RequiresType::RequiresAll(_))
-        ));
+        assert!(matches!(proto.requires_type, Some(jwt_requirement::RequiresType::RequiresAll(_))));
     }
 
     #[test]
@@ -968,9 +906,7 @@ mod tests {
                 name: "selector".into(),
                 requires: HashMap::from([(
                     String::from("issuer1"),
-                    JwtRequirementConfig::ProviderName {
-                        provider_name: "primary".into(),
-                    },
+                    JwtRequirementConfig::ProviderName { provider_name: "primary".into() },
                 )]),
             }),
             bypass_cors_preflight: Some(true),

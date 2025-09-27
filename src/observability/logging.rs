@@ -4,19 +4,24 @@
 
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
+use once_cell::sync::OnceCell;
 use tracing_subscriber::{
     fmt::{self, format::JsonFields},
     layer::SubscriberExt,
     util::SubscriberInitExt,
-    EnvFilter, Layer,
+    EnvFilter,
 };
+
+static LOGGING_INITIALIZED: OnceCell<()> = OnceCell::new();
 
 /// Initialize structured logging based on configuration
 pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
-    // Parse log level
-    let env_filter = EnvFilter::try_new(&config.log_level)
-        .map_err(|e| FlowplaneError::config(format!("Invalid log level '{}': {}", config.log_level, e)))?;
+    let env_filter = parse_env_filter(&config.log_level)?;
 
+    LOGGING_INITIALIZED.get_or_try_init(|| configure_logging(config, env_filter)).map(|_| ())
+}
+
+fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Result<()> {
     let registry = tracing_subscriber::registry().with(env_filter);
 
     if config.json_logging {
@@ -28,19 +33,40 @@ pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
             .with_span_list(false)
             .fmt_fields(JsonFields::new());
 
-        registry.with(json_layer).init();
+        registry
+            .with(json_layer)
+            .try_init()
+            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
     } else {
         // Human-readable logging for development
-        let pretty_layer = fmt::layer()
-            .pretty()
-            .with_target(true)
-            .with_thread_ids(true)
-            .with_thread_names(true);
+        let pretty_layer =
+            fmt::layer().pretty().with_target(true).with_thread_ids(true).with_thread_names(true);
 
-        registry.with(pretty_layer).init();
+        registry
+            .with(pretty_layer)
+            .try_init()
+            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
     }
 
     Ok(())
+}
+
+fn parse_env_filter(level: &str) -> Result<EnvFilter> {
+    let normalized = level.trim();
+    let lower = normalized.to_ascii_lowercase();
+
+    match lower.as_str() {
+        "trace" | "debug" | "info" | "warn" | "error" => {}
+        _ => {
+            return Err(FlowplaneError::config(format!(
+                "Invalid log level '{}': must be one of trace, debug, info, warn, error",
+                level
+            )));
+        }
+    }
+
+    EnvFilter::try_new(normalized)
+        .map_err(|e| FlowplaneError::config(format!("Invalid log level '{}': {}", level, e)))
 }
 
 /// Create a tracing span for request tracking
@@ -152,10 +178,8 @@ mod tests {
 
     #[test]
     fn test_invalid_log_level() {
-        let config = ObservabilityConfig {
-            log_level: "invalid_level".to_string(),
-            ..Default::default()
-        };
+        let config =
+            ObservabilityConfig { log_level: "invalid_level".to_string(), ..Default::default() };
 
         let result = init_logging(&config);
         assert!(result.is_err());

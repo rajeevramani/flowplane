@@ -73,16 +73,11 @@ impl ClusterSpec {
 
     fn ensure_endpoints(&self) -> Result<(), Error> {
         if self.endpoints.is_empty() {
-            return Err(Error::validation(
-                "Cluster must define at least one endpoint",
-            ));
+            return Err(Error::validation("Cluster must define at least one endpoint"));
         }
 
         if let Some(invalid) = self.endpoints.iter().find(|ep| ep.to_host_port().is_none()) {
-            return Err(Error::validation(format!(
-                "Invalid endpoint definition: {}",
-                invalid
-            )));
+            return Err(Error::validation(format!("Invalid endpoint definition: {}", invalid)));
         }
 
         Ok(())
@@ -145,8 +140,7 @@ impl EndpointSpec {
     }
 
     pub fn host_port_or_error(&self) -> Result<(String, u32), Error> {
-        self.to_host_port()
-            .ok_or_else(|| Error::validation(format!("Invalid endpoint: {}", self)))
+        self.to_host_port().ok_or_else(|| Error::validation(format!("Invalid endpoint: {}", self)))
     }
 }
 

@@ -51,18 +51,12 @@ pub struct TypedConfig {
 impl TypedConfig {
     /// Create a typed config from a prost message
     pub fn from_message<M: Message>(type_url: impl Into<String>, msg: &M) -> Self {
-        Self {
-            type_url: type_url.into(),
-            value: Base64Bytes(msg.encode_to_vec()),
-        }
+        Self { type_url: type_url.into(), value: Base64Bytes(msg.encode_to_vec()) }
     }
 
     /// Convert to Envoy Any structure
     pub fn to_any(&self) -> Any {
-        Any {
-            type_url: self.type_url.clone(),
-            value: self.value.0.clone(),
-        }
+        Any { type_url: self.type_url.clone(), value: self.value.0.clone() }
     }
 }
 
@@ -99,9 +93,7 @@ mod tests {
 
     #[test]
     fn typed_config_from_message() {
-        let msg = TestMessage {
-            field: "hello".into(),
-        };
+        let msg = TestMessage { field: "hello".into() };
         let typed = TypedConfig::from_message("type.googleapis.com/test.Message", &msg);
         let any = typed.to_any();
         assert_eq!(any.type_url, "type.googleapis.com/test.Message");

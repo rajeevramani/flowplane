@@ -302,10 +302,7 @@ fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
     let config = ClusterSpec {
         endpoints: endpoints
             .into_iter()
-            .map(|ep| crate::xds::EndpointSpec::Address {
-                host: ep.host,
-                port: ep.port,
-            })
+            .map(|ep| crate::xds::EndpointSpec::Address { host: ep.host, port: ep.port })
             .collect(),
         connect_timeout_seconds,
         use_tls,
@@ -348,14 +345,12 @@ fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
             })
             .collect(),
         circuit_breakers: circuit_breakers.map(|cb| crate::xds::CircuitBreakersSpec {
-            default: cb
-                .default
-                .map(|d| crate::xds::CircuitBreakerThresholdsSpec {
-                    max_connections: d.max_connections,
-                    max_pending_requests: d.max_pending_requests,
-                    max_requests: d.max_requests,
-                    max_retries: d.max_retries,
-                }),
+            default: cb.default.map(|d| crate::xds::CircuitBreakerThresholdsSpec {
+                max_connections: d.max_connections,
+                max_pending_requests: d.max_pending_requests,
+                max_requests: d.max_requests,
+                max_retries: d.max_retries,
+            }),
             high: cb.high.map(|h| crate::xds::CircuitBreakerThresholdsSpec {
                 max_connections: h.max_connections,
                 max_pending_requests: h.max_pending_requests,
@@ -372,11 +367,7 @@ fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
         ..Default::default()
     };
 
-    ClusterConfigParts {
-        name,
-        service_name,
-        config,
-    }
+    ClusterConfigParts { name, service_name, config }
 }
 
 fn require_cluster_repository(state: &ApiState) -> Result<ClusterRepository, ApiError> {
@@ -397,11 +388,7 @@ fn cluster_response_from_data(data: ClusterData) -> Result<ClusterResponse, ApiE
     })?;
     let config = ClusterSpec::from_value(value).map_err(ApiError::from)?;
 
-    Ok(ClusterResponse {
-        name: data.name,
-        service_name: data.service_name,
-        config,
-    })
+    Ok(ClusterResponse { name: data.name, service_name: data.service_name, config })
 }
 
 #[utoipa::path(
@@ -419,15 +406,9 @@ pub async fn create_cluster_handler(
     State(state): State<ApiState>,
     Json(payload): Json<CreateClusterBody>,
 ) -> Result<(StatusCode, Json<ClusterResponse>), ApiError> {
-    payload
-        .validate()
-        .map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
-    let ClusterConfigParts {
-        name,
-        service_name,
-        config,
-    } = cluster_parts_from_body(payload);
+    let ClusterConfigParts { name, service_name, config } = cluster_parts_from_body(payload);
 
     let repository = require_cluster_repository(&state)?;
 
@@ -447,14 +428,10 @@ pub async fn create_cluster_handler(
         "Cluster created via API"
     );
 
-    state
-        .xds_state
-        .refresh_clusters_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after cluster creation");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after cluster creation");
+        ApiError::from(err)
+    })?;
 
     Ok((
         StatusCode::CREATED,
@@ -484,10 +461,7 @@ pub async fn list_clusters_handler(
     Query(params): Query<ListClustersQuery>,
 ) -> Result<Json<Vec<ClusterResponse>>, ApiError> {
     let repository = require_cluster_repository(&state)?;
-    let rows = repository
-        .list(params.limit, params.offset)
-        .await
-        .map_err(ApiError::from)?;
+    let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
 
     let mut clusters = Vec::with_capacity(rows.len());
     for row in rows {
@@ -513,10 +487,7 @@ pub async fn get_cluster_handler(
     Path(name): Path<String>,
 ) -> Result<Json<ClusterResponse>, ApiError> {
     let repository = require_cluster_repository(&state)?;
-    let cluster = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let cluster = repository.get_by_name(&name).await.map_err(ApiError::from)?;
     let response = cluster_response_from_data(cluster)?;
     Ok(Json(response))
 }
@@ -539,15 +510,10 @@ pub async fn update_cluster_handler(
     Path(name): Path<String>,
     Json(payload): Json<CreateClusterBody>,
 ) -> Result<Json<ClusterResponse>, ApiError> {
-    payload
-        .validate()
-        .map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
-    let ClusterConfigParts {
-        name: payload_name,
-        service_name,
-        config,
-    } = cluster_parts_from_body(payload);
+    let ClusterConfigParts { name: payload_name, service_name, config } =
+        cluster_parts_from_body(payload);
 
     if payload_name != name {
         return Err(ApiError::BadRequest(format!(
@@ -557,10 +523,7 @@ pub async fn update_cluster_handler(
     }
 
     let repository = require_cluster_repository(&state)?;
-    let existing = repository
-        .get_by_name(&payload_name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&payload_name).await.map_err(ApiError::from)?;
 
     let configuration = config.to_value().map_err(ApiError::from)?;
     let update_request = UpdateClusterRequest {
@@ -568,10 +531,7 @@ pub async fn update_cluster_handler(
         configuration: Some(configuration),
     };
 
-    let updated = repository
-        .update(&existing.id, update_request)
-        .await
-        .map_err(ApiError::from)?;
+    let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
 
     info!(
         cluster_id = %updated.id,
@@ -579,17 +539,13 @@ pub async fn update_cluster_handler(
         "Cluster updated via API"
     );
 
-    state
-        .xds_state
-        .refresh_clusters_from_repository()
-        .await
-        .map_err(|err| {
-            error!(
-                error = %err,
-                "Failed to refresh xDS caches after cluster update"
-            );
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+        error!(
+            error = %err,
+            "Failed to refresh xDS caches after cluster update"
+        );
+        ApiError::from(err)
+    })?;
 
     let response = cluster_response_from_data(updated)?;
     Ok(Json(response))
@@ -617,15 +573,9 @@ pub async fn delete_cluster_handler(
     }
 
     let repository = require_cluster_repository(&state)?;
-    let existing = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
-    repository
-        .delete(&existing.id)
-        .await
-        .map_err(ApiError::from)?;
+    repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
     info!(
         cluster_id = %existing.id,
@@ -633,17 +583,13 @@ pub async fn delete_cluster_handler(
         "Cluster deleted via API"
     );
 
-    state
-        .xds_state
-        .refresh_clusters_from_repository()
-        .await
-        .map_err(|err| {
-            error!(
-                error = %err,
-                "Failed to refresh xDS caches after cluster deletion"
-            );
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+        error!(
+            error = %err,
+            "Failed to refresh xDS caches after cluster deletion"
+        );
+        ApiError::from(err)
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -692,19 +638,14 @@ mod tests {
         .expect("create table");
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
-        ApiState {
-            xds_state: Arc::new(state),
-        }
+        ApiState { xds_state: Arc::new(state) }
     }
 
     fn sample_request() -> CreateClusterBody {
         CreateClusterBody {
             name: "api-cluster".into(),
             service_name: None,
-            endpoints: vec![EndpointRequest {
-                host: "10.0.0.1".into(),
-                port: 8080,
-            }],
+            endpoints: vec![EndpointRequest { host: "10.0.0.1".into(), port: 8080 }],
             connect_timeout_seconds: Some(7),
             use_tls: Some(true),
             tls_server_name: Some("api.local".into()),
@@ -757,16 +698,8 @@ mod tests {
         assert!(payload.config.use_tls.unwrap());
 
         // verify row persisted.
-        let repo = state
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .cloned()
-            .expect("repository");
-        let stored = repo
-            .get_by_name("api-cluster")
-            .await
-            .expect("stored cluster");
+        let repo = state.xds_state.cluster_repository.as_ref().cloned().expect("repository");
+        let stored = repo.get_by_name("api-cluster").await.expect("stored cluster");
         let config: Value = serde_json::from_str(&stored.configuration).expect("json");
         assert_eq!(config["useTls"], Value::Bool(true));
     }
@@ -790,9 +723,8 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) = create_cluster_handler(State(state.clone()), Json(body))
-            .await
-            .expect("create cluster");
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = list_clusters_handler(State(state), Query(ListClustersQuery::default()))
@@ -809,9 +741,8 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) = create_cluster_handler(State(state.clone()), Json(body))
-            .await
-            .expect("create cluster");
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = get_cluster_handler(State(state), Path("api-cluster".to_string()))
@@ -849,16 +780,8 @@ mod tests {
         assert_eq!(cluster.service_name, "renamed");
         assert_eq!(cluster.config.lb_policy.as_deref(), Some("LEAST_REQUEST"));
 
-        let repo = state
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .cloned()
-            .expect("repository");
-        let stored = repo
-            .get_by_name("api-cluster")
-            .await
-            .expect("stored cluster");
+        let repo = state.xds_state.cluster_repository.as_ref().cloned().expect("repository");
+        let stored = repo.get_by_name("api-cluster").await.expect("stored cluster");
         assert_eq!(stored.version, 2);
     }
 
@@ -867,9 +790,8 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) = create_cluster_handler(State(state.clone()), Json(body))
-            .await
-            .expect("create cluster");
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let status = delete_cluster_handler(State(state.clone()), Path("api-cluster".to_string()))
@@ -877,12 +799,7 @@ mod tests {
             .expect("delete cluster");
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let repo = state
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .cloned()
-            .expect("repository");
+        let repo = state.xds_state.cluster_repository.as_ref().cloned().expect("repository");
         let result = repo.get_by_name("api-cluster").await;
         assert!(result.is_err());
     }

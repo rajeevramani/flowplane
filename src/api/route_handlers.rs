@@ -235,10 +235,7 @@ pub async fn create_route_handler(
 
     let (path_prefix, cluster_summary) = summarize_route(&payload);
     let configuration = serde_json::to_value(&xds_config).map_err(|err| {
-        ApiError::from(Error::internal(format!(
-            "Failed to serialize route definition: {}",
-            err
-        )))
+        ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
 
     let request = CreateRouteRepositoryRequest {
@@ -248,21 +245,14 @@ pub async fn create_route_handler(
         configuration,
     };
 
-    let created = route_repository
-        .create(request)
-        .await
-        .map_err(ApiError::from)?;
+    let created = route_repository.create(request).await.map_err(ApiError::from)?;
 
     info!(route_id = %created.id, route_name = %created.name, "Route created via API");
 
-    state
-        .xds_state
-        .refresh_routes_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after route creation");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after route creation");
+        ApiError::from(err)
+    })?;
 
     let response = RouteResponse {
         name: created.name,
@@ -292,10 +282,7 @@ pub async fn list_routes_handler(
     Query(params): Query<ListRoutesQuery>,
 ) -> Result<Json<Vec<RouteResponse>>, ApiError> {
     let repository = require_route_repository(&state)?;
-    let rows = repository
-        .list(params.limit, params.offset)
-        .await
-        .map_err(ApiError::from)?;
+    let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
 
     let mut routes = Vec::with_capacity(rows.len());
     for row in rows {
@@ -321,10 +308,7 @@ pub async fn get_route_handler(
     Path(name): Path<String>,
 ) -> Result<Json<RouteResponse>, ApiError> {
     let repository = require_route_repository(&state)?;
-    let route = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
     Ok(Json(route_response_from_data(route)?))
 }
 
@@ -356,18 +340,12 @@ pub async fn update_route_handler(
     }
 
     let repository = require_route_repository(&state)?;
-    let existing = repository
-        .get_by_name(&payload.name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
     let (path_prefix, cluster_summary) = summarize_route(&payload);
     let configuration = serde_json::to_value(&xds_config).map_err(|err| {
-        ApiError::from(Error::internal(format!(
-            "Failed to serialize route definition: {}",
-            err
-        )))
+        ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
 
     let update_request = UpdateRouteRepositoryRequest {
@@ -376,21 +354,14 @@ pub async fn update_route_handler(
         configuration: Some(configuration),
     };
 
-    let updated = repository
-        .update(&existing.id, update_request)
-        .await
-        .map_err(ApiError::from)?;
+    let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
 
     info!(route_id = %updated.id, route_name = %updated.name, "Route updated via API");
 
-    state
-        .xds_state
-        .refresh_routes_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after route update");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after route update");
+        ApiError::from(err)
+    })?;
 
     let response = RouteResponse {
         name: updated.name,
@@ -424,26 +395,16 @@ pub async fn delete_route_handler(
     }
 
     let repository = require_route_repository(&state)?;
-    let existing = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
-    repository
-        .delete(&existing.id)
-        .await
-        .map_err(ApiError::from)?;
+    repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
     info!(route_id = %existing.id, route_name = %existing.name, "Route deleted via API");
 
-    state
-        .xds_state
-        .refresh_routes_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after route deletion");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after route deletion");
+        ApiError::from(err)
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -458,10 +419,7 @@ impl RouteDefinition {
             .map(VirtualHostDefinition::to_xds_config)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(XdsRouteConfig {
-            name: self.name.clone(),
-            virtual_hosts,
-        })
+        Ok(XdsRouteConfig { name: self.name.clone(), virtual_hosts })
     }
 
     fn from_xds_config(config: &XdsRouteConfig) -> Self {
@@ -496,11 +454,7 @@ impl VirtualHostDefinition {
         VirtualHostDefinition {
             name: config.name.clone(),
             domains: config.domains.clone(),
-            routes: config
-                .routes
-                .iter()
-                .map(RouteRuleDefinition::from_xds_config)
-                .collect(),
+            routes: config.routes.iter().map(RouteRuleDefinition::from_xds_config).collect(),
             typed_per_filter_config: config.typed_per_filter_config.clone(),
         }
     }
@@ -531,12 +485,7 @@ impl RouteMatchDefinition {
         let headers = if self.headers.is_empty() {
             None
         } else {
-            Some(
-                self.headers
-                    .iter()
-                    .map(HeaderMatchDefinition::to_xds_config)
-                    .collect(),
-            )
+            Some(self.headers.iter().map(HeaderMatchDefinition::to_xds_config).collect())
         };
 
         let query_parameters = if self.query_parameters.is_empty() {
@@ -550,11 +499,7 @@ impl RouteMatchDefinition {
             )
         };
 
-        Ok(XdsRouteMatchConfig {
-            path: self.path.to_xds_config(),
-            headers,
-            query_parameters,
-        })
+        Ok(XdsRouteMatchConfig { path: self.path.to_xds_config(), headers, query_parameters })
     }
 
     fn from_xds_config(config: &XdsRouteMatchConfig) -> Self {
@@ -590,18 +535,12 @@ impl PathMatchDefinition {
 
     fn from_xds_config(path: &XdsPathMatch) -> Self {
         match path {
-            XdsPathMatch::Exact(value) => PathMatchDefinition::Exact {
-                value: value.clone(),
-            },
-            XdsPathMatch::Prefix(value) => PathMatchDefinition::Prefix {
-                value: value.clone(),
-            },
-            XdsPathMatch::Regex(value) => PathMatchDefinition::Regex {
-                value: value.clone(),
-            },
-            XdsPathMatch::Template(value) => PathMatchDefinition::Template {
-                template: value.clone(),
-            },
+            XdsPathMatch::Exact(value) => PathMatchDefinition::Exact { value: value.clone() },
+            XdsPathMatch::Prefix(value) => PathMatchDefinition::Prefix { value: value.clone() },
+            XdsPathMatch::Regex(value) => PathMatchDefinition::Regex { value: value.clone() },
+            XdsPathMatch::Template(value) => {
+                PathMatchDefinition::Template { template: value.clone() }
+            }
         }
     }
 }
@@ -660,10 +599,7 @@ impl RouteActionDefinition {
                 prefix_rewrite: prefix_rewrite.clone(),
                 path_template_rewrite: template_rewrite.clone(),
             }),
-            RouteActionDefinition::Weighted {
-                clusters,
-                total_weight,
-            } => {
+            RouteActionDefinition::Weighted { clusters, total_weight } => {
                 if clusters.is_empty() {
                     return Err(ApiError::from(Error::validation(
                         "Weighted route must include at least one cluster",
@@ -684,15 +620,13 @@ impl RouteActionDefinition {
                     total_weight: *total_weight,
                 })
             }
-            RouteActionDefinition::Redirect {
-                host_redirect,
-                path_redirect,
-                response_code,
-            } => Ok(XdsRouteActionConfig::Redirect {
-                host_redirect: host_redirect.clone(),
-                path_redirect: path_redirect.clone(),
-                response_code: *response_code,
-            }),
+            RouteActionDefinition::Redirect { host_redirect, path_redirect, response_code } => {
+                Ok(XdsRouteActionConfig::Redirect {
+                    host_redirect: host_redirect.clone(),
+                    path_redirect: path_redirect.clone(),
+                    response_code: *response_code,
+                })
+            }
         }
     }
 
@@ -709,29 +643,26 @@ impl RouteActionDefinition {
                 prefix_rewrite: prefix_rewrite.clone(),
                 template_rewrite: path_template_rewrite.clone(),
             },
-            XdsRouteActionConfig::WeightedClusters {
-                clusters,
-                total_weight,
-            } => RouteActionDefinition::Weighted {
-                clusters: clusters
-                    .iter()
-                    .map(|cluster| WeightedClusterDefinition {
-                        name: cluster.name.clone(),
-                        weight: cluster.weight,
-                        typed_per_filter_config: cluster.typed_per_filter_config.clone(),
-                    })
-                    .collect(),
-                total_weight: *total_weight,
-            },
-            XdsRouteActionConfig::Redirect {
-                host_redirect,
-                path_redirect,
-                response_code,
-            } => RouteActionDefinition::Redirect {
-                host_redirect: host_redirect.clone(),
-                path_redirect: path_redirect.clone(),
-                response_code: *response_code,
-            },
+            XdsRouteActionConfig::WeightedClusters { clusters, total_weight } => {
+                RouteActionDefinition::Weighted {
+                    clusters: clusters
+                        .iter()
+                        .map(|cluster| WeightedClusterDefinition {
+                            name: cluster.name.clone(),
+                            weight: cluster.weight,
+                            typed_per_filter_config: cluster.typed_per_filter_config.clone(),
+                        })
+                        .collect(),
+                    total_weight: *total_weight,
+                }
+            }
+            XdsRouteActionConfig::Redirect { host_redirect, path_redirect, response_code } => {
+                RouteActionDefinition::Redirect {
+                    host_redirect: host_redirect.clone(),
+                    path_redirect: path_redirect.clone(),
+                    response_code: *response_code,
+                }
+            }
         }
     }
 }
@@ -795,10 +726,9 @@ fn summarize_route(definition: &RouteDefinition) -> (String, String) {
         .flat_map(|vh| vh.routes.iter())
         .map(|route| match &route.action {
             RouteActionDefinition::Forward { cluster, .. } => cluster.clone(),
-            RouteActionDefinition::Weighted { clusters, .. } => clusters
-                .first()
-                .map(|cluster| cluster.name.clone())
-                .unwrap_or_default(),
+            RouteActionDefinition::Weighted { clusters, .. } => {
+                clusters.first().map(|cluster| cluster.name.clone()).unwrap_or_default()
+            }
             RouteActionDefinition::Redirect { .. } => "__redirect__".to_string(),
         })
         .next()
@@ -808,44 +738,29 @@ fn summarize_route(definition: &RouteDefinition) -> (String, String) {
 }
 
 fn validate_route_config(config: XdsRouteConfig) -> Result<XdsRouteConfig, ApiError> {
-    config
-        .to_envoy_route_configuration()
-        .map_err(ApiError::from)?;
+    config.to_envoy_route_configuration().map_err(ApiError::from)?;
     Ok(config)
 }
 
 fn validate_route_payload(definition: &RouteDefinition) -> Result<(), ApiError> {
-    definition
-        .validate()
-        .map_err(|err| ApiError::from(Error::from(err)))?;
+    definition.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
     for virtual_host in &definition.virtual_hosts {
-        virtual_host
-            .validate()
-            .map_err(|err| ApiError::from(Error::from(err)))?;
+        virtual_host.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
-        if virtual_host
-            .domains
-            .iter()
-            .any(|domain| domain.trim().is_empty())
-        {
+        if virtual_host.domains.iter().any(|domain| domain.trim().is_empty()) {
             return Err(validation_error("Virtual host domains must not be empty"));
         }
 
         for route in &virtual_host.routes {
-            route
-                .validate()
-                .map_err(|err| ApiError::from(Error::from(err)))?;
+            route.validate().map_err(|err| ApiError::from(Error::from(err)))?;
             validate_route_match(&route.r#match)?;
             validate_route_action(&route.action)?;
 
             match (&route.r#match.path, &route.action) {
                 (
                     PathMatchDefinition::Template { .. },
-                    RouteActionDefinition::Forward {
-                        prefix_rewrite: Some(_),
-                        ..
-                    },
+                    RouteActionDefinition::Forward { prefix_rewrite: Some(_), .. },
                 ) => {
                     return Err(validation_error(
                         "Template path matches do not support prefixRewrite",
@@ -853,20 +768,10 @@ fn validate_route_payload(definition: &RouteDefinition) -> Result<(), ApiError> 
                 }
                 (PathMatchDefinition::Template { .. }, RouteActionDefinition::Forward { .. }) => {}
                 (PathMatchDefinition::Template { .. }, _) => {
-                    return Err(validation_error(
-                        "Template path matches require a forward action",
-                    ));
+                    return Err(validation_error("Template path matches require a forward action"));
                 }
-                (
-                    _,
-                    RouteActionDefinition::Forward {
-                        template_rewrite: Some(_),
-                        ..
-                    },
-                ) => {
-                    return Err(validation_error(
-                        "templateRewrite requires a template path match",
-                    ));
+                (_, RouteActionDefinition::Forward { template_rewrite: Some(_), .. }) => {
+                    return Err(validation_error("templateRewrite requires a template path match"));
                 }
                 _ => {}
             }
@@ -897,22 +802,12 @@ fn validate_route_match(r#match: &RouteMatchDefinition) -> Result<(), ApiError> 
         }
     }
 
-    if r#match
-        .headers
-        .iter()
-        .any(|header| header.name.trim().is_empty())
-    {
+    if r#match.headers.iter().any(|header| header.name.trim().is_empty()) {
         return Err(validation_error("Header match name must not be empty"));
     }
 
-    if r#match
-        .query_parameters
-        .iter()
-        .any(|param| param.name.trim().is_empty())
-    {
-        return Err(validation_error(
-            "Query parameter match name must not be empty",
-        ));
+    if r#match.query_parameters.iter().any(|param| param.name.trim().is_empty()) {
+        return Err(validation_error("Query parameter match name must not be empty"));
     }
 
     Ok(())
@@ -920,21 +815,14 @@ fn validate_route_match(r#match: &RouteMatchDefinition) -> Result<(), ApiError> 
 
 fn validate_route_action(action: &RouteActionDefinition) -> Result<(), ApiError> {
     match action {
-        RouteActionDefinition::Forward {
-            cluster,
-            prefix_rewrite,
-            template_rewrite,
-            ..
-        } => {
+        RouteActionDefinition::Forward { cluster, prefix_rewrite, template_rewrite, .. } => {
             if cluster.trim().is_empty() {
                 return Err(validation_error("Forward action requires a cluster name"));
             }
 
             if let Some(prefix) = prefix_rewrite {
                 if prefix.trim().is_empty() {
-                    return Err(validation_error(
-                        "prefixRewrite must not be an empty string",
-                    ));
+                    return Err(validation_error("prefixRewrite must not be an empty string"));
                 }
 
                 if !prefix.starts_with('/') {
@@ -944,9 +832,7 @@ fn validate_route_action(action: &RouteActionDefinition) -> Result<(), ApiError>
 
             if let Some(template) = template_rewrite {
                 if template.trim().is_empty() {
-                    return Err(validation_error(
-                        "templateRewrite must not be an empty string",
-                    ));
+                    return Err(validation_error("templateRewrite must not be an empty string"));
                 }
 
                 ensure_valid_uri_template(template)?;
@@ -954,18 +840,11 @@ fn validate_route_action(action: &RouteActionDefinition) -> Result<(), ApiError>
         }
         RouteActionDefinition::Weighted { clusters, .. } => {
             if clusters.is_empty() {
-                return Err(validation_error(
-                    "Weighted action must include at least one cluster",
-                ));
+                return Err(validation_error("Weighted action must include at least one cluster"));
             }
 
-            if clusters
-                .iter()
-                .any(|cluster| cluster.name.trim().is_empty())
-            {
-                return Err(validation_error(
-                    "Weighted action cluster names must not be empty",
-                ));
+            if clusters.iter().any(|cluster| cluster.name.trim().is_empty()) {
+                return Err(validation_error("Weighted action cluster names must not be empty"));
             }
 
             if clusters.iter().any(|cluster| cluster.weight == 0) {
@@ -974,23 +853,11 @@ fn validate_route_action(action: &RouteActionDefinition) -> Result<(), ApiError>
                 ));
             }
         }
-        RouteActionDefinition::Redirect {
-            host_redirect,
-            path_redirect,
-            ..
-        } => {
-            if host_redirect
-                .as_ref()
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(false)
-                || path_redirect
-                    .as_ref()
-                    .map(|s| s.trim().is_empty())
-                    .unwrap_or(false)
+        RouteActionDefinition::Redirect { host_redirect, path_redirect, .. } => {
+            if host_redirect.as_ref().map(|s| s.trim().is_empty()).unwrap_or(false)
+                || path_redirect.as_ref().map(|s| s.trim().is_empty()).unwrap_or(false)
             {
-                return Err(validation_error(
-                    "Redirect action values must not be empty strings",
-                ));
+                return Err(validation_error("Redirect action values must not be empty strings"));
             }
         }
     }
@@ -1003,9 +870,7 @@ fn validation_error(message: impl Into<String>) -> ApiError {
 }
 
 fn ensure_valid_uri_template(template: &str) -> Result<(), ApiError> {
-    let config = UriTemplateMatchConfig {
-        path_template: template.to_string(),
-    };
+    let config = UriTemplateMatchConfig { path_template: template.to_string() };
 
     if config.encode_to_vec().is_empty() {
         Err(validation_error("Invalid URI template"))
@@ -1074,17 +939,11 @@ mod tests {
         .expect("create tables");
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool.clone());
-        let api_state = ApiState {
-            xds_state: Arc::new(state),
-        };
+        let api_state = ApiState { xds_state: Arc::new(state) };
 
         // Seed a cluster for route references
-        let cluster_repo = api_state
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .cloned()
-            .expect("cluster repo");
+        let cluster_repo =
+            api_state.xds_state.cluster_repository.as_ref().cloned().expect("cluster repo");
 
         cluster_repo
             .create(CreateClusterRequest {
@@ -1120,9 +979,7 @@ mod tests {
                 routes: vec![RouteRuleDefinition {
                     name: Some("api".into()),
                     r#match: RouteMatchDefinition {
-                        path: PathMatchDefinition::Prefix {
-                            value: "/api".into(),
-                        },
+                        path: PathMatchDefinition::Prefix { value: "/api".into() },
                         headers: vec![],
                         query_parameters: vec![],
                     },
@@ -1153,16 +1010,8 @@ mod tests {
         assert_eq!(created.name, "primary-routes");
         assert_eq!(created.config.virtual_hosts.len(), 1);
 
-        let repo = state
-            .xds_state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .expect("route repo");
-        let stored = repo
-            .get_by_name("primary-routes")
-            .await
-            .expect("stored route");
+        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
+        let stored = repo.get_by_name("primary-routes").await.expect("stored route");
         assert_eq!(stored.path_prefix, "/api");
         assert!(stored.cluster_name.contains("api-cluster"));
     }
@@ -1172,9 +1021,8 @@ mod tests {
         let state = setup_state().await;
 
         let payload = sample_route_definition();
-        let (status, _) = create_route_handler(State(state.clone()), Json(payload))
-            .await
-            .expect("create route");
+        let (status, _) =
+            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
         let response = list_routes_handler(State(state), Query(ListRoutesQuery::default()))
@@ -1189,9 +1037,8 @@ mod tests {
     async fn get_route_returns_definition() {
         let state = setup_state().await;
         let payload = sample_route_definition();
-        let (status, _) = create_route_handler(State(state.clone()), Json(payload))
-            .await
-            .expect("create route");
+        let (status, _) =
+            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
         let response = get_route_handler(State(state), Path("primary-routes".into()))
@@ -1226,34 +1073,32 @@ mod tests {
             ],
             total_weight: Some(100),
         };
-        payload.virtual_hosts[0].routes[0]
-            .typed_per_filter_config
-            .insert(
-                "envoy.filters.http.local_ratelimit".into(),
-                HttpScopedConfig::LocalRateLimit(LocalRateLimitConfig {
-                    stat_prefix: "per_route".into(),
-                    token_bucket: Some(TokenBucketConfig {
-                        max_tokens: 10,
-                        tokens_per_fill: Some(10),
-                        fill_interval_ms: 60_000,
-                    }),
-                    status_code: Some(429),
-                    filter_enabled: Some(RuntimeFractionalPercentConfig {
-                        runtime_key: None,
-                        numerator: 100,
-                        denominator: FractionalPercentDenominator::Hundred,
-                    }),
-                    filter_enforced: Some(RuntimeFractionalPercentConfig {
-                        runtime_key: None,
-                        numerator: 100,
-                        denominator: FractionalPercentDenominator::Hundred,
-                    }),
-                    per_downstream_connection: Some(false),
-                    rate_limited_as_resource_exhausted: None,
-                    max_dynamic_descriptors: None,
-                    always_consume_default_token_bucket: Some(false),
+        payload.virtual_hosts[0].routes[0].typed_per_filter_config.insert(
+            "envoy.filters.http.local_ratelimit".into(),
+            HttpScopedConfig::LocalRateLimit(LocalRateLimitConfig {
+                stat_prefix: "per_route".into(),
+                token_bucket: Some(TokenBucketConfig {
+                    max_tokens: 10,
+                    tokens_per_fill: Some(10),
+                    fill_interval_ms: 60_000,
                 }),
-            );
+                status_code: Some(429),
+                filter_enabled: Some(RuntimeFractionalPercentConfig {
+                    runtime_key: None,
+                    numerator: 100,
+                    denominator: FractionalPercentDenominator::Hundred,
+                }),
+                filter_enforced: Some(RuntimeFractionalPercentConfig {
+                    runtime_key: None,
+                    numerator: 100,
+                    denominator: FractionalPercentDenominator::Hundred,
+                }),
+                per_downstream_connection: Some(false),
+                rate_limited_as_resource_exhausted: None,
+                max_dynamic_descriptors: None,
+                always_consume_default_token_bucket: Some(false),
+            }),
+        );
 
         let response = update_route_handler(
             State(state.clone()),
@@ -1269,26 +1114,15 @@ mod tests {
             .typed_per_filter_config
             .get("envoy.filters.http.local_ratelimit")
         {
-            let bucket = cfg
-                .token_bucket
-                .as_ref()
-                .expect("route-level token bucket present");
+            let bucket = cfg.token_bucket.as_ref().expect("route-level token bucket present");
             assert_eq!(bucket.max_tokens, 10);
             assert_eq!(bucket.tokens_per_fill, Some(10));
         } else {
             panic!("expected local rate limit override in response");
         }
 
-        let repo = state
-            .xds_state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .expect("route repo");
-        let stored = repo
-            .get_by_name("primary-routes")
-            .await
-            .expect("stored route");
+        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
+        let stored = repo.get_by_name("primary-routes").await.expect("stored route");
         let stored_config: XdsRouteConfig = serde_json::from_str(&stored.configuration).unwrap();
         assert!(stored_config.virtual_hosts[0].routes[0]
             .typed_per_filter_config
@@ -1300,9 +1134,8 @@ mod tests {
     async fn delete_route_removes_row() {
         let state = setup_state().await;
         let payload = sample_route_definition();
-        let (status, _) = create_route_handler(State(state.clone()), Json(payload))
-            .await
-            .expect("create route");
+        let (status, _) =
+            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
         let status = delete_route_handler(State(state.clone()), Path("primary-routes".into()))
@@ -1311,12 +1144,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let repo = state
-            .xds_state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .expect("route repo");
+        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
         assert!(repo.get_by_name("primary-routes").await.is_err());
     }
 
@@ -1326,9 +1154,8 @@ mod tests {
 
         let mut payload = sample_route_definition();
         payload.name = "template-route".into();
-        payload.virtual_hosts[0].routes[0].r#match.path = PathMatchDefinition::Template {
-            template: "/api/v1/users/{user_id}".into(),
-        };
+        payload.virtual_hosts[0].routes[0].r#match.path =
+            PathMatchDefinition::Template { template: "/api/v1/users/{user_id}".into() };
         payload.virtual_hosts[0].routes[0].action = RouteActionDefinition::Forward {
             cluster: "api-cluster".into(),
             timeout_seconds: Some(5),
@@ -1344,32 +1171,15 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created.name, "template-route");
         let route = &created.config.virtual_hosts[0].routes[0];
-        assert!(matches!(
-            route.r#match.path,
-            PathMatchDefinition::Template { .. }
-        ));
-        if let RouteActionDefinition::Forward {
-            template_rewrite, ..
-        } = &route.action
-        {
+        assert!(matches!(route.r#match.path, PathMatchDefinition::Template { .. }));
+        if let RouteActionDefinition::Forward { template_rewrite, .. } = &route.action {
             assert_eq!(template_rewrite.as_deref(), Some("/users/{user_id}"));
         } else {
             panic!("expected forward action");
         }
 
-        let repo = state
-            .xds_state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .expect("route repo");
-        let stored = repo
-            .get_by_name("template-route")
-            .await
-            .expect("stored template route");
-        assert_eq!(
-            stored.path_prefix,
-            "template:/api/v1/users/{user_id}".to_string()
-        );
+        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
+        let stored = repo.get_by_name("template-route").await.expect("stored template route");
+        assert_eq!(stored.path_prefix, "template:/api/v1/users/{user_id}".to_string());
     }
 }

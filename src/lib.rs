@@ -23,8 +23,11 @@
 //! - **Persistence Layer**: SQLx repositories (SQLite by default, PostgreSQL planned)
 
 pub mod api;
+pub mod auth;
+pub mod cli;
 pub mod config;
 pub mod errors;
+pub mod observability;
 pub mod openapi;
 pub mod storage;
 pub mod utils;
@@ -45,8 +48,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_version_available() {
-        assert!(!VERSION.is_empty());
+    fn version_looks_like_semver() {
+        let components: Vec<_> = VERSION.split('.').collect();
+        assert!(components.len() >= 3, "version should follow semver: {VERSION}");
+        assert!(components.iter().all(|part| !part.is_empty()));
         assert_eq!(APP_NAME, "flowplane");
     }
 }

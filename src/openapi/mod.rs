@@ -89,11 +89,7 @@ pub fn build_gateway_plan(
 
     let virtual_host_name = format!("{}-vh", &options.name);
 
-    let servers = if openapi.servers.is_empty() {
-        Vec::new()
-    } else {
-        openapi.servers.clone()
-    };
+    let servers = if openapi.servers.is_empty() { Vec::new() } else { openapi.servers.clone() };
 
     if servers.is_empty() {
         return Err(GatewayError::MissingServers);
@@ -148,11 +144,8 @@ pub fn build_gateway_plan(
         return Err(GatewayError::NoRoutes);
     }
 
-    let mut domains_vec: Vec<String> = if domains.is_empty() {
-        vec!["*".to_string()]
-    } else {
-        domains.into_iter().collect()
-    };
+    let mut domains_vec: Vec<String> =
+        if domains.is_empty() { vec!["*".to_string()] } else { domains.into_iter().collect() };
 
     if options.shared_listener {
         domains_vec.retain(|domain| domain != "*");
@@ -172,18 +165,12 @@ pub fn build_gateway_plan(
         gateway: options.name.clone(),
         listener: listener_name.clone(),
         route_config: route_name.clone(),
-        clusters: cluster_requests
-            .iter()
-            .map(|request| request.name.clone())
-            .collect(),
+        clusters: cluster_requests.iter().map(|request| request.name.clone()).collect(),
         shared_listener: options.shared_listener,
     };
 
-    let default_cluster_name = summary
-        .clusters
-        .first()
-        .cloned()
-        .unwrap_or_else(|| cluster_info.request.name.clone());
+    let default_cluster_name =
+        summary.clusters.first().cloned().unwrap_or_else(|| cluster_info.request.name.clone());
 
     if options.shared_listener {
         Ok(GatewayPlan {
@@ -194,10 +181,8 @@ pub fn build_gateway_plan(
             summary,
         })
     } else {
-        let route_config = XdsRouteConfig {
-            name: route_name.clone(),
-            virtual_hosts: vec![virtual_host],
-        };
+        let route_config =
+            XdsRouteConfig { name: route_name.clone(), virtual_hosts: vec![virtual_host] };
 
         let mut route_config_value = serde_json::to_value(&route_config)
             .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
@@ -298,16 +283,9 @@ fn cluster_from_server(
 
     let spec = crate::xds::ClusterSpec {
         connect_timeout_seconds: Some(5),
-        endpoints: vec![crate::xds::EndpointSpec::Address {
-            host: host.to_string(),
-            port,
-        }],
+        endpoints: vec![crate::xds::EndpointSpec::Address { host: host.to_string(), port }],
         use_tls: Some(use_tls),
-        tls_server_name: if use_tls {
-            Some(host.to_string())
-        } else {
-            None
-        },
+        tls_server_name: if use_tls { Some(host.to_string()) } else { None },
         dns_lookup_family: None,
         lb_policy: None,
         least_request: None,
@@ -318,9 +296,8 @@ fn cluster_from_server(
         outlier_detection: None,
     };
 
-    let mut configuration = spec
-        .to_value()
-        .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
+    let mut configuration =
+        spec.to_value().map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
     attach_gateway_tag(&mut configuration, gateway_tag);
 
     let request = CreateClusterRequest {
@@ -369,28 +346,15 @@ fn combine_base_path(server: &Server, template: &str) -> String {
 }
 
 fn route_name_for_path(prefix: &str, path: &str) -> String {
-    let slug = path
-        .trim_matches('/')
-        .replace('/', "_")
-        .replace(['{', '}'], "");
-    let slug = if slug.is_empty() {
-        "root".to_string()
-    } else {
-        slug
-    };
+    let slug = path.trim_matches('/').replace('/', "_").replace(['{', '}'], "");
+    let slug = if slug.is_empty() { "root".to_string() } else { slug };
     sanitize_name(&format!("{}-{}", prefix, slug))
 }
 
 fn sanitize_name(raw: &str) -> String {
     let mut name: String = raw
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
 
     if name.is_empty() {
@@ -460,12 +424,7 @@ fn is_enum_wrapper(map: &serde_json::Map<String, JsonValue>) -> bool {
         return false;
     }
 
-    map.keys().all(|key| {
-        key.chars()
-            .next()
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false)
-    })
+    map.keys().all(|key| key.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -509,15 +468,10 @@ mod tests {
         assert!(!plan.summary.shared_listener);
         assert_eq!(plan.summary.clusters.len(), 1);
         assert_eq!(plan.cluster_requests.len(), 1);
-        let route_request = plan
-            .route_request
-            .as_ref()
-            .expect("route request should exist");
+        let route_request = plan.route_request.as_ref().expect("route request should exist");
         assert_eq!(route_request.name, "example-routes");
-        let listener_request = plan
-            .listener_request
-            .as_ref()
-            .expect("listener request should exist");
+        let listener_request =
+            plan.listener_request.as_ref().expect("listener request should exist");
         assert_eq!(listener_request.name, "example-listener");
         assert!(plan.default_virtual_host.is_none());
 

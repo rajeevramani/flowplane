@@ -175,10 +175,8 @@ pub struct LocalRateLimitConfig {
 impl LocalRateLimitConfig {
     /// Convert into Envoy Any payload
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
-        let mut proto = LocalRateLimit {
-            stat_prefix: self.stat_prefix.clone(),
-            ..Default::default()
-        };
+        let mut proto =
+            LocalRateLimit { stat_prefix: self.stat_prefix.clone(), ..Default::default() };
 
         if let Some(bucket) = &self.token_bucket {
             proto.token_bucket = Some(bucket.to_proto()?);
@@ -211,9 +209,7 @@ impl LocalRateLimitConfig {
         }
 
         if let Some(always_consume) = self.always_consume_default_token_bucket {
-            proto.always_consume_default_token_bucket = Some(BoolValue {
-                value: always_consume,
-            });
+            proto.always_consume_default_token_bucket = Some(BoolValue { value: always_consume });
         }
 
         if self.token_bucket.is_none() {
@@ -230,17 +226,11 @@ impl LocalRateLimitConfig {
 
     /// Build configuration from Envoy proto
     pub fn from_proto(proto: &LocalRateLimit) -> Result<Self, crate::Error> {
-        let token_bucket = proto
-            .token_bucket
-            .as_ref()
-            .map(TokenBucketConfig::from_proto)
-            .transpose()?;
+        let token_bucket =
+            proto.token_bucket.as_ref().map(TokenBucketConfig::from_proto).transpose()?;
 
-        let status_code = proto
-            .status
-            .as_ref()
-            .map(|status| status.code as u16)
-            .filter(|code| *code >= 100);
+        let status_code =
+            proto.status.as_ref().map(|status| status.code as u16).filter(|code| *code >= 100);
 
         let filter_enabled = proto
             .filter_enabled
@@ -254,15 +244,11 @@ impl LocalRateLimitConfig {
             .map(RuntimeFractionalPercentConfig::from_proto)
             .transpose()?;
 
-        let max_dynamic_descriptors = proto
-            .max_dynamic_descriptors
-            .as_ref()
-            .map(|value| value.value);
+        let max_dynamic_descriptors =
+            proto.max_dynamic_descriptors.as_ref().map(|value| value.value);
 
-        let always_consume_default_token_bucket = proto
-            .always_consume_default_token_bucket
-            .as_ref()
-            .map(|value| value.value);
+        let always_consume_default_token_bucket =
+            proto.always_consume_default_token_bucket.as_ref().map(|value| value.value);
 
         Ok(Self {
             stat_prefix: proto.stat_prefix.clone(),
@@ -280,9 +266,7 @@ impl LocalRateLimitConfig {
 
 fn duration_to_millis(duration: &ProtoDuration) -> Result<u64, crate::Error> {
     if duration.seconds < 0 || duration.nanos < 0 {
-        return Err(invalid_config(
-            "LocalRateLimit token bucket fill_interval must be positive",
-        ));
+        return Err(invalid_config("LocalRateLimit token bucket fill_interval must be positive"));
     }
 
     let millis_from_secs = (duration.seconds as u64)
