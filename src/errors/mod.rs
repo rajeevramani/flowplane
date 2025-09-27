@@ -3,6 +3,10 @@
 //! This module provides error handling for the Flowplane control plane.
 //! It defines custom error types using `thiserror` for the minimal XDS server.
 
+pub mod tls;
+
+pub use tls::TlsError;
+
 /// Custom result type for Flowplane operations
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -81,5 +85,11 @@ impl Error {
 impl From<validator::ValidationErrors> for Error {
     fn from(err: validator::ValidationErrors) -> Self {
         Self::Validation(format!("Validation failed: {}", err))
+    }
+}
+
+impl From<TlsError> for Error {
+    fn from(error: TlsError) -> Self {
+        Self::Config(error.to_string())
     }
 }

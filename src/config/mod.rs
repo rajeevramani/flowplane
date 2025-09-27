@@ -5,11 +5,14 @@
 
 use crate::Result;
 
+pub mod tls;
+
 pub mod settings;
 
 pub use settings::{
     AppConfig, AuthConfig, DatabaseConfig, ObservabilityConfig, ServerConfig, XdsConfig,
 };
+pub use tls::ApiTlsConfig;
 
 /// Simplified configuration for backwards compatibility and development
 #[derive(Debug, Clone, Default)]
@@ -41,6 +44,7 @@ pub struct XdsTlsConfig {
 pub struct ApiServerConfig {
     pub bind_address: String,
     pub port: u16,
+    pub tls: Option<ApiTlsConfig>,
 }
 
 /// Configuration for Envoy resources served by XDS
@@ -80,7 +84,7 @@ impl Default for SimpleXdsConfig {
 
 impl Default for ApiServerConfig {
     fn default() -> Self {
-        Self { bind_address: "127.0.0.1".to_string(), port: 8080 }
+        Self { bind_address: "127.0.0.1".to_string(), port: 8080, tls: None }
     }
 }
 
@@ -163,7 +167,11 @@ impl Config {
                 },
                 tls: load_xds_tls_config_from_env()?,
             },
-            api: ApiServerConfig { bind_address: api_bind_address, port: api_port },
+            api: ApiServerConfig {
+                bind_address: api_bind_address,
+                port: api_port,
+                tls: ApiTlsConfig::from_env()?,
+            },
         })
     }
 
@@ -237,6 +245,7 @@ mod tests {
         assert_eq!(config.xds.port, 18000);
         assert_eq!(config.api.bind_address, "127.0.0.1");
         assert_eq!(config.api.port, 8080);
+        assert!(config.api.tls.is_none());
     }
 
     #[test]
@@ -260,6 +269,7 @@ mod tests {
         assert_eq!(config.xds.bind_address, "127.0.0.1");
         assert_eq!(config.api.port, 7070);
         assert_eq!(config.api.bind_address, "0.0.0.0");
+        assert!(config.api.tls.is_none());
 
         // Restore original environment
         match original_port {
@@ -295,11 +305,16 @@ mod tests {
         env::remove_var("FLOWPLANE_XDS_TLS_KEY_PATH");
         env::remove_var("FLOWPLANE_XDS_TLS_CLIENT_CA_PATH");
         env::remove_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT");
+        env::remove_var("FLOWPLANE_API_TLS_ENABLED");
+        env::remove_var("FLOWPLANE_API_TLS_CERT_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_KEY_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_CHAIN_PATH");
 
         let config = Config::from_env().unwrap();
         assert_eq!(config.xds.port, 18000);
         assert_eq!(config.xds.bind_address, "0.0.0.0");
         assert!(config.xds.tls.is_none());
+        assert!(config.api.tls.is_none());
 
         // Restore original environment
         match original_port {
@@ -349,5 +364,29 @@ mod tests {
             Some(value) => env::set_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT", value),
             None => env::remove_var("FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT"),
         }
+        env::remove_var("FLOWPLANE_API_TLS_ENABLED");
+        env::remove_var("FLOWPLANE_API_TLS_CERT_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_KEY_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_CHAIN_PATH");
+    }
+
+    #[test]
+    fn test_api_tls_config_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        env::set_var("FLOWPLANE_API_TLS_ENABLED", "true");
+        env::set_var("FLOWPLANE_API_TLS_CERT_PATH", "/tmp/api-cert.pem");
+        env::set_var("FLOWPLANE_API_TLS_KEY_PATH", "/tmp/api-key.pem");
+
+        let config = Config::from_env().unwrap();
+        let tls = config.api.tls.expect("API TLS config present");
+        assert_eq!(tls.cert_path, std::path::PathBuf::from("/tmp/api-cert.pem"));
+        assert_eq!(tls.key_path, std::path::PathBuf::from("/tmp/api-key.pem"));
+        assert!(tls.chain_path.is_none());
+
+        env::remove_var("FLOWPLANE_API_TLS_ENABLED");
+        env::remove_var("FLOWPLANE_API_TLS_CERT_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_KEY_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_CHAIN_PATH");
     }
 }

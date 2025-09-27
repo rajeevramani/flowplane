@@ -46,6 +46,7 @@ ring = "0.17.14"
 base64 = "0.22"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+simple_asn1 = "0.6"
 
 # Observability and monitoring - enhanced like PoC
 tracing = "0.1"
