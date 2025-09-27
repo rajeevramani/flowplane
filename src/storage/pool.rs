@@ -36,52 +36,36 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
         let connect_options = SqliteConnectOptions::from_str(&config.url)
             .map_err(|e| FlowplaneError::Database {
                 source: e,
-                context: format!(
-                    "Invalid SQLite connection string: {}",
-                    sanitize_url(&config.url)
-                ),
+                context: format!("Invalid SQLite connection string: {}", sanitize_url(&config.url)),
             })?
             .create_if_missing(true)
             .busy_timeout(SQLITE_BUSY_TIMEOUT)
             .journal_mode(SqliteJournalMode::Wal);
 
-        pool_options
-            .connect_with(connect_options)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    url = %config.url,
-                    busy_timeout_ms = SQLITE_BUSY_TIMEOUT.as_millis(),
-                    "Failed to create SQLite database pool"
-                );
-                FlowplaneError::Database {
-                    source: e,
-                    context: format!(
-                        "Failed to connect to database: {}",
-                        sanitize_url(&config.url)
-                    ),
-                }
-            })?
+        pool_options.connect_with(connect_options).await.map_err(|e| {
+            tracing::error!(
+                error = %e,
+                url = %config.url,
+                busy_timeout_ms = SQLITE_BUSY_TIMEOUT.as_millis(),
+                "Failed to create SQLite database pool"
+            );
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
+            }
+        })?
     } else {
         pool_options.connect(&config.url).await.map_err(|e| {
             tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
             FlowplaneError::Database {
                 source: e,
-                context: format!(
-                    "Failed to connect to database: {}",
-                    sanitize_url(&config.url)
-                ),
+                context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
             }
         })?
     };
 
     tracing::info!(
-        database_type = if config.is_sqlite() {
-            "sqlite"
-        } else {
-            "postgresql"
-        },
+        database_type = if config.is_sqlite() { "sqlite" } else { "postgresql" },
         max_connections = config.max_connections,
         min_connections = config.min_connections,
         connect_timeout_ms = config.connect_timeout().as_millis(),
@@ -101,9 +85,7 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
 /// Validate database configuration
 fn validate_config(config: &DatabaseConfig) -> Result<()> {
     if config.max_connections == 0 {
-        return Err(FlowplaneError::validation(
-            "max_connections must be greater than 0",
-        ));
+        return Err(FlowplaneError::validation("max_connections must be greater than 0"));
     }
 
     if config.min_connections > config.max_connections {
@@ -147,10 +129,7 @@ fn sanitize_url(url: &str) -> String {
 
 /// Get pool statistics for monitoring
 pub fn get_pool_stats(pool: &Pool<Sqlite>) -> PoolStats {
-    PoolStats {
-        size: pool.size(),
-        idle: pool.num_idle(),
-    }
+    PoolStats { size: pool.size(), idle: pool.num_idle() }
 }
 
 /// Pool statistics for monitoring
@@ -215,20 +194,15 @@ mod tests {
 
     #[test]
     fn test_validate_config_empty_url() {
-        let config = DatabaseConfig {
-            url: "".to_string(),
-            ..Default::default()
-        };
+        let config = DatabaseConfig { url: "".to_string(), ..Default::default() };
 
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_config_invalid_url_scheme() {
-        let config = DatabaseConfig {
-            url: "mysql://localhost/test".to_string(),
-            ..Default::default()
-        };
+        let config =
+            DatabaseConfig { url: "mysql://localhost/test".to_string(), ..Default::default() };
 
         assert!(validate_config(&config).is_err());
     }

@@ -1,0 +1,345 @@
+openapi: 3.0.3
+info:
+  title: Authentication Audit Events Specification
+  description: Defines audit logging events and metadata for authentication system
+  version: 1.0.0
+
+components:
+  schemas:
+    BaseAuditEvent:
+      type: object
+      properties:
+        event_type:
+          type: string
+          description: Type of authentication event
+        timestamp:
+          type: string
+          format: date-time
+          description: When the event occurred
+        correlation_id:
+          type: string
+          description: Request correlation ID for tracing
+          pattern: '^req_[a-zA-Z0-9]{16}$'
+          example: "req_abc123def456ghi7"
+        source_ip:
+          type: string
+          description: Client IP address
+        user_agent:
+          type: string
+          description: Client user agent string
+        endpoint:
+          type: string
+          description: API endpoint that was accessed
+          example: "/api/v1/clusters"
+        method:
+          type: string
+          description: HTTP method
+          enum: [GET, POST, PUT, DELETE, PATCH]
+
+# Token Lifecycle Events
+
+    TokenCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.token.created]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                granted_scopes:
+                  type: array
+                  items:
+                    type: string
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                created_by:
+                  type: string
+                  description: Identity of token creator
+
+    TokenSeededEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.token.seeded]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                granted_scopes:
+                  type: array
+                  items:
+                    type: string
+                bootstrap:
+                  type: boolean
+                  description: True for system bootstrap tokens
+                created_by:
+                  type: string
+                  enum: [system, admin]
+                  description: System for bootstrap, admin for manual seeding
+
+    TokenRevokedEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.token.revoked]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                revoked_by:
+                  type: string
+                  description: Identity of who revoked the token
+                reason:
+                  type: string
+                  description: Reason for revocation
+                  enum: [manual, expired, compromised, policy_change]
+
+    TokenRotatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.token.rotated]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                old_token_hash:
+                  type: string
+                  description: Hash of previous token (for audit trail)
+                rotated_by:
+                  type: string
+
+# Authentication Events
+
+    AuthenticationSuccessEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.request.authenticated]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                granted_scopes:
+                  type: array
+                  items:
+                    type: string
+                validation_duration_ms:
+                  type: integer
+                  description: Time taken to validate token
+
+    AuthenticationFailureEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.request.failed]
+            metadata:
+              type: object
+              properties:
+                failure_reason:
+                  type: string
+                  enum:
+                    - missing_token
+                    - malformed_token
+                    - invalid_token
+                    - expired_token
+                    - revoked_token
+                token_prefix:
+                  type: string
+                  description: First 8 characters of provided token (for debugging)
+                  example: "fp_abc12"
+
+# Authorization Events
+
+    AuthorizationSuccessEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.request.authorized]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                required_scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Scopes required for the endpoint
+                granted_scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Scopes available to the token
+
+    AuthorizationFailureEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.request.forbidden]
+            metadata:
+              type: object
+              properties:
+                token_id:
+                  type: string
+                  format: uuid
+                token_name:
+                  type: string
+                required_scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Scopes required for the endpoint
+                granted_scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Scopes available to the token
+                missing_scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Required scopes not granted to token
+
+# Security Events
+
+    SuspiciousActivityEvent:
+      allOf:
+        - $ref: '#/components/schemas/BaseAuditEvent'
+        - type: object
+          properties:
+            event_type:
+              type: string
+              enum: [auth.security.suspicious_activity]
+            metadata:
+              type: object
+              properties:
+                activity_type:
+                  type: string
+                  enum:
+                    - rate_limit_exceeded
+                    - multiple_failed_attempts
+                    - token_enumeration_attempt
+                    - unusual_access_pattern
+                severity:
+                  type: string
+                  enum: [low, medium, high, critical]
+                details:
+                  type: object
+                  description: Additional context about the suspicious activity
+
+# Event Aggregation and Metrics
+
+x-audit-configuration:
+  retention:
+    authentication_events: "90 days"
+    token_lifecycle_events: "2 years"
+    security_events: "5 years"
+
+  indexing:
+    primary_indexes:
+      - "event_type"
+      - "timestamp"
+      - "correlation_id"
+      - "token_id"
+      - "source_ip"
+    composite_indexes:
+      - "event_type, timestamp"
+      - "token_id, timestamp"
+      - "source_ip, timestamp"
+
+  aggregation_metrics:
+    authentication_rate:
+      description: "Successful authentications per minute"
+      query: "SELECT COUNT(*) FROM audit_log WHERE event_type = 'auth.request.authenticated' AND timestamp >= NOW() - INTERVAL '1 minute'"
+
+    failure_rate:
+      description: "Authentication failures per minute"
+      query: "SELECT COUNT(*) FROM audit_log WHERE event_type = 'auth.request.failed' AND timestamp >= NOW() - INTERVAL '1 minute'"
+
+    unique_tokens_active:
+      description: "Number of unique tokens used in last 24 hours"
+      query: "SELECT COUNT(DISTINCT metadata->>'token_id') FROM audit_log WHERE event_type = 'auth.request.authenticated' AND timestamp >= NOW() - INTERVAL '24 hours'"
+
+    top_endpoints:
+      description: "Most frequently accessed authenticated endpoints"
+      query: "SELECT endpoint, COUNT(*) as requests FROM audit_log WHERE event_type = 'auth.request.authenticated' GROUP BY endpoint ORDER BY requests DESC LIMIT 10"
+
+  alerting:
+    high_failure_rate:
+      condition: "Authentication failure rate > 10 per minute for 5 consecutive minutes"
+      severity: "high"
+
+    token_enumeration:
+      condition: "More than 50 different invalid tokens from same IP in 1 hour"
+      severity: "critical"
+
+    suspicious_token_usage:
+      condition: "Token used from more than 5 different IP addresses in 1 hour"
+      severity: "medium"
+
+# Privacy and Compliance
+
+x-privacy:
+  data_minimization:
+    - "Token values are never logged (only hashes or prefixes)"
+    - "IP addresses are anonymized after 30 days"
+    - "User agents are generalized after 90 days"
+
+  gdpr_compliance:
+    - "Audit logs can be filtered by correlation_id for data subject requests"
+    - "Token-related events can be deleted when token is permanently removed"
+    - "Personal identifiers are pseudonymized where possible"
+
+  security_considerations:
+    - "All audit events are digitally signed to prevent tampering"
+    - "Audit log access requires admin:read scope minimum"
+    - "Audit logs are replicated to secure, append-only storage"

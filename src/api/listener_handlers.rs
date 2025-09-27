@@ -166,14 +166,10 @@ pub async fn create_listener_handler(
     let created = repository.create(request).await.map_err(ApiError::from)?;
     info!(listener_id = %created.id, listener_name = %created.name, "Listener created via API");
 
-    state
-        .xds_state
-        .refresh_listeners_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after listener creation");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after listener creation");
+        ApiError::from(err)
+    })?;
 
     let response = listener_response_from_data(created)?;
     Ok((StatusCode::CREATED, Json(response)))
@@ -197,10 +193,7 @@ pub async fn list_listeners_handler(
     Query(params): Query<ListListenersQuery>,
 ) -> Result<Json<Vec<ListenerResponse>>, ApiError> {
     let repository = require_listener_repository(&state)?;
-    let rows = repository
-        .list(params.limit, params.offset)
-        .await
-        .map_err(ApiError::from)?;
+    let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
 
     let mut listeners = Vec::with_capacity(rows.len());
     for row in rows {
@@ -226,10 +219,7 @@ pub async fn get_listener_handler(
     Path(name): Path<String>,
 ) -> Result<Json<ListenerResponse>, ApiError> {
     let repository = require_listener_repository(&state)?;
-    let listener = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
     let response = listener_response_from_data(listener)?;
     Ok(Json(response))
 }
@@ -255,10 +245,7 @@ pub async fn update_listener_handler(
     validate_update_listener_body(&payload)?;
 
     let repository = require_listener_repository(&state)?;
-    let existing = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     let config = listener_config_from_update(name.clone(), &payload)?;
     let configuration = serde_json::to_value(&config).map_err(|err| {
@@ -275,21 +262,14 @@ pub async fn update_listener_handler(
         configuration: Some(configuration),
     };
 
-    let updated = repository
-        .update(&existing.id, request)
-        .await
-        .map_err(ApiError::from)?;
+    let updated = repository.update(&existing.id, request).await.map_err(ApiError::from)?;
 
     info!(listener_id = %existing.id, listener_name = %name, "Listener updated via API");
 
-    state
-        .xds_state
-        .refresh_listeners_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after listener update");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after listener update");
+        ApiError::from(err)
+    })?;
 
     let response = listener_response_from_data(updated)?;
     Ok(Json(response))
@@ -317,26 +297,16 @@ pub async fn delete_listener_handler(
     }
 
     let repository = require_listener_repository(&state)?;
-    let existing = repository
-        .get_by_name(&name)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
-    repository
-        .delete(&existing.id)
-        .await
-        .map_err(ApiError::from)?;
+    repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
     info!(listener_id = %existing.id, listener_name = %name, "Listener deleted via API");
 
-    state
-        .xds_state
-        .refresh_listeners_from_repository()
-        .await
-        .map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after listener deletion");
-            ApiError::from(err)
-        })?;
+    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+        error!(error = %err, "Failed to refresh xDS caches after listener deletion");
+        ApiError::from(err)
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -390,25 +360,13 @@ fn listener_config_from_parts(
     port: u16,
     filter_chains: &[ListenerFilterChainInput],
 ) -> Result<ListenerConfig, ApiError> {
-    let chains = filter_chains
-        .iter()
-        .map(convert_filter_chain)
-        .collect::<Result<Vec<_>, _>>()?;
+    let chains = filter_chains.iter().map(convert_filter_chain).collect::<Result<Vec<_>, _>>()?;
 
-    Ok(ListenerConfig {
-        name,
-        address,
-        port: port.into(),
-        filter_chains: chains,
-    })
+    Ok(ListenerConfig { name, address, port: port.into(), filter_chains: chains })
 }
 
 fn convert_filter_chain(input: &ListenerFilterChainInput) -> Result<FilterChainConfig, ApiError> {
-    let filters = input
-        .filters
-        .iter()
-        .map(convert_filter)
-        .collect::<Result<Vec<_>, _>>()?;
+    let filters = input.filters.iter().map(convert_filter).collect::<Result<Vec<_>, _>>()?;
 
     Ok(FilterChainConfig {
         name: input.name.clone(),
@@ -438,10 +396,7 @@ fn convert_filter_type(input: &ListenerFilterTypeInput) -> Result<FilterType, Ap
                 None => None,
             };
 
-            if route_config_name
-                .as_ref()
-                .map(|name| name.trim().is_empty())
-                .unwrap_or(true)
+            if route_config_name.as_ref().map(|name| name.trim().is_empty()).unwrap_or(true)
                 && inline_route_config.is_none()
             {
                 return Err(ApiError::from(Error::validation(
@@ -457,10 +412,7 @@ fn convert_filter_type(input: &ListenerFilterTypeInput) -> Result<FilterType, Ap
                 http_filters: http_filters.clone(),
             })
         }
-        ListenerFilterTypeInput::TcpProxy {
-            cluster,
-            access_log,
-        } => {
+        ListenerFilterTypeInput::TcpProxy { cluster, access_log } => {
             if cluster.trim().is_empty() {
                 return Err(ApiError::from(Error::validation(
                     "TCP proxy filter requires a non-empty cluster",
@@ -484,10 +436,7 @@ fn convert_tls_context(input: &ListenerTlsContextInput) -> TlsContextConfig {
 }
 
 fn convert_access_log(input: &ListenerAccessLogInput) -> AccessLogConfig {
-    AccessLogConfig {
-        path: input.path.clone(),
-        format: input.format.clone(),
-    }
+    AccessLogConfig { path: input.path.clone(), format: input.format.clone() }
 }
 
 fn convert_tracing(input: &ListenerTracingInput) -> Result<TracingConfig, ApiError> {
@@ -499,10 +448,7 @@ fn convert_tracing(input: &ListenerTracingInput) -> Result<TracingConfig, ApiErr
 
 fn parse_route_config(value: &Value) -> Result<RouteConfig, ApiError> {
     serde_json::from_value(value.clone()).map_err(|err| {
-        ApiError::from(Error::validation(format!(
-            "Invalid inline route configuration: {}",
-            err
-        )))
+        ApiError::from(Error::validation(format!("Invalid inline route configuration: {}", err)))
     })
 }
 
@@ -516,9 +462,7 @@ fn convert_tracing_config(value: &Value) -> Result<HashMap<String, String>, ApiE
         if let Some(str_value) = val.as_str() {
             config.insert(key.clone(), str_value.to_string());
         } else {
-            return Err(ApiError::from(Error::validation(
-                "Tracing config values must be strings",
-            )));
+            return Err(ApiError::from(Error::validation("Tracing config values must be strings")));
         }
     }
 
@@ -527,9 +471,7 @@ fn convert_tracing_config(value: &Value) -> Result<HashMap<String, String>, ApiE
 
 fn validate_create_listener_body(body: &CreateListenerBody) -> Result<(), ApiError> {
     if body.name.trim().is_empty() {
-        return Err(ApiError::from(Error::validation(
-            "Listener name cannot be empty",
-        )));
+        return Err(ApiError::from(Error::validation("Listener name cannot be empty")));
     }
     validate_listener_common(&body.address, body.port, &body.filter_chains)
 }
@@ -544,21 +486,15 @@ fn validate_listener_common(
     filter_chains: &[ListenerFilterChainInput],
 ) -> Result<(), ApiError> {
     if address.trim().is_empty() {
-        return Err(ApiError::from(Error::validation(
-            "Listener address cannot be empty",
-        )));
+        return Err(ApiError::from(Error::validation("Listener address cannot be empty")));
     }
 
     if port < 1024 {
-        return Err(ApiError::from(Error::validation(
-            "Listener port must be >= 1024",
-        )));
+        return Err(ApiError::from(Error::validation("Listener port must be >= 1024")));
     }
 
     if filter_chains.is_empty() {
-        return Err(ApiError::from(Error::validation(
-            "At least one filter chain is required",
-        )));
+        return Err(ApiError::from(Error::validation("At least one filter chain is required")));
     }
 
     for chain in filter_chains {
@@ -570,9 +506,7 @@ fn validate_listener_common(
 
         for filter in &chain.filters {
             if filter.name.trim().is_empty() {
-                return Err(ApiError::from(Error::validation(
-                    "Filter name cannot be empty",
-                )));
+                return Err(ApiError::from(Error::validation("Filter name cannot be empty")));
             }
 
             if let ListenerFilterTypeInput::HttpConnectionManager {
@@ -581,10 +515,7 @@ fn validate_listener_common(
                 ..
             } = &filter.filter_type
             {
-                if route_config_name
-                    .as_ref()
-                    .map(|s| s.trim().is_empty())
-                    .unwrap_or(true)
+                if route_config_name.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true)
                     && inline_route_config.is_none()
                 {
                     return Err(ApiError::from(Error::validation(
@@ -698,9 +629,7 @@ mod tests {
     async fn build_state() -> (Arc<XdsState>, ApiState) {
         let pool = create_test_pool().await;
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        let api_state = ApiState {
-            xds_state: state.clone(),
-        };
+        let api_state = ApiState { xds_state: state.clone() };
         (state, api_state)
     }
 
@@ -754,10 +683,7 @@ mod tests {
 
         assert!(result.is_ok());
         match result.unwrap() {
-            FilterType::HttpConnectionManager {
-                inline_route_config: Some(config),
-                ..
-            } => {
+            FilterType::HttpConnectionManager { inline_route_config: Some(config), .. } => {
                 assert_eq!(config.name, "inline-route");
             }
             other => panic!("expected HTTP connection manager, got {:?}", other),

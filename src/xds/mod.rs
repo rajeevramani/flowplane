@@ -210,9 +210,7 @@ fn build_server_tls_config(config: &SimpleXdsConfig) -> Result<Option<ServerTlsC
 pub async fn start_minimal_xds_server() -> Result<()> {
     let simple_config = SimpleXdsConfig::default();
     let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install CTRL+C signal handler");
+        tokio::signal::ctrl_c().await.expect("Failed to install CTRL+C signal handler");
     };
     start_minimal_xds_server_with_config(simple_config, shutdown_signal).await
 }
@@ -221,6 +219,7 @@ pub async fn start_minimal_xds_server() -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::XdsConfig;
+    use std::sync::Arc;
 
     #[test]
     fn test_xds_config_default() {
@@ -254,9 +253,10 @@ mod tests {
     async fn test_minimal_ads_service_creation() {
         let simple_config = SimpleXdsConfig::default();
         let state = Arc::new(XdsState::new(simple_config));
-        let _service = MinimalAggregatedDiscoveryService::new(state);
+        assert_eq!(Arc::strong_count(&state), 1);
+        let _service = MinimalAggregatedDiscoveryService::new(state.clone());
 
-        // Basic test that service can be created
-        assert!(true); // Placeholder - in real tests we'd test the service methods
+        // Creation should increase the reference count, proving the state is retained.
+        assert!(Arc::strong_count(&state) >= 2);
     }
 }

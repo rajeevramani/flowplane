@@ -1,0 +1,391 @@
+openapi: 3.0.3
+info:
+  title: Flowplane Personal Access Token API
+  description: Authentication token management for Flowplane control plane
+  version: 1.0.0
+
+paths:
+  /api/v1/tokens:
+    get:
+      summary: List personal access tokens
+      description: Retrieve all tokens for the authenticated user (metadata only)
+      security:
+        - BearerAuth: [admin:read]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, revoked, expired, all]
+            default: active
+          description: Filter tokens by status
+        - name: created_by
+          in: query
+          schema:
+            type: string
+          description: Filter tokens by creator (admin only)
+      responses:
+        '200':
+          description: List of tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TokenMetadata'
+                  total:
+                    type: integer
+                    description: Total number of tokens
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      summary: Create personal access token
+      description: Generate a new personal access token with specified scopes
+      security:
+        - BearerAuth: [admin:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '201':
+          description: Token created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/tokens/{token_id}:
+    get:
+      summary: Get token metadata
+      description: Retrieve metadata for a specific token (no token value)
+      security:
+        - BearerAuth: [admin:read]
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Token metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      summary: Update token metadata
+      description: Update token name or expiration (cannot change scopes)
+      security:
+        - BearerAuth: [admin:write]
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTokenRequest'
+      responses:
+        '200':
+          description: Token updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenMetadata'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      summary: Revoke personal access token
+      description: Immediately revoke a token, making it unusable
+      security:
+        - BearerAuth: [admin:write]
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Token revoked successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/tokens/{token_id}/rotate:
+    post:
+      summary: Rotate personal access token
+      description: Generate new token value while preserving metadata and scopes
+      security:
+        - BearerAuth: [admin:write]
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Token rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Personal Access Token
+      description: Use personal access token with 'fp_' prefix
+
+  schemas:
+    CreateTokenRequest:
+      type: object
+      required:
+        - name
+        - scopes
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[a-zA-Z0-9\s\-_]+$'
+          description: Human-readable token name
+          example: "CI/CD Pipeline Token"
+        scopes:
+          type: array
+          items:
+            type: string
+            pattern: '^(clusters|routes|listeners|admin):(read|write)$'
+          minItems: 1
+          uniqueItems: true
+          description: Requested permissions
+          example: ["clusters:read", "routes:write", "listeners:read"]
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiration date (max 1 year)
+          example: "2025-12-31T23:59:59Z"
+
+    CreateTokenResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Token identifier
+        name:
+          type: string
+          description: Token name
+        token:
+          type: string
+          description: The actual token value (SHOWN ONLY ONCE)
+          example: "fp_1234567890abcdef..."
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Granted scopes
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    RotateTokenResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        token:
+          type: string
+          description: The new token value (SHOWN ONLY ONCE)
+          example: "fp_abcdef1234567890..."
+        scopes:
+          type: array
+          items:
+            type: string
+        rotated_at:
+          type: string
+          format: date-time
+
+    TokenMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked, expired]
+
+    UpdateTokenRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[a-zA-Z0-9\s\-_]+$'
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error context
+        correlation_id:
+          type: string
+          description: Request correlation ID for tracing
+
+  responses:
+    BadRequest:
+      description: Invalid request data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalid_scopes:
+              summary: Invalid scopes provided
+              value:
+                error: "validation_error"
+                message: "Invalid scope format"
+                details:
+                  field: "scopes"
+                  invalid_values: ["invalid:scope"]
+                correlation_id: "req_123456"
+
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missing_token:
+              summary: No Authorization header
+              value:
+                error: "authentication_required"
+                message: "Bearer token required in Authorization header"
+                correlation_id: "req_123456"
+            invalid_token:
+              summary: Invalid or expired token
+              value:
+                error: "invalid_token"
+                message: "Token is invalid or expired"
+                correlation_id: "req_123456"
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            insufficient_scopes:
+              summary: Missing required scopes
+              value:
+                error: "insufficient_permissions"
+                message: "Required scope 'admin:write' not granted"
+                details:
+                  required_scopes: ["admin:write"]
+                  granted_scopes: ["admin:read"]
+                correlation_id: "req_123456"
+
+    NotFound:
+      description: Token not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            token_not_found:
+              summary: Token does not exist
+              value:
+                error: "not_found"
+                message: "Token not found"
+                correlation_id: "req_123456"

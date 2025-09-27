@@ -93,11 +93,7 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
         )));
     }
 
-    info!(
-        "Loaded {} migration files from {}",
-        migrations.len(),
-        migrations_dir.display()
-    );
+    info!("Loaded {} migration files from {}", migrations.len(), migrations_dir.display());
     Ok(migrations)
 }
 
@@ -209,21 +205,13 @@ async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>>
         .await;
 
     match rows {
-        Ok(rows) => Ok(rows
-            .into_iter()
-            .map(|row| row.get::<i64, _>("version"))
-            .collect()),
+        Ok(rows) => Ok(rows.into_iter().map(|row| row.get::<i64, _>("version")).collect()),
         Err(sqlx::Error::Database(db_err))
-            if db_err
-                .message()
-                .contains("no such table: _flowplane_migrations") =>
+            if db_err.message().contains("no such table: _flowplane_migrations") =>
         {
             Ok(Vec::new())
         }
-        Err(e) => Err(FlowplaneError::database(
-            e,
-            "Failed to get applied migrations".to_string(),
-        )),
+        Err(e) => Err(FlowplaneError::database(e, "Failed to get applied migrations".to_string())),
     }
 }
 
@@ -306,16 +294,11 @@ pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<Migratio
             Ok(migrations)
         }
         Err(sqlx::Error::Database(db_err))
-            if db_err
-                .message()
-                .contains("no such table: _flowplane_migrations") =>
+            if db_err.message().contains("no such table: _flowplane_migrations") =>
         {
             Ok(Vec::new())
         }
-        Err(e) => Err(FlowplaneError::database(
-            e,
-            "Failed to list applied migrations".to_string(),
-        )),
+        Err(e) => Err(FlowplaneError::database(e, "Failed to list applied migrations".to_string())),
     }
 }
 
@@ -325,9 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:")
-            .await
-            .unwrap();
+        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
 
         // Run migrations
         let result = run_migrations(&pool).await;
@@ -345,9 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:")
-            .await
-            .unwrap();
+        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
 
         // Run migrations first
         run_migrations(&pool).await.unwrap();
@@ -360,9 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_migration_version() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:")
-            .await
-            .unwrap();
+        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
 
         // Before migrations
         let version = get_migration_version(&pool).await.unwrap();
@@ -376,9 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_applied_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:")
-            .await
-            .unwrap();
+        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
 
         // Before migrations
         let migrations = list_applied_migrations(&pool).await.unwrap();

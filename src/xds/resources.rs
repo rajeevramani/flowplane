@@ -120,10 +120,7 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResourc
 
     Ok(vec![BuiltResource {
         name: cluster.name.clone(),
-        resource: Any {
-            type_url: CLUSTER_TYPE_URL.to_string(),
-            value: encoded,
-        },
+        resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
     }])
 }
 
@@ -171,10 +168,7 @@ pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>
 
     Ok(vec![BuiltResource {
         name: route_config.name.clone(),
-        resource: Any {
-            type_url: ROUTE_TYPE_URL.to_string(),
-            value: encoded,
-        },
+        resource: Any { type_url: ROUTE_TYPE_URL.to_string(), value: encoded },
     }])
 }
 
@@ -214,10 +208,7 @@ pub fn routes_from_database_entries(
 
         built.push(BuiltResource {
             name: envoy_route.name.clone(),
-            resource: Any {
-                type_url: ROUTE_TYPE_URL.to_string(),
-                value: encoded,
-            },
+            resource: Any { type_url: ROUTE_TYPE_URL.to_string(), value: encoded },
         });
     }
 
@@ -293,10 +284,7 @@ pub fn listeners_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
 
     Ok(vec![BuiltResource {
         name: listener.name.clone(),
-        resource: Any {
-            type_url: LISTENER_TYPE_URL.to_string(),
-            value: encoded,
-        },
+        resource: Any { type_url: LISTENER_TYPE_URL.to_string(), value: encoded },
     }])
 }
 
@@ -338,10 +326,7 @@ pub fn listeners_from_database_entries(
 
         resources.push(BuiltResource {
             name: envoy_listener.name.clone(),
-            resource: Any {
-                type_url: LISTENER_TYPE_URL.to_string(),
-                value: encoded,
-            },
+            resource: Any { type_url: LISTENER_TYPE_URL.to_string(), value: encoded },
         });
     }
 
@@ -357,10 +342,7 @@ pub fn clusters_from_database_entries(
 
     for entry in entries {
         let raw_config: Value = serde_json::from_str(&entry.configuration).map_err(|e| {
-            Error::config(format!(
-                "Invalid cluster configuration JSON for '{}': {}",
-                entry.name, e
-            ))
+            Error::config(format!("Invalid cluster configuration JSON for '{}': {}", entry.name, e))
         })?;
 
         let spec = ClusterSpec::from_value(raw_config.clone())?;
@@ -378,10 +360,7 @@ pub fn clusters_from_database_entries(
 
         resources.push(BuiltResource {
             name: entry.name,
-            resource: Any {
-                type_url: CLUSTER_TYPE_URL.to_string(),
-                value: encoded,
-            },
+            resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
         });
     }
 
@@ -435,9 +414,7 @@ fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
     }
 
     if lb_endpoints.is_empty() {
-        return Err(Error::config(
-            "No valid endpoints found in cluster configuration".to_string(),
-        ));
+        return Err(Error::config("No valid endpoints found in cluster configuration".to_string()));
     }
 
     let connect_timeout = spec.connect_timeout_seconds.unwrap_or(5);
@@ -446,10 +423,7 @@ fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
         connect_timeout: Some(seconds_to_duration(connect_timeout)),
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: name.to_string(),
-            endpoints: vec![LocalityLbEndpoints {
-                lb_endpoints,
-                ..Default::default()
-            }],
+            endpoints: vec![LocalityLbEndpoints { lb_endpoints, ..Default::default() }],
             ..Default::default()
         }),
         ..Default::default()
@@ -555,12 +529,7 @@ fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
 
 fn map_lb_policy(name: &str, spec: &ClusterSpec) -> (i32, Option<cluster::LbConfig>) {
     let default_policy = LbPolicy::RoundRobin as i32;
-    let policy = match spec
-        .lb_policy
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
+    let policy = match spec.lb_policy.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(value) => value.to_uppercase(),
         None => return (default_policy, None),
     };
@@ -639,10 +608,7 @@ fn map_dns_lookup_family(cluster: &str, value: Option<&str>) -> Option<i32> {
 }
 
 fn seconds_to_duration(value: u64) -> Duration {
-    Duration {
-        seconds: value as i64,
-        nanos: 0,
-    }
+    Duration { seconds: value as i64, nanos: 0 }
 }
 
 fn optional_duration(value: Option<u64>) -> Option<Duration> {
@@ -668,10 +634,7 @@ fn build_circuit_breakers(spec: &CircuitBreakersSpec) -> CircuitBreakers {
         thresholds.push(build_threshold(high, RoutingPriority::High));
     }
 
-    CircuitBreakers {
-        thresholds,
-        ..Default::default()
-    }
+    CircuitBreakers { thresholds, ..Default::default() }
 }
 
 fn build_threshold(
@@ -691,52 +654,28 @@ fn build_threshold(
 fn build_health_check(cluster: &str, spec: &HealthCheckSpec) -> Result<HealthCheck> {
     let mut check = HealthCheck {
         timeout: optional_duration(match spec {
-            HealthCheckSpec::Http {
-                timeout_seconds, ..
-            } => *timeout_seconds,
-            HealthCheckSpec::Tcp {
-                timeout_seconds, ..
-            } => *timeout_seconds,
+            HealthCheckSpec::Http { timeout_seconds, .. } => *timeout_seconds,
+            HealthCheckSpec::Tcp { timeout_seconds, .. } => *timeout_seconds,
         })
         .or_else(|| Some(seconds_to_duration(5))),
         interval: optional_duration(match spec {
-            HealthCheckSpec::Http {
-                interval_seconds, ..
-            } => *interval_seconds,
-            HealthCheckSpec::Tcp {
-                interval_seconds, ..
-            } => *interval_seconds,
+            HealthCheckSpec::Http { interval_seconds, .. } => *interval_seconds,
+            HealthCheckSpec::Tcp { interval_seconds, .. } => *interval_seconds,
         })
         .or_else(|| Some(seconds_to_duration(10))),
         healthy_threshold: uint32(match spec {
-            HealthCheckSpec::Http {
-                healthy_threshold, ..
-            } => *healthy_threshold,
-            HealthCheckSpec::Tcp {
-                healthy_threshold, ..
-            } => *healthy_threshold,
+            HealthCheckSpec::Http { healthy_threshold, .. } => *healthy_threshold,
+            HealthCheckSpec::Tcp { healthy_threshold, .. } => *healthy_threshold,
         }),
         unhealthy_threshold: uint32(match spec {
-            HealthCheckSpec::Http {
-                unhealthy_threshold,
-                ..
-            } => *unhealthy_threshold,
-            HealthCheckSpec::Tcp {
-                unhealthy_threshold,
-                ..
-            } => *unhealthy_threshold,
+            HealthCheckSpec::Http { unhealthy_threshold, .. } => *unhealthy_threshold,
+            HealthCheckSpec::Tcp { unhealthy_threshold, .. } => *unhealthy_threshold,
         }),
         ..Default::default()
     };
 
     match spec {
-        HealthCheckSpec::Http {
-            path,
-            host,
-            method,
-            expected_statuses,
-            ..
-        } => {
+        HealthCheckSpec::Http { path, host, method, expected_statuses, .. } => {
             let mut http_check = HttpHealthCheck {
                 host: host.clone().unwrap_or_default(),
                 path: path.clone(),
@@ -746,10 +685,7 @@ fn build_health_check(cluster: &str, spec: &HealthCheckSpec) -> Result<HealthChe
             if let Some(statuses) = expected_statuses {
                 http_check.expected_statuses = statuses
                     .iter()
-                    .map(|code| Int64Range {
-                        start: *code as i64,
-                        end: (*code as i64) + 1,
-                    })
+                    .map(|code| Int64Range { start: *code as i64, end: (*code as i64) + 1 })
                     .collect();
             }
 
@@ -760,9 +696,8 @@ fn build_health_check(cluster: &str, spec: &HealthCheckSpec) -> Result<HealthChe
             check.health_checker = Some(health_check::HealthChecker::HttpHealthCheck(http_check));
         }
         HealthCheckSpec::Tcp { .. } => {
-            check.health_checker = Some(health_check::HealthChecker::TcpHealthCheck(
-                TcpHealthCheck::default(),
-            ));
+            check.health_checker =
+                Some(health_check::HealthChecker::TcpHealthCheck(TcpHealthCheck::default()));
         }
     }
 
@@ -867,8 +802,9 @@ mod tests {
 
     fn decode_tls_context(cluster: &Cluster) -> UpstreamTlsContext {
         let transport_socket = cluster.transport_socket.as_ref().expect("transport socket");
-        let typed = match transport_socket.config_type.as_ref().expect("typed config") {
-            TransportSocketConfigType::TypedConfig(any) => any,
+        let typed = match transport_socket.config_type.as_ref() {
+            Some(TransportSocketConfigType::TypedConfig(any)) => any,
+            None => panic!("missing typed config"),
         };
         UpstreamTlsContext::decode(&*typed.value).expect("decode tls context")
     }
@@ -920,9 +856,7 @@ mod tests {
         let spec = ClusterSpec {
             endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
             lb_policy: Some("LEAST_REQUEST".to_string()),
-            least_request: Some(LeastRequestPolicy {
-                choice_count: Some(4),
-            }),
+            least_request: Some(LeastRequestPolicy { choice_count: Some(4) }),
             ..Default::default()
         };
 
@@ -967,9 +901,7 @@ mod tests {
         let spec = ClusterSpec {
             endpoints: vec![EndpointSpec::String("10.0.0.1:8080".to_string())],
             lb_policy: Some("MAGLEV".to_string()),
-            maglev: Some(MaglevPolicy {
-                table_size: Some(65537),
-            }),
+            maglev: Some(MaglevPolicy { table_size: Some(65537) }),
             ..Default::default()
         };
 

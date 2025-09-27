@@ -1,0 +1,3 @@
+# Enforce lint coverage for unwrap/expect inside tests as well.
+allow-unwrap-in-tests = false
+allow-expect-in-tests = false

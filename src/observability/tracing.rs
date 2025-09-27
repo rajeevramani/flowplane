@@ -43,8 +43,8 @@ impl TracingContext {
     /// Create a new root tracing context
     pub fn new_root() -> Self {
         Self {
-            trace_id: uuid::Uuid::new_v4().to_string(),
-            span_id: uuid::Uuid::new_v4().to_string(),
+            trace_id: uuid::Uuid::new_v4().simple().to_string(),
+            span_id: uuid::Uuid::new_v4().simple().to_string(),
             parent_span_id: None,
             baggage: std::collections::HashMap::new(),
         }
@@ -54,7 +54,7 @@ impl TracingContext {
     pub fn new_child(&self) -> Self {
         Self {
             trace_id: self.trace_id.clone(),
-            span_id: uuid::Uuid::new_v4().to_string(),
+            span_id: uuid::Uuid::new_v4().simple().to_string(),
             parent_span_id: Some(self.span_id.clone()),
             baggage: self.baggage.clone(),
         }
@@ -76,17 +76,17 @@ impl TracingContext {
         let mut headers = std::collections::HashMap::new();
 
         // Use standard trace context headers
-        headers.insert("traceparent".to_string(),
-            format!("00-{}-{}-01", self.trace_id, self.span_id));
+        headers
+            .insert("traceparent".to_string(), format!("00-{}-{}-01", self.trace_id, self.span_id));
 
         if let Some(parent) = &self.parent_span_id {
-            headers.insert("tracestate".to_string(),
-                format!("parent={}", parent));
+            headers.insert("tracestate".to_string(), format!("parent={}", parent));
         }
 
         // Add baggage
         if !self.baggage.is_empty() {
-            let baggage_str = self.baggage
+            let baggage_str = self
+                .baggage
                 .iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
@@ -109,7 +109,8 @@ impl TracingContext {
         let trace_id = parts[1].to_string();
         let span_id = parts[2].to_string();
 
-        let parent_span_id = headers.get("tracestate")
+        let parent_span_id = headers
+            .get("tracestate")
             .and_then(|ts| ts.strip_prefix("parent="))
             .map(|p| p.to_string());
 
@@ -122,12 +123,7 @@ impl TracingContext {
             }
         }
 
-        Some(Self {
-            trace_id,
-            span_id,
-            parent_span_id,
-            baggage,
-        })
+        Some(Self { trace_id, span_id, parent_span_id, baggage })
     }
 }
 
@@ -157,10 +153,12 @@ pub fn inject_trace_context(
     let context_headers = context.to_headers();
 
     for (key, value) in context_headers {
-        let header_name = key.parse::<axum::http::HeaderName>()
-            .map_err(|e| FlowplaneError::internal(format!("Invalid header name '{}': {}", key, e)))?;
-        let header_value = value.parse::<axum::http::HeaderValue>()
-            .map_err(|e| FlowplaneError::internal(format!("Invalid header value '{}': {}", value, e)))?;
+        let header_name = key.parse::<axum::http::HeaderName>().map_err(|e| {
+            FlowplaneError::internal(format!("Invalid header name '{}': {}", key, e))
+        })?;
+        let header_value = value.parse::<axum::http::HeaderValue>().map_err(|e| {
+            FlowplaneError::internal(format!("Invalid header value '{}': {}", value, e))
+        })?;
 
         headers.insert(header_name, header_value);
     }
@@ -174,10 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_tracing_disabled() {
-        let config = ObservabilityConfig {
-            enable_tracing: false,
-            ..Default::default()
-        };
+        let config = ObservabilityConfig { enable_tracing: false, ..Default::default() };
 
         let result = init_tracing(&config).await;
         assert!(result.is_ok());
@@ -222,8 +217,7 @@ mod tests {
 
     #[test]
     fn test_tracing_context_headers() {
-        let context = TracingContext::new_root()
-            .with_baggage("user_id", "12345");
+        let context = TracingContext::new_root().with_baggage("user_id", "12345");
 
         let headers = context.to_headers();
         assert!(headers.contains_key("traceparent"));
@@ -241,8 +235,10 @@ mod tests {
     #[test]
     fn test_tracing_context_from_headers() {
         let mut headers = std::collections::HashMap::new();
-        headers.insert("traceparent".to_string(),
-            "00-12345678901234567890123456789012-1234567890123456-01".to_string());
+        headers.insert(
+            "traceparent".to_string(),
+            "00-12345678901234567890123456789012-1234567890123456-01".to_string(),
+        );
         headers.insert("baggage".to_string(), "user_id=12345,session_id=abcdef".to_string());
 
         let context = TracingContext::from_headers(&headers).unwrap();
