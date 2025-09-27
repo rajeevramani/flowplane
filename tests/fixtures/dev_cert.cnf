@@ -1,0 +1,23 @@
+[ req ]
+default_bits = 2048
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+x509_extensions = v3_req
+prompt = no
+
+[ req_distinguished_name ]
+C = US
+ST = TestState
+L = TestCity
+O = Flowplane
+CN = localhost
+
+[ v3_req ]
+subjectAltName = @alt_names
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+
+[ alt_names ]
+DNS.1 = localhost
+IP.1 = 127.0.0.1

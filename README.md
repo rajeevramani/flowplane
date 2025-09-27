@@ -48,6 +48,16 @@ Point Envoy at the xDS server using a TLS-enabled cluster and reference the same
 
 - Flowplane seeds a shared gateway trio (`default-gateway-cluster`, `default-gateway-routes`, `default-gateway-listener`) during startup. They fuel the default OpenAPI import path and are protected from deletion so the shared listener keeps working for every team.
 
+### Enable HTTPS for the Admin API
+Enable TLS termination on the admin API by supplying certificate paths at startup:
+
+- `FLOWPLANE_API_TLS_ENABLED` – set to `true`, `1`, `yes`, or `on` to enable HTTPS (defaults to HTTP when unset).
+- `FLOWPLANE_API_TLS_CERT_PATH` – PEM-encoded leaf certificate served to clients.
+- `FLOWPLANE_API_TLS_KEY_PATH` – PEM-encoded private key matching the certificate.
+- `FLOWPLANE_API_TLS_CHAIN_PATH` *(optional)* – PEM bundle with intermediate issuers if clients need the full chain.
+
+When these variables are present the server binds HTTPS, logs the certificate subject and expiry, and rejects startup if the files are missing, unreadable, expired, or mismatched. See [`docs/tls.md`](docs/tls.md) for workflows covering ACME automation, corporate PKI, and local development certificates.
+
 ### Authenticate API Calls
 Flowplane now protects every REST endpoint with bearer authentication:
 

@@ -133,7 +133,7 @@ fn parse_certificate_metadata(
         }
     };
 
-    let tbs_seq = match cert_seq.get(0) {
+    let tbs_seq = match cert_seq.first() {
         Some(ASN1Block::Sequence(_, items)) => items,
         _ => {
             return Err(TlsError::CertificateMetadata {
@@ -235,8 +235,8 @@ fn parse_public_key_info(block: &ASN1Block, path: &Path) -> Result<PublicKeyInfo
         }
     };
 
-    let (unused_bits, public_key) = match &items[1] {
-        ASN1Block::BitString(_, unused, bytes) => (*unused, bytes.clone()),
+    let (bit_len, public_key) = match &items[1] {
+        ASN1Block::BitString(_, nbits, bytes) => (*nbits, bytes.clone()),
         _ => {
             return Err(TlsError::CertificateMetadata {
                 path: path.to_path_buf(),
@@ -245,7 +245,7 @@ fn parse_public_key_info(block: &ASN1Block, path: &Path) -> Result<PublicKeyInfo
         }
     };
 
-    if unused_bits != 0 {
+    if bit_len % 8 != 0 || public_key.len() * 8 != bit_len {
         return Err(TlsError::CertificateMetadata {
             path: path.to_path_buf(),
             source: anyhow!("subject public key contains unused bits"),
