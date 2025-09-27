@@ -1,4 +1,4 @@
-use std::{net::{IpAddr, Ipv4Addr, SocketAddr}, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc, time::Duration};
 
 use flowplane::{
     api::start_api_server,
@@ -15,9 +15,10 @@ use hyper_util::{
 use reserve_port::reserve_port;
 use tokio::{net::TcpStream, time::sleep};
 
-fn fixture(path: &str) -> PathBuf {
-    PathBuf::from("tests/fixtures").join(path)
-}
+#[path = "../support.rs"]
+mod support;
+
+use support::TestCertificateFiles;
 
 async fn wait_for_listener(addr: SocketAddr) {
     for _ in 0..20 {
@@ -58,9 +59,11 @@ async fn http_mode_preserved_when_tls_disabled() {
 #[tokio::test]
 async fn https_server_serves_requests() {
     let port = reserve_port();
+    let certs =
+        TestCertificateFiles::localhost(time::Duration::days(60)).expect("generate certificates");
     let tls = ApiTlsConfig {
-        cert_path: fixture("valid_cert.pem"),
-        key_path: fixture("valid_key.pem"),
+        cert_path: certs.cert_path.clone(),
+        key_path: certs.key_path.clone(),
         chain_path: None,
     };
     let config = ApiServerConfig { bind_address: "127.0.0.1".to_string(), port, tls: Some(tls) };
@@ -70,7 +73,7 @@ async fn https_server_serves_requests() {
     let handle = tokio::spawn(start_api_server(config, state));
     wait_for_listener(server_addr).await;
 
-    let cert_pem = std::fs::read(fixture("valid_cert.pem")).expect("read certificate");
+    let cert_pem = std::fs::read(&certs.cert_path).expect("read certificate");
     let mut roots = rustls::RootCertStore::empty();
     let mut certs = rustls::pki_types::CertificateDer::pem_slice_iter(&cert_pem);
     let leaf = certs.next().expect("cert present").expect("valid cert");
@@ -100,9 +103,12 @@ async fn https_server_serves_requests() {
 #[tokio::test]
 async fn https_startup_fails_with_mismatched_key() {
     let port = reserve_port();
+    let certs =
+        TestCertificateFiles::localhost(time::Duration::days(60)).expect("generate certificates");
+    let mismatched_key = certs.mismatched_key().expect("generate mismatched key");
     let tls = ApiTlsConfig {
-        cert_path: fixture("valid_cert.pem"),
-        key_path: fixture("mismatched_key.pem"),
+        cert_path: certs.cert_path.clone(),
+        key_path: mismatched_key,
         chain_path: None,
     };
     let config = ApiServerConfig { bind_address: "127.0.0.1".to_string(), port, tls: Some(tls) };
