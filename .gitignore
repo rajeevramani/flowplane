@@ -23,7 +23,6 @@ debug/
 .env.*.local
 *.key
 *.pem
-!tests/fixtures/*.pem
 *.crt
 
 # Logs and runtime data
