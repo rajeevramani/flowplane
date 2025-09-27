@@ -17,9 +17,7 @@ fn install_rustls_provider() {
     use rustls::crypto::{ring, CryptoProvider};
 
     if CryptoProvider::get_default().is_none() {
-        ring::default_provider()
-            .install_default()
-            .expect("install ring crypto provider");
+        ring::default_provider().install_default().expect("install ring crypto provider");
     }
 }
 

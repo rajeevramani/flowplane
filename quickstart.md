@@ -36,6 +36,20 @@ WARN flowplane::openapi::defaults: Seeded bootstrap admin personal access token;
 
 Copy the `fp_pat_...` value into a secret store. The control plane never shows it again.
 
+### Optional: Serve the Admin API over HTTPS
+
+Provide the following variables at startup if you already have certificates:
+
+```bash
+FLOWPLANE_API_TLS_ENABLED=true \
+FLOWPLANE_API_TLS_CERT_PATH=/path/to/cert.pem \
+FLOWPLANE_API_TLS_KEY_PATH=/path/to/key.pem \
+FLOWPLANE_API_TLS_CHAIN_PATH=/path/to/chain.pem \
+cargo run --bin flowplane
+```
+
+Flowplane validates the PEM files during startup and fails fast on unreadable files, mismatched key pairs, or expired certificates. After rotating certificates, restart the control plane to pick up the new material. See [`docs/tls.md`](docs/tls.md) for certificate sourcing guidance.
+
 ## 4. Issue a Scoped Token
 
 Use the bootstrap credential to mint a token with tighter scopes:

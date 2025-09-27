@@ -1,5 +1,12 @@
 //! Utility functions and helpers
 
+pub mod certificates;
+
+pub use certificates::{load_certificate_bundle, CertificateBundle, CertificateInfo};
+
+#[cfg(test)]
+pub use certificates::set_mock_time;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

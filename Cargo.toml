@@ -46,6 +46,9 @@ ring = "0.17.14"
 base64 = "0.22"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+simple_asn1 = "0.6"
+tokio-rustls = "0.26"
+hyper-util = { version = "0.1", features = ["server"] }
 
 # Observability and monitoring - enhanced like PoC
 tracing = "0.1"
@@ -82,3 +85,4 @@ axum-test = "16.4.0"
 tracing-test = "0.2.5"
 reserve-port = "2.3"
 proptest = "1.5"
+hyper-rustls = "0.27"

@@ -23,6 +23,7 @@ debug/
 .env.*.local
 *.key
 *.pem
+!tests/fixtures/*.pem
 *.crt
 
 # Logs and runtime data
@@ -66,4 +67,3 @@ test_flowplane.db-shm
 test_flowplane.db-wal
 
 bruno/
-
