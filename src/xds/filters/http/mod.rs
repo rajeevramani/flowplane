@@ -5,17 +5,22 @@
 //! messages. Individual filters (e.g. Local Rate Limit) live in dedicated
 //! submodules and register their configuration structs here.
 
+pub mod cors;
 pub mod jwt_auth;
 pub mod local_rate_limit;
 
-use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
+use crate::xds::filters::http::cors::{
+    CorsConfig as CorsFilterConfig, CorsPerRouteConfig, ROUTE_CORS_POLICY_TYPE_URL,
+};
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
+use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
+use envoy_types::pb::envoy::config::route::v3::CorsPolicy as RouteCorsPolicyProto;
 use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -50,6 +55,8 @@ pub struct HttpFilterConfigEntry {
 pub enum HttpFilterKind {
     /// Built-in Envoy router filter
     Router,
+    /// Envoy CORS filter
+    Cors(CorsFilterConfig),
     /// Envoy Local Rate Limit filter
     LocalRateLimit(local_rate_limit::LocalRateLimitConfig),
     /// Envoy JWT authentication filter
@@ -69,6 +76,7 @@ impl HttpFilterKind {
     fn default_name(&self) -> &'static str {
         match self {
             Self::Router => ROUTER_FILTER_NAME,
+            Self::Cors(_) => "envoy.filters.http.cors",
             Self::LocalRateLimit(_) => "envoy.filters.http.local_ratelimit",
             Self::JwtAuthn(_) => "envoy.filters.http.jwt_authn",
             Self::Custom { .. } => "custom.http.filter",
@@ -81,6 +89,7 @@ impl HttpFilterKind {
                 "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
                 &RouterFilter::default(),
             ))),
+            Self::Cors(cfg) => cfg.to_any().map(Some),
             Self::LocalRateLimit(cfg) => cfg.to_any().map(Some),
             Self::JwtAuthn(cfg) => cfg.to_any().map(Some),
             Self::Custom { config } => Ok(Some(config.to_any())),
@@ -96,6 +105,8 @@ pub enum HttpScopedConfig {
     LocalRateLimit(LocalRateLimitConfig),
     /// JWT auth per-route overrides
     JwtAuthn(JwtPerRouteConfig),
+    /// CORS per-route policy overrides
+    Cors(CorsPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -106,6 +117,7 @@ impl HttpScopedConfig {
         match self {
             Self::Typed(config) => Ok(config.to_any()),
             Self::LocalRateLimit(cfg) => cfg.to_any(),
+            Self::Cors(cfg) => cfg.to_any(),
             Self::JwtAuthn(cfg) => {
                 let proto = cfg.to_proto()?;
                 Ok(any_from_message(JWT_AUTHN_PER_ROUTE_TYPE_URL, &proto))
@@ -121,6 +133,14 @@ impl HttpScopedConfig {
             })?;
             let cfg = LocalRateLimitConfig::from_proto(&proto)?;
             return Ok(HttpScopedConfig::LocalRateLimit(cfg));
+        }
+
+        if any.type_url == ROUTE_CORS_POLICY_TYPE_URL {
+            let proto = RouteCorsPolicyProto::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!("Failed to decode CORS per-route config: {}", err))
+            })?;
+            let cfg = CorsPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::Cors(cfg));
         }
 
         if any.type_url == JWT_AUTHN_PER_ROUTE_TYPE_URL {
@@ -187,6 +207,9 @@ fn default_router_filter() -> HttpFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xds::filters::http::cors::{
+        CorsOriginMatcher, CorsPerRouteConfig, CorsPolicyConfig,
+    };
 
     #[test]
     fn router_is_appended_when_missing() {
@@ -238,6 +261,36 @@ mod tests {
     }
 
     #[test]
+    fn cors_filter_emits_expected_typed_config() {
+        let policy = CorsPolicyConfig {
+            allow_origin: vec![CorsOriginMatcher::Exact { value: "https://example.com".into() }],
+            ..Default::default()
+        };
+
+        let entries = vec![HttpFilterConfigEntry {
+            name: None,
+            is_optional: false,
+            disabled: false,
+            filter: HttpFilterKind::Cors(CorsFilterConfig { policy }),
+        }];
+
+        let filters = build_http_filters(&entries).expect("build filters");
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].name, "envoy.filters.http.cors");
+
+        let typed = filters[0]
+            .config_type
+            .as_ref()
+            .and_then(|config| match config {
+                HttpFilterConfigType::TypedConfig(any) => Some(any),
+                _ => None,
+            })
+            .expect("typed config present");
+
+        assert_eq!(typed.type_url, crate::xds::filters::http::cors::FILTER_CORS_POLICY_TYPE_URL);
+    }
+
+    #[test]
     fn jwt_per_route_round_trip() {
         let scoped = HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::RequirementName {
             requirement_name: "primary".into(),
@@ -250,6 +303,30 @@ mod tests {
         match restored {
             HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::RequirementName { requirement_name }) => {
                 assert_eq!(requirement_name, "primary");
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cors_scoped_round_trip() {
+        let scoped = HttpScopedConfig::Cors(CorsPerRouteConfig {
+            policy: CorsPolicyConfig {
+                allow_origin: vec![CorsOriginMatcher::Exact {
+                    value: "https://service.example.com".into(),
+                }],
+                allow_methods: vec!["GET".into()],
+                ..Default::default()
+            },
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, ROUTE_CORS_POLICY_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::Cors(config) => {
+                assert_eq!(config.policy.allow_methods, vec!["GET"]);
             }
             other => panic!("unexpected scoped config: {:?}", other),
         }

@@ -60,6 +60,64 @@ All requests traversing that connection manager share the same bucket.
 
 Route, virtual host, and weighted cluster entries can all supply scoped configs. The control plane converts these blocks into the correct `Any` payload for Envoy.
 
+## CORS (Cross-Origin Resource Sharing)
+The CORS filter maps to `envoy.extensions.filters.http.cors.v3.CorsPolicy` and is exposed through `CorsConfig`. Policies can be applied globally via the filter chain and overridden per route with `CorsPerRouteConfig`.
+
+Key fields:
+
+| Field | Description |
+| ----- | ----------- |
+| `allow_origin` | Required list of origin matchers (`exact`, `prefix`, `suffix`, `contains`, `regex`). Multiple entries are OR’d. |
+| `allow_methods` | Optional list of HTTP methods (e.g. `GET`, `POST`). `*` is permitted for wildcard methods. |
+| `allow_headers` / `expose_headers` | Optional header allowlists. Entries are validated against HTTP header syntax; `*` is allowed. |
+| `max_age` | Optional max-age in seconds for preflight caching. Values must be non-negative and ≤ 315 576 000 000 (10,000 years). |
+| `allow_credentials` | Enables credentialed requests. Validation rejects the configuration if credentials are allowed while an `*` origin matcher is present. |
+| `filter_enabled` / `shadow_enabled` | Runtime fractional percent wrappers controlling enforcement vs. shadow evaluation. |
+| `allow_private_network_access` | Propagates Chrome’s Private Network Access response headers when set. |
+| `forward_not_matching_preflights` | Controls whether unmatched preflight requests are forwarded upstream (defaults to Envoy’s behaviour when omitted). |
+
+### Example Filter Entry
+
+```json
+{
+  "name": "envoy.filters.http.cors",
+  "filter": {
+    "type": "cors",
+    "policy": {
+      "allow_origin": [
+        { "type": "exact", "value": "https://app.example.com" },
+        { "type": "suffix", "value": ".internal.example.com" }
+      ],
+      "allow_methods": ["GET", "POST"],
+      "allow_headers": ["authorization", "content-type"],
+      "max_age": 600,
+      "allow_credentials": true,
+      "forward_not_matching_preflights": true
+    }
+  }
+}
+```
+
+### Per-Route Override
+
+Attach overrides using Envoy’s `typedPerFilterConfig` on routes, virtual hosts, or weighted clusters:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.cors": {
+    "policy": {
+      "allow_origin": [
+        { "type": "exact", "value": "https://reports.example.net" }
+      ],
+      "allow_methods": ["GET"],
+      "allow_credentials": false
+    }
+  }
+}
+```
+
+The registry validates origin patterns, headers, and max-age values before producing the relevant `Any` payload (`envoy.config.route.v3.CorsPolicy`).
+
 ## JWT Authentication
 Structured JWT auth lives in `JwtAuthenticationConfig` and `JwtProviderConfig`, mapping to `envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication`.
 
