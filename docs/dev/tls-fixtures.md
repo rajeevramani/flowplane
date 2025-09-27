@@ -1,6 +1,6 @@
 # TLS Test Fixture Regeneration
 
-Flowplane ships a self-signed certificate and key under `tests/fixtures/` so integration tests can bring up an HTTPS listener without hitting the network. Regenerate them whenever the subject or SANs need to change, or if the fixtures are close to expiring.
+Flowplane no longer checks TLS private keys into the repository. Tests generate ephemeral key material on the fly, so you only need to create fixtures locally when running manual experiments or developing against Envoy.
 
 ## Prerequisites
 - OpenSSL 1.1.1 or newer available on your `$PATH`
@@ -22,7 +22,6 @@ openssl req \
 The config file at `tests/fixtures/dev_cert.cnf` pins the subject and SANs so localhost/127.0.0.1 both work. Adjust it if tests need additional hostnames.
 
 ## Post-Regeneration Checklist
-- Verify `cargo test --tests` still succeeds. The HTTPS integration suite trusts the regenerated certificate directly, so any SAN mismatch will surface here.
-- Commit the updated `valid_cert.pem` and `valid_key.pem` files together. They must stay in sync.
-- If the private key format changes (e.g., to PKCS#1), update `load_certificate_bundle` test coverage accordingly.
-```
+- Keep the generated `valid_cert.pem` and `valid_key.pem` files out of version control. `.gitignore` already blocks them, but double-check `git status` before committing.
+- Verify any manual workflows that depend on the files (for example local Envoy runs) before deleting the temporary fixtures.
+- If you change the private key format (e.g., to PKCS#1), update `load_certificate_bundle` test coverage accordingly.

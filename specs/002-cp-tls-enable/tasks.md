@@ -16,11 +16,11 @@ These implementation tasks track what is required for the 002-cp-tls-enable feat
 ## 3. Testing
 - [x] Add unit coverage for TLS config parsing and certificate loader edge cases (`tests/tls/unit/*`).
 - [x] Add integration coverage proving HTTP fallback and HTTPS happy-path requests using fixtures (`tests/tls/integration/test_api_tls.rs`).
-- [ ] Add an integration test exercising broken certificate/key pairs once fixture generation helper lands (tracked separately).
+- [x] Add an integration test exercising broken certificate/key pairs using the ephemeral fixture helper.
 
 ## 4. Tooling & Fixtures
-- [x] Regenerate self-signed certificate/key fixtures with localhost SANs (`tests/fixtures/valid_cert.pem`, `tests/fixtures/valid_key.pem`).
-- [ ] Document OpenSSL command used to refresh fixtures and check them in under `docs/dev/tls-fixtures.md`.
+- [x] Provide helper to generate ephemeral TLS certificate/key fixtures for tests without committing private keys.
+- [x] Document OpenSSL command used to refresh local fixtures for manual testing under `docs/dev/tls-fixtures.md`.
 
 ## 5. Documentation & Release Checklist
 - [ ] Author "Bring Your Own Certificate" guide covering ACME vs corporate PKI, renewal cadence, and local dev tips (`docs/tls.md`).

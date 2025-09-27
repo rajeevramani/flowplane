@@ -86,3 +86,5 @@ tracing-test = "0.2.5"
 reserve-port = "2.3"
 proptest = "1.5"
 hyper-rustls = "0.27"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+tempfile = "3.14"

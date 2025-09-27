@@ -27,7 +27,7 @@ When TLS is enabled, Flowplane validates the files at startup (readability, PEM 
 
 ### Self-Signed for Local Development
 - **What you get**: Quick certificates for testing without external dependencies.
-- **How to use**: Generate a certificate using the OpenSSL config at `tests/fixtures/dev_cert.cnf`. The helper documented in `docs/dev/tls-fixtures.md` produces `valid_cert.pem` / `valid_key.pem` that work for localhost.
+- **How to use**: Generate a certificate using the OpenSSL config at `tests/fixtures/dev_cert.cnf` (see `docs/dev/tls-fixtures.md`). The files land under `tests/fixtures/` but stay untracked so you can regenerate freely.
 - **Client trust**: Development clients may need to trust the generated certificate manually (curl `--cacert`, browser trust dialog, etc.).
 
 ## Operational Checklist
