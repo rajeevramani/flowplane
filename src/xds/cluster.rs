@@ -78,11 +78,7 @@ pub struct HealthCheckConfig {
     ))]
     pub interval: u64,
 
-    #[validate(range(
-        min = 1,
-        max = 10,
-        message = "Healthy threshold must be between 1 and 10"
-    ))]
+    #[validate(range(min = 1, max = 10, message = "Healthy threshold must be between 1 and 10"))]
     pub healthy_threshold: u32,
 
     #[validate(range(
@@ -113,10 +109,7 @@ impl ClusterConfig {
             lb_policy: self.load_balancing_policy.to_envoy_lb_policy() as i32,
             load_assignment: Some(self.create_cluster_load_assignment()?),
             connect_timeout: self.connect_timeout.map(|t| {
-                envoy_types::pb::google::protobuf::Duration {
-                    seconds: t as i64,
-                    nanos: 0,
-                }
+                envoy_types::pb::google::protobuf::Duration { seconds: t as i64, nanos: 0 }
             }),
             // TODO: Add health checks, circuit breakers, etc.
             ..Default::default()
@@ -136,18 +129,13 @@ impl ClusterConfig {
             .map(|endpoint| endpoint.to_envoy_lb_endpoint())
             .collect::<Result<Vec<_>, _>>()?;
 
-        let locality_lb_endpoints = LocalityLbEndpoints {
-            lb_endpoints,
-            ..Default::default()
-        };
+        let locality_lb_endpoints = LocalityLbEndpoints { lb_endpoints, ..Default::default() };
 
-        Ok(
-            envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment {
-                cluster_name: self.name.clone(),
-                endpoints: vec![locality_lb_endpoints],
-                ..Default::default()
-            },
-        )
+        Ok(envoy_types::pb::envoy::config::endpoint::v3::ClusterLoadAssignment {
+            cluster_name: self.name.clone(),
+            endpoints: vec![locality_lb_endpoints],
+            ..Default::default()
+        })
     }
 }
 
@@ -164,14 +152,9 @@ impl EndpointConfig {
             ..Default::default()
         };
 
-        let address = Address {
-            address: Some(AddressType::SocketAddress(socket_address)),
-        };
+        let address = Address { address: Some(AddressType::SocketAddress(socket_address)) };
 
-        let endpoint = Endpoint {
-            address: Some(address),
-            ..Default::default()
-        };
+        let endpoint = Endpoint { address: Some(address), ..Default::default() };
 
         let lb_endpoint = LbEndpoint {
             host_identifier: Some(
@@ -209,9 +192,7 @@ pub struct ClusterManager {
 impl ClusterManager {
     /// Create a new cluster manager
     pub fn new() -> Self {
-        Self {
-            clusters: HashMap::new(),
-        }
+        Self { clusters: HashMap::new() }
     }
 
     /// Add or update a cluster
@@ -257,25 +238,15 @@ mod tests {
         let config = ClusterConfig {
             name: "test-cluster".to_string(),
             endpoints: vec![
-                EndpointConfig {
-                    address: "127.0.0.1".to_string(),
-                    port: 8080,
-                    weight: Some(100),
-                },
-                EndpointConfig {
-                    address: "127.0.0.1".to_string(),
-                    port: 8081,
-                    weight: Some(100),
-                },
+                EndpointConfig { address: "127.0.0.1".to_string(), port: 8080, weight: Some(100) },
+                EndpointConfig { address: "127.0.0.1".to_string(), port: 8081, weight: Some(100) },
             ],
             load_balancing_policy: LoadBalancingPolicy::RoundRobin,
             connect_timeout: Some(5),
             health_checks: None,
         };
 
-        let cluster = config
-            .to_envoy_cluster()
-            .expect("Failed to convert cluster config");
+        let cluster = config.to_envoy_cluster().expect("Failed to convert cluster config");
 
         assert_eq!(cluster.name, "test-cluster");
         assert_eq!(cluster.lb_policy, LbPolicy::RoundRobin as i32);
@@ -303,9 +274,7 @@ mod tests {
             health_checks: None,
         };
 
-        manager
-            .upsert_cluster(config)
-            .expect("Failed to add cluster");
+        manager.upsert_cluster(config).expect("Failed to add cluster");
 
         assert!(manager.get_cluster("test-cluster").is_some());
         assert_eq!(manager.list_cluster_names().len(), 1);
@@ -317,15 +286,10 @@ mod tests {
 
     #[test]
     fn test_endpoint_config_conversion() {
-        let endpoint = EndpointConfig {
-            address: "192.168.1.1".to_string(),
-            port: 9090,
-            weight: Some(50),
-        };
+        let endpoint =
+            EndpointConfig { address: "192.168.1.1".to_string(), port: 9090, weight: Some(50) };
 
-        let lb_endpoint = endpoint
-            .to_envoy_lb_endpoint()
-            .expect("Failed to convert endpoint");
+        let lb_endpoint = endpoint.to_envoy_lb_endpoint().expect("Failed to convert endpoint");
 
         assert!(lb_endpoint.host_identifier.is_some());
         assert!(lb_endpoint.load_balancing_weight.is_some());

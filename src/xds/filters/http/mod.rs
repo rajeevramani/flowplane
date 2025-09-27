@@ -146,10 +146,7 @@ pub fn build_http_filters(
     let mut router_filter: Option<HttpFilter> = None;
 
     for entry in entries {
-        let name = entry
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.filter.default_name().to_string());
+        let name = entry.name.clone().unwrap_or_else(|| entry.filter.default_name().to_string());
 
         let config_any = entry.filter.to_any()?;
         let filter = HttpFilter {

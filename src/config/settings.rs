@@ -59,9 +59,7 @@ impl AppConfig {
     fn validate_custom(&self) -> Result<()> {
         // Validate that ports don't conflict
         if self.server.port == self.xds.port {
-            return Err(FlowplaneError::validation(
-                "Server and xDS ports cannot be the same",
-            ));
+            return Err(FlowplaneError::validation("Server and xDS ports cannot be the same"));
         }
 
         // Validate database URL format
@@ -96,11 +94,7 @@ pub struct ServerConfig {
     pub port: u16,
 
     /// Request timeout in seconds
-    #[validate(range(
-        min = 1,
-        max = 300,
-        message = "Timeout must be between 1 and 300 seconds"
-    ))]
+    #[validate(range(min = 1, max = 300, message = "Timeout must be between 1 and 300 seconds"))]
     pub timeout_seconds: u64,
 
     /// Maximum request body size in bytes
@@ -147,19 +141,11 @@ pub struct DatabaseConfig {
     pub url: String,
 
     /// Maximum number of connections in the pool
-    #[validate(range(
-        min = 1,
-        max = 100,
-        message = "Max connections must be between 1 and 100"
-    ))]
+    #[validate(range(min = 1, max = 100, message = "Max connections must be between 1 and 100"))]
     pub max_connections: u32,
 
     /// Minimum number of connections in the pool
-    #[validate(range(
-        min = 0,
-        max = 50,
-        message = "Min connections must be between 0 and 50"
-    ))]
+    #[validate(range(min = 0, max = 50, message = "Min connections must be between 0 and 50"))]
     pub min_connections: u32,
 
     /// Connection timeout in seconds
@@ -320,6 +306,50 @@ impl ObservabilityConfig {
             Some(format!("0.0.0.0:{}", self.metrics_port))
         }
     }
+
+    /// Build observability configuration from environment variables
+    pub fn from_env() -> Self {
+        fn parse_bool(key: &str, default: bool) -> bool {
+            std::env::var(key)
+                .ok()
+                .map(|value| {
+                    matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on")
+                })
+                .unwrap_or(default)
+        }
+
+        fn parse_u16(key: &str, default: u16) -> u16 {
+            std::env::var(key).ok().and_then(|value| value.parse::<u16>().ok()).unwrap_or(default)
+        }
+
+        fn parse_u64(key: &str, default: u64) -> u64 {
+            std::env::var(key).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(default)
+        }
+
+        let enable_metrics = parse_bool("FLOWPLANE_ENABLE_METRICS", true);
+        let metrics_port =
+            if enable_metrics { parse_u16("FLOWPLANE_METRICS_PORT", 9090) } else { 0 };
+        let enable_tracing = parse_bool("FLOWPLANE_ENABLE_TRACING", true);
+        let jaeger_endpoint = std::env::var("FLOWPLANE_JAEGER_ENDPOINT")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let service_name =
+            std::env::var("FLOWPLANE_SERVICE_NAME").unwrap_or_else(|_| "flowplane".to_string());
+        let log_level = std::env::var("FLOWPLANE_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        let json_logging = parse_bool("FLOWPLANE_JSON_LOGGING", false);
+        let health_check_interval_seconds = parse_u64("FLOWPLANE_HEALTH_CHECK_INTERVAL", 30);
+
+        Self {
+            enable_metrics,
+            metrics_port,
+            enable_tracing,
+            jaeger_endpoint,
+            service_name,
+            log_level,
+            json_logging,
+            health_check_interval_seconds,
+        }
+    }
 }
 
 /// Authentication and authorization configuration
@@ -409,11 +439,7 @@ pub struct XdsConfig {
     pub cache_ttl_seconds: u64,
 
     /// Maximum concurrent xDS streams
-    #[validate(range(
-        min = 1,
-        max = 10000,
-        message = "Max streams must be between 1 and 10000"
-    ))]
+    #[validate(range(min = 1, max = 10000, message = "Max streams must be between 1 and 10000"))]
     pub max_concurrent_streams: u32,
 }
 
@@ -461,20 +487,13 @@ mod tests {
 
     #[test]
     fn test_server_config_bind_address() {
-        let config = ServerConfig {
-            host: "0.0.0.0".to_string(),
-            port: 8080,
-            ..Default::default()
-        };
+        let config = ServerConfig { host: "0.0.0.0".to_string(), port: 8080, ..Default::default() };
         assert_eq!(config.bind_address(), "0.0.0.0:8080");
     }
 
     #[test]
     fn test_server_config_timeout() {
-        let config = ServerConfig {
-            timeout_seconds: 45,
-            ..Default::default()
-        };
+        let config = ServerConfig { timeout_seconds: 45, ..Default::default() };
         assert_eq!(config.timeout(), Duration::from_secs(45));
     }
 
@@ -488,54 +507,35 @@ mod tests {
         assert_eq!(config.connect_timeout(), Duration::from_secs(15));
         assert_eq!(config.idle_timeout(), Some(Duration::from_secs(300)));
 
-        let config_no_idle = DatabaseConfig {
-            idle_timeout_seconds: 0,
-            ..Default::default()
-        };
+        let config_no_idle = DatabaseConfig { idle_timeout_seconds: 0, ..Default::default() };
         assert_eq!(config_no_idle.idle_timeout(), None);
     }
 
     #[test]
     fn test_database_config_type_detection() {
-        let sqlite_config = DatabaseConfig {
-            url: "sqlite://./test.db".to_string(),
-            ..Default::default()
-        };
+        let sqlite_config =
+            DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
         assert!(sqlite_config.is_sqlite());
         assert!(!sqlite_config.is_postgresql());
 
-        let pg_config = DatabaseConfig {
-            url: "postgresql://localhost/test".to_string(),
-            ..Default::default()
-        };
+        let pg_config =
+            DatabaseConfig { url: "postgresql://localhost/test".to_string(), ..Default::default() };
         assert!(!pg_config.is_sqlite());
         assert!(pg_config.is_postgresql());
     }
 
     #[test]
     fn test_observability_config_metrics_address() {
-        let config = ObservabilityConfig {
-            metrics_port: 9090,
-            ..Default::default()
-        };
-        assert_eq!(
-            config.metrics_bind_address(),
-            Some("0.0.0.0:9090".to_string())
-        );
+        let config = ObservabilityConfig { metrics_port: 9090, ..Default::default() };
+        assert_eq!(config.metrics_bind_address(), Some("0.0.0.0:9090".to_string()));
 
-        let disabled_config = ObservabilityConfig {
-            metrics_port: 0,
-            ..Default::default()
-        };
+        let disabled_config = ObservabilityConfig { metrics_port: 0, ..Default::default() };
         assert_eq!(disabled_config.metrics_bind_address(), None);
     }
 
     #[test]
     fn test_auth_config_token_expiry() {
-        let config = AuthConfig {
-            token_expiry_seconds: 7200,
-            ..Default::default()
-        };
+        let config = AuthConfig { token_expiry_seconds: 7200, ..Default::default() };
         assert_eq!(config.token_expiry(), Duration::from_secs(7200));
     }
 

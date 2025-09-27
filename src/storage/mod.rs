@@ -30,13 +30,10 @@ pub async fn run_migrations(pool: &DbPool) -> Result<()> {
 
 /// Check database connectivity
 pub async fn check_connection(pool: &DbPool) -> Result<()> {
-    sqlx::query("SELECT 1")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| FlowplaneError::Database {
-            source: e,
-            context: "Database connectivity check failed".to_string(),
-        })?;
+    sqlx::query("SELECT 1").fetch_one(pool).await.map_err(|e| FlowplaneError::Database {
+        source: e,
+        context: "Database connectivity check failed".to_string(),
+    })?;
 
     Ok(())
 }
@@ -63,10 +60,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_database_url() {
-        let config = DatabaseConfig {
-            url: "invalid://url".to_string(),
-            ..Default::default()
-        };
+        let config = DatabaseConfig { url: "invalid://url".to_string(), ..Default::default() };
 
         let result = create_pool(&config).await;
         assert!(result.is_err());

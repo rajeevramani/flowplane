@@ -1,11 +1,17 @@
 use axum::Router;
-use utoipa::OpenApi;
+use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
+#[allow(unused_imports)]
+use crate::api::auth_handlers::{CreateTokenBody, UpdateTokenBody};
+#[allow(unused_imports)]
 use crate::api::handlers::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
 };
+#[allow(unused_imports)]
+use crate::auth::{models::PersonalAccessToken, token_service::TokenSecretResponse};
+#[allow(unused_imports)]
 use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec, HealthCheckSpec,
     OutlierDetectionSpec,
@@ -14,6 +20,12 @@ use crate::xds::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        crate::api::auth_handlers::create_token_handler,
+        crate::api::auth_handlers::list_tokens_handler,
+        crate::api::auth_handlers::get_token_handler,
+        crate::api::auth_handlers::update_token_handler,
+        crate::api::auth_handlers::revoke_token_handler,
+        crate::api::auth_handlers::rotate_token_handler,
         crate::api::handlers::create_cluster_handler,
         crate::api::handlers::list_clusters_handler,
         crate::api::handlers::get_cluster_handler,
@@ -40,6 +52,10 @@ use crate::xds::{
             CircuitBreakerThresholdsRequest,
             OutlierDetectionRequest,
             ClusterResponse,
+            CreateTokenBody,
+            UpdateTokenBody,
+            PersonalAccessToken,
+            TokenSecretResponse,
             ClusterSpec,
             EndpointSpec,
             CircuitBreakersSpec,
@@ -65,15 +81,32 @@ use crate::xds::{
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
-        (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications")
-    )
+        (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications"),
+        (name = "tokens", description = "Personal access token management APIs")
+    ),
+    security(
+        ("bearerAuth" = [])
+    ),
+    modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;
 
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearerAuth",
+            SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).build()),
+        );
+    }
+}
+
 pub fn docs_router() -> Router {
-    SwaggerUi::new("/swagger-ui")
-        .url("/api-docs/openapi.json", ApiDoc::openapi())
-        .into()
+    SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()).into()
 }
 
 #[cfg(test)]
@@ -86,23 +119,16 @@ mod tests {
         let openapi = ApiDoc::openapi();
 
         // Validate schema requirements.
-        let schemas = openapi
-            .components
-            .as_ref()
-            .expect("components")
-            .schemas
-            .clone();
+        let schemas = openapi.components.as_ref().expect("components").schemas.clone();
 
-        let request_schema = schemas
-            .get("CreateClusterBody")
-            .expect("CreateClusterBody schema");
+        let request_schema = schemas.get("CreateClusterBody").expect("CreateClusterBody schema");
         let request_object = match request_schema {
             RefOr::T(Schema::Object(obj)) => obj,
             RefOr::T(_) => panic!("expected object schema"),
             RefOr::Ref(_) => panic!("expected inline schema, found ref"),
         };
 
-        let required: Vec<_> = request_object.required.iter().cloned().collect();
+        let required = request_object.required.clone();
         assert!(required.contains(&"name".to_string()));
         assert!(required.contains(&"endpoints".to_string()));
         assert!(!required.contains(&"serviceName".to_string()));
@@ -112,5 +138,6 @@ mod tests {
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
         assert!(openapi.paths.paths.contains_key("/api/v1/routes"));
         assert!(openapi.paths.paths.contains_key("/api/v1/routes/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/tokens"));
     }
 }

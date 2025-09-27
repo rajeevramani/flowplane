@@ -1,5 +1,11 @@
+use std::sync::Arc;
+
+use crate::auth::token_service::TokenService;
 use crate::errors::Error;
-use crate::storage::{CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest};
+use crate::storage::{
+    repository_simple::AuditLogRepository, CreateClusterRequest, CreateListenerRequest,
+    CreateRouteRepositoryRequest,
+};
 use crate::xds::XdsState;
 use crate::xds::{
     filters::http::{HttpFilterConfigEntry, HttpFilterKind},
@@ -16,7 +22,7 @@ fn serialize_value<T: serde::Serialize>(value: &T, context: &str) -> Result<Valu
     serde_json::to_value(value)
         .map_err(|err| Error::internal(format!("Failed to serialize {}: {}", context, err)))
 }
-use tracing::info;
+use tracing::{info, warn};
 
 pub const DEFAULT_GATEWAY_CLUSTER: &str = "default-gateway-cluster";
 pub const DEFAULT_GATEWAY_ROUTES: &str = "default-gateway-routes";
@@ -40,13 +46,20 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         None => return Ok(()),
     };
 
+    let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
+    let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
+    if let Some(secret) = token_service.ensure_bootstrap_token().await? {
+        warn!(
+            token_id = %secret.id,
+            token = %secret.token,
+            "Seeded bootstrap admin personal access token; store it securely"
+        );
+    }
+
     if !cluster_repo.exists_by_name(DEFAULT_GATEWAY_CLUSTER).await? {
         let cluster_spec = ClusterSpec {
             connect_timeout_seconds: Some(5),
-            endpoints: vec![EndpointSpec::Address {
-                host: "127.0.0.1".to_string(),
-                port: 65535,
-            }],
+            endpoints: vec![EndpointSpec::Address { host: "127.0.0.1".to_string(), port: 65535 }],
             use_tls: Some(false),
             tls_server_name: None,
             dns_lookup_family: None,
@@ -113,10 +126,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         info!("Created default gateway route configuration");
     }
 
-    if !listener_repo
-        .exists_by_name(DEFAULT_GATEWAY_LISTENER)
-        .await?
-    {
+    if !listener_repo.exists_by_name(DEFAULT_GATEWAY_LISTENER).await? {
         let listener_config = ListenerConfig {
             name: DEFAULT_GATEWAY_LISTENER.to_string(),
             address: DEFAULT_GATEWAY_ADDRESS.to_string(),

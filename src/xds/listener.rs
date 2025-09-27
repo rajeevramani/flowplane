@@ -107,15 +107,10 @@ impl ListenerConfig {
             ..Default::default()
         };
 
-        let address = Address {
-            address: Some(AddressType::SocketAddress(socket_address)),
-        };
+        let address = Address { address: Some(AddressType::SocketAddress(socket_address)) };
 
-        let filter_chains: Result<Vec<FilterChain>, crate::Error> = self
-            .filter_chains
-            .iter()
-            .map(|fc| fc.to_envoy_filter_chain())
-            .collect();
+        let filter_chains: Result<Vec<FilterChain>, crate::Error> =
+            self.filter_chains.iter().map(|fc| fc.to_envoy_filter_chain()).collect();
 
         let listener = Listener {
             name: self.name.clone(),
@@ -199,10 +194,7 @@ impl FilterConfig {
                     value: prost::Message::encode_to_vec(&hcm),
                 }
             }
-            FilterType::TcpProxy {
-                cluster,
-                access_log,
-            } => {
+            FilterType::TcpProxy { cluster, access_log } => {
                 let tcp_proxy = TcpProxy {
                     cluster_specifier: Some(
                         envoy_types::pb::envoy::extensions::filters::network::tcp_proxy::v3::tcp_proxy::ClusterSpecifier::Cluster(cluster.clone())
@@ -264,10 +256,8 @@ fn build_transport_socket(cfg: &TlsContextConfig) -> Result<TransportSocket, cra
         ..Default::default()
     };
 
-    let mut downstream = DownstreamTlsContext {
-        common_tls_context: Some(common),
-        ..Default::default()
-    };
+    let mut downstream =
+        DownstreamTlsContext { common_tls_context: Some(common), ..Default::default() };
 
     if let Some(require) = cfg.require_client_certificate {
         downstream.require_client_certificate = Some(BoolValue { value: require });
@@ -334,9 +324,7 @@ fn build_access_log(cfg: &AccessLogConfig) -> Result<AccessLog, crate::Error> {
 
 fn build_tracing(cfg: &TracingConfig) -> Result<http_connection_manager::Tracing, crate::Error> {
     if cfg.provider.trim().is_empty() {
-        return Err(crate::Error::config(
-            "Tracing provider name cannot be empty",
-        ));
+        return Err(crate::Error::config("Tracing provider name cannot be empty"));
     }
 
     let provider_struct = ProstStruct {
@@ -366,10 +354,7 @@ fn build_tracing(cfg: &TracingConfig) -> Result<http_connection_manager::Tracing
         config_type: Some(tracing::http::ConfigType::TypedConfig(provider_any)),
     };
 
-    Ok(http_connection_manager::Tracing {
-        provider: Some(http_provider),
-        ..Default::default()
-    })
+    Ok(http_connection_manager::Tracing { provider: Some(http_provider), ..Default::default() })
 }
 
 fn data_source_from_path(path: &str) -> DataSource {
@@ -392,9 +377,7 @@ pub struct ListenerManager {
 impl ListenerManager {
     /// Create a new listener manager
     pub fn new() -> Self {
-        Self {
-            listeners: HashMap::new(),
-        }
+        Self { listeners: HashMap::new() }
     }
 
     /// Add or update a listener
@@ -467,10 +450,7 @@ impl ListenerManager {
                 name: Some("default".to_string()),
                 filters: vec![FilterConfig {
                     name: "envoy.filters.network.tcp_proxy".to_string(),
-                    filter_type: FilterType::TcpProxy {
-                        cluster,
-                        access_log: None,
-                    },
+                    filter_type: FilterType::TcpProxy { cluster, access_log: None },
                 }],
                 tls_context: None,
             }],
@@ -542,9 +522,7 @@ mod tests {
             }],
         };
 
-        let listener = config
-            .to_envoy_listener()
-            .expect("Failed to convert listener config");
+        let listener = config.to_envoy_listener().expect("Failed to convert listener config");
 
         assert_eq!(listener.name, "test-listener");
         assert!(listener.address.is_some());
@@ -569,9 +547,7 @@ mod tests {
             "default-route".to_string(),
         );
 
-        manager
-            .upsert_listener(config)
-            .expect("Failed to add listener");
+        manager.upsert_listener(config).expect("Failed to add listener");
 
         assert!(manager.get_listener("http-listener").is_some());
         assert_eq!(manager.list_listener_names().len(), 1);
@@ -671,10 +647,7 @@ mod tests {
         let envoy_listener = listener.to_envoy_listener().expect("listener conversion");
 
         let filter = &envoy_listener.filter_chains[0].filters[0];
-        let config = filter
-            .config_type
-            .as_ref()
-            .expect("filter missing config type");
+        let config = filter.config_type.as_ref().expect("filter missing config type");
         let any = match config {
             envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(any) => {
                 any
@@ -686,10 +659,7 @@ mod tests {
             .expect("decode http connection manager");
 
         assert_eq!(hcm.http_filters.len(), 2);
-        assert_eq!(
-            hcm.http_filters[0].name,
-            "envoy.filters.http.local_ratelimit"
-        );
+        assert_eq!(hcm.http_filters[0].name, "envoy.filters.http.local_ratelimit");
         assert_eq!(hcm.http_filters[1].name, ROUTER_FILTER_NAME);
     }
 }

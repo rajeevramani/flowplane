@@ -112,11 +112,8 @@ pub struct WeightedClusterConfig {
 impl RouteConfig {
     /// Convert REST API RouteConfig to envoy-types RouteConfiguration
     pub fn to_envoy_route_configuration(&self) -> Result<RouteConfiguration, crate::Error> {
-        let virtual_hosts: Result<Vec<VirtualHost>, crate::Error> = self
-            .virtual_hosts
-            .iter()
-            .map(|vh| vh.to_envoy_virtual_host())
-            .collect();
+        let virtual_hosts: Result<Vec<VirtualHost>, crate::Error> =
+            self.virtual_hosts.iter().map(|vh| vh.to_envoy_virtual_host()).collect();
 
         let route_config = RouteConfiguration {
             name: self.name.clone(),
@@ -188,9 +185,7 @@ impl RouteMatchConfig {
                 },
             ),
             PathMatch::Template(template) => {
-                let config = UriTemplateMatchConfig {
-                    path_template: template.clone(),
-                };
+                let config = UriTemplateMatchConfig { path_template: template.clone() };
 
                 let typed_config = TypedExtensionConfig {
                     name: "envoy.path.match.uri_template".to_string(),
@@ -222,12 +217,7 @@ impl RouteActionConfig {
         &self,
     ) -> Result<envoy_types::pb::envoy::config::route::v3::route::Action, crate::Error> {
         let action = match self {
-            RouteActionConfig::Cluster {
-                name,
-                timeout,
-                prefix_rewrite,
-                path_template_rewrite,
-            } => {
+            RouteActionConfig::Cluster { name, timeout, prefix_rewrite, path_template_rewrite } => {
                 #[allow(deprecated)]
                 let mut route_action = RouteAction {
                     cluster_specifier: Some(ClusterSpecifier::Cluster(name.clone())),
@@ -243,9 +233,8 @@ impl RouteActionConfig {
                 }
 
                 if let Some(template) = path_template_rewrite {
-                    let rewrite_config = UriTemplateRewriteConfig {
-                        path_template_rewrite: template.clone(),
-                    };
+                    let rewrite_config =
+                        UriTemplateRewriteConfig { path_template_rewrite: template.clone() };
 
                     let typed_config = TypedExtensionConfig {
                         name: "envoy.path.rewrite.uri_template".to_string(),
@@ -262,10 +251,7 @@ impl RouteActionConfig {
 
                 envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
             }
-            RouteActionConfig::WeightedClusters {
-                clusters,
-                total_weight,
-            } => {
+            RouteActionConfig::WeightedClusters { clusters, total_weight } => {
                 let weighted_clusters: Vec<
                     envoy_types::pb::envoy::config::route::v3::weighted_cluster::ClusterWeight,
                 > = clusters
@@ -310,11 +296,7 @@ impl RouteActionConfig {
 
                 envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
             }
-            RouteActionConfig::Redirect {
-                host_redirect,
-                path_redirect,
-                response_code,
-            } => {
+            RouteActionConfig::Redirect { host_redirect, path_redirect, response_code } => {
                 let redirect_code = response_code
                     .and_then(|c| {
                         envoy_types::pb::envoy::config::route::v3::redirect_action::RedirectResponseCode::try_from(c as i32)
@@ -350,9 +332,7 @@ pub struct RouteManager {
 impl RouteManager {
     /// Create a new route manager
     pub fn new() -> Self {
-        Self {
-            routes: HashMap::new(),
-        }
+        Self { routes: HashMap::new() }
     }
 
     /// Add or update a route configuration
@@ -431,9 +411,8 @@ mod tests {
             }],
         };
 
-        let route_config = config
-            .to_envoy_route_configuration()
-            .expect("Failed to convert route config");
+        let route_config =
+            config.to_envoy_route_configuration().expect("Failed to convert route config");
 
         assert_eq!(route_config.name, "test-route");
         assert_eq!(route_config.virtual_hosts.len(), 1);
@@ -507,28 +486,16 @@ mod tests {
             query_parameters: None,
         };
 
-        let exact_envoy = exact_match
-            .to_envoy_route_match()
-            .expect("Failed to convert exact match");
-        let prefix_envoy = prefix_match
-            .to_envoy_route_match()
-            .expect("Failed to convert prefix match");
-        let regex_envoy = regex_match
-            .to_envoy_route_match()
-            .expect("Failed to convert regex match");
+        let exact_envoy =
+            exact_match.to_envoy_route_match().expect("Failed to convert exact match");
+        let prefix_envoy =
+            prefix_match.to_envoy_route_match().expect("Failed to convert prefix match");
+        let regex_envoy =
+            regex_match.to_envoy_route_match().expect("Failed to convert regex match");
 
-        assert!(matches!(
-            exact_envoy.path_specifier,
-            Some(PathSpecifier::Path(_))
-        ));
-        assert!(matches!(
-            prefix_envoy.path_specifier,
-            Some(PathSpecifier::Prefix(_))
-        ));
-        assert!(matches!(
-            regex_envoy.path_specifier,
-            Some(PathSpecifier::SafeRegex(_))
-        ));
+        assert!(matches!(exact_envoy.path_specifier, Some(PathSpecifier::Path(_))));
+        assert!(matches!(prefix_envoy.path_specifier, Some(PathSpecifier::Prefix(_))));
+        assert!(matches!(regex_envoy.path_specifier, Some(PathSpecifier::SafeRegex(_))));
     }
 
     #[test]
@@ -538,10 +505,7 @@ mod tests {
             token_bucket: Some(TokenBucket {
                 max_tokens: 5,
                 tokens_per_fill: Some(UInt32Value { value: 5 }),
-                fill_interval: Some(Duration {
-                    seconds: 1,
-                    nanos: 0,
-                }),
+                fill_interval: Some(Duration { seconds: 1, nanos: 0 }),
             }),
             ..Default::default()
         };
@@ -605,18 +569,12 @@ mod tests {
             }],
         };
 
-        let envoy_route = route_config
-            .to_envoy_route_configuration()
-            .expect("route to envoy");
+        let envoy_route = route_config.to_envoy_route_configuration().expect("route to envoy");
 
         let vhost = &envoy_route.virtual_hosts[0];
-        assert!(vhost
-            .typed_per_filter_config
-            .contains_key("envoy.filters.http.local_ratelimit"));
+        assert!(vhost.typed_per_filter_config.contains_key("envoy.filters.http.local_ratelimit"));
 
         let route = &vhost.routes[0];
-        assert!(route
-            .typed_per_filter_config
-            .contains_key("envoy.filters.http.local_ratelimit"));
+        assert!(route.typed_per_filter_config.contains_key("envoy.filters.http.local_ratelimit"));
     }
 }

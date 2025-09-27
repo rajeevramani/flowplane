@@ -1,0 +1,226 @@
+openapi: 3.0.3
+info:
+  title: Flowplane Authentication Middleware Specification
+  description: Defines authentication and authorization behavior for protected endpoints
+  version: 1.0.0
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Personal Access Token
+      description: |
+        Personal access token with format: fp_{32_random_characters}
+
+        Token must be provided in Authorization header:
+        Authorization: Bearer fp_1234567890abcdef...
+
+  schemas:
+    AuthenticationError:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - authentication_required
+            - invalid_token
+            - expired_token
+            - revoked_token
+            - malformed_token
+        message:
+          type: string
+          description: Human-readable error message
+        correlation_id:
+          type: string
+          description: Request correlation ID for audit trail
+
+    AuthorizationError:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - insufficient_permissions
+            - scope_required
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          properties:
+            required_scopes:
+              type: array
+              items:
+                type: string
+              description: Scopes required for this endpoint
+            granted_scopes:
+              type: array
+              items:
+                type: string
+              description: Scopes available to the authenticated token
+        correlation_id:
+          type: string
+
+# Authentication Middleware Behavior Contract
+
+x-middleware-behavior:
+  authentication_flow:
+    steps:
+      - step: "extract_bearer_token"
+        description: "Extract token from Authorization: Bearer {token} header"
+        on_missing:
+          action: "return_401"
+          error_type: "authentication_required"
+        on_malformed:
+          action: "return_401"
+          error_type: "malformed_token"
+
+      - step: "validate_token_format"
+        description: "Verify token starts with 'fp_' and has correct length"
+        on_invalid_format:
+          action: "return_401"
+          error_type: "malformed_token"
+
+      - step: "hash_and_lookup"
+        description: "Hash provided token and lookup in database"
+        security_note: "Use constant-time comparison to prevent timing attacks"
+        on_not_found:
+          action: "return_401"
+          error_type: "invalid_token"
+
+      - step: "validate_token_status"
+        description: "Check token is active (not revoked or expired)"
+        on_revoked:
+          action: "return_401"
+          error_type: "revoked_token"
+        on_expired:
+          action: "return_401"
+          error_type: "expired_token"
+
+      - step: "load_scopes"
+        description: "Load granted scopes for authenticated token"
+
+      - step: "create_auth_context"
+        description: "Create AuthContext with token metadata and scopes"
+
+      - step: "update_last_used"
+        description: "Asynchronously update last_used_at timestamp"
+
+      - step: "audit_log"
+        description: "Log successful authentication event"
+        event_type: "auth.request.authenticated"
+
+  authorization_flow:
+    steps:
+      - step: "extract_required_scopes"
+        description: "Get required scopes from endpoint configuration"
+
+      - step: "check_permissions"
+        description: "Verify AuthContext has all required scopes"
+        logic: "granted_scopes.contains_all(required_scopes)"
+
+      - step: "on_authorized"
+        description: "Allow request to proceed to handler"
+
+      - step: "on_unauthorized"
+        description: "Return 403 Forbidden with scope details"
+        action: "return_403"
+        error_type: "insufficient_permissions"
+        audit_event: "auth.request.forbidden"
+
+  error_handling:
+    timing_attack_protection:
+      description: "All token validation uses constant-time operations"
+      implementation: "Use subtle::ConstantTimeEq for token hash comparison"
+
+    rate_limiting:
+      description: "Failed authentication attempts are rate limited per IP"
+      window: "15 minutes"
+      max_attempts: 10
+
+    audit_logging:
+      success_events:
+        - "auth.request.authenticated"
+      failure_events:
+        - "auth.request.failed"
+        - "auth.request.forbidden"
+      metadata_included:
+        - "correlation_id"
+        - "token_id"
+        - "source_ip"
+        - "user_agent"
+        - "endpoint"
+        - "required_scopes"
+        - "granted_scopes"
+
+# Endpoint Security Requirements
+
+x-endpoint-security:
+  scope_definitions:
+    cluster_operations:
+      read: "clusters:read"
+      write: "clusters:write"
+      endpoints:
+        - "GET /api/v1/clusters"
+        - "GET /api/v1/clusters/{name}"
+        - "POST /api/v1/clusters"
+        - "PUT /api/v1/clusters/{name}"
+        - "DELETE /api/v1/clusters/{name}"
+
+    route_operations:
+      read: "routes:read"
+      write: "routes:write"
+      endpoints:
+        - "GET /api/v1/routes"
+        - "GET /api/v1/routes/{name}"
+        - "POST /api/v1/routes"
+        - "PUT /api/v1/routes/{name}"
+        - "DELETE /api/v1/routes/{name}"
+
+    listener_operations:
+      read: "listeners:read"
+      write: "listeners:write"
+      endpoints:
+        - "GET /api/v1/listeners"
+        - "GET /api/v1/listeners/{name}"
+        - "POST /api/v1/listeners"
+        - "PUT /api/v1/listeners/{name}"
+        - "DELETE /api/v1/listeners/{name}"
+
+    admin_operations:
+      read: "admin:read"
+      write: "admin:write"
+      endpoints:
+        - "GET /api/v1/tokens"
+        - "GET /api/v1/tokens/{id}"
+        - "POST /api/v1/tokens"
+        - "PATCH /api/v1/tokens/{id}"
+        - "DELETE /api/v1/tokens/{id}"
+
+  scope_hierarchy:
+    description: "Write permissions include corresponding read permissions"
+    rules:
+      - "clusters:write implies clusters:read"
+      - "routes:write implies routes:read"
+      - "listeners:write implies listeners:read"
+      - "admin:write implies admin:read"
+
+# Integration with Existing Endpoints
+
+x-integration:
+  backward_compatibility:
+    description: "Authentication is additive - existing endpoints work unchanged"
+    implementation: "Middleware is opt-in per endpoint"
+
+  opt_in_strategy:
+    phase_1: "New auth endpoints require authentication"
+    phase_2: "Admin endpoints require authentication"
+    phase_3: "All CRUD endpoints require authentication"
+
+  configuration:
+    environment_variable: "FLOWPLANE_AUTH_REQUIRED"
+    values:
+      - "false" # Authentication disabled (default for backward compatibility)
+      - "admin_only" # Only token management endpoints require auth
+      - "true" # All API endpoints require authentication

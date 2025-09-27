@@ -8,6 +8,8 @@ pub enum ApiError {
     BadRequest(String),
     Conflict(String),
     NotFound(String),
+    Unauthorized(String),
+    Forbidden(String),
     ServiceUnavailable(String),
     Internal(String),
 }
@@ -18,6 +20,8 @@ impl ApiError {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -37,6 +41,8 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => "bad_request",
             ApiError::Conflict(_) => "conflict",
             ApiError::NotFound(_) => "not_found",
+            ApiError::Unauthorized(_) => "unauthorized",
+            ApiError::Forbidden(_) => "forbidden",
             ApiError::ServiceUnavailable(_) => "service_unavailable",
             ApiError::Internal(_) => "internal_error",
         };
@@ -45,18 +51,13 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg)
             | ApiError::Conflict(msg)
             | ApiError::NotFound(msg)
+            | ApiError::Unauthorized(msg)
+            | ApiError::Forbidden(msg)
             | ApiError::ServiceUnavailable(msg)
             | ApiError::Internal(msg) => msg,
         };
 
-        (
-            status,
-            Json(ErrorBody {
-                error: error_kind,
-                message,
-            }),
-        )
-            .into_response()
+        (status, Json(ErrorBody { error: error_kind, message })).into_response()
     }
 }
 
@@ -87,5 +88,13 @@ impl From<Error> for ApiError {
 impl ApiError {
     pub fn service_unavailable<S: Into<String>>(msg: S) -> Self {
         ApiError::ServiceUnavailable(msg.into())
+    }
+
+    pub fn unauthorized<S: Into<String>>(msg: S) -> Self {
+        ApiError::Unauthorized(msg.into())
+    }
+
+    pub fn forbidden<S: Into<String>>(msg: S) -> Self {
+        ApiError::Forbidden(msg.into())
     }
 }

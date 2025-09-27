@@ -7,9 +7,7 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
     info!("🗄️ Running database migrations manually");
 
@@ -81,9 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     // Read it back
-    let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM clusters")
-        .fetch_one(&pool)
-        .await?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM clusters").fetch_one(&pool).await?;
 
     info!("✅ Database test complete! Clusters in DB: {}", count);
     info!("🎉 Migration completed successfully!");

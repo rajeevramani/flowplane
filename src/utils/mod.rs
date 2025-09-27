@@ -25,10 +25,7 @@ pub struct ConfigVersion {
 impl ConfigVersion {
     /// Create a new configuration version
     pub fn new(version: u64) -> Self {
-        Self {
-            version,
-            timestamp: chrono::Utc::now(),
-        }
+        Self { version, timestamp: chrono::Utc::now() }
     }
 
     /// Get the next version number
@@ -49,32 +46,17 @@ pub struct ApiResponse<T> {
 impl<T> ApiResponse<T> {
     /// Create a successful response
     pub fn success(data: T) -> Self {
-        Self {
-            success: true,
-            data: Some(data),
-            error: None,
-            version: None,
-        }
+        Self { success: true, data: Some(data), error: None, version: None }
     }
 
     /// Create a successful response with version
     pub fn success_with_version(data: T, version: ConfigVersion) -> Self {
-        Self {
-            success: true,
-            data: Some(data),
-            error: None,
-            version: Some(version),
-        }
+        Self { success: true, data: Some(data), error: None, version: Some(version) }
     }
 
     /// Create an error response
     pub fn error(message: String) -> Self {
-        Self {
-            success: false,
-            data: None,
-            error: Some(message),
-            version: None,
-        }
+        Self { success: false, data: None, error: Some(message), version: None }
     }
 }
 
@@ -127,13 +109,7 @@ impl<T> PaginatedResponse<T> {
     /// Create a new paginated response
     pub fn new(items: Vec<T>, total: u64, page: u32, limit: u32) -> Self {
         let total_pages = ((total as f64) / (limit as f64)).ceil() as u32;
-        Self {
-            items,
-            total,
-            page,
-            limit,
-            total_pages,
-        }
+        Self { items, total, page, limit, total_pages }
     }
 }
 

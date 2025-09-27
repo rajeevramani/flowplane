@@ -68,7 +68,7 @@ fn default_protocol() -> String {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/gateways/openapi1",
+    path = "/api/v1/gateways/openapi",
     params(GatewayQuery),
     request_body(
         description = "OpenAPI 3.0 document in JSON or YAML format",
@@ -133,11 +133,7 @@ pub async fn create_gateway_from_openapi_handler(
             params.protocol.clone().unwrap_or_else(default_protocol),
         )
     } else {
-        (
-            DEFAULT_GATEWAY_ADDRESS.to_string(),
-            DEFAULT_GATEWAY_PORT,
-            "HTTP".to_string(),
-        )
+        (DEFAULT_GATEWAY_ADDRESS.to_string(), DEFAULT_GATEWAY_PORT, "HTTP".to_string())
     };
 
     let options = GatewayOptions {
@@ -158,10 +154,7 @@ pub async fn create_gateway_from_openapi_handler(
 
     for cluster in &plan.cluster_requests {
         if cluster_repo.exists_by_name(&cluster.name).await? {
-            return Err(ApiError::Conflict(format!(
-                "Cluster '{}' already exists",
-                cluster.name
-            )));
+            return Err(ApiError::Conflict(format!("Cluster '{}' already exists", cluster.name)));
         }
     }
 
@@ -246,10 +239,8 @@ pub async fn create_gateway_from_openapi_handler(
             }
         }
     } else if let Some(virtual_host) = plan.default_virtual_host.as_ref() {
-        let default_route = route_repo
-            .get_by_name(DEFAULT_GATEWAY_ROUTES)
-            .await
-            .map_err(ApiError::from)?;
+        let default_route =
+            route_repo.get_by_name(DEFAULT_GATEWAY_ROUTES).await.map_err(ApiError::from)?;
 
         let mut route_value: Value =
             serde_json::from_str(&default_route.configuration).map_err(|err| {
@@ -269,11 +260,7 @@ pub async fn create_gateway_from_openapi_handler(
                 ))
             })?;
 
-        if route_config
-            .virtual_hosts
-            .iter()
-            .any(|vh| vh.name == virtual_host.name)
-        {
+        if route_config.virtual_hosts.iter().any(|vh| vh.name == virtual_host.name) {
             rollback_import(
                 &listener_repo,
                 &route_repo,

@@ -2,6 +2,7 @@
 //!
 //! This module wires together the API router, handlers, and server boot logic.
 
+pub mod auth_handlers;
 pub mod docs;
 pub mod error;
 pub mod gateway_handlers;

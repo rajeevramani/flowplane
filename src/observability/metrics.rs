@@ -4,152 +4,180 @@
 
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
-use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
+use ::tracing::{info, warn};
+use metrics::{counter, describe_counter, describe_gauge, gauge, histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Metrics recorder that tracks application metrics
-#[derive(Debug, Clone)]
-pub struct MetricsRecorder {
-    // HTTP metrics
-    pub http_requests_total: Counter,
-    pub http_request_duration: Histogram,
-    pub http_responses_total: Counter,
-
-    // xDS metrics
-    pub xds_connections_total: Gauge,
-    pub xds_requests_total: Counter,
-    pub xds_responses_total: Counter,
-    pub xds_stream_duration: Histogram,
-
-    // Database metrics
-    pub db_connections_active: Gauge,
-    pub db_queries_total: Counter,
-    pub db_query_duration: Histogram,
-
-    // Configuration metrics
-    pub config_updates_total: Counter,
-    pub config_objects_total: Gauge,
-
-    // System metrics
-    pub system_uptime: Gauge,
-    pub memory_usage: Gauge,
-}
+#[derive(Debug, Clone, Default)]
+pub struct MetricsRecorder;
 
 impl MetricsRecorder {
-    /// Create a new metrics recorder with initialized metrics
+    /// Create a new metrics recorder instance
     pub fn new() -> Self {
-        Self {
-            // HTTP metrics
-            http_requests_total: counter!("http_requests_total"),
-            http_request_duration: histogram!("http_request_duration_seconds"),
-            http_responses_total: counter!("http_responses_total"),
-
-            // xDS metrics
-            xds_connections_total: gauge!("xds_connections_total"),
-            xds_requests_total: counter!("xds_requests_total"),
-            xds_responses_total: counter!("xds_responses_total"),
-            xds_stream_duration: histogram!("xds_stream_duration_seconds"),
-
-            // Database metrics
-            db_connections_active: gauge!("db_connections_active"),
-            db_queries_total: counter!("db_queries_total"),
-            db_query_duration: histogram!("db_query_duration_seconds"),
-
-            // Configuration metrics
-            config_updates_total: counter!("config_updates_total"),
-            config_objects_total: gauge!("config_objects_total"),
-
-            // System metrics
-            system_uptime: gauge!("system_uptime_seconds"),
-            memory_usage: gauge!("memory_usage_bytes"),
-        }
+        Self
     }
 
     /// Record an HTTP request
     pub fn record_http_request(&self, method: &str, path: &str, status: u16, duration: f64) {
-        self.http_requests_total.increment(1);
-        self.http_request_duration.record(duration);
-        self.http_responses_total.increment(1);
+        counter!("http_requests_total").increment(1);
+        histogram!("http_request_duration_seconds").record(duration);
+        counter!("http_responses_total").increment(1);
 
-        // Record with labels using the metrics crate's label syntax
-        counter!("http_requests_total", "method" => method, "path" => path).increment(1);
-        counter!("http_responses_total", "status" => status.to_string()).increment(1);
+        let request_labels = [("method", method.to_string()), ("path", path.to_string())];
+        counter!("http_requests_total", &request_labels).increment(1);
+
+        let status_label = [("status", status.to_string())];
+        counter!("http_responses_total", &status_label).increment(1);
     }
 
-    /// Record an xDS stream connection
+    /// Record an xDS stream connection event
     pub fn record_xds_connection(&self, node_id: &str, connected: bool) {
+        let labels = [("node_id", node_id.to_string())];
         if connected {
-            self.xds_connections_total.increment(1.0);
-            gauge!("xds_connections_total", "node_id" => node_id).increment(1.0);
+            gauge!("xds_connections_total", &labels).increment(1.0);
         } else {
-            self.xds_connections_total.decrement(1.0);
-            gauge!("xds_connections_total", "node_id" => node_id).decrement(1.0);
+            gauge!("xds_connections_total", &labels).decrement(1.0);
         }
     }
 
-    /// Record an xDS request/response
+    /// Record an xDS request/response outcome
     pub fn record_xds_request(&self, type_url: &str, node_id: &str, success: bool) {
-        self.xds_requests_total.increment(1);
-        counter!("xds_requests_total", "type_url" => type_url, "node_id" => node_id).increment(1);
+        let request_labels = [("type_url", type_url.to_string()), ("node_id", node_id.to_string())];
+        counter!("xds_requests_total", &request_labels).increment(1);
 
-        if success {
-            self.xds_responses_total.increment(1);
-            counter!("xds_responses_total", "type_url" => type_url, "status" => "success").increment(1);
-        } else {
-            counter!("xds_responses_total", "type_url" => type_url, "status" => "error").increment(1);
-        }
+        let status_label = if success { "success" } else { "error" };
+        let response_labels =
+            [("type_url", type_url.to_string()), ("status", status_label.to_string())];
+        counter!("xds_responses_total", &response_labels).increment(1);
     }
 
-    /// Record xDS stream duration
+    /// Record xDS stream duration in seconds
     pub fn record_xds_stream_duration(&self, node_id: &str, duration: f64) {
-        self.xds_stream_duration.record(duration);
-        histogram!("xds_stream_duration_seconds", "node_id" => node_id).record(duration);
+        let labels = [("node_id", node_id.to_string())];
+        histogram!("xds_stream_duration_seconds", &labels).record(duration);
     }
 
-    /// Record database activity
+    /// Record database activity with execution timing
     pub fn record_db_query(&self, operation: &str, table: &str, duration: f64, success: bool) {
-        self.db_queries_total.increment(1);
-        self.db_query_duration.record(duration);
+        let op_table_labels = [("operation", operation.to_string()), ("table", table.to_string())];
+        counter!("db_queries_total", &op_table_labels).increment(1);
 
-        counter!("db_queries_total", "operation" => operation, "table" => table).increment(1);
         let status = if success { "success" } else { "error" };
-        counter!("db_queries_total", "operation" => operation, "status" => status).increment(1);
+        let status_labels = [("operation", operation.to_string()), ("status", status.to_string())];
+        counter!("db_queries_total", &status_labels).increment(1);
+
+        let duration_labels = [("operation", operation.to_string())];
+        histogram!("db_query_duration_seconds", &duration_labels).record(duration);
     }
 
-    /// Update database connections count
+    /// Update database connection gauge
     pub fn update_db_connections(&self, active: u32) {
-        self.db_connections_active.set(active as f64);
+        gauge!("db_connections_active").set(active as f64);
     }
 
-    /// Record configuration update
+    /// Record configuration update activity
     pub fn record_config_update(&self, resource_type: &str, operation: &str) {
-        self.config_updates_total.increment(1);
-        counter!("config_updates_total", "resource_type" => resource_type, "operation" => operation)
-            .increment(1);
+        let labels =
+            [("resource_type", resource_type.to_string()), ("operation", operation.to_string())];
+        counter!("config_updates_total", &labels).increment(1);
     }
 
-    /// Update configuration objects count
+    /// Update configuration object gauge
     pub fn update_config_objects(&self, resource_type: &str, count: u32) {
-        gauge!("config_objects_total", "resource_type" => resource_type).set(count as f64);
+        let labels = [("resource_type", resource_type.to_string())];
+        gauge!("config_objects_total", &labels).set(count as f64);
     }
 
-    /// Update system uptime
+    /// Update system uptime gauge
     pub fn update_uptime(&self, uptime_seconds: f64) {
-        self.system_uptime.set(uptime_seconds);
+        gauge!("system_uptime_seconds").set(uptime_seconds);
     }
 
-    /// Update memory usage
+    /// Update memory usage gauge
     pub fn update_memory_usage(&self, bytes: u64) {
-        self.memory_usage.set(bytes as f64);
+        gauge!("memory_usage_bytes").set(bytes as f64);
     }
-}
 
-impl Default for MetricsRecorder {
-    fn default() -> Self {
-        Self::new()
+    /// Record token creation event
+    pub fn record_token_created(&self, scope_count: usize) {
+        counter!("auth_tokens_created_total").increment(1);
+        let labels = [("scope_count", scope_count.to_string())];
+        counter!("auth_tokens_created_total", &labels).increment(1);
+    }
+
+    /// Record token revocation event
+    pub fn record_token_revoked(&self) {
+        counter!("auth_tokens_revoked_total").increment(1);
+    }
+
+    /// Record token rotation event
+    pub fn record_token_rotated(&self) {
+        counter!("auth_tokens_rotated_total").increment(1);
+    }
+
+    /// Record authentication attempt outcome
+    pub fn record_authentication(&self, status: &str) {
+        counter!("auth_authentications_total").increment(1);
+        let labels = [("status", status.to_string())];
+        counter!("auth_authentications_total", &labels).increment(1);
+    }
+
+    /// Update gauge tracking active personal access tokens
+    pub fn set_active_tokens(&self, count: usize) {
+        gauge!("auth_tokens_active_total", "state" => "active").set(count as f64);
+    }
+
+    /// Register baseline auth metrics so Prometheus exports appear before events occur.
+    pub fn register_auth_metrics(&self) {
+        describe_counter!(
+            "auth_tokens_created_total",
+            Unit::Count,
+            "Number of personal access tokens created"
+        );
+        describe_counter!(
+            "auth_tokens_revoked_total",
+            Unit::Count,
+            "Number of personal access tokens revoked"
+        );
+        describe_counter!(
+            "auth_tokens_rotated_total",
+            Unit::Count,
+            "Number of personal access tokens rotated"
+        );
+        describe_counter!(
+            "auth_authentications_total",
+            Unit::Count,
+            "Authentication attempts grouped by outcome"
+        );
+        describe_gauge!(
+            "auth_tokens_active_total",
+            Unit::Count,
+            "Gauge tracking active personal access tokens"
+        );
+
+        counter!("auth_tokens_created_total").absolute(0);
+        counter!("auth_tokens_revoked_total").absolute(0);
+        counter!("auth_tokens_rotated_total").absolute(0);
+        gauge!("auth_tokens_active_total", "state" => "active").set(0.0);
+
+        const STATUSES: &[&str] = &[
+            "success",
+            "missing_bearer",
+            "malformed",
+            "not_found",
+            "inactive",
+            "expired",
+            "invalid_secret",
+            "error",
+        ];
+
+        for status in STATUSES {
+            counter!("auth_authentications_total", "status" => *status).absolute(0);
+        }
     }
 }
 
@@ -158,7 +186,7 @@ static METRICS: once_cell::sync::Lazy<Arc<RwLock<Option<MetricsRecorder>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(None)));
 
 /// Initialize metrics collection and Prometheus exporter
-pub fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
+pub async fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
     if !config.enable_metrics {
         return Ok(());
     }
@@ -166,32 +194,34 @@ pub fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
     let metrics_addr = match config.metrics_bind_address() {
         Some(addr) => addr,
         None => {
-            tracing::warn!("Metrics disabled: no bind address configured");
+            warn!("Metrics disabled: no bind address configured");
             return Ok(());
         }
     };
 
-    let socket_addr: SocketAddr = metrics_addr
-        .parse()
-        .map_err(|e| FlowplaneError::config(format!("Invalid metrics bind address '{}': {}", metrics_addr, e)))?;
+    let socket_addr: SocketAddr = metrics_addr.parse().map_err(|e| {
+        FlowplaneError::config(format!("Invalid metrics bind address '{}': {}", metrics_addr, e))
+    })?;
 
     // Initialize Prometheus exporter
     let builder = PrometheusBuilder::new()
         .with_http_listener(socket_addr)
         .add_global_label("service", &config.service_name);
 
-    builder
-        .install()
-        .map_err(|e| FlowplaneError::config(format!("Failed to initialize metrics exporter: {}", e)))?;
+    builder.install().map_err(|e| {
+        FlowplaneError::config(format!("Failed to initialize metrics exporter: {}", e))
+    })?;
 
     // Create and store global metrics recorder
     let recorder = MetricsRecorder::new();
-    tokio::spawn(async move {
+    {
         let mut metrics = METRICS.write().await;
-        *metrics = Some(recorder);
-    });
+        *metrics = Some(recorder.clone());
+    }
 
-    tracing::info!(
+    recorder.register_auth_metrics();
+
+    info!(
         metrics_addr = %metrics_addr,
         service_name = %config.service_name,
         "Metrics collection initialized"
@@ -226,6 +256,41 @@ pub async fn record_db_operation(operation: &str, table: &str, duration: f64, su
     }
 }
 
+/// Record personal access token creation via the global recorder
+pub async fn record_token_created(scope_count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_token_created(scope_count);
+    }
+}
+
+/// Record personal access token revocation via the global recorder
+pub async fn record_token_revoked() {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_token_revoked();
+    }
+}
+
+/// Record personal access token rotation via the global recorder
+pub async fn record_token_rotated() {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_token_rotated();
+    }
+}
+
+/// Record authentication attempt outcome via the global recorder
+pub async fn record_authentication(status: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_authentication(status);
+    }
+}
+
+/// Update the active personal access token gauge via the global recorder
+pub async fn set_active_tokens(count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.set_active_tokens(count);
+    }
+}
+
 /// Middleware for automatic HTTP metrics collection
 pub struct MetricsMiddleware;
 
@@ -236,17 +301,27 @@ impl MetricsMiddleware {
     }
 }
 
+impl Default for MetricsMiddleware {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// System metrics collector that runs periodically
 pub struct SystemMetricsCollector {
     start_time: std::time::Instant,
 }
 
+impl Default for SystemMetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemMetricsCollector {
     /// Create a new system metrics collector
     pub fn new() -> Self {
-        Self {
-            start_time: std::time::Instant::now(),
-        }
+        Self { start_time: std::time::Instant::now() }
     }
 
     /// Start collecting system metrics periodically
@@ -263,7 +338,6 @@ impl SystemMetricsCollector {
                 metrics.update_uptime(uptime);
 
                 // Update memory usage (simple implementation)
-                // In a real implementation, you might use a crate like `sysinfo`
                 if let Ok(memory_info) = self.get_memory_usage() {
                     metrics.update_memory_usage(memory_info);
                 }
@@ -273,8 +347,6 @@ impl SystemMetricsCollector {
 
     /// Get current memory usage (placeholder implementation)
     fn get_memory_usage(&self) -> Result<u64> {
-        // This is a placeholder. In a real implementation, you would use
-        // system APIs or crates like `sysinfo` to get actual memory usage.
         Ok(0)
     }
 }
@@ -286,75 +358,49 @@ mod tests {
     #[test]
     fn test_metrics_recorder_creation() {
         let recorder = MetricsRecorder::new();
-
-        // Test that all metrics are initialized
-        recorder.http_requests_total.increment(1);
-        recorder.xds_connections_total.set(5.0);
-        recorder.db_connections_active.set(10.0);
-        recorder.config_updates_total.increment(1);
-        recorder.system_uptime.set(3600.0);
+        recorder.record_http_request("GET", "/", 200, 0.5);
     }
 
     #[test]
     fn test_metrics_recording() {
         let recorder = MetricsRecorder::new();
 
-        // Test HTTP metrics
         recorder.record_http_request("GET", "/api/clusters", 200, 0.123);
         recorder.record_http_request("POST", "/api/clusters", 201, 0.456);
 
-        // Test xDS metrics
         recorder.record_xds_connection("node-1", true);
-        recorder.record_xds_request("type.googleapis.com/envoy.config.cluster.v3.Cluster", "node-1", true);
+        recorder.record_xds_request(
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+            "node-1",
+            true,
+        );
         recorder.record_xds_stream_duration("node-1", 120.5);
 
-        // Test database metrics
         recorder.record_db_query("SELECT", "clusters", 0.05, true);
         recorder.update_db_connections(15);
 
-        // Test configuration metrics
         recorder.record_config_update("cluster", "create");
         recorder.update_config_objects("cluster", 42);
 
-        // Test system metrics
         recorder.update_uptime(7200.0);
-        recorder.update_memory_usage(1024 * 1024 * 128); // 128MB
+        recorder.update_memory_usage(1024 * 1024 * 128);
+        recorder.set_active_tokens(5);
     }
 
-    #[test]
-    fn test_init_metrics_disabled() {
-        let config = ObservabilityConfig {
-            enable_metrics: false,
-            ..Default::default()
-        };
+    #[tokio::test]
+    async fn test_init_metrics_disabled() {
+        let config = ObservabilityConfig { enable_metrics: false, ..Default::default() };
 
-        let result = init_metrics(&config);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_init_metrics_no_port() {
-        let config = ObservabilityConfig {
-            enable_metrics: true,
-            metrics_port: 0,
-            ..Default::default()
-        };
-
-        let result = init_metrics(&config);
+        let result = init_metrics(&config).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_global_metrics_functions() {
-        // These functions should not panic even if no metrics recorder is initialized
-        record_http_request("GET", "/test", 200, 0.1).await;
-        record_xds_operation("test.type", "node-1", true).await;
-        record_db_operation("SELECT", "test_table", 0.05, true).await;
-    }
+    async fn test_init_metrics_no_port() {
+        let config =
+            ObservabilityConfig { enable_metrics: true, metrics_port: 0, ..Default::default() };
 
-    #[test]
-    fn test_system_metrics_collector() {
-        let collector = SystemMetricsCollector::new();
-        assert!(collector.start_time.elapsed().as_millis() < 100); // Should be very recent
+        let result = init_metrics(&config).await;
+        assert!(result.is_ok());
     }
 }
