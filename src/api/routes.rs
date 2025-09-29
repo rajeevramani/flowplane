@@ -28,6 +28,10 @@ use super::{
         create_listener_handler, delete_listener_handler, get_listener_handler,
         list_listeners_handler, update_listener_handler,
     },
+    platform_api_handlers::{
+        append_route_handler, create_api_definition_handler, get_api_definition_handler,
+        list_api_definitions_handler,
+    },
     route_handlers::{
         create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
         update_route_handler,
@@ -128,6 +132,21 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         )
         .merge(
             Router::new()
+                .route("/api/v1/api-definitions", get(list_api_definitions_handler))
+                .route_layer(scope_layer(vec!["routes:read"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/api-definitions", post(create_api_definition_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/api-definitions/{id}", get(get_api_definition_handler))
+                .route_layer(scope_layer(vec!["routes:read"])),
+        )
+        .merge(
+            Router::new()
                 .route("/api/v1/routes/{name}", get(get_route_handler))
                 .route_layer(scope_layer(vec!["routes:read"])),
         )
@@ -139,6 +158,11 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .merge(
             Router::new()
                 .route("/api/v1/routes/{name}", delete(delete_route_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
+                .route("/api/v1/api-definitions/{id}/routes", post(append_route_handler))
                 .route_layer(scope_layer(vec!["routes:write"])),
         )
         .merge(

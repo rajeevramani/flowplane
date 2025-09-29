@@ -3,12 +3,15 @@ use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, listeners_from_config,
-    listeners_from_database_entries, routes_from_config, routes_from_database_entries,
-    BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL,
+    listeners_from_database_entries, resources_from_api_definitions, routes_from_config,
+    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
+    ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterRepository, DbPool, ListenerRepository, RouteRepository},
+    storage::{
+        ApiDefinitionRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
+    },
     Result,
 };
 use envoy_types::pb::google::protobuf::Any;
@@ -54,6 +57,7 @@ pub struct XdsState {
     pub cluster_repository: Option<ClusterRepository>,
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
+    pub api_definition_repository: Option<ApiDefinitionRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -67,6 +71,7 @@ impl XdsState {
             cluster_repository: None,
             route_repository: None,
             listener_repository: None,
+            api_definition_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -76,13 +81,15 @@ impl XdsState {
         let (update_tx, _) = broadcast::channel(128);
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_repository = RouteRepository::new(pool.clone());
-        let listener_repository = ListenerRepository::new(pool);
+        let listener_repository = ListenerRepository::new(pool.clone());
+        let api_definition_repository = ApiDefinitionRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: Some(cluster_repository),
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
+            api_definition_repository: Some(api_definition_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -244,6 +251,45 @@ impl XdsState {
                     "Route cache refresh detected no changes"
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    pub async fn refresh_platform_api_resources(&self) -> Result<()> {
+        let repository = match &self.api_definition_repository {
+            Some(repo) => repo.clone(),
+            None => return Ok(()),
+        };
+
+        let definitions = repository.list_definitions().await?;
+        let routes = repository.list_all_routes().await?;
+
+        if definitions.is_empty() {
+            return Ok(());
+        }
+
+        let built = resources_from_api_definitions(definitions, routes)?;
+        if built.is_empty() {
+            return Ok(());
+        }
+
+        let route_resources: Vec<_> =
+            built.iter().filter(|res| res.type_url() == ROUTE_TYPE_URL).cloned().collect();
+        if !route_resources.is_empty() {
+            self.apply_built_resources(ROUTE_TYPE_URL, route_resources);
+        }
+
+        let listener_resources: Vec<_> =
+            built.iter().filter(|res| res.type_url() == LISTENER_TYPE_URL).cloned().collect();
+        if !listener_resources.is_empty() {
+            self.apply_built_resources(LISTENER_TYPE_URL, listener_resources);
+        }
+
+        let cluster_resources: Vec<_> =
+            built.iter().filter(|res| res.type_url() == CLUSTER_TYPE_URL).cloned().collect();
+        if !cluster_resources.is_empty() {
+            self.apply_built_resources(CLUSTER_TYPE_URL, cluster_resources);
         }
 
         Ok(())

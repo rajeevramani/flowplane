@@ -68,34 +68,49 @@ impl DatabaseAggregatedDiscoveryService {
 
     /// Create cluster resources from database
     async fn create_cluster_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
-        if let Some(repo) = &self.state.cluster_repository {
-            // Try to get clusters from database
+        let mut built = if let Some(repo) = &self.state.cluster_repository {
             match repo.list(Some(100), None).await {
                 Ok(cluster_data_list) => {
                     if cluster_data_list.is_empty() {
                         info!(
                             "No clusters found in database, falling back to config-based cluster"
                         );
-                        return self.create_fallback_cluster_resources();
+                        self.create_fallback_cluster_resources()?
+                    } else {
+                        info!(
+                            phase = "ads_response",
+                            cluster_count = cluster_data_list.len(),
+                            "Building cluster resources from database for ADS response"
+                        );
+                        resources::clusters_from_database_entries(
+                            cluster_data_list,
+                            "ads_response",
+                        )?
                     }
-
-                    info!(
-                        phase = "ads_response",
-                        cluster_count = cluster_data_list.len(),
-                        "Building cluster resources from database for ADS response"
-                    );
-
-                    resources::clusters_from_database_entries(cluster_data_list, "ads_response")
                 }
                 Err(e) => {
                     warn!("Failed to load clusters from database: {}, falling back to config", e);
-                    self.create_fallback_cluster_resources()
+                    self.create_fallback_cluster_resources()?
                 }
             }
         } else {
             info!("No database repository available, using config-based cluster");
-            self.create_fallback_cluster_resources()
+            self.create_fallback_cluster_resources()?
+        };
+
+        if let Some(api_repo) = &self.state.api_definition_repository {
+            let definitions = api_repo.list_definitions().await?;
+            let routes = api_repo.list_all_routes().await?;
+            let platform_resources =
+                resources::resources_from_api_definitions(definitions, routes)?;
+            built.extend(
+                platform_resources
+                    .into_iter()
+                    .filter(|res| res.type_url() == resources::CLUSTER_TYPE_URL),
+            );
         }
+
+        Ok(built)
     }
 
     /// Create fallback cluster resources from config
@@ -104,31 +119,108 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     async fn create_route_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
-        if let Some(repo) = &self.state.route_repository {
+        let mut built = if let Some(repo) = &self.state.route_repository {
             match repo.list(Some(100), None).await {
                 Ok(route_data_list) => {
                     if route_data_list.is_empty() {
                         info!("No routes found in database, falling back to config-based routes");
-                        return self.create_fallback_route_resources();
+                        self.create_fallback_route_resources()?
+                    } else {
+                        info!(
+                            phase = "ads_response",
+                            route_count = route_data_list.len(),
+                            "Building route resources from database for ADS response"
+                        );
+                        resources::routes_from_database_entries(route_data_list, "ads_response")?
                     }
-
-                    info!(
-                        phase = "ads_response",
-                        route_count = route_data_list.len(),
-                        "Building route resources from database for ADS response"
-                    );
-
-                    resources::routes_from_database_entries(route_data_list, "ads_response")
                 }
                 Err(e) => {
                     warn!("Failed to load routes from database: {}, falling back to config", e);
-                    self.create_fallback_route_resources()
+                    self.create_fallback_route_resources()?
                 }
             }
         } else {
             info!("No database repository available, using config-based routes");
-            self.create_fallback_route_resources()
+            self.create_fallback_route_resources()?
+        };
+
+        // Merge Platform API virtual hosts into the default gateway routes for non-isolated APIs only
+        if let Some(api_repo) = &self.state.api_definition_repository {
+            use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
+            use prost::Message;
+
+            let definitions = api_repo.list_definitions().await?;
+            let platform_routes = api_repo.list_all_routes().await?;
+
+            if !definitions.is_empty() && !platform_routes.is_empty() {
+                let mut default_index: Option<usize> = None;
+                for (idx, res) in built.iter().enumerate() {
+                    if res.name == crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES {
+                        default_index = Some(idx);
+                        break;
+                    }
+                }
+
+                if let Some(idx) = default_index {
+                    let mut default_rc = {
+                        let any = &built[idx].resource;
+                        RouteConfiguration::decode(any.value.as_slice()).map_err(|e| {
+                            crate::Error::internal(format!(
+                                "Failed to decode default gateway RouteConfiguration: {}",
+                                e
+                            ))
+                        })?
+                    };
+
+                    // Build a domain allowlist from non-isolated API definitions
+                    let allowed_domains: std::collections::HashSet<String> = definitions
+                        .iter()
+                        .filter(|d| !d.listener_isolation)
+                        .map(|d| d.domain.clone())
+                        .collect();
+
+                    let platform_resources =
+                        resources::resources_from_api_definitions(definitions, platform_routes)?;
+
+                    for res in platform_resources.into_iter() {
+                        if res.type_url() != resources::ROUTE_TYPE_URL {
+                            continue;
+                        }
+                        let mut rc = RouteConfiguration::decode(res.resource.value.as_slice())
+                            .map_err(|e| {
+                                crate::Error::internal(format!(
+                                    "Failed to decode Platform API RouteConfiguration: {}",
+                                    e
+                                ))
+                            })?;
+                        // Retain only vhosts whose domains intersect with allowed (non-isolated) domains
+                        rc.virtual_hosts
+                            .retain(|vh| vh.domains.iter().any(|d| allowed_domains.contains(d)));
+                        if rc.virtual_hosts.is_empty() {
+                            continue;
+                        }
+                        default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
+                    }
+
+                    // Re-encode merged default gateway route config
+                    let merged_any = envoy_types::pb::google::protobuf::Any {
+                        type_url: resources::ROUTE_TYPE_URL.to_string(),
+                        value: default_rc.encode_to_vec(),
+                    };
+
+                    built[idx] = resources::BuiltResource {
+                        name: crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES.to_string(),
+                        resource: merged_any,
+                    };
+                } else {
+                    warn!(
+                        "DEFAULT_GATEWAY_ROUTES not found in repository-built routes; skipping Platform API merge"
+                    );
+                }
+            }
         }
+
+        Ok(built)
     }
 
     fn create_fallback_route_resources(&self) -> Result<Vec<BuiltResource>> {
@@ -136,33 +228,39 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     async fn create_listener_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
-        if let Some(repo) = &self.state.listener_repository {
+        let built = if let Some(repo) = &self.state.listener_repository {
             match repo.list(Some(100), None).await {
                 Ok(listener_data_list) => {
                     if listener_data_list.is_empty() {
                         info!(
                             "No listeners found in database, falling back to config-based listener"
                         );
-                        return self.create_fallback_listener_resources();
+                        self.create_fallback_listener_resources()?
+                    } else {
+                        info!(
+                            phase = "ads_response",
+                            listener_count = listener_data_list.len(),
+                            "Building listener resources from database for ADS response"
+                        );
+                        resources::listeners_from_database_entries(
+                            listener_data_list,
+                            "ads_response",
+                        )?
                     }
-
-                    info!(
-                        phase = "ads_response",
-                        listener_count = listener_data_list.len(),
-                        "Building listener resources from database for ADS response"
-                    );
-
-                    resources::listeners_from_database_entries(listener_data_list, "ads_response")
                 }
                 Err(e) => {
                     warn!("Failed to load listeners from database: {}, falling back to config", e);
-                    self.create_fallback_listener_resources()
+                    self.create_fallback_listener_resources()?
                 }
             }
         } else {
             info!("No database repository available, using config-based listener");
-            self.create_fallback_listener_resources()
-        }
+            self.create_fallback_listener_resources()?
+        };
+
+        // Intentionally do not emit Platform API listeners here to avoid port conflicts
+
+        Ok(built)
     }
 
     fn create_fallback_listener_resources(&self) -> Result<Vec<BuiltResource>> {
@@ -229,6 +327,9 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
         if let Err(error) = state.refresh_clusters_from_repository().await {
             warn!(%error, "Failed to initialize cluster cache from repository");
         }
+        if let Err(error) = state.refresh_platform_api_resources().await {
+            warn!(%error, "Failed to prime Platform API resources after cluster refresh");
+        }
 
         let mut last_version: Option<i64> = None;
 
@@ -244,6 +345,9 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
                         last_version = Some(version);
                         if let Err(error) = state.refresh_clusters_from_repository().await {
                             warn!(%error, "Failed to refresh cluster cache from repository");
+                        }
+                        if let Err(error) = state.refresh_platform_api_resources().await {
+                            warn!(%error, "Failed to refresh Platform API resources after cluster change");
                         }
                     }
                     None => {
@@ -267,6 +371,9 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
         if let Err(error) = state.refresh_routes_from_repository().await {
             warn!(%error, "Failed to initialize route cache from repository");
         }
+        if let Err(error) = state.refresh_platform_api_resources().await {
+            warn!(%error, "Failed to prime Platform API resources after route refresh");
+        }
 
         let mut last_version: Option<i64> = None;
 
@@ -282,6 +389,9 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
                         last_version = Some(version);
                         if let Err(error) = state.refresh_routes_from_repository().await {
                             warn!(%error, "Failed to refresh route cache from repository");
+                        }
+                        if let Err(error) = state.refresh_platform_api_resources().await {
+                            warn!(%error, "Failed to refresh Platform API resources after route change");
                         }
                     }
                     None => {
@@ -305,6 +415,9 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
         if let Err(error) = state.refresh_listeners_from_repository().await {
             warn!(%error, "Failed to initialize listener cache from repository");
         }
+        if let Err(error) = state.refresh_platform_api_resources().await {
+            warn!(%error, "Failed to prime Platform API resources after listener refresh");
+        }
 
         let mut last_version: Option<i64> = None;
 
@@ -320,6 +433,9 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                         last_version = Some(version);
                         if let Err(error) = state.refresh_listeners_from_repository().await {
                             warn!(%error, "Failed to refresh listener cache from repository");
+                        }
+                        if let Err(error) = state.refresh_platform_api_resources().await {
+                            warn!(%error, "Failed to refresh Platform API resources after listener change");
                         }
                     }
                     None => {

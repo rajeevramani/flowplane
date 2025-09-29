@@ -137,6 +137,454 @@ impl From<RouteRow> for RouteData {
     }
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct ApiDefinitionRow {
+    pub id: String,
+    pub team: String,
+    pub domain: String,
+    pub listener_isolation: i64,
+    pub tls_config: Option<String>,
+    pub metadata: Option<String>,
+    pub bootstrap_uri: Option<String>,
+    pub bootstrap_revision: i64,
+    pub version: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Persisted API definition record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiDefinitionData {
+    pub id: String,
+    pub team: String,
+    pub domain: String,
+    pub listener_isolation: bool,
+    pub tls_config: Option<serde_json::Value>,
+    pub metadata: Option<serde_json::Value>,
+    pub bootstrap_uri: Option<String>,
+    pub bootstrap_revision: i64,
+    pub version: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<ApiDefinitionRow> for ApiDefinitionData {
+    fn from(row: ApiDefinitionRow) -> Self {
+        Self {
+            id: row.id,
+            team: row.team,
+            domain: row.domain,
+            listener_isolation: row.listener_isolation != 0,
+            tls_config: row.tls_config.and_then(|json| serde_json::from_str(&json).ok()),
+            metadata: row.metadata.and_then(|json| serde_json::from_str(&json).ok()),
+            bootstrap_uri: row.bootstrap_uri,
+            bootstrap_revision: row.bootstrap_revision,
+            version: row.version,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct ApiRouteRow {
+    pub id: String,
+    pub api_definition_id: String,
+    pub match_type: String,
+    pub match_value: String,
+    pub case_sensitive: i64,
+    pub rewrite_prefix: Option<String>,
+    pub rewrite_regex: Option<String>,
+    pub rewrite_substitution: Option<String>,
+    pub upstream_targets: String,
+    pub timeout_seconds: Option<i64>,
+    pub override_config: Option<String>,
+    pub deployment_note: Option<String>,
+    pub route_order: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Persisted API route record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiRouteData {
+    pub id: String,
+    pub api_definition_id: String,
+    pub match_type: String,
+    pub match_value: String,
+    pub case_sensitive: bool,
+    pub rewrite_prefix: Option<String>,
+    pub rewrite_regex: Option<String>,
+    pub rewrite_substitution: Option<String>,
+    pub upstream_targets: serde_json::Value,
+    pub timeout_seconds: Option<i64>,
+    pub override_config: Option<serde_json::Value>,
+    pub deployment_note: Option<String>,
+    pub route_order: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<ApiRouteRow> for ApiRouteData {
+    fn from(row: ApiRouteRow) -> Self {
+        Self {
+            id: row.id,
+            api_definition_id: row.api_definition_id,
+            match_type: row.match_type,
+            match_value: row.match_value,
+            case_sensitive: row.case_sensitive != 0,
+            rewrite_prefix: row.rewrite_prefix,
+            rewrite_regex: row.rewrite_regex,
+            rewrite_substitution: row.rewrite_substitution,
+            upstream_targets: serde_json::from_str(&row.upstream_targets)
+                .unwrap_or(serde_json::Value::Null),
+            timeout_seconds: row.timeout_seconds,
+            override_config: row.override_config.and_then(|json| serde_json::from_str(&json).ok()),
+            deployment_note: row.deployment_note,
+            route_order: row.route_order,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+/// Create API definition request payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateApiDefinitionRequest {
+    pub team: String,
+    pub domain: String,
+    pub listener_isolation: bool,
+    pub tls_config: Option<serde_json::Value>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Create API route request payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateApiRouteRequest {
+    pub api_definition_id: String,
+    pub match_type: String,
+    pub match_value: String,
+    pub case_sensitive: bool,
+    pub rewrite_prefix: Option<String>,
+    pub rewrite_regex: Option<String>,
+    pub rewrite_substitution: Option<String>,
+    pub upstream_targets: serde_json::Value,
+    pub timeout_seconds: Option<i64>,
+    pub override_config: Option<serde_json::Value>,
+    pub deployment_note: Option<String>,
+    pub route_order: i64,
+}
+
+/// Parameters for updating bootstrap metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateBootstrapMetadataRequest {
+    pub definition_id: String,
+    pub bootstrap_uri: Option<String>,
+    pub bootstrap_revision: i64,
+}
+
+/// Repository encapsulating persistence for API definitions and routes
+#[derive(Debug, Clone)]
+pub struct ApiDefinitionRepository {
+    pool: DbPool,
+}
+
+impl ApiDefinitionRepository {
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub fn pool(&self) -> DbPool {
+        self.pool.clone()
+    }
+
+    fn serialize_optional(value: &Option<serde_json::Value>) -> Result<Option<String>> {
+        value
+            .as_ref()
+            .map(|val| {
+                serde_json::to_string(val).map_err(|e| {
+                    FlowplaneError::validation(format!("Failed to serialize JSON payload: {}", e))
+                })
+            })
+            .transpose()
+    }
+
+    fn serialize_required(value: &serde_json::Value) -> Result<String> {
+        serde_json::to_string(value).map_err(|e| {
+            FlowplaneError::validation(format!("Failed to serialize JSON payload: {}", e))
+        })
+    }
+
+    /// Insert a new API definition record
+    pub async fn create_definition(
+        &self,
+        request: CreateApiDefinitionRequest,
+    ) -> Result<ApiDefinitionData> {
+        let id = Uuid::new_v4().to_string();
+        let tls_config = Self::serialize_optional(&request.tls_config)?;
+        let metadata = Self::serialize_optional(&request.metadata)?;
+        let listener_isolation: i64 = if request.listener_isolation { 1 } else { 0 };
+
+        let now = chrono::Utc::now();
+
+        sqlx::query::<Sqlite>(
+            "INSERT INTO api_definitions (
+                id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                bootstrap_revision, version, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&id)
+        .bind(&request.team)
+        .bind(&request.domain)
+        .bind(listener_isolation)
+        .bind(tls_config)
+        .bind(metadata)
+        .bind(Option::<String>::None)
+        .bind(0_i64)
+        .bind(1_i64)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to insert API definition".to_string(),
+        })?;
+
+        self.get_definition(&id).await
+    }
+
+    /// Delete an API definition by ID (cascades to routes)
+    pub async fn delete_definition(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM api_definitions WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to delete API definition".to_string(),
+            })?;
+        Ok(())
+    }
+
+    /// Fetch an API definition by identifier
+    pub async fn get_definition(&self, id: &str) -> Result<ApiDefinitionData> {
+        let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
+            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, version, created_at, updated_at
+             FROM api_definitions WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to load API definition '{}'", id),
+        })?;
+
+        row.map(ApiDefinitionData::from)
+            .ok_or_else(|| FlowplaneError::not_found(format!("API definition '{}' not found", id)))
+    }
+
+    /// Fetch an API definition by team/domain (if present)
+    pub async fn find_by_team_domain(
+        &self,
+        team: &str,
+        domain: &str,
+    ) -> Result<Option<ApiDefinitionData>> {
+        let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
+            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, version, created_at, updated_at
+             FROM api_definitions WHERE team = $1 AND domain = $2 LIMIT 1",
+        )
+        .bind(team)
+        .bind(domain)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to query API definition by team/domain".to_string(),
+        })?;
+
+        Ok(row.map(ApiDefinitionData::from))
+    }
+
+    /// Fetch an API definition by domain regardless of owning team
+    pub async fn find_by_domain(&self, domain: &str) -> Result<Option<ApiDefinitionData>> {
+        let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
+            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, version, created_at, updated_at
+             FROM api_definitions WHERE domain = $1 LIMIT 1",
+        )
+        .bind(domain)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to query API definition by domain".to_string(),
+        })?;
+
+        Ok(row.map(ApiDefinitionData::from))
+    }
+
+    /// Append a new route to an API definition
+    pub async fn create_route(&self, request: CreateApiRouteRequest) -> Result<ApiRouteData> {
+        let id = Uuid::new_v4().to_string();
+        let upstream_json = Self::serialize_required(&request.upstream_targets)?;
+        let overrides_json = Self::serialize_optional(&request.override_config)?;
+        let case_sensitive = if request.case_sensitive { 1 } else { 0 };
+
+        let now = chrono::Utc::now();
+
+        sqlx::query::<Sqlite>(
+            "INSERT INTO api_routes (
+                id,
+                api_definition_id,
+                match_type,
+                match_value,
+                case_sensitive,
+                rewrite_prefix,
+                rewrite_regex,
+                rewrite_substitution,
+                upstream_targets,
+                timeout_seconds,
+                override_config,
+                deployment_note,
+                route_order,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+            )",
+        )
+        .bind(&id)
+        .bind(&request.api_definition_id)
+        .bind(&request.match_type)
+        .bind(&request.match_value)
+        .bind(case_sensitive)
+        .bind(&request.rewrite_prefix)
+        .bind(&request.rewrite_regex)
+        .bind(&request.rewrite_substitution)
+        .bind(upstream_json)
+        .bind(request.timeout_seconds)
+        .bind(overrides_json)
+        .bind(&request.deployment_note)
+        .bind(request.route_order)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to insert API route".to_string(),
+        })?;
+
+        self.get_route(&id).await
+    }
+
+    /// Retrieve a route by identifier
+    pub async fn get_route(&self, id: &str) -> Result<ApiRouteData> {
+        let row = sqlx::query_as::<Sqlite, ApiRouteRow>(
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+                    rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
+                    override_config, deployment_note, route_order, created_at, updated_at
+             FROM api_routes WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to load API route '{}'", id),
+        })?;
+
+        row.map(ApiRouteData::from)
+            .ok_or_else(|| FlowplaneError::not_found(format!("API route '{}' not found", id)))
+    }
+
+    /// List routes for a given definition ordered by insertion order
+    pub async fn list_routes(&self, api_definition_id: &str) -> Result<Vec<ApiRouteData>> {
+        let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+                    rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
+                    override_config, deployment_note, route_order, created_at, updated_at
+             FROM api_routes WHERE api_definition_id = $1
+             ORDER BY route_order ASC, created_at ASC",
+        )
+        .bind(api_definition_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to list API routes".to_string(),
+        })?;
+
+        Ok(rows.into_iter().map(ApiRouteData::from).collect())
+    }
+
+    /// Update bootstrap metadata for a definition
+    pub async fn update_bootstrap_metadata(
+        &self,
+        request: UpdateBootstrapMetadataRequest,
+    ) -> Result<ApiDefinitionData> {
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            "UPDATE api_definitions
+             SET bootstrap_uri = $2,
+                 bootstrap_revision = $3,
+                 updated_at = $4,
+                 version = version + 1
+             WHERE id = $1",
+        )
+        .bind(&request.definition_id)
+        .bind(&request.bootstrap_uri)
+        .bind(request.bootstrap_revision)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to update bootstrap metadata".to_string(),
+        })?;
+
+        self.get_definition(&request.definition_id).await
+    }
+
+    pub async fn list_definitions(&self) -> Result<Vec<ApiDefinitionData>> {
+        let rows = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
+            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, version, created_at, updated_at
+             FROM api_definitions",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to list API definitions".to_string(),
+        })?;
+
+        Ok(rows.into_iter().map(ApiDefinitionData::from).collect())
+    }
+
+    pub async fn list_all_routes(&self) -> Result<Vec<ApiRouteData>> {
+        let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+                    rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
+                    override_config, deployment_note, route_order, created_at, updated_at
+             FROM api_routes ORDER BY api_definition_id, route_order",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to list API routes".to_string(),
+        })?;
+
+        Ok(rows.into_iter().map(ApiRouteData::from).collect())
+    }
+}
+
 /// Create route request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRouteRequest {
@@ -495,6 +943,8 @@ impl ListenerRepository {
 
         self.get_by_id(&id).await
     }
+
+    // removed create_tx variant to avoid cross-transaction complexity; use create()
 
     pub async fn get_by_id(&self, id: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
@@ -1242,8 +1692,7 @@ impl AuditLogRepository {
         Self { pool }
     }
 
-    /// Record an authentication-related audit event.
-    pub async fn record_auth_event(&self, event: AuditEvent) -> Result<()> {
+    async fn record_event(&self, resource_type: &str, event: AuditEvent) -> Result<()> {
         let now = chrono::Utc::now();
         let metadata_json = serde_json::to_string(&event.metadata).map_err(|err| {
             FlowplaneError::validation(format!("Invalid audit metadata JSON: {}", err))
@@ -1254,7 +1703,7 @@ impl AuditLogRepository {
             "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, old_configuration, new_configuration, user_id, client_ip, user_agent, created_at) \
              VALUES ($1, $2, $3, $4, NULL, $5, NULL, NULL, NULL, $6)"
         )
-        .bind("auth.token")
+        .bind(resource_type)
         .bind(event.resource_id.as_deref())
         .bind(&resource_name)
         .bind(event.action.as_str())
@@ -1268,6 +1717,16 @@ impl AuditLogRepository {
         })?;
 
         Ok(())
+    }
+
+    /// Record an authentication-related audit event.
+    pub async fn record_auth_event(&self, event: AuditEvent) -> Result<()> {
+        self.record_event("auth.token", event).await
+    }
+
+    /// Record a Platform API lifecycle event.
+    pub async fn record_platform_event(&self, event: AuditEvent) -> Result<()> {
+        self.record_event("platform.api", event).await
     }
 }
 
