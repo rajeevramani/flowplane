@@ -140,12 +140,39 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
-                        http_filters: vec![HttpFilterConfigEntry {
-                            name: None,
-                            is_optional: false,
-                            disabled: false,
-                            filter: HttpFilterKind::Router,
-                        }],
+                        http_filters: vec![
+                            // Apply a conservative global local rate limit. Per‑route overrides can disable or adjust.
+                            HttpFilterConfigEntry {
+                                name: None,
+                                is_optional: true,
+                                disabled: false,
+                                filter: HttpFilterKind::LocalRateLimit(
+                                    crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig {
+                                        stat_prefix: "gateway_rl".to_string(),
+                                        token_bucket: Some(
+                                            crate::xds::filters::http::local_rate_limit::TokenBucketConfig {
+                                                max_tokens: 5,
+                                                tokens_per_fill: Some(5),
+                                                fill_interval_ms: 2000,
+                                            },
+                                        ),
+                                        status_code: Some(429),
+                                        filter_enabled: None,
+                                        filter_enforced: None,
+                                        per_downstream_connection: None,
+                                        rate_limited_as_resource_exhausted: None,
+                                        max_dynamic_descriptors: None,
+                                        always_consume_default_token_bucket: None,
+                                    },
+                                ),
+                            },
+                            HttpFilterConfigEntry {
+                                name: None,
+                                is_optional: false,
+                                disabled: false,
+                                filter: HttpFilterKind::Router,
+                            },
+                        ],
                     },
                 }],
                 tls_context: None,

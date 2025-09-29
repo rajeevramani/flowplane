@@ -8,7 +8,7 @@ use crate::xds::filters::http::cors::{
     RuntimeFractionalPercentConfig,
 };
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
-use crate::xds::filters::http::HttpScopedConfig;
+use crate::xds::filters::http::{local_rate_limit::LocalRateLimitConfig, HttpScopedConfig};
 
 const CORS_FILTER_NAME: &str = "envoy.filters.http.cors";
 const JWT_FILTER_NAME: &str = "envoy.filters.http.jwt_authn";
@@ -82,6 +82,13 @@ fn parse_filter_overrides(
         let scoped = match alias.as_str() {
             "cors" => HttpScopedConfig::Cors(parse_cors_override(raw)?),
             "authn" => HttpScopedConfig::JwtAuthn(parse_authn_override(raw)?),
+            "rate_limit" => {
+                let cfg: LocalRateLimitConfig =
+                    serde_json::from_value(raw.clone()).map_err(|err| {
+                        Error::validation(format!("Invalid local rate limit override: {err}"))
+                    })?;
+                HttpScopedConfig::LocalRateLimit(cfg)
+            }
             other if other.contains('.') => HttpScopedConfig::Typed(parse_typed_override(raw)?),
             other => {
                 return Err(Error::validation(format!("Unsupported filter override '{}'", other)));

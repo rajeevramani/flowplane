@@ -516,7 +516,7 @@ fn current_time() -> DateTime<Utc> {
     #[cfg(test)]
     {
         if let Some(now) = NOW_OVERRIDE.lock().unwrap().as_ref() {
-            return now.clone();
+            return *now;
         }
     }
     Utc::now()
