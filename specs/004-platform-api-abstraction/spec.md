@@ -2,7 +2,7 @@
 
 **Feature Branch**: `004-platform-api-abstraction`
 **Created**: 2025-09-28
-**Status**: In Revision
+**Status**: Updated
 
 ## 1. Objective
 - Provide platform teams with a high-level REST API to expose services through Envoy without requiring them to understand listeners, routes, or clusters.
@@ -51,7 +51,7 @@ Today, teams must understand Envoy primitives (clusters, route configs, listener
 - Listener placement behavior:
   - `listenerIsolation=false` (default): API VirtualHost is merged into the default gateway RouteConfiguration and served by the default listener.
   - `listenerIsolation=true`: API is attached only to a dedicated listener provided in the payload (`listener.bindAddress`, `listener.port`, optional `listener.name`, `listener.protocol`). No merge into the default gateway.
-- Automatic generation and storage of Envoy listener/route/cluster resources; users only receive the bootstrap artefact.
+- Automatic generation and storage of Envoy listener/route/cluster resources; bootstrap is returned via API (no server-side file I/O).
 - Basic per-route filter overrides limited to CORS templates.
 - Incremental route addition endpoint (`POST /v1/api-definitions/{id}/routes`) that appends new matches without requiring full replacement.
 - Collision detection that blocks conflicting host/path combinations.
@@ -160,6 +160,24 @@ Returns a summary of the API definition including listener placement and bootstr
 
 Returns a list of API definition summaries. Optional filters (team, domain) and pagination (limit, offset) may be supported.
 
+### 10.4 Generate Bootstrap
+`GET /v1/api-definitions/{id}/bootstrap`
+
+Returns an Envoy bootstrap document tailored for the given API definition and scope.
+
+Query parameters:
+- `format`: `yaml` (default) or `json`
+- `scope`: `all` (default) | `team` | `allowlist`
+- `allowlist`: repeated query parameter of listener names (used when `scope=allowlist`)
+- `includeDefault`: `true|false` (when `scope=team`, whether to include the default gateway listener; default `false`)
+
+Behavior:
+- The returned bootstrap includes `node.id` and `node.metadata` with scope information so xDS filters LDS/RDS/CDS accordingly.
+  - Example metadata: `{ team: "payments", listener_allowlist: ["payments-listener-1"], include_default: true }`
+
+Ownership tagging (non-propagating)
+- Listeners created by the Platform API materializer are tagged in the stored configuration with a non-propagating marker of team ownership (e.g. `flowplaneGateway.team = <team>`). These tags are stripped before building Envoy protobufs so they never reach dataplanes, but they allow precise scoping of LDS responses by team when building bootstrap and xDS responses.
+
 ## Appendix B: API Payload Examples (Reference)
 ### B.1 Create API Request (non-isolated / default listener)
 ```json
@@ -223,10 +241,17 @@ POST /api/v1/api-definitions
 201 Created
 {
   "id": "api_12345",
-  "bootstrapUri": "/bootstrap/api-definitions/api_12345.yaml",
-  "routes": ["37f4695e-7b12-4c8f-8c85-1c4fd6a2c11f"]
+  "routes": ["37f4695e-7b12-4c8f-8c85-1c4fd6a2c11f"],
+  "version": 1
 }
 ```
+
+To download the bootstrap for an API definition, call:
+
+```
+GET /v1/api-definitions/api_12345/bootstrap?format=yaml&scope=team&includeDefault=true
+```
+Returns: `application/yaml` with an Envoy bootstrap containing scoped LDS.
 
 ### B.3 Append Route Request
 ```json
@@ -259,6 +284,44 @@ POST /api/v1/api-definitions/api_12345/routes
   "bootstrapUri": "/bootstrap/api-definitions/api_12345.yaml"
 }
 ```
+
+### B.5 Bootstrap Response (YAML)
+```
+admin:
+  access_log_path: /tmp/envoy_admin.log
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+node:
+  id: team=payments/dp-1
+  metadata:
+    team: payments
+    include_default: true
+    listener_allowlist: ["payments-listener-1"]
+dynamic_resources:
+  lds_config: { ads: {} }
+  cds_config: { ads: {} }
+  ads_config:
+    api_type: GRPC
+    transport_api_version: V3
+    grpc_services: [{ envoy_grpc: { cluster_name: xds_cluster }}]
+static_resources:
+  clusters:
+    - name: xds_cluster
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: xds_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: 18000 }
+```
+
+Notes:
+- The control plane filters LDS by `node.metadata` so the dataplane receives only the requested listeners (team-only or allowlist) or all listeners when `scope=all`.
 
 Responses omit raw Envoy YAML; consumers rely on the returned bootstrap URI or metadata for deployments and auditing.
 

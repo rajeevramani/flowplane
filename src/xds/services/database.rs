@@ -52,7 +52,12 @@ impl DatabaseAggregatedDiscoveryService {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
-        let built = self.build_resources(request.type_url.as_str()).await?;
+        let scope = scope_from_discovery(&request.node);
+        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
+            self.create_listener_resources_from_db_scoped(&scope).await?
+        } else {
+            self.build_resources(request.type_url.as_str()).await?
+        };
         let resources = built.iter().map(|r| r.resource.clone()).collect();
 
         Ok(DiscoveryResponse {
@@ -227,7 +232,10 @@ impl DatabaseAggregatedDiscoveryService {
         resources::routes_from_config(&self.state.config)
     }
 
-    async fn create_listener_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+    async fn create_listener_resources_from_db_scoped(
+        &self,
+        scope: &Scope,
+    ) -> Result<Vec<BuiltResource>> {
         let built = if let Some(repo) = &self.state.listener_repository {
             match repo.list(Some(100), None).await {
                 Ok(listener_data_list) => {
@@ -237,15 +245,46 @@ impl DatabaseAggregatedDiscoveryService {
                         );
                         self.create_fallback_listener_resources()?
                     } else {
+                        let filtered: Vec<crate::storage::repository_simple::ListenerData> =
+                            match scope {
+                                Scope::All => listener_data_list,
+                                Scope::Team { team, include_default } => {
+                                    let mut keep = Vec::new();
+                                    for entry in listener_data_list.into_iter() {
+                                        if entry.name
+                                            == crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER
+                                            && *include_default
+                                        {
+                                            keep.push(entry);
+                                            continue;
+                                        }
+                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(
+                                            &entry.configuration,
+                                        ) {
+                                            if let Some(tag_team) = value
+                                                .get("flowplaneGateway")
+                                                .and_then(|v| v.get("team"))
+                                                .and_then(|v| v.as_str())
+                                            {
+                                                if tag_team == team {
+                                                    keep.push(entry);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    keep
+                                }
+                                Scope::Allowlist { names } => listener_data_list
+                                    .into_iter()
+                                    .filter(|e| names.contains(&e.name))
+                                    .collect(),
+                            };
                         info!(
                             phase = "ads_response",
-                            listener_count = listener_data_list.len(),
+                            listener_count = filtered.len(),
                             "Building listener resources from database for ADS response"
                         );
-                        resources::listeners_from_database_entries(
-                            listener_data_list,
-                            "ads_response",
-                        )?
+                        resources::listeners_from_database_entries(filtered, "ads_response")?
                     }
                 }
                 Err(e) => {
@@ -276,7 +315,7 @@ impl DatabaseAggregatedDiscoveryService {
                 self.create_route_resources_from_db().await
             }
             "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                self.create_listener_resources_from_db().await
+                self.create_listener_resources_from_db_scoped(&Scope::All).await
             }
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
@@ -297,7 +336,12 @@ impl DatabaseAggregatedDiscoveryService {
 
         // Build all available resources for this type
         // The stream logic will handle proper delta filtering and ACK detection
-        let built = self.build_resources(&request.type_url).await?;
+        let scope = scope_from_discovery(&request.node);
+        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
+            self.create_listener_resources_from_db_scoped(&scope).await?
+        } else {
+            self.build_resources(&request.type_url).await?
+        };
 
         let resources: Vec<Resource> = built
             .into_iter()
@@ -503,4 +547,52 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
 
         Ok(Response::new(Box::pin(stream)))
     }
+}
+#[derive(Debug, Clone)]
+enum Scope {
+    All,
+    Team { team: String, include_default: bool },
+    Allowlist { names: Vec<String> },
+}
+
+fn scope_from_discovery(node: &Option<envoy_types::pb::envoy::config::core::v3::Node>) -> Scope {
+    if let Some(n) = node {
+        if let Some(meta) = &n.metadata {
+            let mut team: Option<String> = None;
+            let mut include_default = false;
+            let mut allow: Vec<String> = Vec::new();
+
+            if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
+                meta.fields.get("team").and_then(|v| v.kind.as_ref())
+            {
+                if !s.is_empty() {
+                    team = Some(s.clone());
+                }
+            }
+            if let Some(envoy_types::pb::google::protobuf::value::Kind::BoolValue(b)) =
+                meta.fields.get("include_default").and_then(|v| v.kind.as_ref())
+            {
+                include_default = *b;
+            }
+            if let Some(envoy_types::pb::google::protobuf::value::Kind::ListValue(lv)) =
+                meta.fields.get("listener_allowlist").and_then(|v| v.kind.as_ref())
+            {
+                for item in &lv.values {
+                    if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
+                        item.kind.as_ref()
+                    {
+                        allow.push(s.clone());
+                    }
+                }
+            }
+
+            if !allow.is_empty() {
+                return Scope::Allowlist { names: allow };
+            }
+            if let Some(team) = team {
+                return Scope::Team { team, include_default };
+            }
+        }
+    }
+    Scope::All
 }

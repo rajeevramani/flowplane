@@ -46,6 +46,7 @@ use crate::xds::{
         crate::api::platform_api_handlers::append_route_handler,
         crate::api::platform_api_handlers::list_api_definitions_handler,
         crate::api::platform_api_handlers::get_api_definition_handler
+        ,crate::api::platform_api_handlers::get_bootstrap_handler
     ),
     components(
         schemas(
@@ -91,6 +92,7 @@ use crate::xds::{
             crate::api::platform_api_handlers::AppendRouteResponse,
             crate::api::platform_api_handlers::ApiDefinitionSummary,
             crate::api::platform_api_handlers::ListDefinitionsQuery
+            ,crate::api::platform_api_handlers::BootstrapQuery
         )
     ),
     tags(

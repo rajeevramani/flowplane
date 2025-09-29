@@ -162,6 +162,15 @@ Tasks
    - Pre-check listener conflicts by name and address:port; fail fast on mismatch.
    - Create definition and routes; if isolated-listener creation fails, delete the definition (cascades to routes) to avoid partial writes.
    - Follow-up (optional): convert to true SQL transaction once repo-level tx helpers are standardized.
+ - [ ] T041 Bootstrap API: add `GET /api/v1/api-definitions/{id}/bootstrap` that returns an Envoy bootstrap document (YAML/JSON) instead of writing a file on disk.
+   - Query: `format=yaml|json` (default yaml), `scope=all|team|allowlist` (default all), `allowlist[]=name` (repeatable), `includeDefault=true|false` (default false when `scope=team`).
+   - Include `node.id` and `node.metadata` in the bootstrap with scope information.
+   - Utoipa docs + examples added under the "platform-api" tag.
+ - [ ] T042 xDS scoping by node metadata: filter LDS/RDS/CDS responses per client stream using `node.metadata`.
+   - `scope=team`: return only listeners owned by the team; include default gateway if `include_default=true`.
+   - `scope=allowlist`: return only listeners whose names appear in `listener_allowlist`.
+   - `scope=all` (or no metadata): return current behavior (all listeners).
+ - [ ] T043 Listener ownership tagging: annotate stored listener configuration with non-propagating `flowplaneGateway.team = <team>` metadata and ensure stripping prior to protobuf build (used only for control-plane scoping logic).
 
 ## Dependencies
 
@@ -230,6 +239,8 @@ Tasks
 - Shared isolated listeners: allowed via `listener.name`. Subsequent uses must match address/port/protocol or return 409.
 - Domain uniqueness: enforced per-listener; duplicates allowed across different isolated listeners.
 - Reserved ports: `10000` (default gateway listener). Additional reserved ranges can be added later if needed.
+ - Bootstrap team scope: `includeDefault=false` by default.
+ - Bootstrap method: `GET` endpoint with query parameters (no POST templating required now).
  - [x] T040 API Docs: add Platform API endpoints to Utoipa docs (`src/api/docs.rs`).
    - Document `POST /api/v1/api-definitions` and `POST /api/v1/api-definitions/{id}/routes`.
    - Document `GET /api/v1/api-definitions` and `GET /api/v1/api-definitions/{id}`.

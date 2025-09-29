@@ -334,9 +334,15 @@ impl PlatformApiMaterializer {
             }],
         };
 
-        let listener_value = serde_json::to_value(&listener_config).map_err(|e| {
+        let mut listener_value = serde_json::to_value(&listener_config).map_err(|e| {
             Error::internal(format!("Failed to serialize isolated listener config: {}", e))
         })?;
+        if let Some(obj) = listener_value.as_object_mut() {
+            obj.insert(
+                "flowplaneGateway".to_string(),
+                serde_json::json!({ "team": definition.team }),
+            );
+        }
 
         if !listener_repo.exists_by_name(&listener_name).await.unwrap_or(false) {
             let _created_listener = listener_repo

@@ -147,6 +147,14 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         )
         .merge(
             Router::new()
+                .route(
+                    "/api/v1/api-definitions/{id}/bootstrap",
+                    get(super::platform_api_handlers::get_bootstrap_handler),
+                )
+                .route_layer(scope_layer(vec!["routes:read"])),
+        )
+        .merge(
+            Router::new()
                 .route("/api/v1/routes/{name}", get(get_route_handler))
                 .route_layer(scope_layer(vec!["routes:read"])),
         )
