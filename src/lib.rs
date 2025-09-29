@@ -29,8 +29,10 @@ pub mod config;
 pub mod errors;
 pub mod observability;
 pub mod openapi;
+pub mod platform_api;
 pub mod storage;
 pub mod utils;
+pub mod validation;
 pub mod xds;
 
 // Re-export commonly used types and traits

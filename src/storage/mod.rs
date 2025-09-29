@@ -15,10 +15,12 @@ pub use migrations::{
 };
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
 pub use repository_simple::{
-    ClusterData, ClusterRepository, CreateClusterRequest, CreateListenerRequest,
+    ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, AuditEvent, AuditLogRepository,
+    ClusterData, ClusterRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
+    CreateClusterRequest, CreateListenerRequest,
     CreateRouteRequest as CreateRouteRepositoryRequest, ListenerData, ListenerRepository,
-    RouteData, RouteRepository, UpdateClusterRequest, UpdateListenerRequest,
-    UpdateRouteRequest as UpdateRouteRepositoryRequest,
+    RouteData, RouteRepository, UpdateBootstrapMetadataRequest, UpdateClusterRequest,
+    UpdateListenerRequest, UpdateRouteRequest as UpdateRouteRepositoryRequest,
 };
 
 use crate::errors::{FlowplaneError, Result};

@@ -1,0 +1,27 @@
+{
+  "create": {
+    "team": "payments",
+    "domain": "payments.flowplane.dev",
+    "listenerIsolation": false,
+    "routes": [
+      {
+        "match": { "prefix": "/v1/" },
+        "cluster": {
+          "name": "payments-backend",
+          "endpoint": "payments.svc.cluster.local:8443"
+        },
+        "timeoutSeconds": 3
+      }
+    ]
+  },
+  "append_route": {
+    "route": {
+      "match": { "prefix": "/v2/" },
+      "cluster": {
+        "name": "payments-backend",
+        "endpoint": "payments.svc.cluster.local:8443"
+      },
+      "timeoutSeconds": 5
+    }
+  }
+}

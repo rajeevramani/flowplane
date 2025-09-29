@@ -1,0 +1,32 @@
+{
+  "shared_listener_example": {
+    "team": "e2e",
+    "domain": "example.e2e.local",
+    "listenerIsolation": false,
+    "routes": [
+      {
+        "match": { "prefix": "/e2e/example" },
+        "cluster": { "name": "example-cluster", "endpoint": "127.0.0.1:8080" },
+        "timeoutSeconds": 3
+      }
+    ]
+  },
+  "isolated_listener_example": {
+    "team": "e2e",
+    "domain": "isolated.e2e.local",
+    "listenerIsolation": true,
+    "listener": {
+      "bindAddress": "127.0.0.1",
+      "port": 18080,
+      "protocol": "HTTP"
+    },
+    "routes": [
+      {
+        "match": { "prefix": "/e2e/isolated" },
+        "cluster": { "name": "isolated-cluster", "endpoint": "127.0.0.1:8081" },
+        "timeoutSeconds": 3
+      }
+    ]
+  }
+}
+

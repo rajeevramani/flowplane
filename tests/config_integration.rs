@@ -3,8 +3,9 @@
 //! These tests validate that the configuration system properly reads
 //! environment variables and that the XDS server binds to the configured port.
 
-use flowplane::{Config, Result};
+use flowplane::{Config, Error, Result};
 use reserve_port::find_unused_port;
+use sqlx::sqlite::SqlitePoolOptions;
 use std::env;
 use std::net::TcpListener;
 use std::sync::Mutex;
@@ -197,4 +198,33 @@ fn test_invalid_config_handling() {
         Some(port) => env::set_var("FLOWPLANE_XDS_PORT", port),
         None => env::remove_var("FLOWPLANE_XDS_PORT"),
     }
+}
+
+#[tokio::test]
+async fn migrations_create_platform_api_tables() -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:?cache=shared")
+        .await
+        .map_err(|err| Error::database(err, "Failed to create in-memory pool".to_string()))?;
+
+    flowplane::storage::run_migrations(&pool).await?;
+
+    let api_definitions: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'api_definitions'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|err| Error::database(err, "Failed to verify api_definitions table".to_string()))?;
+    assert!(api_definitions.is_some(), "api_definitions table should exist after migrations");
+
+    let api_routes: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'api_routes'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|err| Error::database(err, "Failed to verify api_routes table".to_string()))?;
+    assert!(api_routes.is_some(), "api_routes table should exist after migrations");
+
+    Ok(())
 }

@@ -41,7 +41,12 @@ use crate::xds::{
         crate::api::listener_handlers::get_listener_handler,
         crate::api::listener_handlers::update_listener_handler,
         crate::api::listener_handlers::delete_listener_handler,
-        crate::api::gateway_handlers::create_gateway_from_openapi_handler
+        crate::api::gateway_handlers::create_gateway_from_openapi_handler,
+        crate::api::platform_api_handlers::create_api_definition_handler,
+        crate::api::platform_api_handlers::append_route_handler,
+        crate::api::platform_api_handlers::list_api_definitions_handler,
+        crate::api::platform_api_handlers::get_api_definition_handler
+        ,crate::api::platform_api_handlers::get_bootstrap_handler
     ),
     components(
         schemas(
@@ -75,14 +80,27 @@ use crate::xds::{
             crate::api::listener_handlers::UpdateListenerBody,
             crate::api::gateway_handlers::GatewayQuery,
             crate::api::gateway_handlers::OpenApiSpecBody,
-            crate::openapi::GatewaySummary
+            crate::openapi::GatewaySummary,
+            crate::validation::requests::api_definition::CreateApiDefinitionBody,
+            crate::validation::requests::api_definition::AppendRouteBody,
+            crate::validation::requests::api_definition::RouteBody,
+            crate::validation::requests::api_definition::RouteMatchBody,
+            crate::validation::requests::api_definition::RouteClusterBody,
+            crate::validation::requests::api_definition::RouteRewriteBody,
+            crate::validation::requests::api_definition::IsolationListenerBody,
+            crate::api::platform_api_handlers::CreateApiDefinitionResponse,
+            crate::api::platform_api_handlers::AppendRouteResponse,
+            crate::api::platform_api_handlers::ApiDefinitionSummary,
+            crate::api::platform_api_handlers::ListDefinitionsQuery
+            ,crate::api::platform_api_handlers::BootstrapQuery
         )
     ),
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications"),
-        (name = "tokens", description = "Personal access token management APIs")
+        (name = "tokens", description = "Personal access token management APIs"),
+        (name = "platform-api", description = "Platform API Abstraction endpoints")
     ),
     security(
         ("bearerAuth" = [])

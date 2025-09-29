@@ -1,9 +1,5 @@
-//! Validated request structures organised by Envoy resource type.
+//! Validated request structures for the Platform API abstraction.
 
-pub mod cluster;
-pub mod listener;
-pub mod route;
+pub mod api_definition;
 
-pub use cluster::*;
-pub use listener::*;
-pub use route::*;
+pub use api_definition::*;

@@ -44,6 +44,8 @@ where
     let responder = Arc::new(responder);
     let label = label.to_string();
     let last_sent = Arc::new(Mutex::new(HashMap::<String, LastDiscoverySnapshot>::new()));
+    let mut update_rx = state.subscribe_updates();
+    let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
 
     tokio::spawn(async move {
         loop {
@@ -64,6 +66,7 @@ where
                             let tx = tx.clone();
                             let label_clone = label.clone();
                             let tracker = last_sent.clone();
+                            let subscribed_for_task = subscribed_types.clone();
 
                             tokio::spawn(async move {
                                 let node_id = discovery_request
@@ -115,6 +118,12 @@ where
 
                                 drop(tracker_guard);
 
+                                // Track this type_url as subscribed by the client
+                                {
+                                    let mut guard = subscribed_for_task.lock().await;
+                                    guard.insert(discovery_request.type_url.clone());
+                                }
+
                                 match responder(state, discovery_request).await {
                                     Ok(response) => {
                                         info!(
@@ -155,6 +164,68 @@ where
                         }
                         None => {
                             info!(stream = %label, "ADS stream ended by client");
+                            break;
+                        }
+                    }
+                }
+                update = update_rx.recv() => {
+                    match update {
+                        Ok(update) => {
+                            // For SOTW, push a fresh snapshot for each type this client has requested
+                            let interested: Vec<String> = {
+                                let guard = subscribed_types.lock().await;
+                                guard.iter().cloned().collect()
+                            };
+                            if interested.is_empty() { continue; }
+
+                            for delta in &update.deltas {
+                                if !interested.contains(&delta.type_url) { continue; }
+
+                                let state_for_task = state_clone.clone();
+                                let responder_for_task = responder.clone();
+                                let tx_for_task = tx.clone();
+                                let label_for_task = label.clone();
+                                let tracker_for_task = last_sent.clone();
+                                let type_url_for_task = delta.type_url.clone();
+
+                                tokio::spawn(async move {
+                                    // Build a minimal request for this type
+                                    let request = DiscoveryRequest { type_url: type_url_for_task.clone(), ..Default::default() };
+                                    match responder_for_task(state_for_task, request).await {
+                                        Ok(response) => {
+                                            info!(
+                                                type_url = %response.type_url,
+                                                version = %response.version_info,
+                                                nonce = %response.nonce,
+                                                resource_count = response.resources.len(),
+                                                stream = %label_for_task,
+                                                "Pushing SOTW update response"
+                                            );
+
+                                            let version = response.version_info.clone();
+                                            let nonce = response.nonce.clone();
+                                            let type_url = response.type_url.clone();
+                                            {
+                                                let mut guard = tracker_for_task.lock().await;
+                                                guard.insert(type_url, LastDiscoverySnapshot { version, nonce });
+                                            }
+
+                                            if tx_for_task.send(Ok(response)).await.is_err() {
+                                                error!(stream = %label_for_task, "Discovery response receiver dropped");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(stream = %label_for_task, error = %e, "Failed to create SOTW push response");
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(stream = %label, skipped = skipped, "Missed {} update notifications", skipped);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!(stream = %label, "Update notification channel closed");
                             break;
                         }
                     }
