@@ -44,11 +44,11 @@ These are the tasks to be completed for the spec detailed in @.agent-os/specs/20
   - [x] 4.7 Verify import works with filter tags
   - [x] 4.8 Verify all tests pass
 
-- [ ] 5. Ensure unified resource visibility across APIs
-  - [ ] 5.1 Write cross-API visibility tests
-  - [ ] 5.2 Implement Native to Platform view transformers
-  - [ ] 5.3 Implement Platform to Native query support
-  - [ ] 5.4 Add resource source tracking
-  - [ ] 5.5 Verify resources created via Platform visible in Native
-  - [ ] 5.6 Verify resources created via Native visible in Platform
-  - [ ] 5.7 Verify all integration tests pass
+- [x] 5. Ensure unified resource visibility across APIs
+  - [x] 5.1 Write cross-API visibility tests
+  - [x] 5.2 Implement Native to Platform view transformers
+  - [x] 5.3 Implement Platform to Native query support
+  - [x] 5.4 Add resource source tracking
+  - [x] 5.5 Verify resources created via Platform visible in Native
+  - [x] 5.6 Verify resources created via Native visible in Platform
+  - [x] 5.7 Verify all integration tests pass

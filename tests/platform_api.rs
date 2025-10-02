@@ -10,6 +10,8 @@ mod test_bootstrap;
 mod test_collision_detection;
 #[path = "platform_api/test_create_api_definition.rs"]
 mod test_create_api_definition;
+#[path = "platform_api/test_cross_api_visibility.rs"]
+mod test_cross_api_visibility;
 #[path = "platform_api/test_isolation.rs"]
 mod test_isolation;
 #[path = "platform_api/test_lifecycle.rs"]
