@@ -19,7 +19,6 @@ use super::{
         rotate_token_handler, update_token_handler,
     },
     docs,
-    gateway_handlers::create_gateway_from_openapi_handler,
     handlers::{
         create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
         update_cluster_handler,
@@ -31,6 +30,9 @@ use super::{
     platform_api_definitions::{
         create_api_definition_handler, delete_api_definition_handler, get_api_definition_by_id_handler,
         list_api_definitions_handler, update_api_definition_handler,
+    },
+    platform_openapi_handlers::{
+        import_openapi_handler, redirect_gateway_import_handler,
     },
     platform_service_handlers::{
         create_service_handler, delete_service_handler, get_service_handler, list_services_handler,
@@ -176,11 +178,6 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
                 .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
                 .route_layer(scope_layer(vec!["listeners:write"])),
         )
-        .merge(
-            Router::new()
-                .route("/api/v1/gateways/openapi", post(create_gateway_from_openapi_handler))
-                .route_layer(scope_layer(vec!["gateways:import"])),
-        )
         // Platform API definitions endpoints
         .merge(
             Router::new()
@@ -206,6 +203,18 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
             Router::new()
                 .route("/api/v1/platform/apis/{id}", delete(delete_api_definition_handler))
                 .route_layer(scope_layer(vec!["apis:write", "route-configs:write", "listeners:write", "clusters:write"])),
+        )
+        // Platform API OpenAPI import endpoint
+        .merge(
+            Router::new()
+                .route("/api/v1/platform/import/openapi", post(import_openapi_handler))
+                .route_layer(scope_layer(vec!["apis:write", "import:write"])),
+        )
+        // Redirect from old gateway endpoint
+        .merge(
+            Router::new()
+                .route("/api/v1/gateways/openapi", post(redirect_gateway_import_handler))
+                .route_layer(scope_layer(vec!["gateways:import"])),
         )
         // Platform API service endpoints
         .merge(

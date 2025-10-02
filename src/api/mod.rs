@@ -9,6 +9,7 @@ pub mod gateway_handlers;
 pub mod handlers;
 pub mod listener_handlers;
 pub mod platform_api_definitions;
+pub mod platform_openapi_handlers;
 pub mod platform_service_handlers;
 pub mod route_handlers;
 pub mod routes;

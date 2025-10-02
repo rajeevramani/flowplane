@@ -14,6 +14,8 @@ mod test_create_api_definition;
 mod test_isolation;
 #[path = "platform_api/test_lifecycle.rs"]
 mod test_lifecycle;
+#[path = "platform_api/test_openapi_import.rs"]
+mod test_openapi_import;
 #[path = "platform_api/test_rbac_enforcement.rs"]
 mod test_rbac_enforcement;
 #[path = "platform_api/test_services.rs"]

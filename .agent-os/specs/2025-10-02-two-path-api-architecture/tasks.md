@@ -34,15 +34,15 @@ These are the tasks to be completed for the spec detailed in @.agent-os/specs/20
   - [x] 3.6 Implement policy (filter) application
   - [x] 3.7 Verify all tests pass
 
-- [ ] 4. Relocate and enhance OpenAPI import functionality
-  - [ ] 4.1 Write tests for relocated OpenAPI import
-  - [ ] 4.2 Move import handler to /api/v1/platform/import/openapi
-  - [ ] 4.3 Implement x-flowplane-* tag processing
-  - [ ] 4.4 Add filter tag validation and error handling
-  - [ ] 4.5 Create redirect from old endpoint
-  - [ ] 4.6 Update OpenAPI import response format
-  - [ ] 4.7 Verify import works with filter tags
-  - [ ] 4.8 Verify all tests pass
+- [x] 4. Relocate and enhance OpenAPI import functionality
+  - [x] 4.1 Write tests for relocated OpenAPI import
+  - [x] 4.2 Move import handler to /api/v1/platform/import/openapi
+  - [x] 4.3 Implement x-flowplane-* tag processing
+  - [x] 4.4 Add filter tag validation and error handling
+  - [x] 4.5 Create redirect from old endpoint
+  - [x] 4.6 Update OpenAPI import response format
+  - [x] 4.7 Verify import works with filter tags
+  - [x] 4.8 Verify all tests pass
 
 - [ ] 5. Ensure unified resource visibility across APIs
   - [ ] 5.1 Write cross-API visibility tests
