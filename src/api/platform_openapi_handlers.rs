@@ -299,7 +299,7 @@ fn openapi_to_api_definition(
         (status = 403, description = "Insufficient permissions"),
         (status = 500, description = "Internal server error")
     ),
-    tag = "platform-api"
+    tag = "platform-import"
 )]
 pub async fn import_openapi_handler(
     State(_state): State<ApiState>,

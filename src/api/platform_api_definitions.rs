@@ -339,7 +339,7 @@ fn api_to_cluster(api: &ApiDefinition, cluster_name: &str) -> CreateClusterBody 
         .map(|ep| EndpointRequest { host: ep.host.clone(), port: ep.port })
         .collect();
 
-    let mut cluster = CreateClusterBody {
+    let cluster = CreateClusterBody {
         name: cluster_name.to_string(),
         service_name: Some(api.upstream.service.clone()),
         endpoints,
@@ -359,7 +359,7 @@ fn api_to_cluster(api: &ApiDefinition, cluster_name: &str) -> CreateClusterBody 
 
     // Add circuit breaker if policy is defined
     if let Some(policies) = &api.policies {
-        if let Some(cb_policy) = &policies.circuit_breaker {
+        if policies.circuit_breaker.is_some() {
             // Circuit breaker configuration would be added here
             // This is simplified - actual implementation would map properly
         }
@@ -419,7 +419,7 @@ fn api_to_route_config(api: &ApiDefinition, route_config_name: &str) -> RouteDef
         (status = 400, description = "Validation error"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-apis"
 )]
 pub async fn create_api_definition_handler(
     State(_state): State<ApiState>,
@@ -480,7 +480,7 @@ pub async fn create_api_definition_handler(
         (status = 200, description = "List of API definitions", body = [ApiDefinitionResponse]),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-apis"
 )]
 pub async fn list_api_definitions_handler(
     State(_state): State<ApiState>,
@@ -522,7 +522,7 @@ pub async fn list_api_definitions_handler(
         (status = 404, description = "API definition not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-apis"
 )]
 pub async fn get_api_definition_by_id_handler(
     State(_state): State<ApiState>,
@@ -545,7 +545,7 @@ pub async fn get_api_definition_by_id_handler(
         (status = 404, description = "API definition not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-apis"
 )]
 pub async fn update_api_definition_handler(
     State(_state): State<ApiState>,
@@ -575,7 +575,7 @@ pub async fn update_api_definition_handler(
         (status = 404, description = "API definition not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-apis"
 )]
 pub async fn delete_api_definition_handler(
     State(_state): State<ApiState>,

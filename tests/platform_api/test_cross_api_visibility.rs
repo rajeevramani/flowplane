@@ -114,7 +114,15 @@ async fn test_platform_api_definition_creates_native_resources() {
     let token = app
         .issue_token(
             "admin",
-            &["apis:write", "route-configs:read", "clusters:read", "listeners:read"],
+            &[
+                "apis:write",
+                "route-configs:write",
+                "clusters:write",
+                "listeners:write",
+                "route-configs:read",
+                "clusters:read",
+                "listeners:read",
+            ],
         )
         .await;
 

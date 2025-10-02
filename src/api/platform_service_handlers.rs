@@ -239,7 +239,7 @@ fn default_unhealthy_threshold() -> u32 {
         (status = 400, description = "Validation error"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-services"
 )]
 pub async fn create_service_handler(
     state: State<ApiState>,
@@ -272,7 +272,7 @@ pub async fn create_service_handler(
         (status = 200, description = "List of services", body = [ServiceResponse]),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-services"
 )]
 pub async fn list_services_handler(
     state: State<ApiState>,
@@ -301,7 +301,7 @@ pub async fn list_services_handler(
         (status = 404, description = "Service not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-services"
 )]
 pub async fn get_service_handler(
     state: State<ApiState>,
@@ -328,7 +328,7 @@ pub async fn get_service_handler(
         (status = 404, description = "Service not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-services"
 )]
 pub async fn update_service_handler(
     state: State<ApiState>,
@@ -367,7 +367,7 @@ pub async fn update_service_handler(
         (status = 404, description = "Service not found"),
         (status = 503, description = "Service unavailable"),
     ),
-    tag = "platform-api"
+    tag = "platform-services"
 )]
 pub async fn delete_service_handler(
     state: State<ApiState>,

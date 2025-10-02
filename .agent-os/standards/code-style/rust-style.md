@@ -19,6 +19,9 @@ This guide defines Rust-specific conventions for Agent OS projects. When Rust ru
 - Constants and statics: `SCREAMING_SNAKE_CASE`.
 - Feature flags: `kebab-case` in `Cargo.toml`.
 
+## Clippy
+- Ensure all clippy errors are cleaned up
+
 ## Modules & Imports
 - Prefer explicit imports; avoid glob imports (`use crate::*`) except in tests/benches.
 - Import order: standard lib, external crates, then `crate`/`super` paths.
@@ -29,6 +32,9 @@ This guide defines Rust-specific conventions for Agent OS projects. When Rust ru
 - Libraries: define domain errors with `thiserror`. Binaries and tests: use `anyhow` for flexible error contexts.
 - Avoid `unwrap()`/`expect()` outside tests/examples. Use `?` with context: `anyhow::Context` to describe the failing operation.
 - Map external errors into domain errors near boundaries.
+
+## Utoipa
+- Make sure all Utoipa documentation text reflects the APIs they represent
 
 ## Concurrency & Async
 - Use `tokio` for async; annotate tests with `#[tokio::test]`. Prefer `multi_thread` flavor if tasks block.

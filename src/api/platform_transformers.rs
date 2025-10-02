@@ -4,9 +4,14 @@ use serde_json::{json, Value};
 
 use crate::{
     api::handlers::ClusterResponse,
-    api::platform_api_definitions::{ApiDefinitionResponse, UpstreamConfig, UpstreamEndpoint},
-    api::platform_service_handlers::{ServiceDefinition, ServiceEndpoint, ServiceResponse},
-    xds::{ClusterSpec, EndpointSpec},
+    api::platform_service_handlers::{
+        LoadBalancingStrategy, ServiceCircuitBreaker, ServiceDefinition, ServiceEndpoint,
+        ServiceHealthCheck, ServiceOutlierDetection, ServiceResponse,
+    },
+    xds::{
+        CircuitBreakerThresholdsSpec, ClusterSpec, EndpointSpec, HealthCheckSpec,
+        OutlierDetectionSpec,
+    },
 };
 
 /// Transform a Native API cluster to a Platform API service
@@ -15,68 +20,103 @@ pub fn cluster_to_service(cluster: &ClusterSpec) -> ServiceResponse {
         .endpoints
         .iter()
         .map(|ep| {
-            // Parse host:port format
-            let (host, port) = if let Some(colon_pos) = ep.host.rfind(':') {
-                let host_part = &ep.host[..colon_pos];
-                let port_part = ep.host[colon_pos + 1..].parse().unwrap_or(80);
-                (host_part.to_string(), port_part)
-            } else {
-                (ep.host.clone(), 80)
-            };
-
-            ServiceEndpoint {
-                host,
-                port,
-                weight: 100, // Default weight if not specified
+            // Handle EndpointSpec enum variants
+            match ep {
+                EndpointSpec::String(s) => {
+                    // Parse host:port format from string
+                    if let Some(colon_pos) = s.rfind(':') {
+                        let host = s[..colon_pos].to_string();
+                        let port = s[colon_pos + 1..].parse().unwrap_or(80);
+                        ServiceEndpoint { host, port, weight: 100, metadata: Default::default() }
+                    } else {
+                        ServiceEndpoint {
+                            host: s.clone(),
+                            port: 80,
+                            weight: 100,
+                            metadata: Default::default(),
+                        }
+                    }
+                }
+                EndpointSpec::Address { host, port } => ServiceEndpoint {
+                    host: host.clone(),
+                    port: *port,
+                    weight: 100,
+                    metadata: Default::default(),
+                },
             }
         })
         .collect();
 
+    // Parse load balancing policy
+    let load_balancing = match cluster.lb_policy.as_deref() {
+        Some("ROUND_ROBIN") => LoadBalancingStrategy::RoundRobin,
+        Some("RANDOM") => LoadBalancingStrategy::Random,
+        Some("LEAST_REQUEST") => LoadBalancingStrategy::LeastRequest,
+        _ => LoadBalancingStrategy::RoundRobin,
+    };
+
+    // Convert health checks
+    let health_check = cluster.health_checks.first().map(|hc| match hc {
+        HealthCheckSpec::Http { path, interval_seconds, timeout_seconds, .. } => {
+            ServiceHealthCheck {
+                path: path.clone(),
+                interval: interval_seconds.unwrap_or(10) as u32,
+                timeout: timeout_seconds.unwrap_or(5) as u32,
+                healthy_threshold: 3,
+                unhealthy_threshold: 3,
+            }
+        }
+        HealthCheckSpec::Tcp { interval_seconds, timeout_seconds, .. } => ServiceHealthCheck {
+            path: "/".to_string(), // TCP checks don't have a path, use default
+            interval: interval_seconds.unwrap_or(10) as u32,
+            timeout: timeout_seconds.unwrap_or(5) as u32,
+            healthy_threshold: 3,
+            unhealthy_threshold: 3,
+        },
+    });
+
+    // Convert circuit breakers
+    let circuit_breaker = cluster.circuit_breakers.as_ref().and_then(|cb| {
+        let default_thresholds = cb.default.as_ref().or(cb.high.as_ref())?;
+        Some(ServiceCircuitBreaker {
+            max_requests: default_thresholds.max_requests,
+            max_pending_requests: default_thresholds.max_pending_requests,
+            max_connections: default_thresholds.max_connections,
+            max_retries: default_thresholds.max_retries,
+            consecutive_errors: Some(5), // Default value
+            interval_ms: Some(10000),    // Default value (10 seconds)
+        })
+    });
+
+    // Convert outlier detection
+    let outlier_detection = cluster.outlier_detection.as_ref().map(|od| {
+        ServiceOutlierDetection {
+            consecutive_5xx: od.consecutive_5xx,
+            interval_ms: od.interval_seconds.map(|s| s * 1000), // Convert seconds to milliseconds
+            base_ejection_time_ms: od.base_ejection_time_seconds.map(|s| s * 1000),
+            max_ejection_percent: od.max_ejection_percent,
+            min_healthy_percent: None, // Default
+        }
+    });
+
+    // Generate cluster ID from cluster name
+    let cluster_id = format!(
+        "{}-cluster",
+        generate_id_from_name(cluster.lb_policy.as_deref().unwrap_or("unknown"))
+    );
+
     ServiceResponse {
-        name: cluster.service_name.clone().unwrap_or_else(|| cluster.name.clone()),
-        description: Some(format!("Native cluster: {}", cluster.name)),
+        name: "cluster".to_string(), // ClusterSpec doesn't have a name field
+        cluster_id,
         endpoints,
-        load_balancing_strategy: cluster
-            .lb_policy
-            .clone()
-            .unwrap_or_else(|| "ROUND_ROBIN".to_string()),
-        health_check: cluster.health_checks.first().map(|hc| {
-            crate::api::platform_service_handlers::ServiceHealthCheck {
-                r#type: hc.r#type.clone().unwrap_or_else(|| "http".to_string()),
-                path: hc.path.clone(),
-                interval_seconds: hc.interval_seconds.unwrap_or(10),
-                timeout_seconds: hc.timeout_seconds.unwrap_or(5),
-                healthy_threshold: hc.healthy_threshold.unwrap_or(2),
-                unhealthy_threshold: hc.unhealthy_threshold.unwrap_or(3),
-            }
-        }),
-        circuit_breaker: cluster.circuit_breakers.as_ref().and_then(|cb| {
-            cb.thresholds.first().map(|threshold| {
-                crate::api::platform_service_handlers::ServiceCircuitBreaker {
-                    max_requests: threshold.max_requests,
-                    max_pending_requests: threshold.max_pending_requests,
-                    max_connections: threshold.max_connections,
-                    max_retries: threshold.max_retries,
-                }
-            })
-        }),
-        outlier_detection: cluster.outlier_detection.as_ref().map(|od| {
-            crate::api::platform_service_handlers::ServiceOutlierDetection {
-                consecutive_5xx: od.consecutive_5xx,
-                interval_seconds: od.interval.map(|i| i as u32),
-                base_ejection_time_seconds: od.base_ejection_time.map(|t| t as u32),
-                max_ejection_percent: od.max_ejection_percent,
-                enforcing_consecutive_5xx: od.enforcing_consecutive_5xx,
-            }
-        }),
-        metadata: json!({
+        load_balancing,
+        health_check,
+        circuit_breaker,
+        outlier_detection,
+        metadata: Some(json!({
             "source": "native_api",
-            "cluster_name": cluster.name,
-            "created_at": cluster.created_at,
-            "updated_at": cluster.updated_at,
-        }),
-        created_at: cluster.created_at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-        updated_at: cluster.updated_at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            "cluster_name": cluster.lb_policy.as_deref().unwrap_or("unknown"),
+        })),
     }
 }
 
@@ -85,66 +125,75 @@ pub fn service_to_cluster_response(
     service: &ServiceDefinition,
     cluster_name: &str,
 ) -> ClusterResponse {
-    ClusterResponse {
-        name: cluster_name.to_string(),
-        service_name: Some(service.name.clone()),
-        endpoints: service
-            .endpoints
-            .iter()
-            .map(|ep| EndpointSpec { host: format!("{}:{}", ep.host, ep.port) })
-            .collect(),
+    let endpoints = service
+        .endpoints
+        .iter()
+        .map(|ep| EndpointSpec::Address { host: ep.host.clone(), port: ep.port })
+        .collect();
+
+    // Convert load balancing strategy enum to string
+    let lb_policy = match service.load_balancing {
+        LoadBalancingStrategy::RoundRobin => Some("ROUND_ROBIN".to_string()),
+        LoadBalancingStrategy::Random => Some("RANDOM".to_string()),
+        LoadBalancingStrategy::LeastRequest => Some("LEAST_REQUEST".to_string()),
+        LoadBalancingStrategy::RingHash => Some("RING_HASH".to_string()),
+        LoadBalancingStrategy::Maglev => Some("MAGLEV".to_string()),
+    };
+
+    let health_checks = service
+        .health_check
+        .as_ref()
+        .map(|hc| {
+            vec![HealthCheckSpec::Http {
+                path: hc.path.clone(),
+                host: None,
+                method: None,
+                interval_seconds: Some(hc.interval as u64),
+                timeout_seconds: Some(hc.timeout as u64),
+                unhealthy_threshold: Some(hc.unhealthy_threshold),
+                healthy_threshold: Some(hc.healthy_threshold),
+                expected_statuses: None,
+            }]
+        })
+        .unwrap_or_default();
+
+    let circuit_breakers =
+        service.circuit_breaker.as_ref().map(|cb| crate::xds::CircuitBreakersSpec {
+            default: Some(CircuitBreakerThresholdsSpec {
+                max_connections: cb.max_connections,
+                max_pending_requests: cb.max_pending_requests,
+                max_requests: cb.max_requests,
+                max_retries: cb.max_retries,
+            }),
+            high: None,
+        });
+
+    let outlier_detection = service.outlier_detection.as_ref().map(|od| {
+        OutlierDetectionSpec {
+            consecutive_5xx: od.consecutive_5xx,
+            interval_seconds: od.interval_ms.map(|ms| ms / 1000), // Convert milliseconds to seconds
+            base_ejection_time_seconds: od.base_ejection_time_ms.map(|ms| ms / 1000),
+            max_ejection_percent: od.max_ejection_percent,
+        }
+    });
+
+    // Create the ClusterSpec
+    let config = ClusterSpec {
         connect_timeout_seconds: Some(5), // Default
-        use_tls: Some(false),             // Default, could be derived from port
+        endpoints,
+        use_tls: Some(false), // Default, could be derived from port
         tls_server_name: None,
         dns_lookup_family: None,
-        lb_policy: Some(
-            service.load_balancing_strategy.clone().unwrap_or_else(|| "ROUND_ROBIN".to_string()),
-        ),
-        health_checks: service
-            .health_check
-            .as_ref()
-            .map(|hc| {
-                vec![crate::xds::HealthCheckSpec {
-                    r#type: Some(hc.r#type.clone()),
-                    path: hc.path.clone(),
-                    host: None,
-                    method: None,
-                    interval_seconds: Some(hc.interval_seconds as u64),
-                    timeout_seconds: Some(hc.timeout_seconds as u64),
-                    healthy_threshold: Some(hc.healthy_threshold as u64),
-                    unhealthy_threshold: Some(hc.unhealthy_threshold as u64),
-                    expected_statuses: None,
-                }]
-            })
-            .unwrap_or_default(),
-        circuit_breakers: service.circuit_breaker.as_ref().map(|cb| {
-            crate::xds::CircuitBreakersSpec {
-                thresholds: vec![crate::xds::CircuitBreakerThresholdsSpec {
-                    priority: Some("DEFAULT".to_string()),
-                    max_connections: cb.max_connections,
-                    max_pending_requests: cb.max_pending_requests,
-                    max_requests: cb.max_requests,
-                    max_retries: cb.max_retries,
-                }],
-            }
-        }),
-        outlier_detection: service.outlier_detection.as_ref().map(|od| {
-            crate::xds::OutlierDetectionSpec {
-                consecutive_5xx: od.consecutive_5xx,
-                interval: od.interval_seconds.map(|s| s as u64),
-                base_ejection_time: od.base_ejection_time_seconds.map(|s| s as u64),
-                max_ejection_percent: od.max_ejection_percent,
-                enforcing_consecutive_5xx: od.enforcing_consecutive_5xx,
-                enforcing_success_rate: None,
-                success_rate_minimum_hosts: None,
-                success_rate_request_volume: None,
-                success_rate_stdev_factor: None,
-                consecutive_gateway_failure: None,
-                enforcing_consecutive_gateway_failure: None,
-                split_external_local_origin_errors: None,
-            }
-        }),
-    }
+        lb_policy,
+        least_request: None,
+        ring_hash: None,
+        maglev: None,
+        circuit_breakers,
+        health_checks,
+        outlier_detection,
+    };
+
+    ClusterResponse { name: cluster_name.to_string(), service_name: service.name.clone(), config }
 }
 
 /// Transform route configurations to simplified API definition view
@@ -193,8 +242,6 @@ pub fn is_platform_service_cluster(cluster_name: &str) -> bool {
 pub fn cluster_name_to_service_name(cluster_name: &str) -> String {
     if cluster_name.ends_with("-cluster") {
         cluster_name.trim_end_matches("-cluster").to_string()
-    } else if cluster_name.ends_with("-service") {
-        cluster_name.to_string()
     } else {
         cluster_name.to_string()
     }
@@ -284,4 +331,15 @@ pub fn policies_to_filters(policies: &crate::api::platform_api_definitions::ApiP
     }
 
     filters
+}
+
+// Helper function to generate a simple ID from a name
+fn generate_id_from_name(name: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("{:x}", hash % 1000000)
 }

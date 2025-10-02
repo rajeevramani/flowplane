@@ -51,7 +51,8 @@ use crate::xds::{
         crate::api::platform_service_handlers::list_services_handler,
         crate::api::platform_service_handlers::get_service_handler,
         crate::api::platform_service_handlers::update_service_handler,
-        crate::api::platform_service_handlers::delete_service_handler
+        crate::api::platform_service_handlers::delete_service_handler,
+        crate::api::platform_openapi_handlers::import_openapi_handler
     ),
     components(
         schemas(
@@ -106,16 +107,19 @@ use crate::xds::{
             crate::api::platform_service_handlers::ServiceCircuitBreaker,
             crate::api::platform_service_handlers::ServiceOutlierDetection,
             crate::api::platform_service_handlers::ServiceResponse,
-            crate::api::platform_service_handlers::LoadBalancingStrategy
+            crate::api::platform_service_handlers::LoadBalancingStrategy,
+            crate::api::platform_openapi_handlers::OpenApiImportQuery
         )
     ),
     tags(
-        (name = "clusters", description = "Operations for managing Envoy clusters"),
-        (name = "route-configs", description = "Operations for managing Envoy route configurations"),
-        (name = "listeners", description = "Operations for managing Envoy listeners"),
-        (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications"),
-        (name = "tokens", description = "Personal access token management APIs"),
-        (name = "platform-api", description = "Platform API Abstraction endpoints")
+        (name = "tokens", description = "Personal access token management"),
+        (name = "clusters", description = "Native API - Envoy cluster management"),
+        (name = "route-configs", description = "Native API - Envoy route configuration management"),
+        (name = "listeners", description = "Native API - Envoy listener management"),
+        (name = "platform-apis", description = "Platform API - API gateway definitions"),
+        (name = "platform-services", description = "Platform API - Backend service definitions"),
+        (name = "platform-import", description = "Platform API - OpenAPI specification import"),
+        (name = "gateways", description = "Legacy - Gateway import endpoints (deprecated)")
     ),
     security(
         ("bearerAuth" = [])
@@ -166,11 +170,22 @@ mod tests {
         assert!(required.contains(&"endpoints".to_string()));
         assert!(!required.contains(&"serviceName".to_string()));
 
-        // Ensure clusters endpoint is documented.
+        // Ensure Native API endpoints are documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters"));
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
         assert!(openapi.paths.paths.contains_key("/api/v1/route-configs"));
         assert!(openapi.paths.paths.contains_key("/api/v1/route-configs/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/listeners"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/listeners/{name}"));
+
+        // Ensure Platform API endpoints are documented.
+        assert!(openapi.paths.paths.contains_key("/api/v1/platform/apis"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/platform/apis/{id}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/platform/services"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/platform/services/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/platform/import/openapi"));
+
+        // Ensure token endpoints are documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/tokens"));
     }
 }
