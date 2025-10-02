@@ -13,9 +13,12 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::api::error::ApiError;
-use crate::api::routes::ApiState;
 use crate::api::handlers::{CreateClusterBody, EndpointRequest};
-use crate::api::route_handlers::{RouteDefinition, VirtualHostDefinition, RouteRuleDefinition, RouteMatchDefinition, PathMatchDefinition, RouteActionDefinition};
+use crate::api::route_handlers::{
+    PathMatchDefinition, RouteActionDefinition, RouteDefinition, RouteMatchDefinition,
+    RouteRuleDefinition, VirtualHostDefinition,
+};
+use crate::api::routes::ApiState;
 use std::collections::HashMap;
 
 /// Platform API definition
@@ -329,16 +332,20 @@ fn default_backoff() -> String {
 
 // Helper function to transform API definition to cluster configuration
 fn api_to_cluster(api: &ApiDefinition, cluster_name: &str) -> CreateClusterBody {
-    let endpoints: Vec<EndpointRequest> = api.upstream.endpoints.iter().map(|ep| EndpointRequest {
-        host: ep.host.clone(),
-        port: ep.port,
-    }).collect();
+    let endpoints: Vec<EndpointRequest> = api
+        .upstream
+        .endpoints
+        .iter()
+        .map(|ep| EndpointRequest { host: ep.host.clone(), port: ep.port })
+        .collect();
 
     let mut cluster = CreateClusterBody {
         name: cluster_name.to_string(),
         service_name: Some(api.upstream.service.clone()),
         endpoints,
-        connect_timeout_seconds: api.policies.as_ref()
+        connect_timeout_seconds: api
+            .policies
+            .as_ref()
             .and_then(|p| p.timeout.as_ref())
             .and_then(|t| t.request.map(|r| r as u64)),
         use_tls: Some(api.upstream.tls),
@@ -363,29 +370,33 @@ fn api_to_cluster(api: &ApiDefinition, cluster_name: &str) -> CreateClusterBody 
 
 // Helper function to transform API routes to route configuration
 fn api_to_route_config(api: &ApiDefinition, route_config_name: &str) -> RouteDefinition {
-    let routes: Vec<RouteRuleDefinition> = api.routes.iter().map(|route| {
-        let full_path = format!("{}{}", api.base_path, route.path);
+    let routes: Vec<RouteRuleDefinition> = api
+        .routes
+        .iter()
+        .map(|route| {
+            let full_path = format!("{}{}", api.base_path, route.path);
 
-        RouteRuleDefinition {
-            name: route.description.clone(),
-            r#match: RouteMatchDefinition {
-                path: PathMatchDefinition::Prefix {
-                    value: full_path
+            RouteRuleDefinition {
+                name: route.description.clone(),
+                r#match: RouteMatchDefinition {
+                    path: PathMatchDefinition::Prefix { value: full_path },
+                    headers: vec![],
+                    query_parameters: vec![],
                 },
-                headers: vec![],
-                query_parameters: vec![],
-            },
-            action: RouteActionDefinition::Forward {
-                cluster: api.upstream.service.clone(),
-                timeout_seconds: api.policies.as_ref()
-                    .and_then(|p| p.timeout.as_ref())
-                    .and_then(|t| t.request.map(|r| r as u64)),
-                prefix_rewrite: None,
-                template_rewrite: None,
-            },
-            typed_per_filter_config: HashMap::new(),
-        }
-    }).collect();
+                action: RouteActionDefinition::Forward {
+                    cluster: api.upstream.service.clone(),
+                    timeout_seconds: api
+                        .policies
+                        .as_ref()
+                        .and_then(|p| p.timeout.as_ref())
+                        .and_then(|t| t.request.map(|r| r as u64)),
+                    prefix_rewrite: None,
+                    template_rewrite: None,
+                },
+                typed_per_filter_config: HashMap::new(),
+            }
+        })
+        .collect();
 
     RouteDefinition {
         name: route_config_name.to_string(),
@@ -495,11 +506,8 @@ pub async fn list_api_definitions_handler(
     let offset = params.offset.unwrap_or(0) as usize;
     let limit = params.limit.unwrap_or(100) as usize;
 
-    let paginated: Vec<ApiDefinitionResponse> = results
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+    let paginated: Vec<ApiDefinitionResponse> =
+        results.into_iter().skip(offset).take(limit).collect();
 
     Ok(Json(paginated))
 }

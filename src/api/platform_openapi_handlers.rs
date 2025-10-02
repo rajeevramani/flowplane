@@ -15,11 +15,11 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
     api::platform_api_definitions::{
-        ApiDefinition, ApiPolicies, ApiRoute,
-        AuthenticationPolicy, CorsPolicy, RateLimitPolicy, UpstreamConfig, UpstreamEndpoint,
+        ApiDefinition, ApiPolicies, ApiRoute, AuthenticationPolicy, CorsPolicy, RateLimitPolicy,
+        UpstreamConfig, UpstreamEndpoint,
     },
+    api::{error::ApiError, routes::ApiState},
 };
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -116,35 +116,32 @@ fn extract_flowplane_policies(operation: &Value) -> (Option<ApiPolicies>, Vec<St
 
     // Check for x-flowplane-cors
     if let Some(cors) = operation.get("x-flowplane-cors") {
-        let origins = cors.get("origins")
+        let origins = cors
+            .get("origins")
             .and_then(|o| o.as_array())
-            .map(|arr| arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_string())
-                .collect())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
             .unwrap_or_else(|| vec!["*".to_string()]);
 
-        let methods = cors.get("methods")
+        let methods = cors
+            .get("methods")
             .and_then(|m| m.as_array())
-            .map(|arr| arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_string())
-                .collect())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
             .unwrap_or_else(|| vec!["GET".to_string(), "POST".to_string()]);
 
-        let headers = cors.get("headers")
+        let headers = cors
+            .get("headers")
             .and_then(|h| h.as_array())
-            .map(|arr| arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_string())
-                .collect())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
             .unwrap_or_else(|| vec!["Content-Type".to_string(), "Authorization".to_string()]);
 
         policies.cors = Some(CorsPolicy {
             origins,
             methods,
             headers,
-            allow_credentials: cors.get("allowCredentials").and_then(|c| c.as_bool()).unwrap_or(false),
+            allow_credentials: cors
+                .get("allowCredentials")
+                .and_then(|c| c.as_bool())
+                .unwrap_or(false),
             max_age: cors.get("maxAge").and_then(|m| m.as_u64()).map(|u| u as u32),
         });
     }
@@ -205,7 +202,8 @@ fn openapi_to_api_definition(
     });
 
     // Extract upstream from servers
-    let upstream = spec.get("servers")
+    let upstream = spec
+        .get("servers")
         .and_then(|s| s.as_array())
         .and_then(|arr| arr.first())
         .and_then(|server| server.get("url"))
@@ -213,16 +211,13 @@ fn openapi_to_api_definition(
         .and_then(|url| {
             if let Ok(parsed) = url::Url::parse(url) {
                 let host = parsed.host_str()?;
-                let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+                let port =
+                    parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
                 let tls = parsed.scheme() == "https";
 
                 Some(UpstreamConfig {
                     service: format!("{}-backend", name),
-                    endpoints: vec![UpstreamEndpoint {
-                        host: host.to_string(),
-                        port,
-                        weight: 100,
-                    }],
+                    endpoints: vec![UpstreamEndpoint { host: host.to_string(), port, weight: 100 }],
                     tls,
                     load_balancing: "ROUND_ROBIN".to_string(),
                 })
@@ -250,7 +245,8 @@ fn openapi_to_api_definition(
             // Process each HTTP method
             for method in &["get", "post", "put", "delete", "patch", "options", "head"] {
                 if let Some(operation) = path_item.get(method) {
-                    let description = operation.get("summary")
+                    let description = operation
+                        .get("summary")
                         .or_else(|| operation.get("description"))
                         .and_then(|d| d.as_str())
                         .map(|s| s.to_string());
@@ -335,24 +331,19 @@ pub async fn import_openapi_handler(
 
     // Validate it's an OpenAPI 3.x document
     if !spec.get("openapi").and_then(|v| v.as_str()).map(|v| v.starts_with("3.")).unwrap_or(false) {
-        return Err(ApiError::BadRequest("Only OpenAPI 3.x specifications are supported".to_string()));
+        return Err(ApiError::BadRequest(
+            "Only OpenAPI 3.x specifications are supported".to_string(),
+        ));
     }
 
     // Convert to API definition
-    let (api_def, warnings) = openapi_to_api_definition(
-        &spec,
-        params.name.clone(),
-        params.version,
-        params.base_path,
-    )?;
+    let (api_def, warnings) =
+        openapi_to_api_definition(&spec, params.name.clone(), params.version, params.base_path)?;
 
     // Generate ID for the API
     let api_id = Uuid::new_v4().to_string();
 
-    info!(
-        "Imported OpenAPI spec '{}' as Platform API definition '{}'",
-        params.name, api_id
-    );
+    info!("Imported OpenAPI spec '{}' as Platform API definition '{}'", params.name, api_id);
 
     // Create response
     let response = OpenApiImportResponse {

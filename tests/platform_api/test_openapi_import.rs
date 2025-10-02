@@ -140,11 +140,7 @@ invalid: yaml
     )
     .await;
 
-    assert_eq!(
-        response.status(),
-        StatusCode::BAD_REQUEST,
-        "Should reject invalid OpenAPI spec"
-    );
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "Should reject invalid OpenAPI spec");
 }
 
 #[tokio::test]
@@ -178,11 +174,7 @@ paths:
     .await;
 
     // Should still create but log warning about unknown filter
-    assert_eq!(
-        response.status(),
-        StatusCode::CREATED,
-        "Should create API even with unknown tags"
-    );
+    assert_eq!(response.status(), StatusCode::CREATED, "Should create API even with unknown tags");
 
     let body: serde_json::Value = read_json(response).await;
     assert!(body.get("warnings").is_some(), "Should include warnings about unknown tags");
@@ -216,11 +208,7 @@ paths:
     )
     .await;
 
-    assert_eq!(
-        response.status(),
-        StatusCode::FORBIDDEN,
-        "Should require import:write scope"
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "Should require import:write scope");
 }
 
 #[tokio::test]
@@ -253,8 +241,8 @@ paths:
 
     // Should redirect to new platform endpoint
     assert!(
-        response.status() == StatusCode::MOVED_PERMANENTLY ||
-        response.status() == StatusCode::PERMANENT_REDIRECT,
+        response.status() == StatusCode::MOVED_PERMANENTLY
+            || response.status() == StatusCode::PERMANENT_REDIRECT,
         "Old endpoint should redirect to new location"
     );
 

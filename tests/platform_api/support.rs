@@ -100,10 +100,8 @@ pub async fn send_request_with_body(
         builder = builder.header("Authorization", format!("Bearer {}", token));
     }
 
-    let request = builder
-        .header("content-type", content_type)
-        .body(Body::from(body))
-        .expect("build request");
+    let request =
+        builder.header("content-type", content_type).body(Body::from(body)).expect("build request");
 
     app.router().oneshot(request).await.expect("request")
 }

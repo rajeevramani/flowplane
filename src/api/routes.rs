@@ -28,12 +28,11 @@ use super::{
         list_listeners_handler, update_listener_handler,
     },
     platform_api_definitions::{
-        create_api_definition_handler, delete_api_definition_handler, get_api_definition_by_id_handler,
-        list_api_definitions_handler, update_api_definition_handler,
+        create_api_definition_handler, delete_api_definition_handler,
+        get_api_definition_by_id_handler, list_api_definitions_handler,
+        update_api_definition_handler,
     },
-    platform_openapi_handlers::{
-        import_openapi_handler, redirect_gateway_import_handler,
-    },
+    platform_openapi_handlers::{import_openapi_handler, redirect_gateway_import_handler},
     platform_service_handlers::{
         create_service_handler, delete_service_handler, get_service_handler, list_services_handler,
         update_service_handler,
@@ -187,7 +186,12 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .merge(
             Router::new()
                 .route("/api/v1/platform/apis", post(create_api_definition_handler))
-                .route_layer(scope_layer(vec!["apis:write", "route-configs:write", "listeners:write", "clusters:write"])),
+                .route_layer(scope_layer(vec![
+                    "apis:write",
+                    "route-configs:write",
+                    "listeners:write",
+                    "clusters:write",
+                ])),
         )
         .merge(
             Router::new()
@@ -197,12 +201,22 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .merge(
             Router::new()
                 .route("/api/v1/platform/apis/{id}", put(update_api_definition_handler))
-                .route_layer(scope_layer(vec!["apis:write", "route-configs:write", "listeners:write", "clusters:write"])),
+                .route_layer(scope_layer(vec![
+                    "apis:write",
+                    "route-configs:write",
+                    "listeners:write",
+                    "clusters:write",
+                ])),
         )
         .merge(
             Router::new()
                 .route("/api/v1/platform/apis/{id}", delete(delete_api_definition_handler))
-                .route_layer(scope_layer(vec!["apis:write", "route-configs:write", "listeners:write", "clusters:write"])),
+                .route_layer(scope_layer(vec![
+                    "apis:write",
+                    "route-configs:write",
+                    "listeners:write",
+                    "clusters:write",
+                ])),
         )
         // Platform API OpenAPI import endpoint
         .merge(

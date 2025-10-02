@@ -4,35 +4,42 @@ use serde_json::{json, Value};
 
 use crate::{
     api::handlers::ClusterResponse,
-    api::platform_service_handlers::{ServiceDefinition, ServiceEndpoint, ServiceResponse},
     api::platform_api_definitions::{ApiDefinitionResponse, UpstreamConfig, UpstreamEndpoint},
+    api::platform_service_handlers::{ServiceDefinition, ServiceEndpoint, ServiceResponse},
     xds::{ClusterSpec, EndpointSpec},
 };
 
 /// Transform a Native API cluster to a Platform API service
 pub fn cluster_to_service(cluster: &ClusterSpec) -> ServiceResponse {
-    let endpoints: Vec<ServiceEndpoint> = cluster.endpoints.iter().map(|ep| {
-        // Parse host:port format
-        let (host, port) = if let Some(colon_pos) = ep.host.rfind(':') {
-            let host_part = &ep.host[..colon_pos];
-            let port_part = ep.host[colon_pos + 1..].parse().unwrap_or(80);
-            (host_part.to_string(), port_part)
-        } else {
-            (ep.host.clone(), 80)
-        };
+    let endpoints: Vec<ServiceEndpoint> = cluster
+        .endpoints
+        .iter()
+        .map(|ep| {
+            // Parse host:port format
+            let (host, port) = if let Some(colon_pos) = ep.host.rfind(':') {
+                let host_part = &ep.host[..colon_pos];
+                let port_part = ep.host[colon_pos + 1..].parse().unwrap_or(80);
+                (host_part.to_string(), port_part)
+            } else {
+                (ep.host.clone(), 80)
+            };
 
-        ServiceEndpoint {
-            host,
-            port,
-            weight: 100, // Default weight if not specified
-        }
-    }).collect();
+            ServiceEndpoint {
+                host,
+                port,
+                weight: 100, // Default weight if not specified
+            }
+        })
+        .collect();
 
     ServiceResponse {
         name: cluster.service_name.clone().unwrap_or_else(|| cluster.name.clone()),
         description: Some(format!("Native cluster: {}", cluster.name)),
         endpoints,
-        load_balancing_strategy: cluster.lb_policy.clone().unwrap_or_else(|| "ROUND_ROBIN".to_string()),
+        load_balancing_strategy: cluster
+            .lb_policy
+            .clone()
+            .unwrap_or_else(|| "ROUND_ROBIN".to_string()),
         health_check: cluster.health_checks.first().map(|hc| {
             crate::api::platform_service_handlers::ServiceHealthCheck {
                 r#type: hc.r#type.clone().unwrap_or_else(|| "http".to_string()),
@@ -74,42 +81,51 @@ pub fn cluster_to_service(cluster: &ClusterSpec) -> ServiceResponse {
 }
 
 /// Transform a Platform API service to a Native API cluster response
-pub fn service_to_cluster_response(service: &ServiceDefinition, cluster_name: &str) -> ClusterResponse {
+pub fn service_to_cluster_response(
+    service: &ServiceDefinition,
+    cluster_name: &str,
+) -> ClusterResponse {
     ClusterResponse {
         name: cluster_name.to_string(),
         service_name: Some(service.name.clone()),
-        endpoints: service.endpoints.iter().map(|ep| EndpointSpec {
-            host: format!("{}:{}", ep.host, ep.port),
-        }).collect(),
+        endpoints: service
+            .endpoints
+            .iter()
+            .map(|ep| EndpointSpec { host: format!("{}:{}", ep.host, ep.port) })
+            .collect(),
         connect_timeout_seconds: Some(5), // Default
-        use_tls: Some(false), // Default, could be derived from port
+        use_tls: Some(false),             // Default, could be derived from port
         tls_server_name: None,
         dns_lookup_family: None,
-        lb_policy: Some(service.load_balancing_strategy.clone().unwrap_or_else(|| "ROUND_ROBIN".to_string())),
-        health_checks: service.health_check.as_ref().map(|hc| vec![
-            crate::xds::HealthCheckSpec {
-                r#type: Some(hc.r#type.clone()),
-                path: hc.path.clone(),
-                host: None,
-                method: None,
-                interval_seconds: Some(hc.interval_seconds as u64),
-                timeout_seconds: Some(hc.timeout_seconds as u64),
-                healthy_threshold: Some(hc.healthy_threshold as u64),
-                unhealthy_threshold: Some(hc.unhealthy_threshold as u64),
-                expected_statuses: None,
-            }
-        ]).unwrap_or_default(),
+        lb_policy: Some(
+            service.load_balancing_strategy.clone().unwrap_or_else(|| "ROUND_ROBIN".to_string()),
+        ),
+        health_checks: service
+            .health_check
+            .as_ref()
+            .map(|hc| {
+                vec![crate::xds::HealthCheckSpec {
+                    r#type: Some(hc.r#type.clone()),
+                    path: hc.path.clone(),
+                    host: None,
+                    method: None,
+                    interval_seconds: Some(hc.interval_seconds as u64),
+                    timeout_seconds: Some(hc.timeout_seconds as u64),
+                    healthy_threshold: Some(hc.healthy_threshold as u64),
+                    unhealthy_threshold: Some(hc.unhealthy_threshold as u64),
+                    expected_statuses: None,
+                }]
+            })
+            .unwrap_or_default(),
         circuit_breakers: service.circuit_breaker.as_ref().map(|cb| {
             crate::xds::CircuitBreakersSpec {
-                thresholds: vec![
-                    crate::xds::CircuitBreakerThresholdsSpec {
-                        priority: Some("DEFAULT".to_string()),
-                        max_connections: cb.max_connections,
-                        max_pending_requests: cb.max_pending_requests,
-                        max_requests: cb.max_requests,
-                        max_retries: cb.max_retries,
-                    }
-                ],
+                thresholds: vec![crate::xds::CircuitBreakerThresholdsSpec {
+                    priority: Some("DEFAULT".to_string()),
+                    max_connections: cb.max_connections,
+                    max_pending_requests: cb.max_pending_requests,
+                    max_requests: cb.max_requests,
+                    max_retries: cb.max_retries,
+                }],
             }
         }),
         outlier_detection: service.outlier_detection.as_ref().map(|od| {
@@ -134,7 +150,8 @@ pub fn service_to_cluster_response(service: &ServiceDefinition, cluster_name: &s
 /// Transform route configurations to simplified API definition view
 pub fn routes_to_api_summary(route_name: &str, route_spec: &Value) -> Value {
     // Extract virtual hosts and routes
-    let virtual_hosts = route_spec.get("virtual_hosts")
+    let virtual_hosts = route_spec
+        .get("virtual_hosts")
         .and_then(|vh| vh.as_array())
         .map(|vhs| vhs.to_vec())
         .unwrap_or_default();
@@ -191,9 +208,7 @@ pub fn is_platform_api_routes(route_name: &str) -> bool {
 
 /// Transform multiple clusters to service list with filtering
 pub fn clusters_to_services(clusters: Vec<ClusterSpec>) -> Vec<ServiceResponse> {
-    clusters.into_iter()
-        .map(|cluster| cluster_to_service(&cluster))
-        .collect()
+    clusters.into_iter().map(|cluster| cluster_to_service(&cluster)).collect()
 }
 
 /// Create metadata for cross-API tracking

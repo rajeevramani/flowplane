@@ -42,14 +42,8 @@ async fn test_platform_service_visible_in_native_clusters() {
     assert_eq!(create_response.status(), StatusCode::CREATED, "Service should be created");
 
     // Query via Native API to verify visibility
-    let list_response = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/clusters",
-        Some(&token.token),
-        None,
-    )
-    .await;
+    let list_response =
+        send_request(&app, Method::GET, "/api/v1/clusters", Some(&token.token), None).await;
 
     assert_eq!(list_response.status(), StatusCode::OK);
     let clusters: Vec<serde_json::Value> = read_json(list_response).await;
@@ -96,14 +90,9 @@ async fn test_native_cluster_visible_in_platform_services() {
     assert_eq!(create_response.status(), StatusCode::CREATED, "Cluster should be created");
 
     // Query via Platform API to verify visibility
-    let list_response = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/platform/services",
-        Some(&token.token),
-        None,
-    )
-    .await;
+    let list_response =
+        send_request(&app, Method::GET, "/api/v1/platform/services", Some(&token.token), None)
+            .await;
 
     assert_eq!(list_response.status(), StatusCode::OK);
     let services: Vec<serde_json::Value> = read_json(list_response).await;
@@ -122,16 +111,12 @@ async fn test_native_cluster_visible_in_platform_services() {
 #[tokio::test]
 async fn test_platform_api_definition_creates_native_resources() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token(
-        "admin",
-        &[
-            "apis:write",
-            "route-configs:read",
-            "clusters:read",
-            "listeners:read"
-        ],
-    )
-    .await;
+    let token = app
+        .issue_token(
+            "admin",
+            &["apis:write", "route-configs:read", "clusters:read", "listeners:read"],
+        )
+        .await;
 
     // Create an API definition via Platform API
     let api_payload = json!({
@@ -215,11 +200,7 @@ async fn test_platform_api_definition_creates_native_resources() {
 #[tokio::test]
 async fn test_native_route_config_visible_in_platform_apis() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token(
-        "admin",
-        &["route-configs:write", "apis:read"],
-    )
-    .await;
+    let token = app.issue_token("admin", &["route-configs:write", "apis:read"]).await;
 
     // Create a route config via Native API
     let route_payload = json!({
@@ -260,14 +241,8 @@ async fn test_native_route_config_visible_in_platform_apis() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
 
     // Query Platform APIs to verify visibility
-    let list_response = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/platform/apis",
-        Some(&token.token),
-        None,
-    )
-    .await;
+    let list_response =
+        send_request(&app, Method::GET, "/api/v1/platform/apis", Some(&token.token), None).await;
 
     assert_eq!(list_response.status(), StatusCode::OK);
     let apis: Vec<serde_json::Value> = read_json(list_response).await;
@@ -283,11 +258,12 @@ async fn test_native_route_config_visible_in_platform_apis() {
 #[tokio::test]
 async fn test_resource_updates_reflected_across_apis() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token(
-        "admin",
-        &["services:write", "services:read", "clusters:write", "clusters:read"],
-    )
-    .await;
+    let token = app
+        .issue_token(
+            "admin",
+            &["services:write", "services:read", "clusters:write", "clusters:read"],
+        )
+        .await;
 
     // Create via Platform API
     let service_payload = json!({
@@ -370,11 +346,8 @@ async fn test_resource_updates_reflected_across_apis() {
 #[tokio::test]
 async fn test_deletion_cascades_across_apis() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token(
-        "admin",
-        &["services:write", "clusters:read", "clusters:write"],
-    )
-    .await;
+    let token =
+        app.issue_token("admin", &["services:write", "clusters:read", "clusters:write"]).await;
 
     // Create via Platform API
     let service_payload = json!({
@@ -433,11 +406,7 @@ async fn test_deletion_cascades_across_apis() {
 #[tokio::test]
 async fn test_query_filters_work_across_apis() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token(
-        "admin",
-        &["apis:write", "apis:read", "route-configs:read"],
-    )
-    .await;
+    let token = app.issue_token("admin", &["apis:write", "apis:read", "route-configs:read"]).await;
 
     // Create multiple API definitions
     for i in 1..=3 {
