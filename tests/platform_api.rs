@@ -1,5 +1,7 @@
 #[path = "platform_api/support.rs"]
 mod support;
+#[path = "platform_api/test_api_definitions.rs"]
+mod test_api_definitions;
 #[path = "platform_api/test_append_route.rs"]
 mod test_append_route;
 #[path = "platform_api/test_bootstrap.rs"]
@@ -14,3 +16,5 @@ mod test_isolation;
 mod test_lifecycle;
 #[path = "platform_api/test_rbac_enforcement.rs"]
 mod test_rbac_enforcement;
+#[path = "platform_api/test_services.rs"]
+mod test_services;

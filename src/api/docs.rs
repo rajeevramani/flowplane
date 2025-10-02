@@ -42,11 +42,16 @@ use crate::xds::{
         crate::api::listener_handlers::update_listener_handler,
         crate::api::listener_handlers::delete_listener_handler,
         crate::api::gateway_handlers::create_gateway_from_openapi_handler,
-        crate::api::platform_api_handlers::create_api_definition_handler,
-        crate::api::platform_api_handlers::append_route_handler,
-        crate::api::platform_api_handlers::list_api_definitions_handler,
-        crate::api::platform_api_handlers::get_api_definition_handler
-        ,crate::api::platform_api_handlers::get_bootstrap_handler
+        crate::api::platform_api_definitions::create_api_definition_handler,
+        crate::api::platform_api_definitions::list_api_definitions_handler,
+        crate::api::platform_api_definitions::get_api_definition_by_id_handler,
+        crate::api::platform_api_definitions::update_api_definition_handler,
+        crate::api::platform_api_definitions::delete_api_definition_handler,
+        crate::api::platform_service_handlers::create_service_handler,
+        crate::api::platform_service_handlers::list_services_handler,
+        crate::api::platform_service_handlers::get_service_handler,
+        crate::api::platform_service_handlers::update_service_handler,
+        crate::api::platform_service_handlers::delete_service_handler
     ),
     components(
         schemas(
@@ -81,22 +86,32 @@ use crate::xds::{
             crate::api::gateway_handlers::GatewayQuery,
             crate::api::gateway_handlers::OpenApiSpecBody,
             crate::openapi::GatewaySummary,
-            crate::validation::requests::api_definition::CreateApiDefinitionBody,
-            crate::validation::requests::api_definition::AppendRouteBody,
-            crate::validation::requests::api_definition::RouteBody,
-            crate::validation::requests::api_definition::RouteMatchBody,
-            crate::validation::requests::api_definition::RouteClusterBody,
-            crate::validation::requests::api_definition::RouteRewriteBody,
-            crate::validation::requests::api_definition::IsolationListenerBody,
-            crate::api::platform_api_handlers::CreateApiDefinitionResponse,
-            crate::api::platform_api_handlers::AppendRouteResponse,
-            crate::api::platform_api_handlers::ApiDefinitionSummary,
-            crate::api::platform_api_handlers::ListDefinitionsQuery
-            ,crate::api::platform_api_handlers::BootstrapQuery
+            crate::api::platform_api_definitions::ApiDefinition,
+            crate::api::platform_api_definitions::UpstreamConfig,
+            crate::api::platform_api_definitions::UpstreamEndpoint,
+            crate::api::platform_api_definitions::ApiRoute,
+            crate::api::platform_api_definitions::ApiPolicies,
+            crate::api::platform_api_definitions::RateLimitPolicy,
+            crate::api::platform_api_definitions::AuthenticationPolicy,
+            crate::api::platform_api_definitions::AuthorizationPolicy,
+            crate::api::platform_api_definitions::CorsPolicy,
+            crate::api::platform_api_definitions::CircuitBreakerPolicy,
+            crate::api::platform_api_definitions::RetryPolicy,
+            crate::api::platform_api_definitions::TimeoutPolicy,
+            crate::api::platform_api_definitions::ApiDefinitionResponse,
+            crate::api::platform_api_definitions::ListApisQuery,
+            crate::api::platform_service_handlers::ServiceDefinition,
+            crate::api::platform_service_handlers::ServiceEndpoint,
+            crate::api::platform_service_handlers::ServiceHealthCheck,
+            crate::api::platform_service_handlers::ServiceCircuitBreaker,
+            crate::api::platform_service_handlers::ServiceOutlierDetection,
+            crate::api::platform_service_handlers::ServiceResponse,
+            crate::api::platform_service_handlers::LoadBalancingStrategy
         )
     ),
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
+        (name = "route-configs", description = "Operations for managing Envoy route configurations"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications"),
         (name = "tokens", description = "Personal access token management APIs"),
@@ -154,8 +169,8 @@ mod tests {
         // Ensure clusters endpoint is documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters"));
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/routes"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/routes/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs/{name}"));
         assert!(openapi.paths.paths.contains_key("/api/v1/tokens"));
     }
 }
