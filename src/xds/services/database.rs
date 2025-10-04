@@ -73,7 +73,7 @@ impl DatabaseAggregatedDiscoveryService {
 
     /// Create cluster resources from database
     async fn create_cluster_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
-        let mut built = if let Some(repo) = &self.state.cluster_repository {
+        let built = if let Some(repo) = &self.state.cluster_repository {
             match repo.list(Some(100), None).await {
                 Ok(cluster_data_list) => {
                     if cluster_data_list.is_empty() {
@@ -103,17 +103,9 @@ impl DatabaseAggregatedDiscoveryService {
             self.create_fallback_cluster_resources()?
         };
 
-        if let Some(api_repo) = &self.state.api_definition_repository {
-            let definitions = api_repo.list_definitions().await?;
-            let routes = api_repo.list_all_routes().await?;
-            let platform_resources =
-                resources::resources_from_api_definitions(definitions, routes)?;
-            built.extend(
-                platform_resources
-                    .into_iter()
-                    .filter(|res| res.type_url() == resources::CLUSTER_TYPE_URL),
-            );
-        }
+        // NOTE: Platform API clusters are NOT added here to avoid duplicates
+        // They are already stored in the database by materialize_native_resources()
+        // and loaded above via cluster_repository.list()
 
         Ok(built)
     }
@@ -185,7 +177,9 @@ impl DatabaseAggregatedDiscoveryService {
                         .collect();
 
                     let platform_resources =
-                        resources::resources_from_api_definitions(definitions, platform_routes)?;
+                        resources::resources_from_api_definitions(definitions.clone(), platform_routes)?;
+
+                    let mut isolated_route_configs = Vec::new();
 
                     for res in platform_resources.into_iter() {
                         if res.type_url() != resources::ROUTE_TYPE_URL {
@@ -198,14 +192,35 @@ impl DatabaseAggregatedDiscoveryService {
                                     e
                                 ))
                             })?;
-                        // Retain only vhosts whose domains intersect with allowed (non-isolated) domains
-                        rc.virtual_hosts
-                            .retain(|vh| vh.domains.iter().any(|d| allowed_domains.contains(d)));
-                        if rc.virtual_hosts.is_empty() {
-                            continue;
+
+                        // Check if this route config belongs to an isolated listener
+                        let is_isolated = definitions.iter().any(|d|
+                            d.listener_isolation &&
+                            rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
+                        );
+
+                        if is_isolated {
+                            // Keep isolated route configs separate - they'll be added to built list
+                            let isolated_any = envoy_types::pb::google::protobuf::Any {
+                                type_url: resources::ROUTE_TYPE_URL.to_string(),
+                                value: rc.encode_to_vec(),
+                            };
+                            isolated_route_configs.push(resources::BuiltResource {
+                                name: rc.name.clone(),
+                                resource: isolated_any,
+                            });
+                        } else {
+                            // Merge non-isolated routes into default gateway
+                            rc.virtual_hosts
+                                .retain(|vh| vh.domains.iter().any(|d| allowed_domains.contains(d)));
+                            if !rc.virtual_hosts.is_empty() {
+                                default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
+                            }
                         }
-                        default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
                     }
+
+                    // Add isolated route configs to the built list
+                    built.extend(isolated_route_configs);
 
                     // Re-encode merged default gateway route config
                     let merged_any = envoy_types::pb::google::protobuf::Any {
@@ -245,40 +260,39 @@ impl DatabaseAggregatedDiscoveryService {
                         );
                         self.create_fallback_listener_resources()?
                     } else {
-                        let filtered: Vec<crate::storage::repository_simple::ListenerData> =
-                            match scope {
-                                Scope::All => listener_data_list,
-                                Scope::Team { team, include_default } => {
-                                    let mut keep = Vec::new();
-                                    for entry in listener_data_list.into_iter() {
-                                        if entry.name
-                                            == crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER
-                                            && *include_default
+                        let filtered: Vec<crate::storage::repository::ListenerData> = match scope {
+                            Scope::All => listener_data_list,
+                            Scope::Team { team, include_default } => {
+                                let mut keep = Vec::new();
+                                for entry in listener_data_list.into_iter() {
+                                    if entry.name
+                                        == crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER
+                                        && *include_default
+                                    {
+                                        keep.push(entry);
+                                        continue;
+                                    }
+                                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(
+                                        &entry.configuration,
+                                    ) {
+                                        if let Some(tag_team) = value
+                                            .get("flowplaneGateway")
+                                            .and_then(|v| v.get("team"))
+                                            .and_then(|v| v.as_str())
                                         {
-                                            keep.push(entry);
-                                            continue;
-                                        }
-                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(
-                                            &entry.configuration,
-                                        ) {
-                                            if let Some(tag_team) = value
-                                                .get("flowplaneGateway")
-                                                .and_then(|v| v.get("team"))
-                                                .and_then(|v| v.as_str())
-                                            {
-                                                if tag_team == team {
-                                                    keep.push(entry);
-                                                }
+                                            if tag_team == team {
+                                                keep.push(entry);
                                             }
                                         }
                                     }
-                                    keep
                                 }
-                                Scope::Allowlist { names } => listener_data_list
-                                    .into_iter()
-                                    .filter(|e| names.contains(&e.name))
-                                    .collect(),
-                            };
+                                keep
+                            }
+                            Scope::Allowlist { names } => listener_data_list
+                                .into_iter()
+                                .filter(|e| names.contains(&e.name))
+                                .collect(),
+                        };
                         info!(
                             phase = "ads_response",
                             listener_count = filtered.len(),

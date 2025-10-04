@@ -21,6 +21,9 @@ pub struct CreateApiDefinitionBody {
     #[serde(default)]
     pub listener: Option<IsolationListenerBody>,
     #[serde(default)]
+    #[schema(example = json!(["listener-1", "listener-2"]))]
+    pub target_listeners: Option<Vec<String>>,
+    #[serde(default)]
     pub tls: Option<Value>,
     pub routes: Vec<RouteBody>,
 }
@@ -116,13 +119,35 @@ impl CreateApiDefinitionBody {
             listener.validate()?;
         }
 
+        // target_listeners validation
+        if let Some(ref target_listeners) = self.target_listeners {
+            // Mutually exclusive with listener_isolation
+            if self.listener_isolation {
+                return Err(Error::validation(
+                    "targetListeners cannot be specified when listenerIsolation is true"
+                ));
+            }
+
+            // Cannot be empty array
+            if target_listeners.is_empty() {
+                return Err(Error::validation(
+                    "targetListeners must contain at least one listener name, or be omitted"
+                ));
+            }
+
+            // Validate each listener name
+            for listener_name in target_listeners {
+                ensure_non_empty(listener_name, "targetListeners entry", 100)?;
+            }
+        }
+
         Ok(())
     }
 
     pub fn into_spec(self) -> Result<ApiDefinitionSpec, Error> {
         self.validate_payload()?;
 
-        let CreateApiDefinitionBody { team, domain, listener_isolation, listener, tls, routes } =
+        let CreateApiDefinitionBody { team, domain, listener_isolation, listener, target_listeners, tls, routes } =
             self;
 
         let mut specs = Vec::with_capacity(routes.len());
@@ -137,6 +162,7 @@ impl CreateApiDefinitionBody {
             domain,
             listener_isolation,
             isolation_listener: listener_spec,
+            target_listeners,
             tls_config: tls,
             routes: specs,
         })
@@ -366,6 +392,7 @@ mod tests {
             domain: "payments.flowplane.dev".to_string(),
             listener_isolation: false,
             listener: None,
+            target_listeners: None,
             tls: None,
             routes: vec![RouteBody {
                 matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
@@ -420,5 +447,116 @@ mod tests {
         assert_eq!(spec.match_value, "/v1");
         assert_eq!(spec.route_order, Some(0));
         assert_eq!(spec.deployment_note.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn target_listeners_rejects_isolation_true() {
+        let body = CreateApiDefinitionBody {
+            team: "payments".to_string(),
+            domain: "payments.flowplane.dev".to_string(),
+            listener_isolation: true,
+            listener: Some(IsolationListenerBody {
+                name: Some("test-listener".to_string()),
+                bind_address: "0.0.0.0".to_string(),
+                port: 8080,
+                protocol: Some("HTTP".to_string()),
+            }),
+            target_listeners: Some(vec!["listener-1".to_string()]),
+            tls: None,
+            routes: vec![RouteBody {
+                matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
+                cluster: RouteClusterBody {
+                    name: "backend".to_string(),
+                    endpoint: "backend:8080".to_string(),
+                },
+                timeout_seconds: None,
+                rewrite: None,
+                filters: None,
+            }],
+        };
+
+        let result = body.into_spec();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("targetListeners cannot be specified"));
+    }
+
+    #[test]
+    fn target_listeners_rejects_empty_array() {
+        let body = CreateApiDefinitionBody {
+            team: "payments".to_string(),
+            domain: "payments.flowplane.dev".to_string(),
+            listener_isolation: false,
+            listener: None,
+            target_listeners: Some(vec![]),
+            tls: None,
+            routes: vec![RouteBody {
+                matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
+                cluster: RouteClusterBody {
+                    name: "backend".to_string(),
+                    endpoint: "backend:8080".to_string(),
+                },
+                timeout_seconds: None,
+                rewrite: None,
+                filters: None,
+            }],
+        };
+
+        let result = body.into_spec();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one listener name"));
+    }
+
+    #[test]
+    fn target_listeners_accepts_valid_names() {
+        let body = CreateApiDefinitionBody {
+            team: "payments".to_string(),
+            domain: "payments.flowplane.dev".to_string(),
+            listener_isolation: false,
+            listener: None,
+            target_listeners: Some(vec!["listener-1".to_string(), "listener-2".to_string()]),
+            tls: None,
+            routes: vec![RouteBody {
+                matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
+                cluster: RouteClusterBody {
+                    name: "backend".to_string(),
+                    endpoint: "backend:8080".to_string(),
+                },
+                timeout_seconds: None,
+                rewrite: None,
+                filters: None,
+            }],
+        };
+
+        let result = body.into_spec();
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.target_listeners, Some(vec!["listener-1".to_string(), "listener-2".to_string()]));
+    }
+
+    #[test]
+    fn target_listeners_accepts_none() {
+        let body = CreateApiDefinitionBody {
+            team: "payments".to_string(),
+            domain: "payments.flowplane.dev".to_string(),
+            listener_isolation: false,
+            listener: None,
+            target_listeners: None,
+            tls: None,
+            routes: vec![RouteBody {
+                matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
+                cluster: RouteClusterBody {
+                    name: "backend".to_string(),
+                    endpoint: "backend:8080".to_string(),
+                },
+                timeout_seconds: None,
+                rewrite: None,
+                filters: None,
+            }],
+        };
+
+        let result = body.into_spec();
+        assert!(result.is_ok());
+        let spec = result.unwrap();
+        assert_eq!(spec.target_listeners, None);
     }
 }
