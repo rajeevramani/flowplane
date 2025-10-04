@@ -6,14 +6,26 @@
 //! submodules and register their configuration structs here.
 
 pub mod cors;
+pub mod credential_injector;
+pub mod custom_response;
+pub mod header_mutation;
+pub mod health_check;
 pub mod jwt_auth;
 pub mod local_rate_limit;
+pub mod rate_limit;
+pub mod rate_limit_quota;
 
 use crate::xds::filters::http::cors::{
     CorsConfig as CorsFilterConfig, CorsPerRouteConfig, ROUTE_CORS_POLICY_TYPE_URL,
 };
+use crate::xds::filters::http::credential_injector::CredentialInjectorConfig;
+use crate::xds::filters::http::custom_response::CustomResponseConfig;
+use crate::xds::filters::http::header_mutation::{HeaderMutationConfig, HeaderMutationPerRouteConfig};
+use crate::xds::filters::http::health_check::HealthCheckConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
+use crate::xds::filters::http::rate_limit::{RateLimitConfig, RateLimitPerRouteConfig};
+use crate::xds::filters::http::rate_limit_quota::{RateLimitQuotaConfig, RateLimitQuotaOverrideConfig};
 use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
@@ -21,6 +33,9 @@ use envoy_types::pb::envoy::extensions::filters::network::http_connection_manage
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
 use envoy_types::pb::envoy::config::route::v3::CorsPolicy as RouteCorsPolicyProto;
+use envoy_types::pb::envoy::extensions::filters::http::header_mutation::v3::HeaderMutationPerRoute as HeaderMutationPerRouteProto;
+use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3::RateLimitPerRoute as RateLimitPerRouteProto;
+use envoy_types::pb::envoy::extensions::filters::http::rate_limit_quota::v3::RateLimitQuotaOverride;
 use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -32,6 +47,12 @@ const LOCAL_RATE_LIMIT_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit";
 const JWT_AUTHN_PER_ROUTE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig";
+const HEADER_MUTATION_PER_ROUTE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutationPerRoute";
+const RATE_LIMIT_PER_ROUTE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute";
+const RATE_LIMIT_QUOTA_OVERRIDE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.extensions.filters.http.rate_limit_quota.v3.RateLimitQuotaOverride";
 
 /// REST representation of an HTTP filter entry
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -61,6 +82,18 @@ pub enum HttpFilterKind {
     LocalRateLimit(local_rate_limit::LocalRateLimitConfig),
     /// Envoy JWT authentication filter
     JwtAuthn(jwt_auth::JwtAuthenticationConfig),
+    /// Envoy distributed Rate Limit filter
+    RateLimit(RateLimitConfig),
+    /// Envoy Rate Limit Quota filter
+    RateLimitQuota(RateLimitQuotaConfig),
+    /// Envoy Header Mutation filter
+    HeaderMutation(HeaderMutationConfig),
+    /// Envoy Health Check filter
+    HealthCheck(HealthCheckConfig),
+    /// Envoy Credential Injector filter
+    CredentialInjector(CredentialInjectorConfig),
+    /// Envoy Custom Response filter
+    CustomResponse(CustomResponseConfig),
     /// Arbitrary filter expressed as a typed config payload
     Custom {
         #[serde(flatten)]
@@ -79,6 +112,12 @@ impl HttpFilterKind {
             Self::Cors(_) => "envoy.filters.http.cors",
             Self::LocalRateLimit(_) => "envoy.filters.http.local_ratelimit",
             Self::JwtAuthn(_) => "envoy.filters.http.jwt_authn",
+            Self::RateLimit(_) => "envoy.filters.http.ratelimit",
+            Self::RateLimitQuota(_) => "envoy.filters.http.rate_limit_quota",
+            Self::HeaderMutation(_) => "envoy.filters.http.header_mutation",
+            Self::HealthCheck(_) => "envoy.filters.http.health_check",
+            Self::CredentialInjector(_) => "envoy.filters.http.credential_injector",
+            Self::CustomResponse(_) => "envoy.filters.http.custom_response",
             Self::Custom { .. } => "custom.http.filter",
         }
     }
@@ -92,6 +131,12 @@ impl HttpFilterKind {
             Self::Cors(cfg) => cfg.to_any().map(Some),
             Self::LocalRateLimit(cfg) => cfg.to_any().map(Some),
             Self::JwtAuthn(cfg) => cfg.to_any().map(Some),
+            Self::RateLimit(cfg) => cfg.to_any().map(Some),
+            Self::RateLimitQuota(cfg) => cfg.to_any().map(Some),
+            Self::HeaderMutation(cfg) => cfg.to_any().map(Some),
+            Self::HealthCheck(cfg) => cfg.to_any().map(Some),
+            Self::CredentialInjector(cfg) => cfg.to_any().map(Some),
+            Self::CustomResponse(cfg) => cfg.to_any().map(Some),
             Self::Custom { config } => Ok(Some(config.to_any())),
         }
     }
@@ -107,6 +152,12 @@ pub enum HttpScopedConfig {
     JwtAuthn(JwtPerRouteConfig),
     /// CORS per-route policy overrides
     Cors(CorsPerRouteConfig),
+    /// Header mutation per-route overrides
+    HeaderMutation(HeaderMutationPerRouteConfig),
+    /// Rate limit per-route overrides
+    RateLimit(RateLimitPerRouteConfig),
+    /// Rate limit quota per-route overrides
+    RateLimitQuota(RateLimitQuotaOverrideConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -122,6 +173,9 @@ impl HttpScopedConfig {
                 let proto = cfg.to_proto()?;
                 Ok(any_from_message(JWT_AUTHN_PER_ROUTE_TYPE_URL, &proto))
             }
+            Self::HeaderMutation(cfg) => cfg.to_any(),
+            Self::RateLimit(cfg) => cfg.to_any(),
+            Self::RateLimitQuota(cfg) => cfg.to_any(),
         }
     }
 
@@ -149,6 +203,40 @@ impl HttpScopedConfig {
             })?;
             let cfg = JwtPerRouteConfig::from_proto(&proto)?;
             return Ok(HttpScopedConfig::JwtAuthn(cfg));
+        }
+
+        if any.type_url == HEADER_MUTATION_PER_ROUTE_TYPE_URL {
+            let proto =
+                HeaderMutationPerRouteProto::decode(any.value.as_slice()).map_err(|err| {
+                    crate::Error::config(format!(
+                        "Failed to decode header mutation per-route config: {}",
+                        err
+                    ))
+                })?;
+            let cfg = HeaderMutationPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::HeaderMutation(cfg));
+        }
+
+        if any.type_url == RATE_LIMIT_PER_ROUTE_TYPE_URL {
+            let proto = RateLimitPerRouteProto::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!(
+                    "Failed to decode rate limit per-route config: {}",
+                    err
+                ))
+            })?;
+            let cfg = RateLimitPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::RateLimit(cfg));
+        }
+
+        if any.type_url == RATE_LIMIT_QUOTA_OVERRIDE_TYPE_URL {
+            let proto = RateLimitQuotaOverride::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!(
+                    "Failed to decode rate limit quota override config: {}",
+                    err
+                ))
+            })?;
+            let cfg = RateLimitQuotaOverrideConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::RateLimitQuota(cfg));
         }
 
         Ok(HttpScopedConfig::Typed(TypedConfig {
@@ -327,6 +415,75 @@ mod tests {
         match restored {
             HttpScopedConfig::Cors(config) => {
                 assert_eq!(config.policy.allow_methods, vec!["GET"]);
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn header_mutation_scoped_round_trip() {
+        use crate::xds::filters::http::header_mutation::HeaderMutationEntry;
+
+        let scoped = HttpScopedConfig::HeaderMutation(HeaderMutationPerRouteConfig {
+            request_headers_to_add: vec![HeaderMutationEntry {
+                key: "x-route-custom".into(),
+                value: "custom-val".into(),
+                append: true,
+            }],
+            request_headers_to_remove: vec!["x-remove".into()],
+            response_headers_to_add: Vec::new(),
+            response_headers_to_remove: vec!["server".into()],
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, HEADER_MUTATION_PER_ROUTE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::HeaderMutation(config) => {
+                assert_eq!(config.request_headers_to_add.len(), 1);
+                assert_eq!(config.request_headers_to_add[0].key, "x-route-custom");
+                assert!(config.request_headers_to_add[0].append);
+                assert_eq!(config.request_headers_to_remove, vec!["x-remove"]);
+                assert_eq!(config.response_headers_to_remove, vec!["server"]);
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rate_limit_scoped_round_trip() {
+        let scoped = HttpScopedConfig::RateLimit(RateLimitPerRouteConfig {
+            domain: Some("route-ratelimit-domain".into()),
+            include_vh_rate_limits: false,
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, RATE_LIMIT_PER_ROUTE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::RateLimit(config) => {
+                assert_eq!(config.domain, Some("route-ratelimit-domain".into()));
+                assert!(!config.include_vh_rate_limits);
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rate_limit_quota_scoped_round_trip() {
+        let scoped = HttpScopedConfig::RateLimitQuota(RateLimitQuotaOverrideConfig {
+            domain: "quota-override-domain".into(),
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, RATE_LIMIT_QUOTA_OVERRIDE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::RateLimitQuota(config) => {
+                assert_eq!(config.domain, "quota-override-domain");
             }
             other => panic!("unexpected scoped config: {:?}", other),
         }

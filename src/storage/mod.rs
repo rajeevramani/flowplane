@@ -5,7 +5,7 @@
 
 pub mod migrations;
 pub mod pool;
-pub mod repository_simple;
+pub mod repository;
 
 pub use crate::config::DatabaseConfig;
 
@@ -14,7 +14,7 @@ pub use migrations::{
     validate_migrations, MigrationInfo,
 };
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
-pub use repository_simple::{
+pub use repository::{
     ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, AuditEvent, AuditLogRepository,
     ClusterData, ClusterRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
     CreateClusterRequest, CreateListenerRequest,

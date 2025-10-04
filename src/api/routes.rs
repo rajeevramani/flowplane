@@ -10,31 +10,21 @@ use crate::auth::{
     auth_service::AuthService,
     middleware::{authenticate, ensure_scopes, ScopeState},
 };
-use crate::storage::repository_simple::AuditLogRepository;
+use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
 use super::{
-    auth_handlers::{
-        create_token_handler, get_token_handler, list_tokens_handler, revoke_token_handler,
-        rotate_token_handler, update_token_handler,
-    },
     docs,
-    gateway_handlers::create_gateway_from_openapi_handler,
     handlers::{
-        create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
-        update_cluster_handler,
-    },
-    listener_handlers::{
-        create_listener_handler, delete_listener_handler, get_listener_handler,
-        list_listeners_handler, update_listener_handler,
-    },
-    platform_api_handlers::{
-        append_route_handler, create_api_definition_handler, get_api_definition_handler,
-        list_api_definitions_handler,
-    },
-    route_handlers::{
-        create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
-        update_route_handler,
+        append_route_handler, create_api_definition_handler, create_cluster_handler,
+        create_gateway_from_openapi_handler, create_listener_handler, create_route_handler,
+        create_token_handler, delete_cluster_handler, delete_listener_handler,
+        delete_route_handler, get_api_definition_handler, get_bootstrap_handler,
+        get_cluster_handler, get_listener_handler, get_route_handler, get_token_handler,
+        import_openapi_handler, list_api_definitions_handler, list_clusters_handler,
+        list_listeners_handler, list_routes_handler, list_tokens_handler, revoke_token_handler,
+        rotate_token_handler, update_cluster_handler, update_listener_handler,
+        update_route_handler, update_token_handler,
     },
 };
 
@@ -142,15 +132,17 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         )
         .merge(
             Router::new()
+                .route("/api/v1/api-definitions/from-openapi", post(import_openapi_handler))
+                .route_layer(scope_layer(vec!["routes:write"])),
+        )
+        .merge(
+            Router::new()
                 .route("/api/v1/api-definitions/{id}", get(get_api_definition_handler))
                 .route_layer(scope_layer(vec!["routes:read"])),
         )
         .merge(
             Router::new()
-                .route(
-                    "/api/v1/api-definitions/{id}/bootstrap",
-                    get(super::platform_api_handlers::get_bootstrap_handler),
-                )
+                .route("/api/v1/api-definitions/{id}/bootstrap", get(get_bootstrap_handler))
                 .route_layer(scope_layer(vec!["routes:read"])),
         )
         .merge(

@@ -2,7 +2,7 @@ use flowplane::auth::auth_service::AuthService;
 use flowplane::auth::models::AuthError;
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
-use flowplane::storage::repository_simple::{AuditLogRepository, SqlxTokenRepository};
+use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;

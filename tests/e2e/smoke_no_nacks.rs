@@ -75,19 +75,11 @@ async fn smoke_no_nacks() {
             .expect("create api");
 
     // Probe routing through Envoy to ensure convergence
-    let mut ok = false;
-    for _ in 0..60 {
-        match envoy.proxy_get(&domain, &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
-        }
-    }
-    assert!(ok, "envoy did not route to echo within timeout");
+    let body = envoy
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("envoy did not route to echo within timeout");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Fetch stats and assert no NACKs or update failures
     let stats = envoy.get_stats().await.expect("stats");

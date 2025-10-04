@@ -140,17 +140,11 @@ async fn mtls_xds_matrix() {
             assert_eq!(cds_fail, 0, "expected no CDS failures for {}", case.name);
             assert_eq!(lds_fail, 0, "expected no LDS failures for {}", case.name);
             // Optional: verify routing via HTTP (default gateway listener)
-            let mut ok = false;
-            for _ in 0..40 {
-                match EnvoyHandle::proxy_get(&envoy, &domain, &route_path).await {
-                    Ok((200, body)) if body.starts_with("echo:") => {
-                        ok = true;
-                        break;
-                    }
-                    _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-                }
-            }
-            assert!(ok, "routing did not converge for {}", case.name);
+            let body = envoy
+                .wait_for_route(&domain, &route_path, 200)
+                .await
+                .unwrap_or_else(|_| panic!("routing did not converge for {}", case.name));
+            assert!(body.starts_with("echo:"), "unexpected echo response for {}", case.name);
         } else {
             // Failure expected: zero successes or >0 failures
             assert!(

@@ -22,6 +22,7 @@ struct ClusterRow {
     pub service_name: String,
     pub configuration: String,
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -36,6 +37,7 @@ struct ListenerRow {
     pub protocol: String,
     pub configuration: String,
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -50,6 +52,7 @@ pub struct ListenerData {
     pub protocol: String,
     pub configuration: String,
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -64,6 +67,7 @@ impl From<ListenerRow> for ListenerData {
             protocol: row.protocol,
             configuration: row.configuration,
             version: row.version,
+            source: row.source,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -78,6 +82,7 @@ pub struct ClusterData {
     pub service_name: String,
     pub configuration: String, // JSON serialized
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -90,6 +95,7 @@ impl From<ClusterRow> for ClusterData {
             service_name: row.service_name,
             configuration: row.configuration,
             version: row.version,
+            source: row.source,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -105,6 +111,7 @@ struct RouteRow {
     pub cluster_name: String,
     pub configuration: String,
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -118,6 +125,7 @@ pub struct RouteData {
     pub cluster_name: String,
     pub configuration: String,
     pub version: i64,
+    pub source: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -131,6 +139,7 @@ impl From<RouteRow> for RouteData {
             cluster_name: row.cluster_name,
             configuration: row.configuration,
             version: row.version,
+            source: row.source,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -147,6 +156,8 @@ struct ApiDefinitionRow {
     pub metadata: Option<String>,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
+    pub generated_listener_id: Option<String>,
+    pub target_listeners: Option<String>,
     pub version: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -163,6 +174,8 @@ pub struct ApiDefinitionData {
     pub metadata: Option<serde_json::Value>,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
+    pub generated_listener_id: Option<String>,
+    pub target_listeners: Option<Vec<String>>,
     pub version: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -179,6 +192,10 @@ impl From<ApiDefinitionRow> for ApiDefinitionData {
             metadata: row.metadata.and_then(|json| serde_json::from_str(&json).ok()),
             bootstrap_uri: row.bootstrap_uri,
             bootstrap_revision: row.bootstrap_revision,
+            generated_listener_id: row.generated_listener_id,
+            target_listeners: row
+                .target_listeners
+                .and_then(|json| serde_json::from_str(&json).ok()),
             version: row.version,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -201,6 +218,9 @@ struct ApiRouteRow {
     pub override_config: Option<String>,
     pub deployment_note: Option<String>,
     pub route_order: i64,
+    pub generated_route_id: Option<String>,
+    pub generated_cluster_id: Option<String>,
+    pub filter_config: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -221,6 +241,9 @@ pub struct ApiRouteData {
     pub override_config: Option<serde_json::Value>,
     pub deployment_note: Option<String>,
     pub route_order: i64,
+    pub generated_route_id: Option<String>,
+    pub generated_cluster_id: Option<String>,
+    pub filter_config: Option<serde_json::Value>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -242,6 +265,9 @@ impl From<ApiRouteRow> for ApiRouteData {
             override_config: row.override_config.and_then(|json| serde_json::from_str(&json).ok()),
             deployment_note: row.deployment_note,
             route_order: row.route_order,
+            generated_route_id: row.generated_route_id,
+            generated_cluster_id: row.generated_cluster_id,
+            filter_config: row.filter_config.and_then(|json| serde_json::from_str(&json).ok()),
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -254,6 +280,7 @@ pub struct CreateApiDefinitionRequest {
     pub team: String,
     pub domain: String,
     pub listener_isolation: bool,
+    pub target_listeners: Option<Vec<String>>,
     pub tls_config: Option<serde_json::Value>,
     pub metadata: Option<serde_json::Value>,
 }
@@ -323,20 +350,24 @@ impl ApiDefinitionRepository {
         let id = Uuid::new_v4().to_string();
         let tls_config = Self::serialize_optional(&request.tls_config)?;
         let metadata = Self::serialize_optional(&request.metadata)?;
+        let target_listeners = Self::serialize_optional(
+            &request.target_listeners.as_ref().map(|v| serde_json::to_value(v).unwrap())
+        )?;
         let listener_isolation: i64 = if request.listener_isolation { 1 } else { 0 };
 
         let now = chrono::Utc::now();
 
         sqlx::query::<Sqlite>(
             "INSERT INTO api_definitions (
-                id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                id, team, domain, listener_isolation, target_listeners, tls_config, metadata, bootstrap_uri,
                 bootstrap_revision, version, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(&id)
         .bind(&request.team)
         .bind(&request.domain)
         .bind(listener_isolation)
+        .bind(target_listeners)
         .bind(tls_config)
         .bind(metadata)
         .bind(Option::<String>::None)
@@ -367,11 +398,24 @@ impl ApiDefinitionRepository {
         Ok(())
     }
 
+    /// Delete an API route by ID
+    pub async fn delete_route(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM api_routes WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to delete API route '{}'", id),
+            })?;
+        Ok(())
+    }
+
     /// Fetch an API definition by identifier
     pub async fn get_definition(&self, id: &str) -> Result<ApiDefinitionData> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, version, created_at, updated_at
+                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
              FROM api_definitions WHERE id = $1",
         )
         .bind(id)
@@ -394,7 +438,7 @@ impl ApiDefinitionRepository {
     ) -> Result<Option<ApiDefinitionData>> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, version, created_at, updated_at
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions WHERE team = $1 AND domain = $2 LIMIT 1",
         )
         .bind(team)
@@ -413,7 +457,7 @@ impl ApiDefinitionRepository {
     pub async fn find_by_domain(&self, domain: &str) -> Result<Option<ApiDefinitionData>> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, version, created_at, updated_at
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions WHERE domain = $1 LIMIT 1",
         )
         .bind(domain)
@@ -487,7 +531,7 @@ impl ApiDefinitionRepository {
         let row = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
-                    override_config, deployment_note, route_order, created_at, updated_at
+                    override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes WHERE id = $1",
         )
         .bind(id)
@@ -507,7 +551,7 @@ impl ApiDefinitionRepository {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
-                    override_config, deployment_note, route_order, created_at, updated_at
+                    override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes WHERE api_definition_id = $1
              ORDER BY route_order ASC, created_at ASC",
         )
@@ -551,10 +595,66 @@ impl ApiDefinitionRepository {
         self.get_definition(&request.definition_id).await
     }
 
+    /// Update generated listener ID for an API definition
+    pub async fn update_generated_listener_id(
+        &self,
+        definition_id: &str,
+        listener_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE api_definitions
+             SET generated_listener_id = $2,
+                 updated_at = $3
+             WHERE id = $1",
+        )
+        .bind(definition_id)
+        .bind(listener_id)
+        .bind(chrono::Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!(
+                "Failed to update generated_listener_id for definition '{}'",
+                definition_id
+            ),
+        })?;
+
+        Ok(())
+    }
+
+    /// Update generated route and cluster IDs for an API route
+    pub async fn update_generated_resource_ids(
+        &self,
+        route_id: &str,
+        generated_route_id: Option<&str>,
+        generated_cluster_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE api_routes
+             SET generated_route_id = $2,
+                 generated_cluster_id = $3,
+                 updated_at = $4
+             WHERE id = $1",
+        )
+        .bind(route_id)
+        .bind(generated_route_id)
+        .bind(generated_cluster_id)
+        .bind(chrono::Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to update generated resource IDs for route '{}'", route_id),
+        })?;
+
+        Ok(())
+    }
+
     pub async fn list_definitions(&self) -> Result<Vec<ApiDefinitionData>> {
         let rows = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, version, created_at, updated_at
+                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
              FROM api_definitions",
         )
         .fetch_all(&self.pool)
@@ -571,7 +671,7 @@ impl ApiDefinitionRepository {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
-                    override_config, deployment_note, route_order, created_at, updated_at
+                    override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes ORDER BY api_definition_id, route_order",
         )
         .fetch_all(&self.pool)
@@ -694,7 +794,7 @@ impl ClusterRepository {
     /// Get cluster by ID
     pub async fn get_by_id(&self, id: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, created_at, updated_at FROM clusters WHERE id = $1"
+            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -716,7 +816,7 @@ impl ClusterRepository {
     /// Get cluster by name
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -743,7 +843,7 @@ impl ClusterRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -948,7 +1048,7 @@ impl ListenerRepository {
 
     pub async fn get_by_id(&self, id: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners WHERE id = $1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, created_at, updated_at FROM listeners WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -969,7 +1069,7 @@ impl ListenerRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -995,7 +1095,7 @@ impl ListenerRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, address, port, protocol, configuration, version, source, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -1191,7 +1291,7 @@ impl RouteRepository {
 
     pub async fn get_by_id(&self, id: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at FROM routes WHERE id = $1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1212,7 +1312,7 @@ impl RouteRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -1254,7 +1354,7 @@ impl RouteRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -1383,6 +1483,7 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -1402,6 +1503,7 @@ mod tests {
                 cluster_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -1422,6 +1524,7 @@ mod tests {
                 protocol TEXT NOT NULL DEFAULT 'HTTP',
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)

@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::auth::models::{TokenStatus, UpdatePersonalAccessToken};
 use crate::errors::Result;
 use crate::observability::metrics;
-use crate::storage::repository_simple::{
+use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
 };
 

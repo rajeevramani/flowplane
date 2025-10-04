@@ -1,6 +1,6 @@
 use chrono::Utc;
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus, UpdatePersonalAccessToken};
-use flowplane::storage::repository_simple::{SqlxTokenRepository, TokenRepository};
+use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;

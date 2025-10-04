@@ -22,6 +22,7 @@ async fn setup_pool() -> DbPool {
             service_name TEXT NOT NULL,
             configuration TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -40,6 +41,7 @@ async fn setup_pool() -> DbPool {
             cluster_name TEXT NOT NULL,
             configuration TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -59,6 +61,7 @@ async fn setup_pool() -> DbPool {
             protocol TEXT,
             configuration TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );

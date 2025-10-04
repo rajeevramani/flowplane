@@ -105,43 +105,67 @@ jobs:
   e2e-smoke:
     name: E2E Smoke (Envoy optional)
     runs-on: ubuntu-latest
+    needs: [test, clippy]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install sqlx-cli (sqlite)
+        run: cargo install sqlx-cli --no-default-features --features sqlite
+      - name: Run migrations
+        run: sqlx migrate run
+        env:
+          DATABASE_URL: sqlite://flowplane_test.sqlite
       - name: Run e2e smoke_boot_and_route
         run: RUN_E2E=1 RUST_LOG=info cargo test --test smoke_boot_and_route -- --ignored --nocapture
+        env:
+          DATABASE_URL: sqlite://flowplane_test.sqlite
       - name: Run e2e smoke_no_nacks
         run: RUN_E2E=1 RUST_LOG=info cargo test --test smoke_no_nacks -- --ignored --nocapture || true
-      - name: Collect Envoy admin logs if present
-        if: ${{ failure() }}
+        env:
+          DATABASE_URL: sqlite://flowplane_test.sqlite
+      - name: Collect test artifacts
+        if: ${{ always() }}
         run: |
           mkdir -p artifacts
           cp -v /tmp/envoy_admin*.log artifacts/ 2>/dev/null || true
-      - name: Upload artifacts on failure
-        if: ${{ failure() }}
+          cp -v /tmp/flowplane-e2e*.sqlite artifacts/ 2>/dev/null || true
+          find /tmp -name "*.envoy.yaml" -exec cp -v {} artifacts/ \; 2>/dev/null || true
+      - name: Upload artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-smoke-artifacts
           path: artifacts
+          if-no-files-found: ignore
 
   e2e-full:
     name: E2E Full (main/nightly)
     runs-on: ubuntu-latest
+    needs: [test, clippy]
     if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install sqlx-cli (sqlite)
+        run: cargo install sqlx-cli --no-default-features --features sqlite
+      - name: Run migrations
+        run: sqlx migrate run
+        env:
+          DATABASE_URL: sqlite://flowplane_test.sqlite
       - name: Attempt to install Envoy (best-effort)
         run: |
           sudo apt-get update || true
           sudo apt-get install -y envoy || true
+      - name: Check Envoy availability
+        run: which envoy && envoy --version || echo "Envoy not installed, tests will skip"
       - name: Run E2E suites
         run: |
           set -e
           export RUN_E2E=1
           export RUST_LOG=info
+          export DATABASE_URL=sqlite://flowplane_test.sqlite
           cargo test --test smoke_boot_and_route -- --ignored --nocapture
           cargo test --test smoke_no_nacks -- --ignored --nocapture || true
           cargo test --test config_update_add_route -- --ignored --nocapture || true
@@ -149,18 +173,26 @@ jobs:
           cargo test --test config_delete_cleanup -- --ignored --nocapture || true
           cargo test --test filters -- --ignored --nocapture || true
           cargo test --test filters_rate_limit -- --ignored --nocapture || true
+          cargo test --test filters_header_mutation -- --ignored --nocapture || true
+          cargo test --test filters_health_check -- --ignored --nocapture || true
+          cargo test --test filters_custom_response -- --ignored --nocapture || true
           cargo test --test listener_scoping -- --ignored --nocapture || true
           cargo test --test resilience_restart_envoy -- --ignored --nocapture || true
           cargo test --test resilience_restart_cp -- --ignored --nocapture || true
           cargo test --test multi_envoy_consistency -- --ignored --nocapture || true
-      - name: Collect Envoy admin logs if present
-        if: ${{ failure() }}
+          cargo test --test negative_conflicts -- --ignored --nocapture || true
+          cargo test --test negative_invalid_payload -- --ignored --nocapture || true
+      - name: Collect test artifacts
+        if: ${{ always() }}
         run: |
           mkdir -p artifacts
           cp -v /tmp/envoy_admin*.log artifacts/ 2>/dev/null || true
-      - name: Upload artifacts on failure
-        if: ${{ failure() }}
+          cp -v /tmp/flowplane-e2e*.sqlite artifacts/ 2>/dev/null || true
+          find /tmp -name "*.envoy.yaml" -exec cp -v {} artifacts/ \; 2>/dev/null || true
+      - name: Upload artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-full-artifacts
           path: artifacts
+          if-no-files-found: ignore

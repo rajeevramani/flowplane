@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 pub struct EnvoyHandle {
@@ -93,17 +93,102 @@ impl EnvoyHandle {
 
     #[allow(dead_code)]
     pub async fn wait_admin_ready(&self) {
-        let client: Client<HttpConnector, Full<bytes::Bytes>> =
-            Client::builder(TokioExecutor::new()).build(HttpConnector::new());
-        let uri: Uri = format!("http://127.0.0.1:{}/stats", self.admin_port).parse().unwrap();
-        for _ in 0..100 {
-            if let Ok(res) = client.get(uri.clone()).await {
-                if res.status().is_success() {
-                    break;
+        use super::retry::{retry_with_backoff, RetryConfig};
+
+        let config = RetryConfig::fast().with_description("Envoy admin ready");
+        let admin_port = self.admin_port;
+
+        retry_with_backoff(config, move || async move {
+            let client: Client<HttpConnector, Full<bytes::Bytes>> =
+                Client::builder(TokioExecutor::new()).build(HttpConnector::new());
+            let uri: Uri = format!("http://127.0.0.1:{}/stats", admin_port).parse().unwrap();
+            let res = client.get(uri).await.map_err(|e| format!("Admin request failed: {}", e))?;
+            if res.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("Admin not ready: {}", res.status()))
+            }
+        })
+        .await
+        .expect("Envoy admin should become ready");
+    }
+
+    /// Wait for a specific route to be available and responding correctly on the default gateway
+    #[allow(dead_code)]
+    pub async fn wait_for_route(
+        &self,
+        host: &str,
+        path: &str,
+        expected_status: u16,
+    ) -> anyhow::Result<String> {
+        let port = flowplane::openapi::defaults::DEFAULT_GATEWAY_PORT;
+        self.wait_for_route_on_port(port, host, path, expected_status).await
+    }
+
+    /// Wait for a specific route to be available and responding correctly on a specific port
+    #[allow(dead_code)]
+    pub async fn wait_for_route_on_port(
+        &self,
+        port: u16,
+        host: &str,
+        path: &str,
+        expected_status: u16,
+    ) -> anyhow::Result<String> {
+        let mut delay = Duration::from_millis(200);
+        let max_delay = Duration::from_secs(10);
+        let max_attempts = 60;
+
+        for attempt in 1..=max_attempts {
+            match self.proxy_get_on_port(port, host, path).await {
+                Ok((status, body)) if status == expected_status && !body.is_empty() => {
+                    if attempt > 1 {
+                        debug!(attempt, port, "Route converged");
+                    }
+                    return Ok(body);
+                }
+                Ok((status, _)) => {
+                    debug!(attempt, port, status, "Route not ready yet");
+                }
+                Err(e) => {
+                    debug!(attempt, port, error = %e, "Route request failed");
                 }
             }
-            sleep(Duration::from_millis(100)).await;
+
+            if attempt < max_attempts {
+                sleep(delay).await;
+                delay =
+                    Duration::from_millis(((delay.as_millis() as f64) * 1.5) as u64).min(max_delay);
+            }
         }
+
+        anyhow::bail!("Route {}:{}{} failed to converge after {} attempts", host, port, path, max_attempts)
+    }
+
+    /// Wait for config_dump to contain expected content
+    #[allow(dead_code)]
+    pub async fn wait_for_config_content(&self, expected: &str) -> anyhow::Result<String> {
+        let mut delay = Duration::from_millis(200);
+        let max_delay = Duration::from_secs(10);
+        let max_attempts = 60;
+
+        for attempt in 1..=max_attempts {
+            if let Ok(dump) = self.get_config_dump().await {
+                if dump.contains(expected) {
+                    if attempt > 1 {
+                        debug!(attempt, "Config dump converged");
+                    }
+                    return Ok(dump);
+                }
+            }
+
+            if attempt < max_attempts {
+                sleep(delay).await;
+                delay =
+                    Duration::from_millis(((delay.as_millis() as f64) * 1.5) as u64).min(max_delay);
+            }
+        }
+
+        anyhow::bail!("Config dump did not contain '{}' after {} attempts", expected, max_attempts)
     }
 
     #[allow(dead_code)]
@@ -132,6 +217,17 @@ impl EnvoyHandle {
     #[allow(dead_code)]
     pub async fn proxy_get(&self, host: &str, path: &str) -> anyhow::Result<(u16, String)> {
         let port = flowplane::openapi::defaults::DEFAULT_GATEWAY_PORT;
+        self.proxy_get_on_port(port, host, path).await
+    }
+
+    /// Send a proxied GET request through a specific listener port with Host override.
+    #[allow(dead_code)]
+    pub async fn proxy_get_on_port(
+        &self,
+        port: u16,
+        host: &str,
+        path: &str,
+    ) -> anyhow::Result<(u16, String)> {
         let connector = HttpConnector::new();
         let client: Client<HttpConnector, _> =
             Client::builder(TokioExecutor::new()).build(connector);

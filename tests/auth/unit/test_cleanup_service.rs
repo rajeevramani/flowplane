@@ -1,9 +1,7 @@
 use chrono::{Duration, Utc};
 use flowplane::auth::cleanup_service::CleanupService;
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
-use flowplane::storage::repository_simple::{
-    AuditLogRepository, SqlxTokenRepository, TokenRepository,
-};
+use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;

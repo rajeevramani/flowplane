@@ -79,17 +79,11 @@ async fn resilience_restart_cp() {
     .expect("create api");
 
     // Verify routing
-    let mut ok = false;
-    for _ in 0..60 {
-        match envoy.proxy_get(&domain, &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok, "initial routing did not converge");
+    let body = envoy
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("initial routing did not converge");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Drop CP (simulates outage)
     drop(cp);

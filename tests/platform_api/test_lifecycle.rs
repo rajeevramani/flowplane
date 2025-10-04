@@ -39,9 +39,12 @@ async fn platform_api_create_append_and_persist_routes() {
     let api_id = body.get("id").and_then(|v| v.as_str()).expect("api id");
     let bootstrap_uri = body.get("bootstrapUri").and_then(|v| v.as_str()).expect("bootstrap uri");
 
-    // Bootstrap should be materialized on disk for the dataplane
-    let bootstrap_path = format!("data/bootstrap/{}.yaml", api_id);
-    assert!(std::path::Path::new(&bootstrap_path).exists(), "bootstrap file should exist");
+    // Bootstrap is now served dynamically via API endpoint (no file on disk)
+    assert_eq!(
+        bootstrap_uri,
+        format!("/api/v1/api-definitions/{}/bootstrap", api_id),
+        "bootstrap URI should point to API endpoint"
+    );
 
     let append_payload = json!({
         "route": {
@@ -90,7 +93,4 @@ async fn platform_api_create_append_and_persist_routes() {
         override_json.get("cors").and_then(|value| value.get("policy")).is_some(),
         "canonical CORS policy should be stored"
     );
-
-    // Ensure bootstrap URI points to the stored location
-    assert!(bootstrap_uri.contains(&format!("/api-definitions/{}.yaml", api_id)));
 }

@@ -15,6 +15,7 @@ async fn detecting_domain_collision_for_different_team() {
             team: "payments".into(),
             domain: "payments.flowplane.dev".into(),
             listener_isolation: false,
+            target_listeners: None,
             tls_config: None,
             metadata: None,
         })

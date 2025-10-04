@@ -12,7 +12,7 @@ use crate::auth::{
     validation::CreateTokenRequest,
 };
 use crate::config::DatabaseConfig;
-use crate::storage::{create_pool, repository_simple::AuditLogRepository};
+use crate::storage::{create_pool, repository::AuditLogRepository};
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {

@@ -2,9 +2,7 @@ use chrono::Utc;
 use flowplane::auth::models::TokenStatus;
 use flowplane::auth::token_service::{TokenSecretResponse, TokenService};
 use flowplane::auth::validation::{CreateTokenRequest, UpdateTokenRequest};
-use flowplane::storage::repository_simple::{
-    AuditLogRepository, SqlxTokenRepository, TokenRepository,
-};
+use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;

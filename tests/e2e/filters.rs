@@ -95,17 +95,11 @@ async fn filters_cors_and_jwt_overrides() {
     assert!(res.status().is_success(), "create api failed: {}", res.status());
 
     // Verify routing still works
-    let mut ok = false;
-    for _ in 0..60 {
-        match EnvoyHandle::proxy_get(&envoy, &domain, &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok, "route did not converge with filters");
+    let body = envoy
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("route did not converge with filters");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Validate config_dump contains the per-route typed_per_filter_config entries
     let dump = envoy.get_config_dump().await.expect("config_dump");

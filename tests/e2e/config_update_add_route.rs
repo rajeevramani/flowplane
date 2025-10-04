@@ -74,18 +74,10 @@ async fn config_update_add_route() {
             .expect("create api");
     let api_id = resp["id"].as_str().expect("api id");
 
-    // Verify route1 works
-    let mut ok = false;
-    for _ in 0..60 {
-        match envoy.proxy_get(&domain, &route1).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok, "initial route did not converge");
+    // Verify route1 works on the default gateway
+    let body =
+        envoy.wait_for_route(&domain, &route1, 200).await.expect("initial route did not converge");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Append route2
     let _ = post_append_route(
@@ -101,17 +93,9 @@ async fn config_update_add_route() {
     .expect("append route");
 
     // Verify both route1 and route2 work
-    let mut ok2 = false;
-    for _ in 0..60 {
-        match envoy.proxy_get(&domain, &route2).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok2 = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok2, "appended route did not converge");
+    let body =
+        envoy.wait_for_route(&domain, &route2, 200).await.expect("appended route did not converge");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Optional: config_dump contains both paths
     let dump = envoy.get_config_dump().await.expect("config_dump");

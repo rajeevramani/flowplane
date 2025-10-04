@@ -2,7 +2,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 
 use super::support::{read_json, send_request, setup_platform_api_app};
-use flowplane::storage::repository_simple::{CreateListenerRequest, ListenerRepository};
+use flowplane::storage::repository::{CreateListenerRequest, ListenerRepository};
 
 #[tokio::test]
 async fn create_isolated_api_creates_dedicated_listener() {

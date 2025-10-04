@@ -3,7 +3,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 #[allow(unused_imports)]
-use crate::api::auth_handlers::{CreateTokenBody, UpdateTokenBody};
+use crate::api::handlers::auth::{CreateTokenBody, UpdateTokenBody};
 #[allow(unused_imports)]
 use crate::api::handlers::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
@@ -20,33 +20,33 @@ use crate::xds::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        crate::api::auth_handlers::create_token_handler,
-        crate::api::auth_handlers::list_tokens_handler,
-        crate::api::auth_handlers::get_token_handler,
-        crate::api::auth_handlers::update_token_handler,
-        crate::api::auth_handlers::revoke_token_handler,
-        crate::api::auth_handlers::rotate_token_handler,
-        crate::api::handlers::create_cluster_handler,
-        crate::api::handlers::list_clusters_handler,
-        crate::api::handlers::get_cluster_handler,
-        crate::api::handlers::update_cluster_handler,
-        crate::api::handlers::delete_cluster_handler,
-        crate::api::route_handlers::create_route_handler,
-        crate::api::route_handlers::list_routes_handler,
-        crate::api::route_handlers::get_route_handler,
-        crate::api::route_handlers::update_route_handler,
-        crate::api::route_handlers::delete_route_handler,
-        crate::api::listener_handlers::create_listener_handler,
-        crate::api::listener_handlers::list_listeners_handler,
-        crate::api::listener_handlers::get_listener_handler,
-        crate::api::listener_handlers::update_listener_handler,
-        crate::api::listener_handlers::delete_listener_handler,
-        crate::api::gateway_handlers::create_gateway_from_openapi_handler,
-        crate::api::platform_api_handlers::create_api_definition_handler,
-        crate::api::platform_api_handlers::append_route_handler,
-        crate::api::platform_api_handlers::list_api_definitions_handler,
-        crate::api::platform_api_handlers::get_api_definition_handler
-        ,crate::api::platform_api_handlers::get_bootstrap_handler
+        crate::api::handlers::auth::create_token_handler,
+        crate::api::handlers::auth::list_tokens_handler,
+        crate::api::handlers::auth::get_token_handler,
+        crate::api::handlers::auth::update_token_handler,
+        crate::api::handlers::auth::revoke_token_handler,
+        crate::api::handlers::auth::rotate_token_handler,
+        crate::api::handlers::clusters::create_cluster_handler,
+        crate::api::handlers::clusters::list_clusters_handler,
+        crate::api::handlers::clusters::get_cluster_handler,
+        crate::api::handlers::clusters::update_cluster_handler,
+        crate::api::handlers::clusters::delete_cluster_handler,
+        crate::api::handlers::routes::create_route_handler,
+        crate::api::handlers::routes::list_routes_handler,
+        crate::api::handlers::routes::get_route_handler,
+        crate::api::handlers::routes::update_route_handler,
+        crate::api::handlers::routes::delete_route_handler,
+        crate::api::handlers::listeners::create_listener_handler,
+        crate::api::handlers::listeners::list_listeners_handler,
+        crate::api::handlers::listeners::get_listener_handler,
+        crate::api::handlers::listeners::update_listener_handler,
+        crate::api::handlers::listeners::delete_listener_handler,
+        crate::api::handlers::gateways::create_gateway_from_openapi_handler,
+        crate::api::handlers::api_definitions::create_api_definition_handler,
+        crate::api::handlers::api_definitions::append_route_handler,
+        crate::api::handlers::api_definitions::list_api_definitions_handler,
+        crate::api::handlers::api_definitions::get_api_definition_handler,
+        crate::api::handlers::api_definitions::get_bootstrap_handler
     ),
     components(
         schemas(
@@ -67,19 +67,19 @@ use crate::xds::{
             CircuitBreakerThresholdsSpec,
             HealthCheckSpec,
             OutlierDetectionSpec,
-            crate::api::route_handlers::RouteDefinition,
-            crate::api::route_handlers::VirtualHostDefinition,
-            crate::api::route_handlers::RouteRuleDefinition,
-            crate::api::route_handlers::RouteMatchDefinition,
-            crate::api::route_handlers::PathMatchDefinition,
-            crate::api::route_handlers::RouteActionDefinition,
-            crate::api::route_handlers::WeightedClusterDefinition,
-            crate::api::route_handlers::RouteResponse,
-            crate::api::listener_handlers::ListenerResponse,
-            crate::api::listener_handlers::CreateListenerBody,
-            crate::api::listener_handlers::UpdateListenerBody,
-            crate::api::gateway_handlers::GatewayQuery,
-            crate::api::gateway_handlers::OpenApiSpecBody,
+            crate::api::handlers::routes::RouteDefinition,
+            crate::api::handlers::routes::VirtualHostDefinition,
+            crate::api::handlers::routes::RouteRuleDefinition,
+            crate::api::handlers::routes::RouteMatchDefinition,
+            crate::api::handlers::routes::PathMatchDefinition,
+            crate::api::handlers::routes::RouteActionDefinition,
+            crate::api::handlers::routes::WeightedClusterDefinition,
+            crate::api::handlers::routes::RouteResponse,
+            crate::api::handlers::listeners::ListenerResponse,
+            crate::api::handlers::listeners::CreateListenerBody,
+            crate::api::handlers::listeners::UpdateListenerBody,
+            crate::api::handlers::gateways::GatewayQuery,
+            crate::api::handlers::gateways::OpenApiSpecBody,
             crate::openapi::GatewaySummary,
             crate::validation::requests::api_definition::CreateApiDefinitionBody,
             crate::validation::requests::api_definition::AppendRouteBody,
@@ -88,11 +88,11 @@ use crate::xds::{
             crate::validation::requests::api_definition::RouteClusterBody,
             crate::validation::requests::api_definition::RouteRewriteBody,
             crate::validation::requests::api_definition::IsolationListenerBody,
-            crate::api::platform_api_handlers::CreateApiDefinitionResponse,
-            crate::api::platform_api_handlers::AppendRouteResponse,
-            crate::api::platform_api_handlers::ApiDefinitionSummary,
-            crate::api::platform_api_handlers::ListDefinitionsQuery
-            ,crate::api::platform_api_handlers::BootstrapQuery
+            crate::api::handlers::api_definitions::CreateApiDefinitionResponse,
+            crate::api::handlers::api_definitions::AppendRouteResponse,
+            crate::api::handlers::api_definitions::ApiDefinitionSummary,
+            crate::api::handlers::api_definitions::ListDefinitionsQuery,
+            crate::api::handlers::api_definitions::BootstrapQuery
         )
     ),
     tags(
