@@ -359,4 +359,223 @@ mod tests {
         let filters = override_config.as_array().unwrap();
         assert_eq!(filters.len(), 1);
     }
+
+    #[test]
+    fn extracts_global_xflowplane_filters_with_listener_isolation() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "x-flowplane-filters": [
+                    {
+                        "filter": {
+                            "type": "cors",
+                            "policy": {
+                                "allow_origin": [{"type": "exact", "value": "*"}],
+                                "allow_methods": ["GET", "POST"]
+                            }
+                        }
+                    }
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+            .expect("convert spec");
+
+        assert!(spec.listener_isolation);
+        assert!(spec.isolation_listener.is_some());
+
+        let listener = spec.isolation_listener.unwrap();
+        assert!(listener.http_filters.is_some());
+
+        let filters = listener.http_filters.unwrap();
+        assert_eq!(filters.len(), 1);
+    }
+
+    #[test]
+    fn no_global_filters_when_extension_missing() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+            .expect("convert spec");
+
+        assert!(spec.listener_isolation);
+        let listener = spec.isolation_listener.unwrap();
+        assert!(listener.http_filters.is_none());
+    }
+
+    #[test]
+    fn no_route_filters_when_extension_missing() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+            .expect("convert spec");
+
+        assert_eq!(spec.routes.len(), 1);
+        let route = &spec.routes[0];
+        assert!(route.override_config.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_global_filter_format() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "x-flowplane-filters": "invalid-not-array",
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidFilters(_)));
+    }
+
+    #[test]
+    fn route_filters_from_post_when_get_missing() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "post": {
+                            "x-flowplane-filters": [
+                                {
+                                    "filter": {
+                                        "type": "local_rate_limit",
+                                        "requests_per_second": 10.0
+                                    }
+                                }
+                            ],
+                            "responses": {
+                                "201": {"description": "Created"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+            .expect("convert spec");
+
+        assert_eq!(spec.routes.len(), 1);
+        let route = &spec.routes[0];
+        assert!(route.override_config.is_some());
+    }
+
+    #[test]
+    fn combines_global_and_route_level_filters() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "x-flowplane-filters": [
+                    {
+                        "filter": {
+                            "type": "cors",
+                            "policy": {
+                                "allow_origin": [{"type": "exact", "value": "*"}],
+                                "allow_methods": ["GET", "POST"]
+                            }
+                        }
+                    }
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "x-flowplane-filters": [
+                                {
+                                    "filter": {
+                                        "type": "header_mutation",
+                                        "request_headers_to_add": [
+                                            {"key": "x-route", "value": "users", "append": false}
+                                        ]
+                                    }
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+            .expect("convert spec");
+
+        // Verify global filters
+        let listener = spec.isolation_listener.as_ref().unwrap();
+        assert!(listener.http_filters.is_some());
+        let global_filters = listener.http_filters.as_ref().unwrap();
+        assert_eq!(global_filters.len(), 1);
+
+        // Verify route-level filters
+        assert_eq!(spec.routes.len(), 1);
+        let route = &spec.routes[0];
+        assert!(route.override_config.is_some());
+    }
 }
