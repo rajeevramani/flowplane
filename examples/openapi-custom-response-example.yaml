@@ -277,27 +277,3 @@ components:
           type: integer
           description: Seconds to wait before retrying (for 429 errors)
           example: 60
-
-# Testing Instructions:
-#
-# 1. Import this OpenAPI spec:
-#    curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?listenerIsolation=true" \
-#      -H "Authorization: Bearer $TOKEN" \
-#      -H "Content-Type: application/json" \
-#      -d @openapi-custom-response-example.yaml
-#
-# 2. Test success case (no custom response):
-#    curl -H "Host: custom-response-demo.example.com" http://localhost:10000/status/200
-#    Expected: Raw httpbin HTML response
-#
-# 3. Test 400 error (custom response triggered):
-#    curl -H "Host: custom-response-demo.example.com" http://localhost:10000/status/400
-#    Expected: {"error": "bad request", "status_code": 400, "message": "..."}
-#
-# 4. Test 500 error (custom response with sanitization):
-#    curl -H "Host: custom-response-demo.example.com" http://localhost:10000/status/500
-#    Expected: {"error": "internal server error", "status_code": 500, "message": "..."}
-#
-# 5. Test health check (custom_response disabled):
-#    curl -H "Host: custom-response-demo.example.com" http://localhost:10000/health
-#    Expected: Raw httpbin response (not JSON)
