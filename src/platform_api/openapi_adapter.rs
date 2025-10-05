@@ -1,7 +1,8 @@
-use openapiv3::{OpenAPI, ReferenceOr};
+use openapiv3::{OpenAPI, PathItem, ReferenceOr};
 use serde_json::json;
 
 use crate::openapi::GatewayError;
+use crate::xds::filters::http::HttpFilterConfigEntry;
 
 use super::materializer::{ApiDefinitionSpec, ListenerInput, RouteSpec};
 
@@ -56,7 +57,7 @@ pub fn openapi_to_api_definition_spec(
     let mut routes = Vec::new();
 
     for (path_template, item) in openapi.paths.paths.iter() {
-        let _path_item = match item {
+        let path_item = match item {
             ReferenceOr::Item(item) => item,
             ReferenceOr::Reference { reference } => {
                 return Err(GatewayError::UnsupportedServer(reference.clone()))
@@ -73,6 +74,16 @@ pub fn openapi_to_api_definition_spec(
             }]
         });
 
+        // Parse route-level x-flowplane-filters from path item operations
+        let route_filters = parse_route_level_filters(path_item)?;
+        let override_config = if let Some(filters) = route_filters {
+            Some(serde_json::to_value(&filters).map_err(|e| {
+                GatewayError::InvalidFilters(format!("Failed to serialize route filters: {}", e))
+            })?)
+        } else {
+            None
+        };
+
         let route_spec = RouteSpec {
             match_type: "prefix".to_string(),
             match_value: effective_path,
@@ -82,7 +93,7 @@ pub fn openapi_to_api_definition_spec(
             rewrite_substitution: None,
             upstream_targets,
             timeout_seconds: Some(30),
-            override_config: None, // TODO: Extract route-level x-flowplane-* extensions (subtask 19.2)
+            override_config,
             deployment_note: Some(format!("Generated from OpenAPI path: {}", path_template)),
             route_order: Some(routes.len() as i64),
         };
@@ -131,6 +142,46 @@ pub fn openapi_to_api_definition_spec(
         tls_config,
         routes,
     })
+}
+
+/// Parse route-level x-flowplane-filters from path item operations.
+///
+/// Checks operations in priority order (GET, POST, PUT, DELETE, PATCH, etc.)
+/// and returns filters from the first operation that has them defined.
+/// Returns None if no operations have x-flowplane-filters extensions.
+fn parse_route_level_filters(
+    path_item: &PathItem,
+) -> Result<Option<Vec<HttpFilterConfigEntry>>, GatewayError> {
+    const EXTENSION_ROUTE_FILTERS: &str = "x-flowplane-filters";
+
+    // Check operations in priority order
+    let operations = [
+        &path_item.get,
+        &path_item.post,
+        &path_item.put,
+        &path_item.delete,
+        &path_item.patch,
+        &path_item.head,
+        &path_item.options,
+        &path_item.trace,
+    ];
+
+    for operation_opt in operations.iter() {
+        if let Some(operation) = operation_opt {
+            if let Some(value) = operation.extensions.get(EXTENSION_ROUTE_FILTERS) {
+                let filters = serde_json::from_value::<Vec<HttpFilterConfigEntry>>(value.clone())
+                    .map_err(|err| {
+                        GatewayError::InvalidFilters(format!(
+                            "Failed to parse route-level {}: {}",
+                            EXTENSION_ROUTE_FILTERS, err
+                        ))
+                    })?;
+                return Ok(Some(filters));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn combine_base_path(server: &openapiv3::Server, template: &str) -> String {
@@ -271,5 +322,49 @@ mod tests {
         let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), false);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), GatewayError::MissingServers));
+    }
+
+    #[test]
+    fn extracts_route_level_xflowplane_filters() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "x-flowplane-filters": [
+                                {
+                                    "filter": {
+                                        "type": "header_mutation",
+                                        "request_headers_to_add": [
+                                            {"key": "x-route-header", "value": "users", "append": false}
+                                        ]
+                                    }
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+            .expect("convert spec");
+
+        assert_eq!(spec.routes.len(), 1);
+        let route = &spec.routes[0];
+        assert!(route.override_config.is_some());
+
+        // Verify the override_config contains the filter
+        let override_config = route.override_config.as_ref().unwrap();
+        assert!(override_config.is_array());
+        let filters = override_config.as_array().unwrap();
+        assert_eq!(filters.len(), 1);
     }
 }
