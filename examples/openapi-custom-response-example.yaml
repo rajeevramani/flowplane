@@ -1,0 +1,322 @@
+openapi: 3.0.0
+info:
+  title: API with Custom Response Filter Examples
+  version: 1.0.0
+  description: |
+    This example demonstrates how to use the custom_response filter
+    at both global and route levels to customize error responses.
+
+    The custom_response filter allows you to:
+    - Return custom error pages for specific HTTP status codes
+    - Override default error responses on a per-route basis
+    - Disable custom responses for specific endpoints
+
+    Import via: POST /api/v1/api-definitions/from-openapi?listenerIsolation=true
+
+servers:
+  - url: https://api.example.com
+    description: Production API server
+
+# Global custom_response filter - applies to all routes by default
+x-flowplane-filters:
+  # Custom response filter for handling 4xx and 5xx errors
+  - filter:
+      type: custom_response
+      # Note: The matcher configuration defines which status codes trigger custom responses
+      # For now, this enables the filter globally with default behavior
+
+  # CORS for cross-origin requests
+  - filter:
+      type: cors
+      policy:
+        allow_origin:
+          - type: exact
+            value: "*"
+        allow_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        allow_headers:
+          - content-type
+          - authorization
+        max_age: 3600
+
+paths:
+  # Standard API endpoint - uses global custom_response filter
+  /api/v1/users:
+    post:
+      summary: Create a new user
+      description: |
+        Creates a new user account. This endpoint uses the global custom_response
+        filter, so 400/500 errors will be formatted according to the global policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request - custom error response will be returned by the
+            custom_response filter with standardized error format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error with custom response
+
+  # API endpoint with custom_response DISABLED for this route
+  /api/v1/users/{userId}:
+    get:
+      summary: Get user by ID
+      description: |
+        Retrieves a user by ID. This endpoint DISABLES the custom_response filter,
+        allowing the upstream service to return its native error format.
+
+        Use case: When the upstream service has its own error handling that you
+        don't want to override.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      x-flowplane-route-overrides:
+        # Disable custom_response for this route - let upstream handle errors
+        custom_response: disabled
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid user ID - upstream native error format
+        '404':
+          description: User not found - upstream native error format
+
+  # Health check endpoint - no custom responses needed
+  /health:
+    get:
+      summary: Health check endpoint
+      description: |
+        Simple health check that should return raw responses without any
+        custom error formatting.
+      x-flowplane-route-overrides:
+        custom_response: disabled
+        authn: disabled  # Also disable auth for health checks
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # Admin endpoint with custom error handling
+  /admin/settings:
+    put:
+      summary: Update admin settings
+      description: |
+        Administrative endpoint that uses the global custom_response filter
+        to provide consistent error responses for validation failures.
+      x-flowplane-route-overrides:
+        authn: admin-required
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                setting_key:
+                  type: string
+                setting_value:
+                  type: string
+      responses:
+        '200':
+          description: Settings updated successfully
+        '400':
+          description: |
+            Invalid settings - custom error response with detailed validation errors.
+            The custom_response filter will format this consistently.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - custom error format
+        '403':
+          description: Forbidden - custom error format
+
+  # Payment endpoint - uses global custom responses for PCI compliance
+  /api/v1/payments:
+    post:
+      summary: Process payment
+      description: |
+        Payment processing endpoint that uses custom_response filter to ensure
+        sensitive error details are not leaked to clients (security best practice).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      responses:
+        '200':
+          description: Payment processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          description: |
+            Payment validation failed - custom_response filter ensures no sensitive
+            payment details are exposed in error messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: Payment required - insufficient funds (custom format)
+        '500':
+          description: Payment processing error (sanitized by custom_response)
+
+  # Webhook endpoint - needs raw error responses
+  /webhooks/external:
+    post:
+      summary: External webhook receiver
+      description: |
+        Webhook endpoint that disables custom_response to ensure external
+        systems receive the exact error responses they expect.
+      x-flowplane-route-overrides:
+        custom_response: disabled
+        authn: webhook-signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Webhook processed
+        '400':
+          description: Invalid webhook payload - raw upstream error
+        '401':
+          description: Invalid signature - raw upstream error
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required:
+        - username
+        - email
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+          example: johndoe
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        password:
+          type: string
+          minLength: 8
+          example: SecurePass123!
+
+    PaymentRequest:
+      type: object
+      required:
+        - amount
+        - currency
+        - payment_method
+      properties:
+        amount:
+          type: number
+          format: decimal
+          example: 99.99
+        currency:
+          type: string
+          example: USD
+        payment_method:
+          type: string
+          example: card_xxxx1234
+
+    PaymentResponse:
+      type: object
+      properties:
+        transaction_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [success, pending, failed]
+        amount:
+          type: number
+          format: decimal
+
+    ErrorResponse:
+      type: object
+      description: |
+        Standardized error response format returned by the custom_response filter.
+        This ensures consistent error handling across all API endpoints.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Invalid request parameters
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    example: email
+                  issue:
+                    type: string
+                    example: Invalid email format
+            request_id:
+              type: string
+              format: uuid
+              example: 550e8400-e29b-41d4-a716-446655440000
