@@ -1,35 +1,14 @@
 openapi: 3.0.0
 info:
-  title: Custom Response Filter Demo with HTTPBin
+  title: Custom Response Filter Demo
   version: 1.0.0
-  description: |
-    This example demonstrates the custom_response filter using httpbin.org's
-    /status/{code} endpoint to show real error handling in action.
-
-    Key demonstrations:
-    - /status/200 → Returns success (custom_response filter enabled but no match)
-    - /status/400 → Triggers custom_response filter to return {"error": "bad request"}
-    - /status/500 → Triggers custom_response filter to return {"error": "internal server error"}
-    - /health → Disables custom_response, returns raw httpbin response
-
-    Import via: POST /api/v1/api-definitions/from-openapi?listenerIsolation=true
 
 servers:
   - url: https://httpbin.org
-    description: HTTPBin testing server
 
-# Global custom_response filter configuration
 x-flowplane-filters:
-  # Custom response filter that intercepts error status codes
   - filter:
       type: custom_response
-      # This enables the filter to transform error responses
-      # The matcher configuration would define:
-      # - Match on response_code (400, 500, etc.)
-      # - Return custom JSON payload: {"error": "bad request"}
-      # Note: Full matcher tree config is complex - shown here for demonstration
-
-  # CORS for browser testing
   - filter:
       type: cors
       policy:
@@ -43,237 +22,52 @@ x-flowplane-filters:
         max_age: 3600
 
 paths:
-  # Success case - custom_response filter is enabled but doesn't match 200
   /status/200:
     get:
-      summary: Success response (200 OK)
-      description: |
-        Returns 200 OK from httpbin. The custom_response filter is enabled
-        but doesn't trigger because 200 is a success code.
-
-        Expected behavior:
-        - HTTPBin returns: 200 OK with empty body
-        - custom_response filter: No action (doesn't match success codes)
-        - Client receives: Raw httpbin 200 response
-
-        Test with:
-        ```bash
-        curl -H "Host: custom-response-demo.example.com" \
-             http://localhost:10000/status/200
-        ```
+      summary: Success response
       responses:
         '200':
-          description: Success - returns raw httpbin response
-          content:
-            text/html:
-              schema:
-                type: string
+          description: Success
 
-  # Error case - custom_response filter intercepts and transforms 400
   /status/400:
     get:
-      summary: Bad request error (400) with custom response
-      description: |
-        HTTPBin returns 400 Bad Request. The custom_response filter intercepts
-        this and returns a standardized JSON error response.
-
-        Expected behavior:
-        - HTTPBin returns: 400 Bad Request
-        - custom_response filter: Matches 400, replaces response body
-        - Client receives: {"error": "bad request"}
-
-        Test with:
-        ```bash
-        curl -H "Host: custom-response-demo.example.com" \
-             http://localhost:10000/status/400
-        ```
-
-        Response will be:
-        ```json
-        {
-          "error": "bad request",
-          "status_code": 400,
-          "message": "The request could not be processed"
-        }
-        ```
+      summary: Bad request with custom response
       responses:
         '400':
-          description: Bad Request - transformed by custom_response filter
+          description: Bad Request
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "bad request"
-                status_code: 400
-                message: "The request could not be processed"
 
-  # Server error case - custom_response filter transforms 500
   /status/500:
     get:
-      summary: Internal server error (500) with custom response
-      description: |
-        HTTPBin returns 500 Internal Server Error. The custom_response filter
-        intercepts and returns sanitized error information (security best practice).
-
-        Expected behavior:
-        - HTTPBin returns: 500 Internal Server Error
-        - custom_response filter: Matches 5xx, sanitizes response
-        - Client receives: {"error": "internal server error"}
-
-        Test with:
-        ```bash
-        curl -H "Host: custom-response-demo.example.com" \
-             http://localhost:10000/status/500
-        ```
+      summary: Server error with custom response
       responses:
         '500':
-          description: Internal Server Error - sanitized by custom_response filter
+          description: Internal Server Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "internal server error"
-                status_code: 500
-                message: "An unexpected error occurred"
 
-  # Unauthorized case - custom_response filter transforms 401
-  /status/401:
-    get:
-      summary: Unauthorized error (401) with custom response
-      description: |
-        HTTPBin returns 401 Unauthorized. Custom response filter provides
-        consistent authentication error format.
-
-        Expected behavior:
-        - HTTPBin returns: 401 Unauthorized
-        - custom_response filter: Matches 401, formats auth error
-        - Client receives: {"error": "unauthorized", "message": "Authentication required"}
-      responses:
-        '401':
-          description: Unauthorized - formatted by custom_response filter
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "unauthorized"
-                status_code: 401
-                message: "Authentication required"
-
-  # Forbidden case - custom_response filter transforms 403
-  /status/403:
-    get:
-      summary: Forbidden error (403) with custom response
-      description: |
-        HTTPBin returns 403 Forbidden. Custom response provides consistent
-        authorization error format.
-      responses:
-        '403':
-          description: Forbidden - formatted by custom_response filter
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "forbidden"
-                status_code: 403
-                message: "You don't have permission to access this resource"
-
-  # Health check - DISABLES custom_response to return raw response
   /health:
     get:
-      summary: Health check with custom_response DISABLED
-      description: |
-        Health check endpoint that bypasses the custom_response filter.
-        This ensures monitoring tools receive the exact response from httpbin.
-
-        Expected behavior:
-        - HTTPBin returns: 200 OK with httpbin HTML
-        - custom_response filter: DISABLED for this route
-        - Client receives: Raw httpbin response (not JSON formatted)
-
-        Test with:
-        ```bash
-        curl -H "Host: custom-response-demo.example.com" \
-             http://localhost:10000/health
-        ```
-
-        Use case: Health checks, monitoring endpoints, webhooks that need
-        raw upstream responses without transformation.
-      x-flowplane-route-overrides:
-        # Disable custom_response for this route only
-        custom_response: disabled
-      responses:
-        '200':
-          description: Health check - raw httpbin response
-          content:
-            text/html:
-              schema:
-                type: string
-
-  # Alternate health endpoint using /status/200 but with override
-  /status/200/raw:
-    get:
-      summary: Success endpoint with custom_response DISABLED
-      description: |
-        Same as /status/200 but explicitly disables custom_response filter
-        to demonstrate route-level override capability.
-
-        This shows that you can disable the global filter on specific routes.
+      summary: Health check with custom_response disabled
       x-flowplane-route-overrides:
         custom_response: disabled
       responses:
         '200':
-          description: Success - raw response (custom_response disabled)
-
-  # Rate limit exceeded case
-  /status/429:
-    get:
-      summary: Rate limit exceeded (429) with custom response
-      description: |
-        HTTPBin returns 429 Too Many Requests. Custom response provides
-        consistent rate limiting error format.
-      responses:
-        '429':
-          description: Too Many Requests - formatted by custom_response filter
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "rate_limit_exceeded"
-                status_code: 429
-                message: "Too many requests. Please try again later."
-                retry_after: 60
+          description: OK
 
 components:
   schemas:
     ErrorResponse:
       type: object
-      description: |
-        Standardized error response returned by the custom_response filter.
-        The filter intercepts error status codes from httpbin and transforms
-        them into this consistent JSON format.
-      required:
-        - error
-        - status_code
-        - message
       properties:
         error:
           type: string
-          description: Machine-readable error code
-          example: "bad_request"
         status_code:
           type: integer
-          description: HTTP status code
-          example: 400
         message:
           type: string
-          description: Human-readable error message
-          example: "The request could not be processed"
-        retry_after:
-          type: integer
-          description: Seconds to wait before retrying (for 429 errors)
-          example: 60
