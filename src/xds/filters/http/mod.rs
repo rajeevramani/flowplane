@@ -19,7 +19,7 @@ use crate::xds::filters::http::cors::{
     CorsConfig as CorsFilterConfig, CorsPerRouteConfig, FILTER_CORS_POLICY_TYPE_URL,
 };
 use crate::xds::filters::http::credential_injector::CredentialInjectorConfig;
-use crate::xds::filters::http::custom_response::CustomResponseConfig;
+use crate::xds::filters::http::custom_response::{CustomResponseConfig, CustomResponsePerRouteConfig};
 use crate::xds::filters::http::header_mutation::{HeaderMutationConfig, HeaderMutationPerRouteConfig};
 use crate::xds::filters::http::health_check::HealthCheckConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
@@ -53,6 +53,8 @@ const RATE_LIMIT_PER_ROUTE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute";
 const RATE_LIMIT_QUOTA_OVERRIDE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.rate_limit_quota.v3.RateLimitQuotaOverride";
+const CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.config.route.v3.FilterConfig";
 
 /// REST representation of an HTTP filter entry
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -162,6 +164,8 @@ pub enum HttpScopedConfig {
     RateLimit(RateLimitPerRouteConfig),
     /// Rate limit quota per-route overrides
     RateLimitQuota(RateLimitQuotaOverrideConfig),
+    /// Custom response per-route overrides
+    CustomResponse(CustomResponsePerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -180,6 +184,7 @@ impl HttpScopedConfig {
             Self::HeaderMutation(cfg) => cfg.to_any(),
             Self::RateLimit(cfg) => cfg.to_any(),
             Self::RateLimitQuota(cfg) => cfg.to_any(),
+            Self::CustomResponse(cfg) => cfg.to_any(),
         }
     }
 
@@ -241,6 +246,18 @@ impl HttpScopedConfig {
             })?;
             let cfg = RateLimitQuotaOverrideConfig::from_proto(&proto)?;
             return Ok(HttpScopedConfig::RateLimitQuota(cfg));
+        }
+
+        if any.type_url == CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL {
+            use envoy_types::pb::envoy::config::route::v3::FilterConfig;
+            let proto = FilterConfig::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!(
+                    "Failed to decode custom response per-route config: {}",
+                    err
+                ))
+            })?;
+            let cfg = CustomResponsePerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::CustomResponse(cfg));
         }
 
         Ok(HttpScopedConfig::Typed(TypedConfig {

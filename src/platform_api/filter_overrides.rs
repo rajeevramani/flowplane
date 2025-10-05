@@ -7,6 +7,7 @@ use crate::xds::filters::http::cors::{
     CorsOriginMatcher, CorsPerRouteConfig, CorsPolicyConfig, FractionalPercentDenominator,
     RuntimeFractionalPercentConfig,
 };
+use crate::xds::filters::http::custom_response::CustomResponsePerRouteConfig;
 use crate::xds::filters::http::header_mutation::HeaderMutationPerRouteConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::rate_limit::RateLimitPerRouteConfig;
@@ -19,6 +20,7 @@ const LOCAL_RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.local_ratelimit";
 const HEADER_MUTATION_FILTER_NAME: &str = "envoy.filters.http.header_mutation";
 const RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.ratelimit";
 const RATE_LIMIT_QUOTA_FILTER_NAME: &str = "envoy.filters.http.rate_limit_quota";
+const CUSTOM_RESPONSE_FILTER_NAME: &str = "envoy.filters.http.custom_response";
 
 /// Validate filter overrides without mutating the payload.
 pub fn validate_filter_overrides(filters: &Option<Value>) -> Result<(), Error> {
@@ -57,11 +59,12 @@ pub fn typed_per_filter_config(
             "header_mutation" => HEADER_MUTATION_FILTER_NAME,
             "ratelimit" => RATE_LIMIT_FILTER_NAME, // Distributed rate limit
             "rate_limit_quota" => RATE_LIMIT_QUOTA_FILTER_NAME,
+            "custom_response" => CUSTOM_RESPONSE_FILTER_NAME,
             // Allow callers to specify a fully-qualified filter name directly.
             other if other.contains('.') => other,
             other => {
                 return Err(Error::validation(format!(
-                    "Unsupported filter override alias '{}'; expected 'cors', 'jwt_authn', 'rate_limit', 'header_mutation', 'ratelimit', 'rate_limit_quota', or a fully qualified filter name",
+                    "Unsupported filter override alias '{}'; expected 'cors', 'jwt_authn', 'rate_limit', 'header_mutation', 'ratelimit', 'rate_limit_quota', 'custom_response', or a fully qualified filter name",
                     other
                 )));
             }
@@ -128,6 +131,26 @@ fn parse_filter_overrides(
                         Error::validation(format!("Invalid rate limit quota override: {err}"))
                     })?;
                 Some(HttpScopedConfig::RateLimitQuota(cfg))
+            }
+            "custom_response" => {
+                // Support "disabled" string or structured config
+                if let Value::String(s) = raw {
+                    if s.trim().eq_ignore_ascii_case("disabled") {
+                        Some(HttpScopedConfig::CustomResponse(CustomResponsePerRouteConfig {
+                            disabled: true,
+                        }))
+                    } else {
+                        return Err(Error::validation(
+                            "Invalid custom_response override: expected 'disabled' or object".to_string()
+                        ));
+                    }
+                } else {
+                    let cfg: CustomResponsePerRouteConfig = serde_json::from_value(raw.clone())
+                        .map_err(|err| {
+                            Error::validation(format!("Invalid custom response override: {err}"))
+                        })?;
+                    Some(HttpScopedConfig::CustomResponse(cfg))
+                }
             }
             other if other.contains('.') => {
                 Some(HttpScopedConfig::Typed(parse_typed_override(raw)?))
@@ -348,5 +371,59 @@ mod tests {
         assert!(map.contains_key(HEADER_MUTATION_FILTER_NAME));
         assert!(map.contains_key(RATE_LIMIT_FILTER_NAME));
         assert!(map.contains_key(RATE_LIMIT_QUOTA_FILTER_NAME));
+    }
+
+    #[test]
+    fn custom_response_override_disabled_string() {
+        let filters = json!({
+            "custom_response": "disabled"
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert!(map.contains_key(CUSTOM_RESPONSE_FILTER_NAME));
+
+        match map.get(CUSTOM_RESPONSE_FILTER_NAME) {
+            Some(HttpScopedConfig::CustomResponse(cfg)) => {
+                assert!(cfg.disabled);
+            }
+            _ => panic!("Expected CustomResponse config"),
+        }
+    }
+
+    #[test]
+    fn custom_response_override_object() {
+        let filters = json!({
+            "custom_response": {
+                "disabled": false
+            }
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert!(map.contains_key(CUSTOM_RESPONSE_FILTER_NAME));
+
+        match map.get(CUSTOM_RESPONSE_FILTER_NAME) {
+            Some(HttpScopedConfig::CustomResponse(cfg)) => {
+                assert!(!cfg.disabled);
+            }
+            _ => panic!("Expected CustomResponse config"),
+        }
+    }
+
+    #[test]
+    fn custom_response_override_canonicalizes() {
+        let filters = json!({
+            "custom_response": "disabled"
+        });
+        let canonical = canonicalize_filter_overrides(Some(filters)).expect("canonicalize");
+        let canonical_value = canonical.expect("some value");
+        let obj = canonical_value.as_object().expect("object");
+        assert!(obj.contains_key("custom_response"));
+    }
+
+    #[test]
+    fn custom_response_invalid_string_rejected() {
+        let filters = json!({
+            "custom_response": "invalid"
+        });
+        let err = typed_per_filter_config(&Some(filters)).expect_err("should fail");
+        assert!(format!("{err}").contains("expected 'disabled' or object"));
     }
 }

@@ -12,6 +12,9 @@ use utoipa::ToSchema;
 const CUSTOM_RESPONSE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse";
 
+const CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL: &str =
+    "type.googleapis.com/envoy.config.route.v3.FilterConfig";
+
 /// Configuration for custom response filter
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
 pub struct CustomResponseConfig {
@@ -69,6 +72,49 @@ impl CustomResponseConfig {
         });
 
         let config = Self { custom_response_matcher };
+
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+/// Per-route custom response configuration
+///
+/// This allows disabling or customizing custom response behavior per-route.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
+pub struct CustomResponsePerRouteConfig {
+    /// Whether to disable custom response for this route
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+impl CustomResponsePerRouteConfig {
+    /// Validate per-route configuration
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        // Simple boolean flag, always valid
+        Ok(())
+    }
+
+    /// Convert to Envoy Any payload for typed_per_filter_config
+    pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
+        use envoy_types::pb::envoy::config::route::v3::FilterConfig;
+
+        self.validate()?;
+
+        let proto = FilterConfig {
+            disabled: self.disabled,
+            is_optional: false,
+            config: None, // Custom response doesn't support per-route config, only disable
+        };
+
+        Ok(any_from_message(CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL, &proto))
+    }
+
+    /// Build configuration from Envoy proto
+    pub fn from_proto(proto: &envoy_types::pb::envoy::config::route::v3::FilterConfig) -> Result<Self, crate::Error> {
+        let config = Self {
+            disabled: proto.disabled,
+        };
 
         config.validate()?;
         Ok(config)
@@ -139,5 +185,35 @@ mod tests {
     fn validates_successfully() {
         let config = CustomResponseConfig::default();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn per_route_config_default() {
+        let config = CustomResponsePerRouteConfig::default();
+        assert!(!config.disabled);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn per_route_config_disabled() {
+        let config = CustomResponsePerRouteConfig { disabled: true };
+        assert!(config.validate().is_ok());
+
+        let any = config.to_any().expect("to_any");
+        assert_eq!(any.type_url, CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL);
+    }
+
+    #[test]
+    fn per_route_proto_round_trip() {
+        use envoy_types::pb::envoy::config::route::v3::FilterConfig;
+
+        let config = CustomResponsePerRouteConfig { disabled: true };
+        let any = config.to_any().expect("to_any");
+
+        let proto = FilterConfig::decode(any.value.as_slice()).expect("decode proto");
+        assert!(proto.disabled);
+
+        let round_tripped = CustomResponsePerRouteConfig::from_proto(&proto).expect("from_proto");
+        assert!(round_tripped.disabled);
     }
 }

@@ -174,6 +174,24 @@ x-flowplane-route-overrides:
 
 ---
 
+### 7. `custom_response` - Custom Response Override
+
+Control custom response behavior for specific routes.
+
+#### Disable Custom Response
+
+```yaml
+x-flowplane-route-overrides:
+  custom_response: disabled
+```
+
+**Use Cases:**
+- Disable custom response filter for specific routes
+- Let upstream handle error pages for certain endpoints
+- Bypass custom error handling for health checks
+
+---
+
 ## NOT Currently Supported
 
 The following are **NOT** supported as route-level overrides:
