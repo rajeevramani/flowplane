@@ -73,7 +73,7 @@ pub fn openapi_to_api_definition_spec(
             }]
         });
 
-        // Parse route-level x-flowplane-filters from path item operations
+        // Parse route-level x-flowplane-route-overrides from path item operations
         // Store the raw JSON value in override_config for typed_per_filter_config processing
         let override_config = parse_route_level_filters(path_item)?;
 
@@ -110,10 +110,18 @@ pub fn openapi_to_api_definition_spec(
 
     // Configure listener isolation if requested
     let isolation_listener = if listener_isolation {
+        // Use a deterministic port based on the domain to avoid conflicts
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        domain.hash(&mut hasher);
+        // Port range 20000-29999 for isolated listeners
+        let port = 20000 + (hasher.finish() % 10000) as u32;
+
         Some(ListenerInput {
             name: None,
             bind_address: "0.0.0.0".to_string(),
-            port: 10000, // Default port for isolated listener
+            port,
             protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
             tls_config: tls_config.clone(),
             http_filters: if global_filters.is_empty() {
@@ -137,20 +145,19 @@ pub fn openapi_to_api_definition_spec(
     })
 }
 
-/// Parse route-level x-flowplane-filters from path item operations.
+/// Parse route-level x-flowplane-route-overrides from path item operations.
 ///
 /// Checks operations in priority order (GET, POST, PUT, DELETE, PATCH, etc.)
-/// and returns the raw filter extension value from the first operation that has it.
-/// Returns None if no operations have x-flowplane-filters extensions.
+/// and returns the raw filter override object from the first operation that has it.
+/// Returns None if no operations have x-flowplane-route-overrides extensions.
 ///
-/// Note: The returned JSON value is stored in RouteSpec.override_config and passed to
-/// the materializer's typed_per_filter_config function for processing. The x-flowplane-filters
-/// format (array of HttpFilterConfigEntry) may need conversion to work with typed_per_filter_config's
-/// expected format (object with filter aliases as keys). This will be addressed in subtask 19.4.
+/// The returned JSON value is stored in RouteSpec.override_config and passed to
+/// the materializer's typed_per_filter_config function for processing. It should be
+/// an object with filter aliases as keys (e.g., {"authn": "disabled", "cors": {...}}).
 fn parse_route_level_filters(
     path_item: &PathItem,
 ) -> Result<Option<serde_json::Value>, GatewayError> {
-    const EXTENSION_ROUTE_FILTERS: &str = "x-flowplane-filters";
+    const EXTENSION_ROUTE_FILTERS: &str = "x-flowplane-route-overrides";
 
     // Check operations in priority order
     let operations = [
@@ -164,12 +171,10 @@ fn parse_route_level_filters(
         &path_item.trace,
     ];
 
-    for operation_opt in operations.iter() {
-        if let Some(operation) = operation_opt {
-            if let Some(value) = operation.extensions.get(EXTENSION_ROUTE_FILTERS) {
-                // Return the raw JSON value - it will be processed by typed_per_filter_config
-                return Ok(Some(value.clone()));
-            }
+    for operation in operations.iter().copied().flatten() {
+        if let Some(value) = operation.extensions.get(EXTENSION_ROUTE_FILTERS) {
+            // Return the raw JSON value - it will be processed by typed_per_filter_config
+            return Ok(Some(value.clone()));
         }
     }
 
@@ -285,7 +290,7 @@ mod tests {
         assert!(spec.tls_config.is_none()); // HTTP not HTTPS
 
         let listener = spec.isolation_listener.unwrap();
-        assert_eq!(listener.port, 10000);
+        assert!(listener.port >= 20000 && listener.port < 30000, "Port should be in 20000-29999 range");
         assert_eq!(listener.bind_address, "0.0.0.0");
         assert_eq!(listener.protocol, "HTTP");
         assert!(listener.tls_config.is_none());
@@ -326,16 +331,9 @@ mod tests {
                 "paths": {
                     "/users": {
                         "get": {
-                            "x-flowplane-filters": [
-                                {
-                                    "filter": {
-                                        "type": "header_mutation",
-                                        "request_headers_to_add": [
-                                            {"key": "x-route-header", "value": "users", "append": false}
-                                        ]
-                                    }
-                                }
-                            ],
+                            "x-flowplane-route-overrides": {
+                                "authn": "disabled"
+                            },
                             "responses": {
                                 "200": {"description": "OK"}
                             }
@@ -353,11 +351,11 @@ mod tests {
         let route = &spec.routes[0];
         assert!(route.override_config.is_some());
 
-        // Verify the override_config contains the filter
+        // Verify the override_config contains the filter overrides
         let override_config = route.override_config.as_ref().unwrap();
-        assert!(override_config.is_array());
-        let filters = override_config.as_array().unwrap();
-        assert_eq!(filters.len(), 1);
+        assert!(override_config.is_object());
+        let overrides = override_config.as_object().unwrap();
+        assert!(overrides.contains_key("authn"));
     }
 
     #[test]
@@ -497,14 +495,9 @@ mod tests {
                 "paths": {
                     "/users": {
                         "post": {
-                            "x-flowplane-filters": [
-                                {
-                                    "filter": {
-                                        "type": "local_rate_limit",
-                                        "requests_per_second": 10.0
-                                    }
-                                }
-                            ],
+                            "x-flowplane-route-overrides": {
+                                "cors": "allow-authenticated"
+                            },
                             "responses": {
                                 "201": {"description": "Created"}
                             }
@@ -544,16 +537,9 @@ mod tests {
                 "paths": {
                     "/users": {
                         "get": {
-                            "x-flowplane-filters": [
-                                {
-                                    "filter": {
-                                        "type": "header_mutation",
-                                        "request_headers_to_add": [
-                                            {"key": "x-route", "value": "users", "append": false}
-                                        ]
-                                    }
-                                }
-                            ],
+                            "x-flowplane-route-overrides": {
+                                "authn": "oidc-default"
+                            },
                             "responses": {
                                 "200": {"description": "OK"}
                             }
