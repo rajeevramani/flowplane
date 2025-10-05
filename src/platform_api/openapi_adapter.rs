@@ -2,7 +2,6 @@ use openapiv3::{OpenAPI, PathItem, ReferenceOr};
 use serde_json::json;
 
 use crate::openapi::GatewayError;
-use crate::xds::filters::http::HttpFilterConfigEntry;
 
 use super::materializer::{ApiDefinitionSpec, ListenerInput, RouteSpec};
 
@@ -75,14 +74,8 @@ pub fn openapi_to_api_definition_spec(
         });
 
         // Parse route-level x-flowplane-filters from path item operations
-        let route_filters = parse_route_level_filters(path_item)?;
-        let override_config = if let Some(filters) = route_filters {
-            Some(serde_json::to_value(&filters).map_err(|e| {
-                GatewayError::InvalidFilters(format!("Failed to serialize route filters: {}", e))
-            })?)
-        } else {
-            None
-        };
+        // Store the raw JSON value in override_config for typed_per_filter_config processing
+        let override_config = parse_route_level_filters(path_item)?;
 
         let route_spec = RouteSpec {
             match_type: "prefix".to_string(),
@@ -147,11 +140,16 @@ pub fn openapi_to_api_definition_spec(
 /// Parse route-level x-flowplane-filters from path item operations.
 ///
 /// Checks operations in priority order (GET, POST, PUT, DELETE, PATCH, etc.)
-/// and returns filters from the first operation that has them defined.
+/// and returns the raw filter extension value from the first operation that has it.
 /// Returns None if no operations have x-flowplane-filters extensions.
+///
+/// Note: The returned JSON value is stored in RouteSpec.override_config and passed to
+/// the materializer's typed_per_filter_config function for processing. The x-flowplane-filters
+/// format (array of HttpFilterConfigEntry) may need conversion to work with typed_per_filter_config's
+/// expected format (object with filter aliases as keys). This will be addressed in subtask 19.4.
 fn parse_route_level_filters(
     path_item: &PathItem,
-) -> Result<Option<Vec<HttpFilterConfigEntry>>, GatewayError> {
+) -> Result<Option<serde_json::Value>, GatewayError> {
     const EXTENSION_ROUTE_FILTERS: &str = "x-flowplane-filters";
 
     // Check operations in priority order
@@ -169,14 +167,8 @@ fn parse_route_level_filters(
     for operation_opt in operations.iter() {
         if let Some(operation) = operation_opt {
             if let Some(value) = operation.extensions.get(EXTENSION_ROUTE_FILTERS) {
-                let filters = serde_json::from_value::<Vec<HttpFilterConfigEntry>>(value.clone())
-                    .map_err(|err| {
-                        GatewayError::InvalidFilters(format!(
-                            "Failed to parse route-level {}: {}",
-                            EXTENSION_ROUTE_FILTERS, err
-                        ))
-                    })?;
-                return Ok(Some(filters));
+                // Return the raw JSON value - it will be processed by typed_per_filter_config
+                return Ok(Some(value.clone()));
             }
         }
     }
