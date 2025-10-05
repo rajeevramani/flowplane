@@ -1100,7 +1100,7 @@ mod tests {
     use super::*;
     use crate::platform_api::filter_overrides::canonicalize_filter_overrides;
     use crate::storage::{ApiDefinitionData, ApiRouteData, ListenerData};
-    use crate::xds::filters::http::cors::ROUTE_CORS_POLICY_TYPE_URL;
+    use crate::xds::filters::http::cors::FILTER_CORS_POLICY_TYPE_URL;
     use crate::xds::{
         listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec,
@@ -1197,7 +1197,7 @@ mod tests {
             .typed_per_filter_config
             .get("envoy.filters.http.cors")
             .expect("cors override present");
-        assert_eq!(cors_any.type_url, ROUTE_CORS_POLICY_TYPE_URL);
+        assert_eq!(cors_any.type_url, FILTER_CORS_POLICY_TYPE_URL);
 
         let cluster_any = resources
             .iter()
@@ -1216,7 +1216,7 @@ mod tests {
         // materialization process (materialize_isolated_listener) when listener_isolation=true,
         // or routes are merged into existing listeners when listener_isolation=false.
         assert!(
-            resources.iter().find(|res| res.resource.type_url == LISTENER_TYPE_URL).is_none(),
+            !resources.iter().any(|res| res.resource.type_url == LISTENER_TYPE_URL),
             "No listener should be generated for listener_isolation=false"
         );
     }

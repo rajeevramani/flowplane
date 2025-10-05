@@ -16,7 +16,7 @@ pub mod rate_limit;
 pub mod rate_limit_quota;
 
 use crate::xds::filters::http::cors::{
-    CorsConfig as CorsFilterConfig, CorsPerRouteConfig, ROUTE_CORS_POLICY_TYPE_URL,
+    CorsConfig as CorsFilterConfig, CorsPerRouteConfig, FILTER_CORS_POLICY_TYPE_URL,
 };
 use crate::xds::filters::http::credential_injector::CredentialInjectorConfig;
 use crate::xds::filters::http::custom_response::CustomResponseConfig;
@@ -32,7 +32,7 @@ use envoy_types::pb::envoy::extensions::filters::network::http_connection_manage
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
-use envoy_types::pb::envoy::config::route::v3::CorsPolicy as RouteCorsPolicyProto;
+use envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy as FilterCorsPolicyProto;
 use envoy_types::pb::envoy::extensions::filters::http::header_mutation::v3::HeaderMutationPerRoute as HeaderMutationPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3::RateLimitPerRoute as RateLimitPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::rate_limit_quota::v3::RateLimitQuotaOverride;
@@ -128,7 +128,11 @@ impl HttpFilterKind {
                 "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
                 &RouterFilter::default(),
             ))),
-            Self::Cors(cfg) => cfg.to_any().map(Some),
+            Self::Cors(_cfg) => {
+                // Validate the config but use the empty marker for the HTTP filter chain
+                _cfg.policy.validate()?;
+                Ok(Some(cors::filter_marker_any()))
+            }
             Self::LocalRateLimit(cfg) => cfg.to_any().map(Some),
             Self::JwtAuthn(cfg) => cfg.to_any().map(Some),
             Self::RateLimit(cfg) => cfg.to_any().map(Some),
@@ -189,8 +193,8 @@ impl HttpScopedConfig {
             return Ok(HttpScopedConfig::LocalRateLimit(cfg));
         }
 
-        if any.type_url == ROUTE_CORS_POLICY_TYPE_URL {
-            let proto = RouteCorsPolicyProto::decode(any.value.as_slice()).map_err(|err| {
+        if any.type_url == FILTER_CORS_POLICY_TYPE_URL {
+            let proto = FilterCorsPolicyProto::decode(any.value.as_slice()).map_err(|err| {
                 crate::Error::config(format!("Failed to decode CORS per-route config: {}", err))
             })?;
             let cfg = CorsPerRouteConfig::from_proto(&proto)?;
@@ -375,7 +379,8 @@ mod tests {
             })
             .expect("typed config present");
 
-        assert_eq!(typed.type_url, crate::xds::filters::http::cors::FILTER_CORS_POLICY_TYPE_URL);
+        // CORS filter uses an empty marker in the HTTP filter chain
+        assert_eq!(typed.type_url, crate::xds::filters::http::cors::CORS_FILTER_TYPE_URL);
     }
 
     #[test]
@@ -409,12 +414,62 @@ mod tests {
         });
 
         let any = scoped.to_any().expect("to_any");
-        assert_eq!(any.type_url, ROUTE_CORS_POLICY_TYPE_URL);
+        assert_eq!(any.type_url, FILTER_CORS_POLICY_TYPE_URL);
 
         let restored = HttpScopedConfig::from_any(&any).expect("from_any");
         match restored {
             HttpScopedConfig::Cors(config) => {
                 assert_eq!(config.policy.allow_methods, vec!["GET"]);
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cors_filter_and_route_config_use_correct_types() {
+        // Test that CORS filter chain uses empty Cors marker
+        let policy = CorsPolicyConfig {
+            allow_origin: vec![CorsOriginMatcher::Exact { value: "*".into() }],
+            allow_methods: vec!["GET".into(), "POST".into()],
+            allow_headers: vec!["content-type".into()],
+            max_age: Some(3600),
+            ..Default::default()
+        };
+
+        // 1. Test HTTP filter chain produces empty Cors marker
+        let filter_entry = HttpFilterConfigEntry {
+            name: None,
+            is_optional: false,
+            disabled: false,
+            filter: HttpFilterKind::Cors(CorsFilterConfig { policy: policy.clone() }),
+        };
+
+        let filters = build_http_filters(&[filter_entry]).expect("build filters");
+        let typed = filters[0]
+            .config_type
+            .as_ref()
+            .and_then(|config| match config {
+                HttpFilterConfigType::TypedConfig(any) => Some(any),
+                _ => None,
+            })
+            .expect("typed config present");
+
+        // Should use empty Cors marker type URL
+        assert_eq!(typed.type_url, crate::xds::filters::http::cors::CORS_FILTER_TYPE_URL);
+
+        // 2. Test route-level config uses CorsPolicy with correct type URL
+        let route_config = HttpScopedConfig::Cors(CorsPerRouteConfig { policy });
+        let route_any = route_config.to_any().expect("to_any");
+
+        // Should use CorsPolicy type URL for route-level config
+        assert_eq!(route_any.type_url, FILTER_CORS_POLICY_TYPE_URL);
+
+        // Verify it can be decoded back
+        let restored = HttpScopedConfig::from_any(&route_any).expect("from_any");
+        match restored {
+            HttpScopedConfig::Cors(config) => {
+                assert_eq!(config.policy.allow_methods, vec!["GET", "POST"]);
+                assert_eq!(config.policy.max_age, Some(3600));
             }
             other => panic!("unexpected scoped config: {:?}", other),
         }
