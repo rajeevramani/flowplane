@@ -7,12 +7,18 @@ use crate::xds::filters::http::cors::{
     CorsOriginMatcher, CorsPerRouteConfig, CorsPolicyConfig, FractionalPercentDenominator,
     RuntimeFractionalPercentConfig,
 };
+use crate::xds::filters::http::header_mutation::HeaderMutationPerRouteConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
+use crate::xds::filters::http::rate_limit::{RateLimitPerRouteConfig};
+use crate::xds::filters::http::rate_limit_quota::RateLimitQuotaOverrideConfig;
 use crate::xds::filters::http::{local_rate_limit::LocalRateLimitConfig, HttpScopedConfig};
 
 const CORS_FILTER_NAME: &str = "envoy.filters.http.cors";
 const JWT_FILTER_NAME: &str = "envoy.filters.http.jwt_authn";
-const RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.local_ratelimit";
+const LOCAL_RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.local_ratelimit";
+const HEADER_MUTATION_FILTER_NAME: &str = "envoy.filters.http.header_mutation";
+const RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.ratelimit";
+const RATE_LIMIT_QUOTA_FILTER_NAME: &str = "envoy.filters.http.rate_limit_quota";
 
 /// Validate filter overrides without mutating the payload.
 pub fn validate_filter_overrides(filters: &Option<Value>) -> Result<(), Error> {
@@ -47,12 +53,15 @@ pub fn typed_per_filter_config(
         let filter_name = match alias.as_str() {
             "cors" => CORS_FILTER_NAME,
             "jwt_authn" | "authn" => JWT_FILTER_NAME,  // Support both for backward compatibility
-            "rate_limit" => RATE_LIMIT_FILTER_NAME,
+            "rate_limit" => LOCAL_RATE_LIMIT_FILTER_NAME,
+            "header_mutation" => HEADER_MUTATION_FILTER_NAME,
+            "ratelimit" => RATE_LIMIT_FILTER_NAME,  // Distributed rate limit
+            "rate_limit_quota" => RATE_LIMIT_QUOTA_FILTER_NAME,
             // Allow callers to specify a fully-qualified filter name directly.
             other if other.contains('.') => other,
             other => {
                 return Err(Error::validation(format!(
-                    "Unsupported filter override alias '{}'; expected 'cors', 'jwt_authn', 'rate_limit', or a fully qualified filter name",
+                    "Unsupported filter override alias '{}'; expected 'cors', 'jwt_authn', 'rate_limit', 'header_mutation', 'ratelimit', 'rate_limit_quota', or a fully qualified filter name",
                     other
                 )));
             }
@@ -98,6 +107,27 @@ fn parse_filter_overrides(
                         Error::validation(format!("Invalid local rate limit override: {err}"))
                     })?;
                 Some(HttpScopedConfig::LocalRateLimit(cfg))
+            }
+            "header_mutation" => {
+                let cfg: HeaderMutationPerRouteConfig =
+                    serde_json::from_value(raw.clone()).map_err(|err| {
+                        Error::validation(format!("Invalid header mutation override: {err}"))
+                    })?;
+                Some(HttpScopedConfig::HeaderMutation(cfg))
+            }
+            "ratelimit" => {
+                let cfg: RateLimitPerRouteConfig =
+                    serde_json::from_value(raw.clone()).map_err(|err| {
+                        Error::validation(format!("Invalid rate limit override: {err}"))
+                    })?;
+                Some(HttpScopedConfig::RateLimit(cfg))
+            }
+            "rate_limit_quota" => {
+                let cfg: RateLimitQuotaOverrideConfig =
+                    serde_json::from_value(raw.clone()).map_err(|err| {
+                        Error::validation(format!("Invalid rate limit quota override: {err}"))
+                    })?;
+                Some(HttpScopedConfig::RateLimitQuota(cfg))
             }
             other if other.contains('.') => Some(HttpScopedConfig::Typed(parse_typed_override(raw)?)),
             other => {
@@ -229,5 +259,90 @@ mod tests {
         let filters = json!({ "authn": "oidc-default" });
         let map = typed_per_filter_config(&Some(filters)).expect("map");
         assert!(map.contains_key(JWT_FILTER_NAME));
+    }
+
+    #[test]
+    fn header_mutation_override_parses_correctly() {
+        let filters = json!({
+            "header_mutation": {
+                "request_headers_to_add": [
+                    {"key": "x-custom", "value": "test", "append": false}
+                ],
+                "request_headers_to_remove": ["x-old"],
+                "response_headers_to_add": [],
+                "response_headers_to_remove": []
+            }
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert!(map.contains_key(HEADER_MUTATION_FILTER_NAME));
+
+        match map.get(HEADER_MUTATION_FILTER_NAME) {
+            Some(HttpScopedConfig::HeaderMutation(cfg)) => {
+                assert_eq!(cfg.request_headers_to_add.len(), 1);
+                assert_eq!(cfg.request_headers_to_add[0].key, "x-custom");
+                assert_eq!(cfg.request_headers_to_remove, vec!["x-old"]);
+            }
+            _ => panic!("Expected HeaderMutation config"),
+        }
+    }
+
+    #[test]
+    fn ratelimit_override_parses_correctly() {
+        let filters = json!({
+            "ratelimit": {
+                "stage": 0,
+                "disable_key": "disabled"
+            }
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert!(map.contains_key(RATE_LIMIT_FILTER_NAME));
+
+        match map.get(RATE_LIMIT_FILTER_NAME) {
+            Some(HttpScopedConfig::RateLimit(_cfg)) => {
+                // Successfully parsed distributed rate limit config
+            }
+            _ => panic!("Expected RateLimit config"),
+        }
+    }
+
+    #[test]
+    fn rate_limit_quota_override_parses_correctly() {
+        let filters = json!({
+            "rate_limit_quota": {
+                "domain": "test-domain"
+            }
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert!(map.contains_key(RATE_LIMIT_QUOTA_FILTER_NAME));
+
+        match map.get(RATE_LIMIT_QUOTA_FILTER_NAME) {
+            Some(HttpScopedConfig::RateLimitQuota(cfg)) => {
+                assert_eq!(cfg.domain, "test-domain");
+            }
+            _ => panic!("Expected RateLimitQuota config"),
+        }
+    }
+
+    #[test]
+    fn all_new_filter_aliases_work_together() {
+        let filters = json!({
+            "header_mutation": {
+                "request_headers_to_add": [{"key": "x-test", "value": "1", "append": false}],
+                "request_headers_to_remove": [],
+                "response_headers_to_add": [],
+                "response_headers_to_remove": []
+            },
+            "ratelimit": {
+                "stage": 0
+            },
+            "rate_limit_quota": {
+                "domain": "combined-test-domain"
+            }
+        });
+        let map = typed_per_filter_config(&Some(filters)).expect("map");
+        assert_eq!(map.len(), 3);
+        assert!(map.contains_key(HEADER_MUTATION_FILTER_NAME));
+        assert!(map.contains_key(RATE_LIMIT_FILTER_NAME));
+        assert!(map.contains_key(RATE_LIMIT_QUOTA_FILTER_NAME));
     }
 }

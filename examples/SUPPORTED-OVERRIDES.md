@@ -99,15 +99,87 @@ x-flowplane-route-overrides:
 
 ---
 
+### 4. `header_mutation` - Header Mutation Override
+
+Customize headers for specific routes.
+
+#### Custom Header Mutation
+
+```yaml
+x-flowplane-route-overrides:
+  header_mutation:
+    request_headers_to_add:
+      - key: x-route-id
+        value: admin-route
+        append: false
+    request_headers_to_remove:
+      - x-debug
+    response_headers_to_add:
+      - key: x-cache-status
+        value: hit
+        append: false
+    response_headers_to_remove:
+      - server
+```
+
+**Required Fields:**
+- At least one of: `request_headers_to_add`, `request_headers_to_remove`, `response_headers_to_add`, or `response_headers_to_remove`
+
+**Use Cases:**
+- Add route-specific tracking headers
+- Remove sensitive headers for public endpoints
+- Add custom cache headers per route
+
+---
+
+### 5. `ratelimit` - Distributed Rate Limit Override
+
+⚠️ **Note**: Use `ratelimit` for distributed rate limiting (not `rate_limit` which is for local rate limiting)
+
+#### Custom Distributed Rate Limit
+
+```yaml
+x-flowplane-route-overrides:
+  ratelimit:
+    stage: 0
+    disable_key: disabled
+```
+
+**Use Cases:**
+- Override distributed rate limit behavior per route
+- Disable distributed rate limiting for specific endpoints
+- Use different rate limit stages for different routes
+
+---
+
+### 6. `rate_limit_quota` - Rate Limit Quota Override
+
+Control quota-based rate limiting for specific routes.
+
+#### Custom Rate Limit Quota
+
+```yaml
+x-flowplane-route-overrides:
+  rate_limit_quota:
+    domain: premium-users
+```
+
+**Required Fields:**
+- `domain`: Quota domain (string, required)
+
+**Use Cases:**
+- Different quota buckets for premium vs free tiers
+- Route-specific quota allocation
+- Per-endpoint quota limits
+
+---
+
 ## NOT Currently Supported
 
 The following are **NOT** supported as route-level overrides:
 
-### ❌ `header_mutation`
-Header mutation can only be configured globally via `x-flowplane-filters`.
-
 ### ❌ `local_rate_limit` (at route level)
-Use `rate_limit` instead for route-level overrides.
+Use `rate_limit` instead for local rate limiting route-level overrides.
 
 ---
 
