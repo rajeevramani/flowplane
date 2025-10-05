@@ -351,7 +351,7 @@ impl ApiDefinitionRepository {
         let tls_config = Self::serialize_optional(&request.tls_config)?;
         let metadata = Self::serialize_optional(&request.metadata)?;
         let target_listeners = Self::serialize_optional(
-            &request.target_listeners.as_ref().map(|v| serde_json::to_value(v).unwrap())
+            &request.target_listeners.as_ref().map(|v| serde_json::to_value(v).unwrap()),
         )?;
         let listener_isolation: i64 = if request.listener_isolation { 1 } else { 0 };
 

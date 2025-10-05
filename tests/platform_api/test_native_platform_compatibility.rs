@@ -6,7 +6,10 @@ use flowplane::{
     platform_api::materializer::PlatformApiMaterializer,
     storage::repository::{ClusterRepository, CreateClusterRequest, RouteRepository},
     xds::{
-        route::{PathMatch, RouteActionConfig, RouteConfig, RouteMatchConfig, RouteRule, VirtualHostConfig},
+        route::{
+            PathMatch, RouteActionConfig, RouteConfig, RouteMatchConfig, RouteRule,
+            VirtualHostConfig,
+        },
         ClusterSpec, EndpointSpec, XdsState,
     },
 };
@@ -293,10 +296,11 @@ async fn test_native_api_update_preserves_platform_api_routes() {
         .find(|vh| vh.name == "default-gateway-vhost")
         .expect("Default vhost should exist");
     assert!(
-        default_vhost
-            .routes
-            .iter()
-            .any(|r| r.name.as_ref().map(|n| n == "native-updated-route").unwrap_or(false)),
+        default_vhost.routes.iter().any(|r| r
+            .name
+            .as_ref()
+            .map(|n| n == "native-updated-route")
+            .unwrap_or(false)),
         "Native updated route should exist"
     );
 }
@@ -444,7 +448,8 @@ async fn test_route_ordering_is_deterministic() {
     // Get route config
     let route1 = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let config1: RouteConfig = serde_json::from_str(&route1.configuration).unwrap();
-    let vhost_names1: Vec<String> = config1.virtual_hosts.iter().map(|vh| vh.name.clone()).collect();
+    let vhost_names1: Vec<String> =
+        config1.virtual_hosts.iter().map(|vh| vh.name.clone()).collect();
 
     // Trigger an xDS refresh (simulates update)
     ctx.state.refresh_routes_from_repository().await.unwrap();
@@ -452,7 +457,8 @@ async fn test_route_ordering_is_deterministic() {
     // Get route config again
     let route2 = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let config2: RouteConfig = serde_json::from_str(&route2.configuration).unwrap();
-    let vhost_names2: Vec<String> = config2.virtual_hosts.iter().map(|vh| vh.name.clone()).collect();
+    let vhost_names2: Vec<String> =
+        config2.virtual_hosts.iter().map(|vh| vh.name.clone()).collect();
 
     // Verify ordering is deterministic (should be alphabetically sorted)
     assert_eq!(
@@ -463,8 +469,5 @@ async fn test_route_ordering_is_deterministic() {
     // Verify virtual hosts are sorted alphabetically
     let mut sorted_names = vhost_names1.clone();
     sorted_names.sort();
-    assert_eq!(
-        vhost_names1, sorted_names,
-        "Virtual hosts should be sorted alphabetically"
-    );
+    assert_eq!(vhost_names1, sorted_names, "Virtual hosts should be sorted alphabetically");
 }

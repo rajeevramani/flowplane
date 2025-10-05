@@ -21,8 +21,7 @@ use envoy_types::pb::envoy::config::core::v3::transport_socket::ConfigType as Tr
 use envoy_types::pb::envoy::config::core::v3::{
     health_check::{self, HttpHealthCheck, TcpHealthCheck},
     socket_address::{self, Protocol},
-    Address, HealthCheck, RequestMethod, RoutingPriority,
-    SocketAddress, TransportSocket,
+    Address, HealthCheck, RequestMethod, RoutingPriority, SocketAddress, TransportSocket,
 };
 use envoy_types::pb::envoy::config::endpoint::v3::{
     lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,

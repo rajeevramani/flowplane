@@ -176,8 +176,10 @@ impl DatabaseAggregatedDiscoveryService {
                         .map(|d| d.domain.clone())
                         .collect();
 
-                    let platform_resources =
-                        resources::resources_from_api_definitions(definitions.clone(), platform_routes)?;
+                    let platform_resources = resources::resources_from_api_definitions(
+                        definitions.clone(),
+                        platform_routes,
+                    )?;
 
                     let mut isolated_route_configs = Vec::new();
 
@@ -194,10 +196,10 @@ impl DatabaseAggregatedDiscoveryService {
                             })?;
 
                         // Check if this route config belongs to an isolated listener
-                        let is_isolated = definitions.iter().any(|d|
-                            d.listener_isolation &&
-                            rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
-                        );
+                        let is_isolated = definitions.iter().any(|d| {
+                            d.listener_isolation
+                                && rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
+                        });
 
                         if is_isolated {
                             // Keep isolated route configs separate - they'll be added to built list
@@ -211,8 +213,9 @@ impl DatabaseAggregatedDiscoveryService {
                             });
                         } else {
                             // Merge non-isolated routes into default gateway
-                            rc.virtual_hosts
-                                .retain(|vh| vh.domains.iter().any(|d| allowed_domains.contains(d)));
+                            rc.virtual_hosts.retain(|vh| {
+                                vh.domains.iter().any(|d| allowed_domains.contains(d))
+                            });
                             if !rc.virtual_hosts.is_empty() {
                                 default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
                             }

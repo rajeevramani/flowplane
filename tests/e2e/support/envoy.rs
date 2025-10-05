@@ -161,7 +161,13 @@ impl EnvoyHandle {
             }
         }
 
-        anyhow::bail!("Route {}:{}{} failed to converge after {} attempts", host, port, path, max_attempts)
+        anyhow::bail!(
+            "Route {}:{}{} failed to converge after {} attempts",
+            host,
+            port,
+            path,
+            max_attempts
+        )
     }
 
     /// Wait for config_dump to contain expected content

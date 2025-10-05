@@ -290,7 +290,10 @@ mod tests {
         assert!(spec.tls_config.is_none()); // HTTP not HTTPS
 
         let listener = spec.isolation_listener.unwrap();
-        assert!(listener.port >= 20000 && listener.port < 30000, "Port should be in 20000-29999 range");
+        assert!(
+            listener.port >= 20000 && listener.port < 30000,
+            "Port should be in 20000-29999 range"
+        );
         assert_eq!(listener.bind_address, "0.0.0.0");
         assert_eq!(listener.protocol, "HTTP");
         assert!(listener.tls_config.is_none());

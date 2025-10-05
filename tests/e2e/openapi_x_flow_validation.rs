@@ -1,8 +1,8 @@
 //! E2E: OpenAPI x-flowplane extension validation for global and route-level filters.
 
+use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use tempfile::tempdir;
-use http_body_util::BodyExt;
 
 mod support;
 use support::api::{create_pat, wait_http_ready};
@@ -122,7 +122,8 @@ async fn openapi_global_filters_applied_to_all_routes() {
 
     let import_uri: hyper::http::Uri = format!(
         "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
-        api_addr, namer.test_id()
+        api_addr,
+        namer.test_id()
     )
     .parse()
     .unwrap();
@@ -132,9 +133,7 @@ async fn openapi_global_filters_applied_to_all_routes() {
         .uri(import_uri)
         .header(hyper::http::header::CONTENT_TYPE, "application/json")
         .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(http_body_util::Full::<bytes::Bytes>::from(
-            openapi_spec.to_string(),
-        ))
+        .body(http_body_util::Full::<bytes::Bytes>::from(openapi_spec.to_string()))
         .unwrap();
 
     let res = client.request(req).await.unwrap();
@@ -142,12 +141,7 @@ async fn openapi_global_filters_applied_to_all_routes() {
     let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    assert!(
-        status.is_success(),
-        "OpenAPI import failed: {} - {}",
-        status,
-        body_str
-    );
+    assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
     // Parse the response to get the API definition ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
@@ -261,7 +255,8 @@ async fn openapi_route_level_filters_override_global() {
 
     let import_uri: hyper::http::Uri = format!(
         "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
-        api_addr, namer.test_id()
+        api_addr,
+        namer.test_id()
     )
     .parse()
     .unwrap();
@@ -271,9 +266,7 @@ async fn openapi_route_level_filters_override_global() {
         .uri(import_uri)
         .header(hyper::http::header::CONTENT_TYPE, "application/json")
         .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(http_body_util::Full::<bytes::Bytes>::from(
-            openapi_spec.to_string(),
-        ))
+        .body(http_body_util::Full::<bytes::Bytes>::from(openapi_spec.to_string()))
         .unwrap();
 
     let res = client.request(req).await.unwrap();
@@ -281,16 +274,14 @@ async fn openapi_route_level_filters_override_global() {
     let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    assert!(
-        status.is_success(),
-        "OpenAPI import failed: {} - {}",
-        status,
-        body_str
-    );
+    assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
     // Parse the response to get the API definition ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
-    eprintln!("OpenAPI import with route overrides successful: {}", serde_json::to_string_pretty(&response).unwrap());
+    eprintln!(
+        "OpenAPI import with route overrides successful: {}",
+        serde_json::to_string_pretty(&response).unwrap()
+    );
 
     // Verify that the import succeeded and returned an ID
     assert!(response["id"].is_string(), "Response should contain API definition ID");
@@ -412,7 +403,8 @@ async fn openapi_comprehensive_filter_validation() {
 
     let import_uri: hyper::http::Uri = format!(
         "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
-        api_addr, namer.test_id()
+        api_addr,
+        namer.test_id()
     )
     .parse()
     .unwrap();
@@ -422,9 +414,7 @@ async fn openapi_comprehensive_filter_validation() {
         .uri(import_uri)
         .header(hyper::http::header::CONTENT_TYPE, "application/json")
         .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(http_body_util::Full::<bytes::Bytes>::from(
-            openapi_spec.to_string(),
-        ))
+        .body(http_body_util::Full::<bytes::Bytes>::from(openapi_spec.to_string()))
         .unwrap();
 
     let res = client.request(req).await.unwrap();
@@ -432,16 +422,14 @@ async fn openapi_comprehensive_filter_validation() {
     let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body_str = String::from_utf8_lossy(&body_bytes);
 
-    assert!(
-        status.is_success(),
-        "OpenAPI import failed: {} - {}",
-        status,
-        body_str
-    );
+    assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
     // Parse the response to get the API definition ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
-    eprintln!("Comprehensive OpenAPI filter import successful: {}", serde_json::to_string_pretty(&response).unwrap());
+    eprintln!(
+        "Comprehensive OpenAPI filter import successful: {}",
+        serde_json::to_string_pretty(&response).unwrap()
+    );
 
     // Verify that the import succeeded and returned an ID
     assert!(response["id"].is_string(), "Response should contain API definition ID");
@@ -485,10 +473,7 @@ async fn openapi_comprehensive_filter_validation() {
     );
 
     // Verify the route is configured
-    assert!(
-        dump.contains("/api/v1/users"),
-        "Route path should be in config_dump"
-    );
+    assert!(dump.contains("/api/v1/users"), "Route path should be in config_dump");
 
     eprintln!("✅ Config dump validation passed - all filters present");
 

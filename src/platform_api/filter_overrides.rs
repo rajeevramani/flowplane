@@ -9,7 +9,7 @@ use crate::xds::filters::http::cors::{
 };
 use crate::xds::filters::http::header_mutation::HeaderMutationPerRouteConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
-use crate::xds::filters::http::rate_limit::{RateLimitPerRouteConfig};
+use crate::xds::filters::http::rate_limit::RateLimitPerRouteConfig;
 use crate::xds::filters::http::rate_limit_quota::RateLimitQuotaOverrideConfig;
 use crate::xds::filters::http::{local_rate_limit::LocalRateLimitConfig, HttpScopedConfig};
 
@@ -52,10 +52,10 @@ pub fn typed_per_filter_config(
     for (alias, scoped) in entries {
         let filter_name = match alias.as_str() {
             "cors" => CORS_FILTER_NAME,
-            "jwt_authn" | "authn" => JWT_FILTER_NAME,  // Support both for backward compatibility
+            "jwt_authn" | "authn" => JWT_FILTER_NAME, // Support both for backward compatibility
             "rate_limit" => LOCAL_RATE_LIMIT_FILTER_NAME,
             "header_mutation" => HEADER_MUTATION_FILTER_NAME,
-            "ratelimit" => RATE_LIMIT_FILTER_NAME,  // Distributed rate limit
+            "ratelimit" => RATE_LIMIT_FILTER_NAME, // Distributed rate limit
             "rate_limit_quota" => RATE_LIMIT_QUOTA_FILTER_NAME,
             // Allow callers to specify a fully-qualified filter name directly.
             other if other.contains('.') => other,
@@ -109,8 +109,8 @@ fn parse_filter_overrides(
                 Some(HttpScopedConfig::LocalRateLimit(cfg))
             }
             "header_mutation" => {
-                let cfg: HeaderMutationPerRouteConfig =
-                    serde_json::from_value(raw.clone()).map_err(|err| {
+                let cfg: HeaderMutationPerRouteConfig = serde_json::from_value(raw.clone())
+                    .map_err(|err| {
                         Error::validation(format!("Invalid header mutation override: {err}"))
                     })?;
                 Some(HttpScopedConfig::HeaderMutation(cfg))
@@ -123,13 +123,15 @@ fn parse_filter_overrides(
                 Some(HttpScopedConfig::RateLimit(cfg))
             }
             "rate_limit_quota" => {
-                let cfg: RateLimitQuotaOverrideConfig =
-                    serde_json::from_value(raw.clone()).map_err(|err| {
+                let cfg: RateLimitQuotaOverrideConfig = serde_json::from_value(raw.clone())
+                    .map_err(|err| {
                         Error::validation(format!("Invalid rate limit quota override: {err}"))
                     })?;
                 Some(HttpScopedConfig::RateLimitQuota(cfg))
             }
-            other if other.contains('.') => Some(HttpScopedConfig::Typed(parse_typed_override(raw)?)),
+            other if other.contains('.') => {
+                Some(HttpScopedConfig::Typed(parse_typed_override(raw)?))
+            }
             other => {
                 return Err(Error::validation(format!("Unsupported filter override '{}'", other)));
             }
@@ -158,8 +160,10 @@ fn parse_cors_override(value: &Value) -> Result<Option<CorsPerRouteConfig>, Erro
                 )));
             }
         }
-        Value::Object(_) => Some(serde_json::from_value::<CorsPerRouteConfig>(value.clone())
-            .map_err(|err| Error::validation(format!("Invalid CORS override: {err}")))?),
+        Value::Object(_) => Some(
+            serde_json::from_value::<CorsPerRouteConfig>(value.clone())
+                .map_err(|err| Error::validation(format!("Invalid CORS override: {err}")))?,
+        ),
         _ => {
             return Err(Error::validation(
                 "CORS override must be a string template or structured object",

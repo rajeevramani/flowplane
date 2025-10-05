@@ -204,14 +204,17 @@ impl PlatformApiMaterializer {
 
             // Retrieve the generated listener ID
             if let Some(listener_input) = spec.isolation_listener.as_ref() {
-                let listener_repo =
-                    self.state.listener_repository.as_ref().cloned().ok_or_else(|| {
-                        Error::internal("Listener repository is not configured")
-                    })?;
+                let listener_repo = self
+                    .state
+                    .listener_repository
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
 
-                let listener_name = listener_input.name.clone().unwrap_or_else(|| {
-                    format!("platform-{}-listener", short_id(&definition.id))
-                });
+                let listener_name = listener_input
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("platform-{}-listener", short_id(&definition.id)));
 
                 let listener = listener_repo.get_by_name(&listener_name).await?;
                 generated_listener_id = Some(listener.id);
@@ -219,7 +222,11 @@ impl PlatformApiMaterializer {
         } else {
             // listenerIsolation=false: merge routes into existing listeners
             if let Err(err) = self
-                .materialize_shared_listener_routes(&definition, &created_routes, &spec.target_listeners)
+                .materialize_shared_listener_routes(
+                    &definition,
+                    &created_routes,
+                    &spec.target_listeners,
+                )
                 .await
             {
                 // Compensating delete to avoid partial writes
@@ -475,8 +482,7 @@ impl PlatformApiMaterializer {
         use crate::storage::CreateListenerRequest;
         use crate::xds::listener::ListenerConfig as XListenerConfig;
         use crate::xds::route::{
-            PathMatch, RouteActionConfig, RouteMatchConfig, RouteRule,
-            VirtualHostConfig,
+            PathMatch, RouteActionConfig, RouteMatchConfig, RouteRule, VirtualHostConfig,
         };
 
         let listener_repo = self
@@ -605,7 +611,9 @@ impl PlatformApiMaterializer {
         use crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER;
         use crate::platform_api::filter_overrides::typed_per_filter_config;
         use crate::storage::repository::UpdateRouteRequest;
-        use crate::xds::route::{PathMatch, RouteActionConfig, RouteMatchConfig, RouteRule, VirtualHostConfig};
+        use crate::xds::route::{
+            PathMatch, RouteActionConfig, RouteMatchConfig, RouteRule, VirtualHostConfig,
+        };
 
         let listener_repo = self
             .state
@@ -785,7 +793,9 @@ impl PlatformApiMaterializer {
             let cluster_name = build_cluster_name(&definition.id, &api_route.id);
 
             // Convert upstream_targets to endpoints format for ClusterSpec compatibility
-            let endpoints = if let Some(targets) = api_route.upstream_targets.get("targets").and_then(|t| t.as_array()) {
+            let endpoints = if let Some(targets) =
+                api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
+            {
                 targets
                     .iter()
                     .filter_map(|target| {
@@ -976,10 +986,9 @@ impl PlatformApiMaterializer {
                     })?;
 
                 // Remove the Platform API virtual host for this definition
-                let vhost_name_to_remove = format!("platform-api-{}-vhost", short_id(&definition.id));
-                route_config
-                    .virtual_hosts
-                    .retain(|vh| vh.name != vhost_name_to_remove);
+                let vhost_name_to_remove =
+                    format!("platform-api-{}-vhost", short_id(&definition.id));
+                route_config.virtual_hosts.retain(|vh| vh.name != vhost_name_to_remove);
 
                 tracing::info!(
                     route_config_name = %route_config_name,
@@ -990,7 +999,10 @@ impl PlatformApiMaterializer {
 
                 // Update the route configuration in the database
                 let updated_config = serde_json::to_value(&route_config).map_err(|e| {
-                    Error::internal(format!("Failed to serialize updated route configuration: {}", e))
+                    Error::internal(format!(
+                        "Failed to serialize updated route configuration: {}",
+                        e
+                    ))
                 })?;
 
                 route_repo

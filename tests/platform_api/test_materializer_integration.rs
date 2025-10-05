@@ -257,10 +257,7 @@ async fn test_shared_listener_mode_merges_routes() {
     let outcome = materializer.create_definition(spec).await.unwrap();
 
     // Verify no isolated listener was created
-    assert!(
-        outcome.generated_listener_id.is_none(),
-        "Should not generate listener in shared mode"
-    );
+    assert!(outcome.generated_listener_id.is_none(), "Should not generate listener in shared mode");
 
     // Verify the default gateway route config was updated with a new virtual host
     let updated_route = route_repo.get_by_name("default-gateway-routes").await.unwrap();

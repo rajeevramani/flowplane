@@ -150,7 +150,10 @@ async fn platform_api_isolated_listener_mode() {
     .expect("create isolated api");
 
     let api_id = resp["id"].as_str().expect("api id");
-    eprintln!("Created Platform API definition {} with isolated listener on port {}", api_id, isolated_listener);
+    eprintln!(
+        "Created Platform API definition {} with isolated listener on port {}",
+        api_id, isolated_listener
+    );
 
     // Verify route works on the ISOLATED listener port (not default gateway)
     let body = envoy

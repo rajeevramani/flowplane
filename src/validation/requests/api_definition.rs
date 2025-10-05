@@ -124,14 +124,14 @@ impl CreateApiDefinitionBody {
             // Mutually exclusive with listener_isolation
             if self.listener_isolation {
                 return Err(Error::validation(
-                    "targetListeners cannot be specified when listenerIsolation is true"
+                    "targetListeners cannot be specified when listenerIsolation is true",
                 ));
             }
 
             // Cannot be empty array
             if target_listeners.is_empty() {
                 return Err(Error::validation(
-                    "targetListeners must contain at least one listener name, or be omitted"
+                    "targetListeners must contain at least one listener name, or be omitted",
                 ));
             }
 
@@ -147,8 +147,15 @@ impl CreateApiDefinitionBody {
     pub fn into_spec(self) -> Result<ApiDefinitionSpec, Error> {
         self.validate_payload()?;
 
-        let CreateApiDefinitionBody { team, domain, listener_isolation, listener, target_listeners, tls, routes } =
-            self;
+        let CreateApiDefinitionBody {
+            team,
+            domain,
+            listener_isolation,
+            listener,
+            target_listeners,
+            tls,
+            routes,
+        } = self;
 
         let mut specs = Vec::with_capacity(routes.len());
         for (idx, route) in routes.into_iter().enumerate() {
@@ -531,7 +538,10 @@ mod tests {
         let result = body.into_spec();
         assert!(result.is_ok());
         let spec = result.unwrap();
-        assert_eq!(spec.target_listeners, Some(vec!["listener-1".to_string(), "listener-2".to_string()]));
+        assert_eq!(
+            spec.target_listeners,
+            Some(vec!["listener-1".to_string(), "listener-2".to_string()])
+        );
     }
 
     #[test]
