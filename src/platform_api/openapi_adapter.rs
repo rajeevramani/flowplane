@@ -49,6 +49,9 @@ pub fn openapi_to_api_definition_spec(
 
     let use_tls = matches!(url.scheme(), "https" | "grpcs");
 
+    // Parse global x-flowplane-filters from OpenAPI extensions
+    let global_filters = crate::openapi::parse_global_filters(&openapi)?;
+
     // Convert OpenAPI paths to RouteSpec
     let mut routes = Vec::new();
 
@@ -79,7 +82,7 @@ pub fn openapi_to_api_definition_spec(
             rewrite_substitution: None,
             upstream_targets,
             timeout_seconds: Some(30),
-            override_config: None, // TODO: Extract from x-flowplane-* extensions
+            override_config: None, // TODO: Extract route-level x-flowplane-* extensions (subtask 19.2)
             deployment_note: Some(format!("Generated from OpenAPI path: {}", path_template)),
             route_order: Some(routes.len() as i64),
         };
@@ -109,6 +112,11 @@ pub fn openapi_to_api_definition_spec(
             port: 10000, // Default port for isolated listener
             protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
             tls_config: tls_config.clone(),
+            http_filters: if global_filters.is_empty() {
+                None
+            } else {
+                Some(global_filters.clone())
+            },
         })
     } else {
         None

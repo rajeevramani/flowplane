@@ -552,7 +552,9 @@ impl PlatformApiMaterializer {
                         inline_route_config: None,
                         access_log: None,
                         tracing: None,
-                        http_filters: Vec::new(),
+                        http_filters: listener
+                            .and_then(|l| l.http_filters.clone())
+                            .unwrap_or_default(),
                     },
                 }],
                 tls_context: None,

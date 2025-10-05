@@ -6,6 +6,8 @@
 
 use serde_json::Value;
 
+use crate::xds::filters::http::HttpFilterConfigEntry;
+
 /// High-level specification for creating a Platform API definition.
 ///
 /// This type represents the complete configuration for an API definition
@@ -55,6 +57,11 @@ pub struct ListenerConfig {
 
     /// Optional TLS configuration
     pub tls_config: Option<Value>,
+
+    /// Optional HTTP filters to apply at listener level (global filters)
+    /// These filters apply to all routes through this listener
+    /// Can be overridden per-route via typed_per_filter_config
+    pub http_filters: Option<Vec<HttpFilterConfigEntry>>,
 }
 
 /// Route configuration for domain entities.
@@ -169,6 +176,7 @@ mod tests {
                 "certificate": "cert.pem",
                 "private_key": "key.pem"
             })),
+            http_filters: None,
         };
 
         assert_eq!(listener.port, 8443);

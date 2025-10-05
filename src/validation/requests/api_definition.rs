@@ -193,6 +193,7 @@ impl IsolationListenerBody {
             port: self.port as u32,
             protocol: self.protocol.unwrap_or_else(|| "HTTP".to_string()),
             tls_config: None,
+            http_filters: None, // No global filters when creating directly via API
         }
     }
 }

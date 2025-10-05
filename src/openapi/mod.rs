@@ -237,7 +237,7 @@ pub fn build_gateway_plan(
     }
 }
 
-fn parse_global_filters(openapi: &OpenAPI) -> Result<Vec<HttpFilterConfigEntry>, GatewayError> {
+pub fn parse_global_filters(openapi: &OpenAPI) -> Result<Vec<HttpFilterConfigEntry>, GatewayError> {
     if let Some(value) = openapi.extensions.get(EXTENSION_GLOBAL_FILTERS) {
         serde_json::from_value::<Vec<HttpFilterConfigEntry>>(value.clone()).map_err(|err| {
             GatewayError::InvalidFilters(format!(
