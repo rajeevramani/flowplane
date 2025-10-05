@@ -12,6 +12,7 @@ use crate::xds::filters::http::{local_rate_limit::LocalRateLimitConfig, HttpScop
 
 const CORS_FILTER_NAME: &str = "envoy.filters.http.cors";
 const JWT_FILTER_NAME: &str = "envoy.filters.http.jwt_authn";
+const RATE_LIMIT_FILTER_NAME: &str = "envoy.filters.http.local_ratelimit";
 
 /// Validate filter overrides without mutating the payload.
 pub fn validate_filter_overrides(filters: &Option<Value>) -> Result<(), Error> {
@@ -45,12 +46,13 @@ pub fn typed_per_filter_config(
     for (alias, scoped) in entries {
         let filter_name = match alias.as_str() {
             "cors" => CORS_FILTER_NAME,
-            "authn" => JWT_FILTER_NAME,
+            "jwt_authn" | "authn" => JWT_FILTER_NAME,  // Support both for backward compatibility
+            "rate_limit" => RATE_LIMIT_FILTER_NAME,
             // Allow callers to specify a fully-qualified filter name directly.
             other if other.contains('.') => other,
             other => {
                 return Err(Error::validation(format!(
-                    "Unsupported filter override alias '{}'; expected 'cors', 'authn', or a fully qualified filter name",
+                    "Unsupported filter override alias '{}'; expected 'cors', 'jwt_authn', 'rate_limit', or a fully qualified filter name",
                     other
                 )));
             }
@@ -80,40 +82,54 @@ fn parse_filter_overrides(
     let mut entries = Vec::with_capacity(obj.len());
     for (alias, raw) in obj {
         let scoped = match alias.as_str() {
-            "cors" => HttpScopedConfig::Cors(parse_cors_override(raw)?),
-            "authn" => HttpScopedConfig::JwtAuthn(parse_authn_override(raw)?),
+            "cors" => {
+                // parse_cors_override returns None for "disabled"
+                if let Some(cfg) = parse_cors_override(raw)? {
+                    Some(HttpScopedConfig::Cors(cfg))
+                } else {
+                    // "disabled" - skip this filter (don't add to typed_per_filter_config)
+                    continue;
+                }
+            }
+            "jwt_authn" | "authn" => Some(HttpScopedConfig::JwtAuthn(parse_authn_override(raw)?)),
             "rate_limit" => {
                 let cfg: LocalRateLimitConfig =
                     serde_json::from_value(raw.clone()).map_err(|err| {
                         Error::validation(format!("Invalid local rate limit override: {err}"))
                     })?;
-                HttpScopedConfig::LocalRateLimit(cfg)
+                Some(HttpScopedConfig::LocalRateLimit(cfg))
             }
-            other if other.contains('.') => HttpScopedConfig::Typed(parse_typed_override(raw)?),
+            other if other.contains('.') => Some(HttpScopedConfig::Typed(parse_typed_override(raw)?)),
             other => {
                 return Err(Error::validation(format!("Unsupported filter override '{}'", other)));
             }
         };
-        entries.push((alias.clone(), scoped));
+        if let Some(cfg) = scoped {
+            entries.push((alias.clone(), cfg));
+        }
     }
 
     Ok(entries)
 }
 
-fn parse_cors_override(value: &Value) -> Result<CorsPerRouteConfig, Error> {
+fn parse_cors_override(value: &Value) -> Result<Option<CorsPerRouteConfig>, Error> {
     let config = match value {
         Value::String(template) => {
-            if template == "allow-authenticated" {
-                cors_allow_authenticated_template()
+            let trimmed = template.trim();
+            if trimmed.eq_ignore_ascii_case("disabled") {
+                // Returning None means "don't include this filter in typed_per_filter_config"
+                return Ok(None);
+            } else if trimmed == "allow-authenticated" {
+                Some(cors_allow_authenticated_template())
             } else {
                 return Err(Error::validation(format!(
-                    "Unknown CORS template '{}'. Supported templates: allow-authenticated",
+                    "Unknown CORS template '{}'. Supported templates: disabled, allow-authenticated",
                     template
                 )));
             }
         }
-        Value::Object(_) => serde_json::from_value::<CorsPerRouteConfig>(value.clone())
-            .map_err(|err| Error::validation(format!("Invalid CORS override: {err}")))?,
+        Value::Object(_) => Some(serde_json::from_value::<CorsPerRouteConfig>(value.clone())
+            .map_err(|err| Error::validation(format!("Invalid CORS override: {err}")))?),
         _ => {
             return Err(Error::validation(
                 "CORS override must be a string template or structured object",
@@ -121,7 +137,9 @@ fn parse_cors_override(value: &Value) -> Result<CorsPerRouteConfig, Error> {
         }
     };
 
-    config.policy.validate().map_err(|err| Error::validation(err.to_string()))?;
+    if let Some(cfg) = &config {
+        cfg.policy.validate().map_err(|err| Error::validation(err.to_string()))?;
+    }
     Ok(config)
 }
 

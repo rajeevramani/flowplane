@@ -1,0 +1,137 @@
+openapi: 3.0.0
+info:
+  title: HTTPBin Simple Demo (Working)
+  version: 1.0.0
+  description: |
+    Simplified working example using httpbin.org.
+
+    Known limitation: Global CORS filters are not currently supported.
+    Use route-level CORS overrides instead.
+
+    To import:
+    curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true" \
+      -H "Content-Type: application/yaml" \
+      -H "Authorization: Bearer YOUR_TOKEN" \
+      --data-binary @httpbin-simple.yaml
+
+    After import, find your assigned port:
+    curl http://localhost:8080/api/v1/api-definitions/{API_ID}/bootstrap | jq -r '.static_resources.listeners[] | select(.name | contains("platform")) | .address.socket_address.port_value'
+
+    Then test (IMPORTANT: Must include Host header matching the server URL domain):
+    curl http://localhost:{PORT}/get -H "Host: httpbin.org"
+    curl http://localhost:{PORT}/headers -H "Host: httpbin.org"
+
+    Or use httpie:
+    http localhost:{PORT}/get Host:httpbin.org
+
+servers:
+  - url: https://httpbin.org
+    description: HTTPBin test server (proxied through the gateway)
+
+# Global filters - header mutation and rate limiting work
+x-flowplane-filters:
+  # Add tracking headers to all requests
+  - filter:
+      type: header_mutation
+      request_headers_to_add:
+        - key: x-gateway
+          value: "flowplane"
+          append: false
+      response_headers_to_add:
+        - key: x-served-by
+          value: "flowplane"
+          append: false
+
+  # Global rate limit - 100 requests per minute
+  - filter:
+      type: local_rate_limit
+      stat_prefix: httpbin_global_rl
+      token_bucket:
+        max_tokens: 100
+        tokens_per_fill: 100
+        fill_interval_ms: 60000
+
+paths:
+  # Simple GET - uses global filters
+  /get:
+    get:
+      summary: Simple GET request
+      responses:
+        '200':
+          description: Request details
+
+  # Check added headers
+  /headers:
+    get:
+      summary: View request headers
+      description: See headers added by the gateway
+      responses:
+        '200':
+          description: All request headers
+
+  # POST with stricter rate limit
+  /post:
+    post:
+      summary: POST request
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: httpbin_post_rl
+          token_bucket:
+            max_tokens: 20
+            tokens_per_fill: 20
+            fill_interval_ms: 60000
+      responses:
+        '200':
+          description: Echo POST data
+
+  # PUT with strict rate limit
+  /put:
+    put:
+      summary: PUT request
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: httpbin_put_rl
+          token_bucket:
+            max_tokens: 10
+            tokens_per_fill: 10
+            fill_interval_ms: 60000
+      responses:
+        '200':
+          description: Echo PUT data
+
+  # Very permissive for testing
+  /status/200:
+    get:
+      summary: Return HTTP status code
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: integer
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: httpbin_status_rl
+          token_bucket:
+            max_tokens: 500
+            tokens_per_fill: 500
+            fill_interval_ms: 60000
+      responses:
+        '200':
+          description: Success
+
+  # JSON response
+  /json:
+    get:
+      summary: Get sample JSON
+      responses:
+        '200':
+          description: Sample JSON data
+
+  # UUID generator
+  /uuid:
+    get:
+      summary: Generate random UUID
+      responses:
+        '200':
+          description: Random UUID
