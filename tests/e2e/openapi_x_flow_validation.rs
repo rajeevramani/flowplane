@@ -480,3 +480,162 @@ async fn openapi_comprehensive_filter_validation() {
     echo.stop().await;
     guard.finish(true);
 }
+
+#[tokio::test]
+#[ignore = "requires Envoy + CP runtime"]
+async fn openapi_custom_response_route_override() {
+    if std::env::var("RUN_E2E").ok().as_deref() != Some("1") {
+        eprintln!("skipping custom_response route override test (set RUN_E2E=1 to enable)");
+        return;
+    }
+    if !EnvoyHandle::is_available() {
+        eprintln!("envoy binary not found; skipping");
+        return;
+    }
+
+    let artifacts = tempdir().expect("artifacts dir");
+    let artifacts_dir = artifacts.path().to_path_buf();
+    let mut guard = TeardownGuard::new(&artifacts_dir, ArtifactMode::OnFailure);
+
+    let namer = UniqueNamer::for_test("openapi_custom_response_override");
+
+    let mut ports = PortAllocator::new();
+    let envoy_admin = ports.reserve_labeled("envoy-admin");
+    let echo_upstream = ports.reserve_labeled("echo-upstream");
+
+    let db_dir = tempdir().expect("db dir");
+    let db_path = db_dir.path().join("flowplane-e2e.sqlite");
+    guard.track_path(&db_path);
+
+    let echo_addr: SocketAddr = format!("127.0.0.1:{}", echo_upstream).parse().unwrap();
+    let mut echo = EchoServerHandle::start(echo_addr).await;
+
+    let api_addr: SocketAddr =
+        format!("127.0.0.1:{}", ports.reserve_labeled("api")).parse().unwrap();
+    let xds_addr: SocketAddr =
+        format!("127.0.0.1:{}", ports.reserve_labeled("xds")).parse().unwrap();
+    let _cp =
+        ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
+    wait_http_ready(api_addr).await;
+
+    let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
+    envoy.wait_admin_ready().await;
+
+    let token = create_pat(vec![
+        "listeners:write",
+        "listeners:read",
+        "routes:write",
+        "routes:read",
+        "clusters:write",
+        "clusters:read",
+    ])
+    .await
+    .expect("pat");
+
+    // Create OpenAPI spec with custom_response global filter and route-level override
+    let openapi_spec = serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "Custom Response Override Test API",
+            "version": "1.0.0"
+        },
+        "servers": [{
+            "url": format!("http://127.0.0.1:{}", echo_addr.port())
+        }],
+        "x-flowplane-filters": [
+            {
+                "filter": {
+                    "type": "custom_response"
+                }
+            }
+        ],
+        "paths": {
+            "/with-custom-response": {
+                "get": {
+                    "responses": {
+                        "200": {"description": "Uses global custom_response filter"}
+                    }
+                }
+            },
+            "/without-custom-response": {
+                "get": {
+                    "x-flowplane-route-overrides": {
+                        "custom_response": "disabled"
+                    },
+                    "responses": {
+                        "200": {"description": "Disables custom_response for this route"}
+                    }
+                }
+            }
+        }
+    });
+
+    // Import OpenAPI spec
+    let connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    let client: hyper_util::client::legacy::Client<_, _> =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build(connector);
+
+    let import_uri: hyper::http::Uri = format!(
+        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        api_addr,
+        namer.test_id()
+    )
+    .parse()
+    .unwrap();
+
+    let req = hyper::Request::builder()
+        .method(hyper::http::Method::POST)
+        .uri(import_uri)
+        .header(hyper::http::header::CONTENT_TYPE, "application/json")
+        .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(http_body_util::Full::<bytes::Bytes>::from(openapi_spec.to_string()))
+        .unwrap();
+
+    let res = client.request(req).await.unwrap();
+    let status = res.status();
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
+
+    // Parse the response to get the API definition ID
+    let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
+    eprintln!(
+        "OpenAPI import with custom_response route override successful: {}",
+        serde_json::to_string_pretty(&response).unwrap()
+    );
+
+    // Verify that the import succeeded and returned an ID
+    assert!(response["id"].is_string(), "Response should contain API definition ID");
+
+    // Wait for Envoy to receive the configuration
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Validate Envoy configuration via config_dump
+    let dump = envoy.get_config_dump().await.expect("config_dump");
+
+    // Verify custom_response filter is present in the HTTP filter chain
+    assert!(
+        dump.contains("envoy.extensions.filters.http.custom_response"),
+        "Custom response filter should be in config_dump"
+    );
+
+    // Verify typed_per_filter_config contains the route override
+    // The override should appear as a FilterConfig with disabled=true
+    assert!(
+        dump.contains("typed_per_filter_config"),
+        "Route configuration should contain typed_per_filter_config"
+    );
+
+    // Verify the custom_response filter name appears in per-route config
+    assert!(
+        dump.contains("envoy.filters.http.custom_response"),
+        "Custom response filter name should appear in route config"
+    );
+
+    eprintln!("✅ Custom response route override validation passed - config accepted by Envoy");
+
+    echo.stop().await;
+    guard.finish(true);
+}
