@@ -5,9 +5,9 @@
 
 ## Executive Summary
 
-✅ **Status**: Core filters (CORS, JWT, Rate Limiting) fully supported
-⚠️ **Gaps**: Some filters lack route-level override support
-📝 **Action Items**: 5 filters need route-level override implementation
+✅ **Status**: All core filters fully supported at global and route level
+✅ **Complete**: 6 filters with full route override support
+📝 **Remaining**: 3 filters global-only (low priority - rarely need per-route config)
 
 ---
 
@@ -18,20 +18,20 @@
 | ✅ **Router** | ✅ Yes | N/A | Always added automatically |
 | ✅ **CORS** | ✅ Yes | ✅ Yes | Full support including "disabled" |
 | ✅ **JWT Auth** | ✅ Yes | ✅ Yes | Supports disabled & named requirements |
-| ✅ **Local Rate Limit** | ✅ Yes | ✅ Yes | Use `rate_limit` alias for route overrides |
-| ⚠️ **Header Mutation** | ✅ Yes | ❌ No | **GAP**: Only global scope |
-| ⚠️ **Distributed Rate Limit** | ✅ Yes | ❌ Partial | Route override exists but not in filter_overrides |
-| ⚠️ **Rate Limit Quota** | ✅ Yes | ❌ Partial | Route override exists but not in filter_overrides |
-| ⚠️ **Health Check** | ✅ Yes | ❌ No | **GAP**: No route override support |
-| ⚠️ **Credential Injector** | ✅ Yes | ❌ No | **GAP**: No route override support |
-| ⚠️ **Custom Response** | ✅ Yes | ❌ No | **GAP**: No route override support |
+| ✅ **Local Rate Limit** | ✅ Yes | ✅ Yes | Use `rate_limit` alias |
+| ✅ **Header Mutation** | ✅ Yes | ✅ Yes | ✅ **ENABLED** in Task #20 |
+| ✅ **Distributed Rate Limit** | ✅ Yes | ✅ Yes | ✅ **ENABLED** - use `ratelimit` alias |
+| ✅ **Rate Limit Quota** | ✅ Yes | ✅ Yes | ✅ **ENABLED** in Task #20 |
+| ⚠️ **Health Check** | ✅ Yes | ❌ No | Global only (rarely needs per-route) |
+| ⚠️ **Credential Injector** | ✅ Yes | ❌ No | Global only (low priority) |
+| ⚠️ **Custom Response** | ✅ Yes | ❌ No | Global only (low priority) |
 | ✅ **Custom/Typed** | ✅ Yes | ✅ Yes | Generic support via TypedConfig |
 
 ---
 
 ## Detailed Analysis
 
-### ✅ Fully Supported (3 filters)
+### ✅ Fully Supported (6 filters - COMPLETE!)
 
 #### 1. CORS (`cors`)
 - **Global**: Via `x-flowplane-filters` with `type: cors`
@@ -62,34 +62,33 @@
 - **Important**: Use `rate_limit` (not `local_rate_limit`) for route overrides
 - **Status**: ✅ **Production Ready**
 
----
-
-### ⚠️ Partial Support (3 filters)
-
-#### 4. Header Mutation (`header_mutation`)
+#### 4. Header Mutation (`header_mutation`) - ✅ **ENABLED**
 - **Global**: ✅ Fully supported
-- **Route**: ❌ **NOT SUPPORTED**
-- **Impact**: Cannot customize headers per-route
-- **Use Cases Blocked**:
-  - Route-specific API version headers
-  - Different tracking headers per route group
-  - Conditional header injection based on path
-- **Code Location**: `HttpScopedConfig::HeaderMutation` exists but not in `filter_overrides.rs`
-- **Fix Required**: Add to `parse_filter_overrides()` in `filter_overrides.rs:84`
+- **Route**: ✅ **ENABLED in Task #20** (commit e4155b4)
+- **Features**:
+  - Request/response header add/remove
+  - Per-route header customization
+  - Route-specific tracking headers
+- **Status**: ✅ **Production Ready**
 
-#### 5. Distributed Rate Limit (`ratelimit`)
+#### 5. Distributed Rate Limit (`ratelimit`) - ✅ **ENABLED**
 - **Global**: ✅ Fully supported
-- **Route**: ⚠️ Partial - `RateLimitPerRouteConfig` exists but not wired up
-- **Impact**: Cannot override distributed rate limit per-route
-- **Code Location**: `HttpScopedConfig::RateLimit` exists but not in `filter_overrides.rs`
-- **Fix Required**: Add `ratelimit` alias in `filter_overrides.rs:84`
+- **Route**: ✅ **ENABLED in Task #20** (commit e4155b4)
+- **Features**:
+  - Stage configuration per-route
+  - disable_key support
+  - Route-specific rate limit descriptors
+- **Alias**: Use `ratelimit` (not `rate_limit`)
+- **Status**: ✅ **Production Ready**
 
-#### 6. Rate Limit Quota (`rate_limit_quota`)
+#### 6. Rate Limit Quota (`rate_limit_quota`) - ✅ **ENABLED**
 - **Global**: ✅ Fully supported
-- **Route**: ⚠️ Partial - `RateLimitQuotaOverrideConfig` exists but not wired up
-- **Impact**: Cannot override quota limits per-route
-- **Code Location**: `HttpScopedConfig::RateLimitQuota` exists but not in `filter_overrides.rs`
-- **Fix Required**: Add `rate_limit_quota` alias in `filter_overrides.rs:84`
+- **Route**: ✅ **ENABLED in Task #20** (commit e4155b4)
+- **Features**:
+  - Domain-based quota allocation
+  - Per-route quota buckets
+  - Different quotas for premium vs free tiers
+- **Status**: ✅ **Production Ready**
 
 ---
 
