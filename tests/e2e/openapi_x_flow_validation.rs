@@ -446,6 +446,52 @@ async fn openapi_comprehensive_filter_validation() {
     // Verify that the import succeeded and returned an ID
     assert!(response["id"].is_string(), "Response should contain API definition ID");
 
+    // Wait for Envoy to receive the configuration
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Validate Envoy configuration via config_dump (Subtask 18.4)
+    let dump = envoy.get_config_dump().await.expect("config_dump");
+
+    // Verify CORS filter is present
+    assert!(
+        dump.contains("envoy.extensions.filters.http.cors"),
+        "CORS filter should be in config_dump"
+    );
+    assert!(
+        dump.contains("envoy.extensions.filters.http.cors.v3.Cors"),
+        "CORS filter type URL should be in config_dump"
+    );
+
+    // Verify local rate limit filter is present
+    assert!(
+        dump.contains("envoy.extensions.filters.http.local_ratelimit"),
+        "Local rate limit filter should be in config_dump"
+    );
+    assert!(
+        dump.contains("envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit"),
+        "Local rate limit type URL should be in config_dump"
+    );
+
+    // Verify custom response filter is present
+    assert!(
+        dump.contains("envoy.extensions.filters.http.custom_response"),
+        "Custom response filter should be in config_dump"
+    );
+
+    // Verify router filter (always present)
+    assert!(
+        dump.contains("envoy.extensions.filters.http.router"),
+        "Router filter should be in config_dump"
+    );
+
+    // Verify the route is configured
+    assert!(
+        dump.contains("/api/v1/users"),
+        "Route path should be in config_dump"
+    );
+
+    eprintln!("✅ Config dump validation passed - all filters present");
+
     echo.stop().await;
     guard.finish(true);
 }
