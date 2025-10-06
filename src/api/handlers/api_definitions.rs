@@ -7,6 +7,8 @@ use axum::{
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde::Serialize;
+#[allow(unused_imports)]
+use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::storage::repository::ApiDefinitionData;
@@ -22,31 +24,67 @@ use axum::response::Response;
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "id": "api-def-abc123",
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "routes": ["route-xyz789", "route-uvw456"]
+}))]
 pub struct CreateApiDefinitionResponse {
+    #[schema(example = "api-def-abc123")]
     id: String,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: String,
+    #[schema(example = json!(["route-xyz789", "route-uvw456"]))]
     routes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "apiId": "api-def-abc123",
+    "routeId": "route-new999",
+    "revision": 2,
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap"
+}))]
 pub struct AppendRouteResponse {
+    #[schema(example = "api-def-abc123")]
     api_id: String,
+    #[schema(example = "route-new999")]
     route_id: String,
+    #[schema(example = 2)]
     revision: i64,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "id": "api-def-abc123",
+    "team": "payments",
+    "domain": "payments.example.com",
+    "listenerIsolation": false,
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "version": 1,
+    "createdAt": "2025-10-06T09:00:00Z",
+    "updatedAt": "2025-10-06T09:00:00Z"
+}))]
 pub struct ApiDefinitionSummary {
+    #[schema(example = "api-def-abc123")]
     id: String,
+    #[schema(example = "payments")]
     team: String,
+    #[schema(example = "payments.example.com")]
     domain: String,
+    #[schema(example = false)]
     listener_isolation: bool,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: Option<String>,
+    #[schema(example = 1)]
     version: i64,
+    #[schema(example = "2025-10-06T09:00:00Z")]
     created_at: String,
+    #[schema(example = "2025-10-06T09:00:00Z")]
     updated_at: String,
 }
 
