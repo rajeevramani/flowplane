@@ -89,6 +89,27 @@ pub enum ApiCommands {
         #[arg(short, long, default_value = "json")]
         output: String,
     },
+
+    /// Validate x-flowplane-filters in an OpenAPI spec before import
+    ValidateFilters {
+        /// Path to OpenAPI spec file (JSON or YAML)
+        #[arg(short, long)]
+        file: PathBuf,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
+
+    /// Show filter configurations from an imported API definition
+    ShowFilters {
+        /// API definition ID
+        id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "yaml")]
+        output: String,
+    },
 }
 
 /// API definition summary response
@@ -123,7 +144,15 @@ pub async fn handle_api_command(
     timeout: Option<u64>,
     verbose: bool,
 ) -> Result<()> {
-    // Resolve configuration from multiple sources
+    // Handle commands that don't require authentication
+    match &command {
+        ApiCommands::ValidateFilters { file, output } => {
+            return validate_filters(file.clone(), output).await;
+        }
+        _ => {}
+    }
+
+    // Resolve configuration from multiple sources for commands that need API access
     let token = resolve_token(token, token_file)?;
     let base_url = resolve_base_url(base_url);
     let timeout = resolve_timeout(timeout);
@@ -147,6 +176,8 @@ pub async fn handle_api_command(
             get_bootstrap_config(&client, &id, &format, &scope, allowlist, include_default).await?
         }
         ApiCommands::ImportOpenapi { file, output } => import_openapi(&client, file, &output).await?,
+        ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
+        ApiCommands::ShowFilters { id, output } => show_filters(&client, &id, &output).await?,
     }
 
     Ok(())
@@ -327,4 +358,172 @@ fn truncate(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
     }
+}
+
+/// Validate x-flowplane-filters in an OpenAPI spec before import
+async fn validate_filters(file: PathBuf, output: &str) -> Result<()> {
+    use crate::openapi::parse_global_filters;
+
+    // Read file contents
+    let contents = std::fs::read_to_string(&file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+
+    // Parse OpenAPI document
+    let openapi: openapiv3::OpenAPI = if file.extension().and_then(|s| s.to_str()) == Some("json") {
+        serde_json::from_str(&contents).context("Failed to parse OpenAPI JSON document")?
+    } else {
+        serde_yaml::from_str(&contents).context("Failed to parse OpenAPI YAML document")?
+    };
+
+    // Extract and validate global filters
+    match parse_global_filters(&openapi) {
+        Ok(filters) => {
+            if filters.is_empty() {
+                println!("✅ No x-flowplane-filters found in OpenAPI spec");
+                println!("\nTo add filters, include the x-flowplane-filters extension at the top level:");
+                println!("\nExample:");
+                println!("  x-flowplane-filters:");
+                println!("    - filter:");
+                println!("        type: cors");
+                println!("        policy:");
+                println!("          allow_origin:");
+                println!("            - type: exact");
+                println!("              value: \"https://example.com\"");
+            } else {
+                println!("✅ Successfully validated {} filter(s) in OpenAPI spec", filters.len());
+                println!();
+
+                if output == "table" {
+                    print_filters_table(&filters);
+                } else if output == "json" {
+                    let json = serde_json::to_string_pretty(&filters)
+                        .context("Failed to serialize filters to JSON")?;
+                    println!("{}", json);
+                } else {
+                    let yaml = serde_yaml::to_string(&filters)
+                        .context("Failed to serialize filters to YAML")?;
+                    println!("{}", yaml);
+                }
+            }
+            Ok(())
+        }
+        Err(err) => {
+            println!("❌ Filter validation failed:");
+            println!("\n{}", err);
+            println!("\nCommon filter types:");
+            println!("  - cors");
+            println!("  - header_mutation");
+            println!("  - local_rate_limit");
+            println!("  - custom_response");
+            println!("\nSee examples/openapi-with-x-flowplane-filters.yaml for usage examples");
+            anyhow::bail!("Filter validation failed")
+        }
+    }
+}
+
+/// Show filter configurations from an imported API definition
+async fn show_filters(client: &FlowplaneClient, id: &str, output: &str) -> Result<()> {
+    // Fetch bootstrap config which contains materialized filter configurations
+    let path = format!("/api/v1/api-definitions/{}/bootstrap?scope=all&format=json", id);
+    let bootstrap: serde_json::Value = client.get_json(&path).await
+        .context("Failed to fetch bootstrap configuration")?;
+
+    // Extract filter configurations from Envoy bootstrap config
+    let filters = extract_filters_from_bootstrap(&bootstrap)?;
+
+    if filters.is_empty() {
+        println!("No HTTP filters configured for API definition '{}'", id);
+        return Ok(());
+    }
+
+    println!("HTTP Filters for API definition '{}':", id);
+    println!();
+
+    if output == "json" {
+        let json = serde_json::to_string_pretty(&filters)
+            .context("Failed to serialize filters to JSON")?;
+        println!("{}", json);
+    } else if output == "table" {
+        print_bootstrap_filters_table(&filters);
+    } else {
+        let yaml = serde_yaml::to_string(&filters)
+            .context("Failed to serialize filters to YAML")?;
+        println!("{}", yaml);
+    }
+
+    Ok(())
+}
+
+/// Extract HTTP filter names from Envoy bootstrap configuration
+fn extract_filters_from_bootstrap(bootstrap: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
+    let mut filters = Vec::new();
+
+    // Navigate through Envoy bootstrap structure to find HTTP filters
+    // Bootstrap -> static_resources -> listeners -> filter_chains -> filters -> typed_config -> http_filters
+    if let Some(static_resources) = bootstrap.get("static_resources") {
+        if let Some(listeners) = static_resources.get("listeners").and_then(|v| v.as_array()) {
+            for listener in listeners {
+                if let Some(filter_chains) = listener.get("filter_chains").and_then(|v| v.as_array()) {
+                    for chain in filter_chains {
+                        if let Some(chain_filters) = chain.get("filters").and_then(|v| v.as_array()) {
+                            for filter in chain_filters {
+                                if let Some(typed_config) = filter.get("typed_config") {
+                                    if let Some(http_filters) = typed_config.get("http_filters").and_then(|v| v.as_array()) {
+                                        for http_filter in http_filters {
+                                            filters.push(http_filter.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(filters)
+}
+
+/// Print filters in a table format for validation command
+fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEntry]) {
+    println!("{:<5} {:<30} {}", "No.", "Filter Type", "Configuration");
+    println!("{}", "-".repeat(80));
+
+    for (i, filter) in filters.iter().enumerate() {
+        let filter_json = serde_json::to_value(filter).unwrap_or(serde_json::Value::Null);
+        let filter_type = filter_json.get("filter")
+            .and_then(|f| f.get("type"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown");
+
+        let config_preview = serde_json::to_string(&filter)
+            .unwrap_or_else(|_| "{}".to_string());
+        let truncated = truncate(&config_preview, 45);
+
+        println!("{:<5} {:<30} {}", i + 1, filter_type, truncated);
+    }
+    println!();
+}
+
+/// Print bootstrap filters in a table format for show-filters command
+fn print_bootstrap_filters_table(filters: &[serde_json::Value]) {
+    println!("{:<5} {:<30} {}", "No.", "Filter Name", "Type URL");
+    println!("{}", "-".repeat(80));
+
+    for (i, filter) in filters.iter().enumerate() {
+        let name = filter.get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown");
+        let type_url = filter.get("typed_config")
+            .and_then(|tc| tc.get("@type"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown");
+
+        // Extract just the filter type from the type URL
+        let filter_type = type_url.rsplit('.').next().unwrap_or(type_url);
+
+        println!("{:<5} {:<30} {}", i + 1, name, filter_type);
+    }
+    println!();
 }
