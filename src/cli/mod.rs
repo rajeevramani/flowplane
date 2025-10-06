@@ -8,7 +8,9 @@ pub mod auth;
 pub mod client;
 pub mod clusters;
 pub mod config;
+pub mod config_cmd;
 pub mod listeners;
+pub mod output;
 pub mod routes;
 
 use crate::config::DatabaseConfig;
@@ -86,6 +88,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: routes::RouteCommands,
     },
+
+    /// Configuration management commands
+    Config {
+        #[command(subcommand)]
+        command: config_cmd::ConfigCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +169,9 @@ pub async fn run_cli() -> anyhow::Result<()> {
                 cli.verbose,
             )?;
             routes::handle_route_command(command, &client).await?
+        }
+        Commands::Config { command } => {
+            config_cmd::handle_config_command(command).await?
         }
     }
 
