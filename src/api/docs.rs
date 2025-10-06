@@ -47,7 +47,6 @@ use crate::xds::{
         crate::api::handlers::listeners::get_listener_handler,
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
-        crate::api::handlers::gateways::create_gateway_from_openapi_handler,
         crate::api::handlers::api_definitions::create_api_definition_handler,
         crate::api::handlers::api_definitions::import_openapi_handler,
         crate::api::handlers::api_definitions::append_route_handler,
@@ -85,9 +84,6 @@ use crate::xds::{
             crate::api::handlers::listeners::ListenerResponse,
             crate::api::handlers::listeners::CreateListenerBody,
             crate::api::handlers::listeners::UpdateListenerBody,
-            crate::api::handlers::gateways::GatewayQuery,
-            crate::api::handlers::gateways::OpenApiSpecBody,
-            crate::openapi::GatewaySummary,
             crate::api::handlers::api_definitions::OpenApiSpecBody,
             crate::api::handlers::api_definitions::ImportOpenApiQuery,
             crate::validation::requests::api_definition::CreateApiDefinitionBody,
@@ -114,7 +110,6 @@ use crate::xds::{
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
-        (name = "gateways", description = "Operations for importing gateway configurations from OpenAPI specifications"),
         (name = "tokens", description = "Personal access token management APIs"),
         (name = "platform-api", description = "Platform API Abstraction endpoints")
     ),
