@@ -5,6 +5,7 @@
 
 pub mod migrations;
 pub mod pool;
+pub mod repositories;
 pub mod repository;
 
 pub use crate::config::DatabaseConfig;
