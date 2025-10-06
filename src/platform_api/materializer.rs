@@ -35,11 +35,15 @@ pub type AppendRouteOutcome = DomainAppendRouteOutcome<ApiDefinitionData, ApiRou
 impl RouteConfig {
     /// Convert domain RouteConfig to storage CreateApiRouteRequest
     fn into_request(self, definition_id: &str, route_order: i64) -> CreateApiRouteRequest {
+        // Convert headers from Vec<HeaderMatchConfig> to JSON
+        let headers = self.headers.and_then(|h| serde_json::to_value(h).ok());
+
         CreateApiRouteRequest {
             api_definition_id: definition_id.to_string(),
             match_type: self.match_type,
             match_value: self.match_value,
             case_sensitive: self.case_sensitive,
+            headers,
             rewrite_prefix: self.rewrite_prefix,
             rewrite_regex: self.rewrite_regex,
             rewrite_substitution: self.rewrite_substitution,
@@ -139,11 +143,13 @@ impl PlatformApiMaterializer {
 
         let mut created_routes = Vec::with_capacity(spec.routes.len());
         for (idx, route_spec) in spec.routes.iter().cloned().enumerate() {
+            let headers_json = route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
             ensure_route_available(
                 &self.repository,
                 &definition.id,
                 &route_spec.match_type,
                 &route_spec.match_value,
+                headers_json.as_ref(),
             )
             .await?;
             let order = route_spec.route_order.unwrap_or(idx as i64);
@@ -301,11 +307,13 @@ impl PlatformApiMaterializer {
         // Create new API routes
         let mut created_routes = Vec::with_capacity(updated_routes.len());
         for (idx, route_spec) in updated_routes.iter().cloned().enumerate() {
+            let headers_json = route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
             ensure_route_available(
                 &self.repository,
                 definition_id,
                 &route_spec.match_type,
                 &route_spec.match_value,
+                headers_json.as_ref(),
             )
             .await?;
             let order = route_spec.route_order.unwrap_or(idx as i64);
@@ -389,11 +397,13 @@ impl PlatformApiMaterializer {
         let definition = self.repository.get_definition(definition_id).await?;
         let existing_routes = self.repository.list_routes(definition_id).await?;
 
+        let headers_json = spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
         ensure_route_available(
             &self.repository,
             definition_id,
             &spec.match_type,
             &spec.match_value,
+            headers_json.as_ref(),
         )
         .await?;
 
@@ -522,6 +532,7 @@ impl PlatformApiMaterializer {
             let path = match route.match_type.to_lowercase().as_str() {
                 "prefix" => PathMatch::Prefix(route.match_value.clone()),
                 "path" | "exact" => PathMatch::Exact(route.match_value.clone()),
+                "template" => PathMatch::Template(route.match_value.clone()),
                 other => {
                     return Err(Error::validation(format!(
                         "Unsupported route match type '{}' for isolated listener",
@@ -530,9 +541,13 @@ impl PlatformApiMaterializer {
                 }
             };
 
+            // Deserialize headers from JSON storage to HeaderMatchConfig
+            let headers =
+                route.headers.as_ref().and_then(|h| serde_json::from_value(h.clone()).ok());
+
             vhost.routes.push(RouteRule {
                 name: Some(format!("platform-api-{}", short_id(&route.id))),
-                r#match: RouteMatchConfig { path, headers: None, query_parameters: None },
+                r#match: RouteMatchConfig { path, headers, query_parameters: None },
                 action,
                 typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
             });
@@ -708,6 +723,7 @@ impl PlatformApiMaterializer {
                 let path = match route.match_type.to_lowercase().as_str() {
                     "prefix" => PathMatch::Prefix(route.match_value.clone()),
                     "path" | "exact" => PathMatch::Exact(route.match_value.clone()),
+                    "template" => PathMatch::Template(route.match_value.clone()),
                     other => {
                         return Err(Error::validation(format!(
                             "Unsupported route match type '{}' for shared listener",
@@ -716,9 +732,13 @@ impl PlatformApiMaterializer {
                     }
                 };
 
+                // Deserialize headers from JSON storage to HeaderMatchConfig
+                let headers =
+                    route.headers.as_ref().and_then(|h| serde_json::from_value(h.clone()).ok());
+
                 vhost.routes.push(RouteRule {
                     name: Some(format!("platform-api-{}", short_id(&route.id))),
-                    r#match: RouteMatchConfig { path, headers: None, query_parameters: None },
+                    r#match: RouteMatchConfig { path, headers, query_parameters: None },
                     action,
                     typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
                 });

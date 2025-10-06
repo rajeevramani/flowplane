@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::xds::filters::http::HttpFilterConfigEntry;
+use crate::xds::route::HeaderMatchConfig;
 
 /// High-level specification for creating a Platform API definition.
 ///
@@ -70,7 +71,7 @@ pub struct ListenerConfig {
 /// independent of any specific routing implementation.
 #[derive(Debug, Clone)]
 pub struct RouteConfig {
-    /// Type of match (e.g., "prefix", "exact", "regex")
+    /// Type of match (e.g., "prefix", "exact", "regex", "template")
     pub match_type: String,
 
     /// Value to match against
@@ -78,6 +79,9 @@ pub struct RouteConfig {
 
     /// Whether matching is case-sensitive
     pub case_sensitive: bool,
+
+    /// Optional header matchers (e.g., HTTP method matching via :method pseudo-header)
+    pub headers: Option<Vec<HeaderMatchConfig>>,
 
     /// Optional prefix rewrite
     pub rewrite_prefix: Option<String>,
@@ -190,6 +194,7 @@ mod tests {
             match_type: "prefix".to_string(),
             match_value: "/api/v1".to_string(),
             case_sensitive: true,
+            headers: None,
             rewrite_prefix: None,
             rewrite_regex: None,
             rewrite_substitution: None,
@@ -215,6 +220,7 @@ mod tests {
             match_type: "prefix".to_string(),
             match_value: "/old-api".to_string(),
             case_sensitive: false,
+            headers: None,
             rewrite_prefix: Some("/new-api".to_string()),
             rewrite_regex: None,
             rewrite_substitution: None,

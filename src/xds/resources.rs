@@ -200,6 +200,7 @@ pub fn resources_from_api_definitions(
             let path_match = match route.match_type.to_lowercase().as_str() {
                 "prefix" => crate::xds::route::PathMatch::Prefix(route.match_value.clone()),
                 "path" | "exact" => crate::xds::route::PathMatch::Exact(route.match_value.clone()),
+                "template" => crate::xds::route::PathMatch::Template(route.match_value.clone()),
                 other => {
                     return Err(Error::validation(format!(
                         "Unsupported route match type '{}'",
@@ -1149,6 +1150,7 @@ mod tests {
             match_type: "prefix".into(),
             match_value: "/api".into(),
             case_sensitive: true,
+            headers: None,
             rewrite_prefix: None,
             rewrite_regex: None,
             rewrite_substitution: None,

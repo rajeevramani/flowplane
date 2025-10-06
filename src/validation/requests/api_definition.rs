@@ -264,6 +264,7 @@ impl RouteBody {
             match_type,
             match_value,
             case_sensitive: true,
+            headers: None,
             rewrite_prefix,
             rewrite_regex,
             rewrite_substitution,
