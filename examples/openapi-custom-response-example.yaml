@@ -2,15 +2,6 @@ openapi: 3.0.0
 info:
   title: Custom Response Filter Demo
   version: 1.0.0
-  description: |
-    NOTE: The custom_response filter requires complex matcher tree configuration
-    to define which status codes to intercept and what body to return.
-
-    Currently, the matcher configuration requires base64-encoded protobuf, which
-    is not practical to configure via OpenAPI. This example shows the structure,
-    but a full implementation would need Native API or enhanced OpenAPI support.
-
-    The route-level override (disabled) works and is demonstrated in /health.
 
 servers:
   - url: https://httpbin.org
@@ -18,10 +9,21 @@ servers:
 x-flowplane-filters:
   - filter:
       type: custom_response
-      # TODO: Matcher configuration needed here to specify:
-      # - Which status codes to match (e.g., 400, 500)
-      # - What response body to return (e.g., {"error": "bad request"})
-      # This requires complex protobuf matcher tree configuration
+      matchers:
+        - status_code:
+            type: exact
+            code: 400
+          response:
+            body: '{"error": "bad request", "status_code": 400}'
+            headers:
+              content-type: application/json
+        - status_code:
+            type: exact
+            code: 500
+          response:
+            body: '{"error": "internal server error", "status_code": 500}'
+            headers:
+              content-type: application/json
   - filter:
       type: cors
       policy:
@@ -44,21 +46,29 @@ paths:
 
   /status/400:
     get:
-      summary: Bad request (would return custom response if matcher configured)
+      summary: Bad request - returns custom JSON error
       responses:
         '400':
           description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /status/500:
     get:
-      summary: Server error (would return custom response if matcher configured)
+      summary: Server error - returns custom JSON error
       responses:
         '500':
           description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /health:
     get:
-      summary: Health check with custom_response disabled (WORKS)
+      summary: Health check with custom_response disabled
       x-flowplane-route-overrides:
         custom_response: disabled
       responses:
