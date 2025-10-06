@@ -141,7 +141,8 @@ fn parse_filter_overrides(
                         }))
                     } else {
                         return Err(Error::validation(
-                            "Invalid custom_response override: expected 'disabled' or object".to_string()
+                            "Invalid custom_response override: expected 'disabled' or object"
+                                .to_string(),
                         ));
                     }
                 } else {

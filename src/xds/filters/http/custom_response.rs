@@ -135,11 +135,7 @@ impl LocalResponsePolicy {
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), "application/json".to_string());
 
-        Self {
-            status_code: Some(status_code),
-            body: Some(body),
-            headers,
-        }
+        Self { status_code: Some(status_code), body: Some(body), headers }
     }
 }
 
@@ -223,16 +219,19 @@ impl CustomResponseConfig {
     }
 
     /// Build Envoy matcher tree from user-friendly matcher rules
-    fn build_envoy_matcher(&self) -> Result<envoy_types::pb::xds::r#type::matcher::v3::Matcher, crate::Error> {
+    fn build_envoy_matcher(
+        &self,
+    ) -> Result<envoy_types::pb::xds::r#type::matcher::v3::Matcher, crate::Error> {
         use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
         use envoy_types::pb::envoy::extensions::http::custom_response::local_response_policy::v3::LocalResponsePolicy as EnvoyLocalResponsePolicy;
         use envoy_types::pb::google::protobuf::UInt32Value;
         use envoy_types::pb::xds::core::v3::TypedExtensionConfig;
         use envoy_types::pb::xds::r#type::matcher::v3::matcher::OnMatch;
         use envoy_types::pb::xds::r#type::matcher::v3::{
-            matcher, Matcher, matcher::MatcherList, matcher::matcher_list::FieldMatcher,
-            matcher::matcher_list::Predicate, matcher::matcher_list::predicate::SinglePredicate,
+            matcher,
             matcher::matcher_list::predicate::single_predicate::Matcher as PredicateMatcher,
+            matcher::matcher_list::predicate::SinglePredicate, matcher::matcher_list::FieldMatcher,
+            matcher::matcher_list::Predicate, matcher::MatcherList, Matcher,
         };
 
         // For now, create a simple matcher that matches on response code
@@ -249,13 +248,14 @@ impl CustomResponseConfig {
                 }),
                 body_format: None,
                 response_headers_to_add: rule.response.headers.iter().map(|(k, v)| {
+                    #[allow(deprecated)]
                     HeaderValueOption {
                         header: Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
                             key: k.clone(),
                             value: v.clone(),
                             raw_value: vec![],
                         }),
-                        append: None, // Deprecated field, use append_action instead
+                        append: None,
                         append_action: 1, // APPEND_IF_EXISTS_OR_ADD
                         keep_empty_value: false,
                     }
@@ -384,10 +384,10 @@ impl CustomResponsePerRouteConfig {
     }
 
     /// Build configuration from Envoy proto
-    pub fn from_proto(proto: &envoy_types::pb::envoy::config::route::v3::FilterConfig) -> Result<Self, crate::Error> {
-        let config = Self {
-            disabled: proto.disabled,
-        };
+    pub fn from_proto(
+        proto: &envoy_types::pb::envoy::config::route::v3::FilterConfig,
+    ) -> Result<Self, crate::Error> {
+        let config = Self { disabled: proto.disabled };
 
         config.validate()?;
         Ok(config)
@@ -540,11 +540,8 @@ mod tests {
         };
         assert!(policy.validate().is_ok());
 
-        let invalid = LocalResponsePolicy {
-            status_code: Some(600),
-            body: None,
-            headers: HashMap::new(),
-        };
+        let invalid =
+            LocalResponsePolicy { status_code: Some(600), body: None, headers: HashMap::new() };
         assert!(invalid.validate().is_err());
 
         let invalid2 = LocalResponsePolicy {
@@ -606,12 +603,10 @@ mod tests {
     #[test]
     fn custom_response_config_rejects_both_formats() {
         let config = CustomResponseConfig {
-            matchers: vec![
-                ResponseMatcherRule {
-                    status_code: StatusCodeMatcher::Exact { code: 400 },
-                    response: LocalResponsePolicy::json_error(400, "bad request"),
-                },
-            ],
+            matchers: vec![ResponseMatcherRule {
+                status_code: StatusCodeMatcher::Exact { code: 400 },
+                response: LocalResponsePolicy::json_error(400, "bad request"),
+            }],
             custom_response_matcher: Some(MatcherConfig {
                 config: TypedConfig {
                     type_url: "type.googleapis.com/xds.type.matcher.v3.Matcher".into(),
@@ -628,20 +623,18 @@ mod tests {
     #[test]
     fn custom_response_config_serde_round_trip() {
         let config = CustomResponseConfig {
-            matchers: vec![
-                ResponseMatcherRule {
-                    status_code: StatusCodeMatcher::Exact { code: 400 },
-                    response: LocalResponsePolicy {
-                        status_code: Some(400),
-                        body: Some("{\"error\": \"bad request\"}".to_string()),
-                        headers: {
-                            let mut h = HashMap::new();
-                            h.insert("content-type".to_string(), "application/json".to_string());
-                            h
-                        },
+            matchers: vec![ResponseMatcherRule {
+                status_code: StatusCodeMatcher::Exact { code: 400 },
+                response: LocalResponsePolicy {
+                    status_code: Some(400),
+                    body: Some("{\"error\": \"bad request\"}".to_string()),
+                    headers: {
+                        let mut h = HashMap::new();
+                        h.insert("content-type".to_string(), "application/json".to_string());
+                        h
                     },
                 },
-            ],
+            }],
             custom_response_matcher: None,
         };
 
