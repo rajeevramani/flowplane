@@ -36,7 +36,7 @@ use envoy_types::pb::google::protobuf::{Any, Duration, UInt32Value, UInt64Value}
 use prost::Message;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::xds::{filters::http::build_http_filters, listener::ListenerConfig, route::RouteConfig};
 
@@ -233,7 +233,7 @@ pub fn resources_from_api_definitions(
         }
 
         let route_config_name = format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(&definition.id));
-        tracing::info!(
+        tracing::debug!(
             route_config_name = %route_config_name,
             definition_id = %definition.id,
             num_routes = virtual_host.routes.len(),
@@ -488,6 +488,7 @@ pub fn routes_from_database_entries(
     phase: &str,
 ) -> Result<Vec<BuiltResource>> {
     let mut built = Vec::with_capacity(routes.len());
+    let mut total_bytes = 0;
 
     for route_row in routes {
         let mut value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
@@ -509,17 +510,27 @@ pub fn routes_from_database_entries(
         let envoy_route = route_config.to_envoy_route_configuration()?;
         let encoded = envoy_route.encode_to_vec();
 
-        info!(
+        debug!(
             phase,
             resource = %envoy_route.name,
             bytes = encoded.len(),
             "Built route configuration from repository"
         );
 
+        total_bytes += encoded.len();
         built.push(BuiltResource {
             name: envoy_route.name.clone(),
             resource: Any { type_url: ROUTE_TYPE_URL.to_string(), value: encoded },
         });
+    }
+
+    if !built.is_empty() {
+        debug!(
+            phase,
+            route_count = built.len(),
+            total_bytes,
+            "Built route configurations from repository"
+        );
     }
 
     Ok(built)
@@ -604,6 +615,7 @@ pub fn listeners_from_database_entries(
     context: &str,
 ) -> Result<Vec<BuiltResource>> {
     let mut resources = Vec::with_capacity(entries.len());
+    let mut total_bytes = 0;
 
     for entry in entries {
         let mut value: Value = serde_json::from_str(&entry.configuration).map_err(|err| {
@@ -625,7 +637,7 @@ pub fn listeners_from_database_entries(
         let envoy_listener = config.to_envoy_listener()?;
         let encoded = envoy_listener.encode_to_vec();
 
-        info!(
+        debug!(
             phase = context,
             listener_name = %entry.name,
             protocol = %entry.protocol,
@@ -634,10 +646,20 @@ pub fn listeners_from_database_entries(
             "Built listener resource from database entry"
         );
 
+        total_bytes += encoded.len();
         resources.push(BuiltResource {
             name: envoy_listener.name.clone(),
             resource: Any { type_url: LISTENER_TYPE_URL.to_string(), value: encoded },
         });
+    }
+
+    if !resources.is_empty() {
+        debug!(
+            phase = context,
+            listener_count = resources.len(),
+            total_bytes,
+            "Built listener resources from database"
+        );
     }
 
     Ok(resources)
@@ -649,6 +671,7 @@ pub fn clusters_from_database_entries(
     context: &str,
 ) -> Result<Vec<BuiltResource>> {
     let mut resources = Vec::new();
+    let mut total_bytes = 0;
 
     for entry in entries {
         let raw_config: Value = serde_json::from_str(&entry.configuration).map_err(|e| {
@@ -659,7 +682,7 @@ pub fn clusters_from_database_entries(
         let cluster = cluster_from_spec(&entry.name, &spec)?;
         let encoded = cluster.encode_to_vec();
 
-        info!(
+        debug!(
             phase = context,
             cluster_name = %entry.name,
             service_name = %entry.service_name,
@@ -668,10 +691,20 @@ pub fn clusters_from_database_entries(
             "Built cluster resource from database entry"
         );
 
+        total_bytes += encoded.len();
         resources.push(BuiltResource {
             name: entry.name,
             resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
         });
+    }
+
+    if !resources.is_empty() {
+        debug!(
+            phase = context,
+            cluster_count = resources.len(),
+            total_bytes,
+            "Built cluster resources from database"
+        );
     }
 
     Ok(resources)
