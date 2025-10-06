@@ -16,18 +16,6 @@ use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec, HealthCheckSpec,
     OutlierDetectionSpec,
 };
-#[allow(unused_imports)]
-use crate::xds::filters::http::{
-    cors::{CorsConfig, CorsOriginMatcher, CorsPolicyConfig, CorsPerRouteConfig, FractionalPercentDenominator, RuntimeFractionalPercentConfig},
-    credential_injector::{CredentialConfig, CredentialInjectorConfig},
-    custom_response::{CustomResponseConfig, CustomResponsePerRouteConfig, LocalResponsePolicy, ResponseMatcherRule, MatcherConfig},
-    header_mutation::{HeaderMutationConfig, HeaderMutationEntry, HeaderMutationPerRouteConfig},
-    health_check::HealthCheckConfig,
-    jwt_auth::{JwtAuthenticationConfig, JwtProviderConfig, JwtRequirementRuleConfig, LocalJwksConfig, RemoteJwksConfig, RemoteJwksHttpUriConfig, JwtHeaderConfig, JwtClaimToHeaderConfig},
-    local_rate_limit::{LocalRateLimitConfig, TokenBucketConfig},
-    rate_limit::{RateLimitConfig, RateLimitPerRouteConfig, RateLimitServiceGrpcConfig},
-    rate_limit_quota::{RateLimitQuotaConfig, RateLimitQuotaOverrideConfig, RlqsServerConfig},
-};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -104,41 +92,7 @@ use crate::xds::filters::http::{
             crate::api::handlers::api_definitions::AppendRouteResponse,
             crate::api::handlers::api_definitions::ApiDefinitionSummary,
             crate::api::handlers::api_definitions::ListDefinitionsQuery,
-            crate::api::handlers::api_definitions::BootstrapQuery,
-            // HTTP Filter Configurations
-            CorsConfig,
-            CorsPolicyConfig,
-            CorsOriginMatcher,
-            CorsPerRouteConfig,
-            RuntimeFractionalPercentConfig,
-            FractionalPercentDenominator,
-            CredentialConfig,
-            CredentialInjectorConfig,
-            CustomResponseConfig,
-            CustomResponsePerRouteConfig,
-            LocalResponsePolicy,
-            ResponseMatcherRule,
-            MatcherConfig,
-            HeaderMutationConfig,
-            HeaderMutationEntry,
-            HeaderMutationPerRouteConfig,
-            HealthCheckConfig,
-            JwtAuthenticationConfig,
-            JwtProviderConfig,
-            JwtRequirementRuleConfig,
-            LocalJwksConfig,
-            RemoteJwksConfig,
-            RemoteJwksHttpUriConfig,
-            JwtHeaderConfig,
-            JwtClaimToHeaderConfig,
-            LocalRateLimitConfig,
-            TokenBucketConfig,
-            RateLimitConfig,
-            RateLimitPerRouteConfig,
-            RateLimitServiceGrpcConfig,
-            RateLimitQuotaConfig,
-            RateLimitQuotaOverrideConfig,
-            RlqsServerConfig
+            crate::api::handlers::api_definitions::BootstrapQuery
         )
     ),
     tags(

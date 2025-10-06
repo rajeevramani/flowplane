@@ -17,7 +17,6 @@ use envoy_types::pb::google::protobuf::{Any as EnvoyAny, BoolValue};
 use http::{header::HeaderName, Method};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use utoipa::ToSchema;
 
 pub const FILTER_CORS_POLICY_TYPE_URL: &str =
@@ -189,17 +188,6 @@ impl FractionalPercentDenominator {
 
 /// Declarative representation of Envoy's `CorsPolicy` message.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
-#[schema(example = json!({
-    "allow_origin": [
-        {"type": "exact", "value": "https://example.com"},
-        {"type": "regex", "value": "https://.*\\.example\\.com"}
-    ],
-    "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "allow_headers": ["content-type", "authorization", "x-custom-header"],
-    "expose_headers": ["x-request-id", "x-correlation-id"],
-    "max_age": 3600,
-    "allow_credentials": true
-}))]
 pub struct CorsPolicyConfig {
     /// String matchers describing allowed origins. Must not be empty.
     #[serde(default)]
