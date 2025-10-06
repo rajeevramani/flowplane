@@ -37,8 +37,8 @@ debug!(
 
 #### Resource Building Logs (`src/xds/resources.rs`)
 - **Changed**: Individual resource build messages from INFO → DEBUG
-- **Added**: Aggregated summary logs at INFO level
-- **Impact**: From N logs per refresh to 1 summary log per resource type
+- **Changed**: Aggregated summary logs from INFO → DEBUG (due to high frequency during concurrent cache refreshes)
+- **Impact**: Eliminates ~4-8 duplicate logs per cache refresh cycle
 - **Location**: `routes_from_database_entries()`, `listeners_from_database_entries()`, `clusters_from_database_entries()`
 
 ```rust
@@ -50,9 +50,9 @@ info!(
     "Built route configuration from repository"
 );
 
-// After (one summary log):
+// After (aggregated at DEBUG level):
 if !built.is_empty() {
-    info!(
+    debug!(
         phase,
         route_count = built.len(),
         total_bytes,
@@ -61,9 +61,11 @@ if !built.is_empty() {
 }
 ```
 
-**Example Output**:
+**Rationale**: Cache refresh operations happen frequently on multiple concurrent threads, creating duplicate logs. These are internal operations useful for troubleshooting but not business-significant events for production monitoring.
+
+**Example Output** (with RUST_LOG=debug):
 ```
-INFO Built route configurations from repository route_count=5 total_bytes=1024 phase=cache_refresh
+DEBUG Built route configurations from repository route_count=5 total_bytes=1024 phase=cache_refresh
 ```
 
 ### 2. Structured Logging with Correlation IDs
@@ -254,17 +256,20 @@ All existing tests continue to pass (168 tests), validating:
 ### When to Use INFO vs DEBUG
 
 **INFO**: Significant state changes and business events
-- API definition created/updated/deleted
-- Native resources materialized
-- xDS configuration sent to Envoy
-- Authentication events
+- API definition created/updated/deleted (from materializer)
+- BFF routes materialized to native resources (with IDs)
+- xDS configuration updates sent to Envoy (with change counts)
+- Authentication successes and failures
 - Resource conflict detection
+- HTTP API requests (from access logs)
 
-**DEBUG**: Operational details for troubleshooting
-- Cache refresh with no changes
-- Individual resource builds
+**DEBUG**: Operational details and internal operations
+- Cache refresh operations (with/without changes)
+- Resource building from database (routes, listeners, clusters)
+- Platform API route config creation
+- Individual resource serialization
 - Middleware processing details
-- Temporary state snapshots
+- Database query execution
 
 **TRACE**: Extremely detailed execution flow
 - Function entry/exit
