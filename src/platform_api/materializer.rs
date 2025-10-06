@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use sqlx;
+use tracing::{field, info, instrument};
 
 use super::{
     audit, bootstrap,
@@ -75,6 +76,16 @@ impl PlatformApiMaterializer {
         Ok(Self { state, repository, audit_repo })
     }
 
+    #[instrument(
+        skip(self),
+        fields(
+            team = %spec.team,
+            domain = %spec.domain,
+            api_definition_id = field::Empty,
+            correlation_id = %uuid::Uuid::new_v4(),
+            listener_isolation = spec.listener_isolation
+        )
+    )]
     pub async fn create_definition(
         &self,
         spec: ApiDefinitionSpec,
@@ -140,6 +151,9 @@ impl PlatformApiMaterializer {
                 metadata: None,
             })
             .await?;
+
+        // Record API definition ID in span for correlation
+        tracing::Span::current().record("api_definition_id", field::display(&definition.id));
 
         let mut created_routes = Vec::with_capacity(spec.routes.len());
         for (idx, route_spec) in spec.routes.iter().cloned().enumerate() {
@@ -482,6 +496,15 @@ impl PlatformApiMaterializer {
         Ok(())
     }
 
+    #[instrument(
+        skip(self, routes, listener),
+        fields(
+            api_definition_id = %definition.id,
+            team = %definition.team,
+            domain = %definition.domain,
+            route_count = routes.len()
+        )
+    )]
     async fn materialize_isolated_listener(
         &self,
         definition: &ApiDefinitionData,
@@ -617,6 +640,15 @@ impl PlatformApiMaterializer {
     }
 
     /// Merge Platform API routes into existing shared listeners (listenerIsolation=false mode)
+    #[instrument(
+        skip(self, routes, target_listeners),
+        fields(
+            api_definition_id = %definition.id,
+            team = %definition.team,
+            domain = %definition.domain,
+            route_count = routes.len()
+        )
+    )]
     async fn materialize_shared_listener_routes(
         &self,
         definition: &ApiDefinitionData,
@@ -783,6 +815,15 @@ impl PlatformApiMaterializer {
 
     /// Materialize native resources (listeners, routes, clusters) from Platform API definition
     /// Tags all resources with source='platform_api' and stores FK relationships
+    #[instrument(
+        skip(self, api_routes, _listener_spec),
+        fields(
+            api_definition_id = %definition.id,
+            team = %definition.team,
+            domain = %definition.domain,
+            route_count = api_routes.len()
+        )
+    )]
     async fn materialize_native_resources(
         &self,
         definition: &ApiDefinitionData,
@@ -907,8 +948,23 @@ impl PlatformApiMaterializer {
                 .await
                 .map_err(|e| Error::internal(format!("Failed to tag route with source: {}", e)))?;
 
-            generated_route_ids.push(route.id);
+            generated_route_ids.push(route.id.clone());
+
+            info!(
+                api_route_id = %api_route.id,
+                native_route_id = %route.id,
+                native_cluster_id = %cluster.id,
+                match_type = %api_route.match_type,
+                match_value = %api_route.match_value,
+                "Materialized BFF route to native resources"
+            );
         }
+
+        info!(
+            total_routes = generated_route_ids.len(),
+            total_clusters = generated_cluster_ids.len(),
+            "Completed native resource materialization"
+        );
 
         // Listener ID will be retrieved after listener creation in create_definition
         // (listener is created AFTER clusters to ensure proper xDS ordering)
