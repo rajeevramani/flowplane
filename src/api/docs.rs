@@ -12,18 +12,15 @@ use crate::api::handlers::{
 #[allow(unused_imports)]
 use crate::auth::{models::PersonalAccessToken, token_service::TokenSecretResponse};
 #[allow(unused_imports)]
+use crate::xds::filters::http::{
+    cors::CorsPolicyConfig, custom_response::CustomResponseConfig,
+    header_mutation::HeaderMutationConfig, health_check::HealthCheckConfig,
+    local_rate_limit::LocalRateLimitConfig, rate_limit::RateLimitConfig,
+};
+#[allow(unused_imports)]
 use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec, HealthCheckSpec,
     OutlierDetectionSpec,
-};
-#[allow(unused_imports)]
-use crate::xds::filters::http::{
-    cors::CorsPolicyConfig,
-    custom_response::CustomResponseConfig,
-    header_mutation::HeaderMutationConfig,
-    health_check::HealthCheckConfig,
-    local_rate_limit::LocalRateLimitConfig,
-    rate_limit::RateLimitConfig,
 };
 
 #[derive(OpenApi)]
