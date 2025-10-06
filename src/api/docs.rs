@@ -16,6 +16,15 @@ use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec, HealthCheckSpec,
     OutlierDetectionSpec,
 };
+#[allow(unused_imports)]
+use crate::xds::filters::http::{
+    cors::CorsPolicyConfig,
+    custom_response::CustomResponseConfig,
+    header_mutation::HeaderMutationConfig,
+    health_check::HealthCheckConfig,
+    local_rate_limit::LocalRateLimitConfig,
+    rate_limit::RateLimitConfig,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -92,7 +101,14 @@ use crate::xds::{
             crate::api::handlers::api_definitions::AppendRouteResponse,
             crate::api::handlers::api_definitions::ApiDefinitionSummary,
             crate::api::handlers::api_definitions::ListDefinitionsQuery,
-            crate::api::handlers::api_definitions::BootstrapQuery
+            crate::api::handlers::api_definitions::BootstrapQuery,
+            // Commonly used HTTP filter configurations
+            CorsPolicyConfig,
+            CustomResponseConfig,
+            HeaderMutationConfig,
+            HealthCheckConfig,
+            LocalRateLimitConfig,
+            RateLimitConfig
         )
     ),
     tags(
