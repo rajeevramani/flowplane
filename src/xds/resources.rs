@@ -1,6 +1,5 @@
 use std::{collections::HashMap, net::IpAddr};
 
-use crate::openapi::defaults::{DEFAULT_GATEWAY_ADDRESS, DEFAULT_GATEWAY_PORT};
 use crate::platform_api::filter_overrides::typed_per_filter_config;
 use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, HealthCheckSpec,
@@ -20,22 +19,15 @@ use envoy_types::pb::envoy::config::cluster::v3::cluster::{
 use envoy_types::pb::envoy::config::cluster::v3::{CircuitBreakers, Cluster, OutlierDetection};
 use envoy_types::pb::envoy::config::core::v3::transport_socket::ConfigType as TransportSocketConfigType;
 use envoy_types::pb::envoy::config::core::v3::{
-    config_source,
     health_check::{self, HttpHealthCheck, TcpHealthCheck},
     socket_address::{self, Protocol},
-    Address, AggregatedConfigSource, ConfigSource, HealthCheck, RequestMethod, RoutingPriority,
-    SocketAddress, TransportSocket,
+    Address, HealthCheck, RequestMethod, RoutingPriority, SocketAddress, TransportSocket,
 };
 use envoy_types::pb::envoy::config::endpoint::v3::{
     lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
 };
-use envoy_types::pb::envoy::config::listener::v3::{
-    filter::ConfigType as ListenerFilterConfigType, Filter, FilterChain, Listener,
-};
+use envoy_types::pb::envoy::config::listener::v3::Listener;
 use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
-use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
-    http_connection_manager, HttpConnectionManager, Rds,
-};
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
     CommonTlsContext, UpstreamTlsContext,
 };
@@ -165,6 +157,22 @@ pub fn resources_from_api_definitions(
             continue;
         }
 
+        // Skip route config generation for listenerIsolation=false (routes are merged into shared listeners)
+        if !definition.listener_isolation {
+            // Still need to generate clusters for these routes
+            for route in definition_routes {
+                let targets = parse_upstream_targets(&route)?;
+                if targets.is_empty() {
+                    continue;
+                }
+
+                let cluster_name = build_cluster_name(&definition.id, &route.id);
+                let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
+                cluster_resources.push(cluster_resource);
+            }
+            continue;
+        }
+
         let mut virtual_host = crate::xds::route::VirtualHostConfig {
             name: format!("{}-vhost", short_id(&definition.id)),
             domains: vec![definition.domain.clone()],
@@ -224,6 +232,12 @@ pub fn resources_from_api_definitions(
         }
 
         let route_config_name = format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(&definition.id));
+        tracing::info!(
+            route_config_name = %route_config_name,
+            definition_id = %definition.id,
+            num_routes = virtual_host.routes.len(),
+            "resources_from_api_definitions: Creating Platform API route config"
+        );
         let route_config = crate::xds::route::RouteConfig {
             name: route_config_name.clone(),
             virtual_hosts: vec![virtual_host],
@@ -238,8 +252,14 @@ pub fn resources_from_api_definitions(
             },
         });
 
-        let listener_resource = build_listener_for_definition(&definition, &route_config_name)?;
-        built_resources.push(listener_resource);
+        // NOTE: Listeners for Platform API definitions are created in the database by
+        // materialize_isolated_listener() and loaded via refresh_listeners_from_repository().
+        // We don't create listeners here to avoid duplicates.
+
+        // NOTE: Clusters for Platform API definitions are created in the database by
+        // materialize_native_resources() and loaded via refresh_clusters_from_repository().
+        // We include them here for dynamic generation, but refresh_platform_api_resources()
+        // will NOT send them to Envoy to avoid duplicates (they're sent by refresh_clusters_from_repository()).
     }
 
     built_resources.extend(cluster_resources);
@@ -413,100 +433,6 @@ fn build_platform_cluster(cluster_name: &str, targets: &[ParsedTarget]) -> Resul
     })
 }
 
-fn build_listener_for_definition(
-    definition: &ApiDefinitionData,
-    route_config_name: &str,
-) -> Result<BuiltResource> {
-    let http_filters = build_http_filters(&[])?;
-    // let mut hcm = HttpConnectionManager::default();
-    // hcm.stat_prefix = format!("platform_api_{}", short_id(&definition.id));
-    // hcm.route_specifier = Some(http_connection_manager::RouteSpecifier::Rds(Rds {
-    //     config_source: Some(ConfigSource {
-    //         resource_api_version: 0,
-    //         config_source_specifier: Some(config_source::ConfigSourceSpecifier::Ads(
-    //             AggregatedConfigSource::default(),
-    //         )),
-    //         ..Default::default()
-    //     }),
-    //     route_config_name: route_config_name.to_string(),
-    // }));
-    // hcm.http_filters = http_filters;
-    let hcm: HttpConnectionManager = HttpConnectionManager {
-        stat_prefix: format!("platform_api_{}", short_id(&definition.id)),
-        route_specifier: Some(http_connection_manager::RouteSpecifier::Rds(Rds {
-            config_source: Some(ConfigSource {
-                resource_api_version: 0,
-                config_source_specifier: Some(config_source::ConfigSourceSpecifier::Ads(
-                    AggregatedConfigSource::default(),
-                )),
-                ..Default::default()
-            }),
-            route_config_name: route_config_name.to_string(),
-        })),
-        http_filters,
-        ..Default::default()
-    };
-
-    let hcm_any = Any {
-        type_url: "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager".to_string(),
-        value: hcm.encode_to_vec(),
-    };
-
-    let listener_name = format!("platform-api-{}-listener", short_id(&definition.id));
-    let listener = Listener {
-        name: listener_name.clone(),
-        address: Some(Address {
-            address: Some(
-                envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
-                    SocketAddress {
-                        address: DEFAULT_GATEWAY_ADDRESS.to_string(),
-                        port_specifier: Some(socket_address::PortSpecifier::PortValue(
-                            DEFAULT_GATEWAY_PORT as u32,
-                        )),
-                        protocol: Protocol::Tcp as i32,
-                        ..Default::default()
-                    },
-                ),
-            ),
-        }),
-        filter_chains: vec![FilterChain {
-            filters: vec![Filter {
-                name: "envoy.filters.network.http_connection_manager".to_string(),
-                config_type: Some(ListenerFilterConfigType::TypedConfig(hcm_any)),
-            }],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    // let mut listener = Listener::default();
-    // listener.name = listener_name.clone();
-    // listener.address = Some(Address {
-    //     address: Some(envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
-    //         SocketAddress {
-    //             address: DEFAULT_GATEWAY_ADDRESS.to_string(),
-    //             port_specifier: Some(socket_address::PortSpecifier::PortValue(
-    //                 DEFAULT_GATEWAY_PORT as u32,
-    //             )),
-    //             protocol: Protocol::Tcp as i32,
-    //             ..Default::default()
-    //         },
-    //     )),
-    // });
-    // listener.filter_chains.push(FilterChain {
-    //     filters: vec![Filter {
-    //         name: "envoy.filters.network.http_connection_manager".to_string(),
-    //         config_type: Some(ListenerFilterConfigType::TypedConfig(hcm_any)),
-    //         ..Default::default()
-    //     }],
-    //     ..Default::default()
-    // });
-
-    let encoded = listener.encode_to_vec();
-    Ok(BuiltResource {
-        name: listener_name,
-        resource: Any { type_url: LISTENER_TYPE_URL.to_string(), value: encoded },
-    })
-}
 /// Build route configuration resources from the static configuration
 pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>> {
     let resources = &config.resources;
@@ -1173,7 +1099,7 @@ mod tests {
     use super::*;
     use crate::platform_api::filter_overrides::canonicalize_filter_overrides;
     use crate::storage::{ApiDefinitionData, ApiRouteData, ListenerData};
-    use crate::xds::filters::http::cors::ROUTE_CORS_POLICY_TYPE_URL;
+    use crate::xds::filters::http::cors::FILTER_CORS_POLICY_TYPE_URL;
     use crate::xds::{
         listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec,
@@ -1195,16 +1121,18 @@ mod tests {
     }
 
     #[test]
-    fn platform_api_route_generates_clusters_routes_and_listener() {
+    fn platform_api_route_generates_clusters_and_routes() {
         let definition = ApiDefinitionData {
             id: "def-1234".into(),
             team: "payments".into(),
             domain: "payments.flowplane.dev".into(),
-            listener_isolation: false,
+            listener_isolation: true,
+            target_listeners: None,
             tls_config: None,
             metadata: None,
             bootstrap_uri: None,
             bootstrap_revision: 1,
+            generated_listener_id: None,
             version: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1234,6 +1162,9 @@ mod tests {
             override_config,
             deployment_note: None,
             route_order: 0,
+            generated_route_id: None,
+            generated_cluster_id: None,
+            filter_config: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1265,7 +1196,7 @@ mod tests {
             .typed_per_filter_config
             .get("envoy.filters.http.cors")
             .expect("cors override present");
-        assert_eq!(cors_any.type_url, ROUTE_CORS_POLICY_TYPE_URL);
+        assert_eq!(cors_any.type_url, FILTER_CORS_POLICY_TYPE_URL);
 
         let cluster_any = resources
             .iter()
@@ -1279,22 +1210,14 @@ mod tests {
         assert_eq!(endpoints[0].load_balancing_weight.as_ref().unwrap().value, 80);
         assert_eq!(endpoints[1].load_balancing_weight.as_ref().unwrap().value, 20);
 
-        let listener_any = resources
-            .iter()
-            .find(|res| res.resource.type_url == LISTENER_TYPE_URL)
-            .expect("listener resource");
-        let listener = Listener::decode(listener_any.resource.value.as_slice()).expect("listener");
-        let hcm_any = match listener.filter_chains[0].filters[0].config_type.as_ref().unwrap() {
-            ListenerFilterConfigType::TypedConfig(any) => any,
-            other => panic!("unexpected filter config: {:?}", other),
-        };
-        let hcm = HttpConnectionManager::decode(hcm_any.value.as_slice()).expect("hcm");
-        match hcm.route_specifier.expect("route specifier") {
-            http_connection_manager::RouteSpecifier::Rds(rds) => {
-                assert_eq!(rds.route_config_name, route_config.name);
-            }
-            other => panic!("expected RDS route specifier, got {:?}", other),
-        }
+        // Note: Listeners are NOT generated by resources_from_api_definitions when
+        // listener_isolation=false. They are created separately via the database
+        // materialization process (materialize_isolated_listener) when listener_isolation=true,
+        // or routes are merged into existing listeners when listener_isolation=false.
+        assert!(
+            !resources.iter().any(|res| res.resource.type_url == LISTENER_TYPE_URL),
+            "No listener should be generated for listener_isolation=false"
+        );
     }
 
     #[test]
@@ -1515,6 +1438,7 @@ mod tests {
             protocol: "TCP".to_string(),
             configuration: serde_json::to_string(&listener_config).unwrap(),
             version: 1,
+            source: "native_api".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

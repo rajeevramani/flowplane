@@ -1,0 +1,400 @@
+openapi: 3.0.0
+info:
+  title: HTTPBin Demo API with x-flowplane Filters
+  version: 1.0.0
+  description: |
+    A practical example using httpbin.org to demonstrate x-flowplane filter extensions.
+
+    To import this spec:
+    curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true" \
+      -H "Content-Type: application/yaml" \
+      --data-binary @httpbin-demo.yaml
+
+    Then test the endpoints:
+    - curl http://localhost:<ASSIGNED_PORT>/get
+    - curl http://localhost:<ASSIGNED_PORT>/post -X POST -d '{"test":"data"}'
+    - curl http://localhost:<ASSIGNED_PORT>/headers
+
+servers:
+  - url: https://httpbin.org
+    description: HTTPBin test server
+
+# Global filters applied to ALL routes
+x-flowplane-filters:
+  # Global CORS - allow requests from any origin for testing
+  - filter:
+      type: cors
+      policy:
+        allow_origin:
+          - type: exact
+            value: "*"
+        allow_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        allow_headers:
+          - content-type
+          - authorization
+          - x-api-key
+          - x-custom-header
+        expose_headers:
+          - x-request-id
+        max_age: 3600
+
+  # Global header mutation - add tracking headers
+  - filter:
+      type: header_mutation
+      request_headers_to_add:
+        - key: x-gateway
+          value: "flowplane"
+          append: false
+        - key: x-forwarded-by
+          value: "flowplane-gateway"
+          append: false
+      response_headers_to_add:
+        - key: x-served-by
+          value: "flowplane"
+          append: false
+
+  # Global rate limiting - 100 requests per minute
+  - filter:
+      type: local_rate_limit
+      stat_prefix: httpbin_global_rl
+      token_bucket:
+        max_tokens: 100
+        tokens_per_fill: 100
+        fill_interval_ms: 60000
+
+paths:
+  # Simple GET endpoint - uses global filters only
+  /get:
+    get:
+      summary: Simple HTTP GET
+      description: |
+        Returns GET request details including headers added by gateway.
+        Test: curl http://localhost:<PORT>/get
+      responses:
+        '200':
+          description: Request details
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # POST endpoint with stricter rate limiting
+  /post:
+    post:
+      summary: HTTP POST endpoint
+      description: |
+        Echoes POST data back. Stricter rate limit than GET.
+        Test: curl http://localhost:<PORT>/post -X POST -H "Content-Type: application/json" -d '{"test":"data"}'
+      x-flowplane-route-overrides:
+        # Override rate limit to be more restrictive for writes
+        # NOTE: Use 'rate_limit' not 'local_rate_limit' for route overrides
+        rate_limit:
+          stat_prefix: httpbin_post_rl
+          token_bucket:
+            max_tokens: 20
+            tokens_per_fill: 20
+            fill_interval_ms: 60000  # Only 20 POST requests per minute
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Echo of POST data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # PUT endpoint
+  /put:
+    put:
+      summary: HTTP PUT endpoint
+      description: |
+        Echoes PUT data back. Same strict rate limit as POST.
+        Test: curl http://localhost:<PORT>/put -X PUT -H "Content-Type: application/json" -d '{"update":"data"}'
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: httpbin_put_rl
+          token_bucket:
+            max_tokens: 20
+            tokens_per_fill: 20
+            fill_interval_ms: 60000
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Echo of PUT data
+
+  # DELETE endpoint
+  /delete:
+    delete:
+      summary: HTTP DELETE endpoint
+      description: |
+        Returns DELETE request details. Very strict rate limit.
+        Test: curl http://localhost:<PORT>/delete -X DELETE
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: httpbin_delete_rl
+          token_bucket:
+            max_tokens: 10
+            tokens_per_fill: 10
+            fill_interval_ms: 60000  # Only 10 DELETE per minute
+      responses:
+        '200':
+          description: DELETE request details
+
+  # Headers endpoint - shows what headers the gateway added
+  /headers:
+    get:
+      summary: View request headers
+      description: |
+        Returns all headers sent to httpbin. Great for seeing gateway-added headers.
+        Test: curl http://localhost:<PORT>/headers
+      responses:
+        '200':
+          description: All request headers
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # Status codes endpoint - permissive rate limit
+  /status/{code}:
+    get:
+      summary: Return specific status code
+      description: |
+        Returns the specified HTTP status code.
+        Test: curl http://localhost:<PORT>/status/200
+        Test: curl http://localhost:<PORT>/status/404
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: HTTP status code to return
+      x-flowplane-route-overrides:
+        # Very permissive for testing
+        rate_limit:
+          stat_prefix: httpbin_status_rl
+          token_bucket:
+            max_tokens: 500
+            tokens_per_fill: 500
+            fill_interval_ms: 60000
+      responses:
+        '200':
+          description: Success
+        '404':
+          description: Not found
+        '500':
+          description: Server error
+
+  # Delay endpoint - test timeouts and rate limiting
+  /delay/{seconds}:
+    get:
+      summary: Delayed response
+      description: |
+        Returns response after specified delay (max 10 seconds).
+        Test: curl http://localhost:<PORT>/delay/2
+      parameters:
+        - name: seconds
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+          description: Delay in seconds
+      x-flowplane-route-overrides:
+        # Strict rate limit to prevent delay abuse
+        rate_limit:
+          stat_prefix: httpbin_delay_rl
+          token_bucket:
+            max_tokens: 5
+            tokens_per_fill: 5
+            fill_interval_ms: 60000  # Only 5 delay requests per minute
+      responses:
+        '200':
+          description: Delayed response
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # JSON endpoint
+  /json:
+    get:
+      summary: Return sample JSON
+      description: |
+        Returns a sample JSON object.
+        Test: curl http://localhost:<PORT>/json
+      responses:
+        '200':
+          description: Sample JSON data
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # Response headers endpoint
+  /response-headers:
+    get:
+      summary: Set response headers
+      description: |
+        Returns response with custom headers set via query params.
+        Test: curl "http://localhost:<PORT>/response-headers?foo=bar&baz=qux"
+      parameters:
+        - name: foo
+          in: query
+          schema:
+            type: string
+        - name: baz
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Response with custom headers
+
+  # User agent endpoint
+  /user-agent:
+    get:
+      summary: Return user agent
+      description: |
+        Returns the user agent string.
+        Test: curl http://localhost:<PORT>/user-agent
+      responses:
+        '200':
+          description: User agent details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user-agent:
+                    type: string
+
+  # UUID endpoint
+  /uuid:
+    get:
+      summary: Generate UUID
+      description: |
+        Returns a random UUID.
+        Test: curl http://localhost:<PORT>/uuid
+      responses:
+        '200':
+          description: Generated UUID
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uuid:
+                    type: string
+
+  # Anything endpoint - accepts any HTTP method
+  /anything:
+    get:
+      summary: Echo anything
+      description: |
+        Returns request details for any HTTP method.
+        Test: curl http://localhost:<PORT>/anything
+      responses:
+        '200':
+          description: Request details
+    post:
+      summary: Echo anything (POST)
+      description: |
+        Test: curl http://localhost:<PORT>/anything -X POST -d '{"any":"data"}'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Request details
+    put:
+      summary: Echo anything (PUT)
+      responses:
+        '200':
+          description: Request details
+    delete:
+      summary: Echo anything (DELETE)
+      responses:
+        '200':
+          description: Request details
+
+  # Base64 decode endpoint
+  /base64/{value}:
+    get:
+      summary: Decode base64
+      description: |
+        Decodes base64 encoded string.
+        Test: curl http://localhost:<PORT>/base64/SGVsbG8gV29ybGQ=
+      parameters:
+        - name: value
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Base64 encoded value
+      responses:
+        '200':
+          description: Decoded value
+
+  # Public endpoint - CORS disabled as example
+  /ip:
+    get:
+      summary: Get origin IP
+      description: |
+        Returns the origin IP address. Example of disabling CORS for a route.
+        Test: curl http://localhost:<PORT>/ip
+      x-flowplane-route-overrides:
+        # Disable CORS for this specific route
+        cors: disabled
+      responses:
+        '200':
+          description: Origin IP address
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  origin:
+                    type: string
+
+  # Admin endpoint with custom CORS
+  /bearer:
+    get:
+      summary: Test bearer token
+      description: |
+        Returns authenticated user data if valid bearer token provided.
+        Test: curl http://localhost:<PORT>/bearer -H "Authorization: Bearer test-token"
+      x-flowplane-route-overrides:
+        # Override CORS for admin endpoints - only allow specific origin
+        cors:
+          policy:
+            allow_origin:
+              - type: exact
+                value: "https://admin.example.com"
+            allow_methods:
+              - GET
+            allow_credentials: true
+      responses:
+        '200':
+          description: Authenticated user data
+          content:
+            application/json:
+              schema:
+                type: object

@@ -38,7 +38,7 @@ fi
 
 echo ""
 echo "🧪 Running tests..."
-if cargo test -- --test-threads=1; then
+if RUN_E2E=1 cargo test -- --test-threads=1; then
     echo "✅ All tests passed"
 else
     echo "❌ Tests failed"

@@ -11,7 +11,7 @@ use crate::auth::{
     models::{AuthContext, AuthError, TokenStatus},
 };
 use crate::observability::metrics;
-use crate::storage::repository_simple::{
+use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
 };
 

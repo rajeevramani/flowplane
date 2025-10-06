@@ -317,6 +317,7 @@ impl CorsPolicyConfig {
         Ok(policy)
     }
 
+    #[allow(dead_code)]
     fn to_route_proto(&self) -> Result<RouteCorsPolicy, crate::Error> {
         self.validate()?;
 
@@ -394,6 +395,7 @@ impl CorsPolicyConfig {
         Ok(config)
     }
 
+    #[allow(dead_code)]
     fn from_route_proto(proto: &RouteCorsPolicy) -> Result<Self, crate::Error> {
         let config = Self {
             allow_origin: proto
@@ -513,13 +515,13 @@ pub struct CorsPerRouteConfig {
 impl CorsPerRouteConfig {
     /// Convert to per-route typed config Any payload.
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
-        let policy = self.policy.to_route_proto()?;
-        Ok(any_from_message(ROUTE_CORS_POLICY_TYPE_URL, &policy))
+        let policy = self.policy.to_filter_proto()?;
+        Ok(any_from_message(FILTER_CORS_POLICY_TYPE_URL, &policy))
     }
 
     /// Deserialize per-route configuration from proto.
-    pub fn from_proto(proto: &RouteCorsPolicy) -> Result<Self, crate::Error> {
-        Ok(Self { policy: CorsPolicyConfig::from_route_proto(proto)? })
+    pub fn from_proto(proto: &FilterCorsPolicy) -> Result<Self, crate::Error> {
+        Ok(Self { policy: CorsPolicyConfig::from_filter_proto(proto)? })
     }
 }
 
@@ -591,9 +593,9 @@ mod tests {
     fn route_proto_round_trip() {
         let config = CorsPerRouteConfig { policy: sample_policy() };
         let any = config.to_any().expect("to_any");
-        assert_eq!(any.type_url, ROUTE_CORS_POLICY_TYPE_URL);
+        assert_eq!(any.type_url, FILTER_CORS_POLICY_TYPE_URL);
 
-        let proto = RouteCorsPolicy::decode(any.value.as_slice()).expect("decode proto");
+        let proto = FilterCorsPolicy::decode(any.value.as_slice()).expect("decode proto");
         let round_tripped = CorsPerRouteConfig::from_proto(&proto).expect("from proto");
         assert_eq!(round_tripped.policy.allow_headers, vec!["x-request-id"]);
         assert_eq!(round_tripped.policy.forward_not_matching_preflights, Some(true));

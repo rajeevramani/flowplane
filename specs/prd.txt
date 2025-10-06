@@ -1,0 +1,1173 @@
+# Flowplane Control Plane: Unified BFF API Architecture
+
+<context>
+## Overview
+Flowplane is an Envoy proxy control plane that currently provides three API patterns for configuring proxy resources:
+1. **Native API:** Direct Envoy resource manipulation (`/api/v1/clusters`, `/api/v1/listeners`, `/api/v1/routes`) ✅ Fully implemented
+2. **OpenAPI Gateway Import:** Auto-generate Envoy config from OpenAPI specs (`/api/v1/gateways/openapi`) ✅ Exists but will be merged
+3. **Platform API:** Simplified abstraction over Envoy complexity (`/api/v1/api-definitions`) ✅ Exists but needs enhancement
+
+This PRD consolidates patterns #2 and #3 into a unified Backend-for-Frontend (BFF) API that abstracts Envoy complexity while retaining native API access for advanced users. The goal is to provide teams with a simpler, declarative interface for common use cases while maintaining full Envoy control for power users.
+
+## Current State vs. Target State
+
+### What Already Works (Solid Foundation)
+✅ **Platform API (`/api/v1/api-definitions`)**: Create API definitions with routes
+✅ **Route Matching**: Full support for path, method, headers, query parameters
+✅ **Listener Isolation**: Dedicated and shared listener modes
+✅ **HTTP Filters**: CORS, JWT Auth, Local Rate Limit fully implemented
+✅ **Filter Scopes**: Route, virtual host, and listener-level filter application
+✅ **Native API**: Full CRUD on clusters, listeners, routes
+✅ **OpenAPI Import**: Functional gateway creation from OpenAPI specs
+✅ **xDS Server**: Dynamic configuration delivery to Envoy proxies
+✅ **Authentication**: JWT-based API auth with scoped tokens
+✅ **CLI**: Token management via direct DB access
+
+### What Needs to Be Built (This PRD)
+❌ **Data Model Unification**: Add foreign keys + source tagging to link BFF → native resources
+❌ **Bootstrap API Response**: Return xDS bootstrap config in API response (not file)
+❌ **OpenAPI Merge**: Consolidate `/api/v1/gateways/openapi` into `/api/v1/api-definitions/from-openapi`
+❌ **Native Resource Generation**: BFF API should create entries in clusters/routes tables
+❌ **Additional Filters**: 7 more filters (rate-limit, header-mutation, health-check, etc.)
+❌ **CLI Expansion**: HTTP-based CRUD commands for all resources
+❌ **Logging Cleanup**: Reduce chattiness, focus on actionable logs
+❌ **Code Refactoring**: Break large files into manageable modules
+❌ **Documentation**: Comprehensive docs for v0.0.1 release
+
+**Target Users:**
+- Application teams needing simple API gateway configuration
+- Platform engineers requiring fine-grained Envoy control
+- DevOps teams managing multi-tenant proxy infrastructure
+
+**Value Proposition:**
+- Single unified API for simplified and native Envoy configuration
+- Automatic listener isolation for team boundaries
+- Direct bootstrap config generation (no file I/O)
+- Extensible HTTP filter ecosystem via OpenAPI extensions
+- Comprehensive CLI for all control plane operations
+
+# User Experience
+
+**User Personas:**
+1. **Application Developer** - Needs simple API gateway without Envoy expertise
+2. **Platform Engineer** - Requires full Envoy control and xDS configuration
+3. **DevOps/SRE** - Manages multi-tenant infrastructure and deployments
+
+**Key User Flows:**
+
+*Flow 1: Application Team Creates API (BFF Path)*
+1. Team writes OpenAPI spec with `x-flowplane-*` extensions for filters
+2. POST spec to `/api/v1/api-definitions/from-openapi`
+3. System auto-generates listeners, routes, clusters
+4. GET `/api/v1/api-definitions/{id}/bootstrap` → download YAML
+5. Start Envoy proxy with bootstrap config
+6. Proxy connects to control plane via xDS
+
+*Flow 2: Platform Engineer Creates Native Resources (Power User Path)*
+1. Engineer crafts specific Envoy listener configuration
+2. POST to `/api/v1/listeners` with full Envoy JSON
+3. Create routes and clusters via native APIs
+4. xDS automatically propagates to connected proxies
+5. Fine-tune configuration with direct Envoy control
+
+*Flow 3: DevOps Team Uses CLI*
+1. Create token: `cargo run --bin flowplane-cli auth create-token`
+2. Configure CLI: Store token in `~/.flowplane/config.toml`
+3. Deploy API: `flowplane api create --file api.yaml`
+4. Monitor: `flowplane api list --team payments`
+5. Update: `flowplane api delete api-123 && flowplane api create --file api-v2.yaml`
+
+**UI/UX Considerations:**
+- CLI-first experience (no web UI in v0.0.1)
+- Clear, actionable error messages with remediation hints
+- Consistent JSON/YAML response formats
+- Comprehensive utoipa-generated API documentation
+- Examples in documentation for every endpoint
+</context>
+
+<PRD>
+# Technical Architecture
+
+## 1. Unified BFF API (`/api/v1/api-definitions`)
+
+### 1.1 Native BFF Creation
+**Endpoint:** `POST /api/v1/api-definitions`
+
+**Current Implementation Status:**
+- ✅ Endpoint exists and functional
+- ✅ Accepts: team, domain, listenerIsolation, listener config, routes
+- ✅ Route matching supports: path (prefix/exact), headers, query parameters
+- ✅ Creates native listeners for isolation mode
+- ✅ Stores api_definitions + api_routes tables
+- ❌ Does NOT yet create native routes/clusters tables (Phase 1 work)
+- ✅ DOES create native listeners table (isolation mode only)
+- ❌ Does NOT return bootstrap in response (writes to file - Phase 1 work)
+
+**What it does:**
+- Accepts simplified API definition (team, domain, routes with path/header/query matching, upstream targets)
+- Validates listener isolation requirements
+- Creates API definition and routes in database
+- For isolated listeners: Creates dedicated Envoy listener with inline route config
+- Writes bootstrap file to disk (currently) - **will change to return in response**
+
+**Why it's important:**
+- Abstracts Envoy complexity from application teams
+- Maintains backward compatibility with existing Platform API
+- Provides single source of truth for API configurations
+
+**How it works (Current):**
+1. Validate request (team, domain uniqueness, route patterns, listener isolation)
+2. Create api_definition record
+3. Create api_routes records
+4. If listener_isolation=true: Create inline listener with embedded route config
+5. Write bootstrap metadata to database
+6. Refresh xDS caches
+
+**How it will work (After Phase 1):**
+1. Validate request (team, domain uniqueness, route patterns, listener isolation)
+2. **Transform BFF model → native Envoy resources (listeners, routes, clusters)**
+3. **Store in database with foreign key relationships**
+4. Create api_definition + api_routes records with FKs to native resources
+5. Generate bootstrap config from materialized resources
+6. **Return bootstrap config in API response (YAML/JSON)**
+
+### 1.2 OpenAPI Import
+**Endpoint:** `POST /api/v1/api-definitions/from-openapi`
+
+**What it does:**
+- Parses OpenAPI 3.x specification
+- Auto-detects Envoy path types (exact, prefix, regex) from OpenAPI paths
+- Extracts `x-flowplane-*` custom tags for filter configuration
+- Creates API definition with routes derived from spec paths
+- Supports listener isolation via `x-flowplane-listenerIsolation` tag
+
+**Why it's important:**
+- Teams can define APIs using familiar OpenAPI format
+- Eliminates manual translation of OpenAPI → Envoy config
+- Enables filter configuration directly in API specifications
+
+**How it works:**
+1. Parse OpenAPI YAML/JSON
+2. Extract paths and convert to route configurations with method/header matching:
+   - `/users/{id}` → exact match or path template based on Envoy best practice
+   - `/api/v1/*` → prefix match
+   - Custom regex patterns preserved
+   - **HTTP methods (GET, POST, etc.) → header match on `:method` pseudo-header**
+   - **Custom headers from OpenAPI parameters → header matchers**
+3. Parse `x-flowplane-*` extensions for filters, TLS, listener settings
+4. Create unified API definition with full route matching (path + method + headers)
+5. Follow same materialization flow as native BFF creation
+
+### 1.3 Route Matching Capabilities
+
+**Current Support (Fully Implemented):**
+
+The system already supports comprehensive route matching beyond just paths:
+
+#### Path Matching
+- `prefix`: Match path prefix (e.g., `/api/v1/` matches `/api/v1/users`, `/api/v1/orders`)
+- `path` (exact): Exact path match (e.g., `/api/users` matches only `/api/users`)
+- `regex`: Regular expression matching
+- `template`: URI template matching (e.g., `/users/{id}`)
+
+#### HTTP Method Matching
+- Implemented via header matchers on `:method` pseudo-header
+- Supports: GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD
+- Example: Match only `GET /api/users` but not `POST /api/users`
+
+#### Header Matching
+- `exact`: Exact header value match
+- `regex`: Regex pattern matching on header value
+- `present`: Check if header exists (regardless of value)
+- Supports multiple header conditions (AND logic)
+
+#### Query Parameter Matching
+- `exact`: Exact query param value match
+- `regex`: Regex pattern on query param value
+- `present`: Check if query param exists
+
+**Example Route Configuration:**
+```json
+{
+  "match": {
+    "prefix": "/api/users"
+  },
+  "cluster": {
+    "name": "user-service",
+    "endpoint": "user-service.svc:8080"
+  }
+}
+```
+
+**Example with Method + Headers:**
+```json
+{
+  "match": {
+    "path": {
+      "exact": "/api/users/profile"
+    },
+    "headers": [
+      {
+        "name": ":method",
+        "value": "POST"
+      },
+      {
+        "name": "content-type",
+        "regex": "application/json.*"
+      },
+      {
+        "name": "x-api-version",
+        "value": "v2"
+      }
+    ],
+    "queryParameters": [
+      {
+        "name": "include_metadata",
+        "present": true
+      }
+    ]
+  }
+}
+```
+
+**OpenAPI Import Support:**
+The OpenAPI import endpoint will automatically extract:
+- HTTP methods from operation definitions (get, post, put, etc.)
+- Required headers from `parameters` with `in: header`
+- Query parameters from `parameters` with `in: query`
+
+### 1.4 GET Operations
+**Endpoints:**
+- `GET /api/v1/api-definitions` (list with filters: team, domain, pagination)
+- `GET /api/v1/api-definitions/{id}` (single definition + routes)
+- `GET /api/v1/api-definitions/{id}/bootstrap` (retrieve bootstrap config)
+
+**What it does:**
+- Query API definitions by team, domain, or ID
+- Return both BFF view and underlying native resource references
+- Regenerate bootstrap config on demand
+
+**Why it's important:**
+- Teams need visibility into their API configurations
+- Debugging requires both high-level and low-level views
+- Config retrieval without file system access
+
+## 2. Native Envoy Resource API (Retained)
+
+**Endpoints:** `/api/v1/clusters`, `/api/v1/listeners`, `/api/v1/routes`
+
+**Current Implementation Status:**
+- ✅ All endpoints exist and functional
+- ✅ Full CRUD operations supported
+- ✅ Native tables: clusters, listeners, routes
+- ❌ No `source` field yet (Phase 1 migration will add)
+- ✅ Platform API creates listeners directly (isolated mode)
+- ❌ Platform API does NOT yet create routes/clusters in native tables
+
+**What it does:**
+- Full CRUD operations on native Envoy resources
+- Direct xDS configuration control
+- Advanced features not exposed in BFF API
+
+**Why it's important:**
+- Power users need granular control
+- Migration path for existing native API users
+- Escape hatch for unsupported BFF scenarios
+
+**How it works (After Phase 1):**
+- Maintains existing behavior
+- **NEW: Resources tagged with `source=native_api` vs `source=platform_api` column**
+- Platform API-generated resources queryable via native endpoints
+- Foreign key relationships track ownership (api_definitions → native resources)
+
+## 3. Listener Isolation & Multi-Tenancy
+
+**Current Implementation Status:**
+- ✅ Listener isolation fully implemented
+- ✅ Dedicated listeners work (unique name, address, port)
+- ✅ Shared listener support (default listener)
+- ✅ Validation prevents port conflicts
+
+### Dedicated Listeners (Isolation Mode)
+**Configuration:** `listenerIsolation: true` or `x-flowplane-listenerIsolation: true`
+
+**What it does:**
+- Creates dedicated listener per API definition
+- Teams get isolated port/address space
+- Full network-level isolation
+
+**How it works:**
+1. Generate unique listener name: `{team}-{domain}-listener`
+2. Assign unique port from pool (or user-specified)
+3. Create listener with team-specific virtual hosts
+4. Link API definition → listener via foreign key
+
+### Shared Listeners (Multi-Tenant Mode)
+**Configuration:** `listenerIsolation: false` + optional `listener: "shared-listener"`
+
+**What it does:**
+- Multiple API definitions share a listener
+- Route-based isolation via virtual hosts
+- Resource efficiency for high-density deployments
+
+**How it works:**
+1. Use specified listener or default to `default-shared-listener`
+2. Add virtual host to existing listener
+3. Route traffic via host headers and path matching
+
+## 4. HTTP Filter Ecosystem
+
+**Current Implementation Status:**
+- ✅ `cors` filter fully implemented
+- ✅ `jwt_authn` filter fully implemented
+- ✅ `local_rate_limit` filter fully implemented
+- ✅ Filter registry architecture exists
+- ✅ Scoped filter config (route/virtualHost/listener) supported
+- ❌ Remaining filters need implementation (Phase 3)
+
+### Filter Configuration via OpenAPI Extensions
+**Currently Supported Filters:**
+- ✅ `x-flowplane-cors`: CORS policy configuration (allow origins, methods, headers, credentials, max age)
+- ✅ `x-flowplane-jwt-authn`: JWT authentication and validation with provider configuration
+- ✅ `x-flowplane-local-rate-limit`: Local token bucket rate limiting (requests per unit, burst)
+
+**Filters to Implement (Priority Order):**
+1. `x-flowplane-rate-limit`: Distributed rate limiting with external rate limit service
+2. `x-flowplane-rate-limit-quota`: Quota-based rate limiting with bucket configuration
+3. `x-flowplane-header-mutation`: Request/response header add/remove/replace operations
+4. `x-flowplane-health-check`: Active/passive health checking for upstream clusters
+5. `x-flowplane-credential-injector`: Inject authentication credentials (API keys, tokens) into requests
+6. `x-flowplane-custom-response`: Custom error response pages and status code mapping
+7. `x-flowplane-gcp-authn`: Google Cloud Platform authentication (service account, workload identity)
+
+### Filter Scopes
+**What it does:**
+- Apply filters at route level (per-endpoint granularity)
+- Apply filters at virtual host level (per-API granularity)
+- Apply filters at listener level (global policies)
+
+**Configuration Example (OpenAPI Extension):**
+```yaml
+paths:
+  /api/users:
+    get:
+      x-flowplane-cors:
+        scope: route  # Apply to this specific path
+        allowOrigins: ["https://example.com"]
+        allowMethods: ["GET", "POST"]
+        maxAge: 3600
+      responses:
+        '200':
+          description: List users
+
+  /api/admin:
+    x-flowplane-jwt-authn:
+      scope: virtualHost  # Apply to all routes under this path
+      providers:
+        - name: "auth0"
+          issuer: "https://auth.example.com"
+          audiences: ["api.example.com"]
+
+x-flowplane-local-rate-limit:
+  scope: listener  # Apply globally to all routes
+  tokensPerFill: 100
+  fillInterval: "1m"
+```
+
+**How scope works:**
+- `route`: Filter applies to specific endpoint (e.g., `GET /api/users`)
+- `virtualHost`: Filter applies to all routes in a virtual host (domain-level)
+- `listener`: Filter applies globally to all traffic on the listener
+
+**How it works:**
+1. Parse filter config from OpenAPI extension
+2. Validate against filter schema
+3. Generate Envoy filter chain at specified scope
+4. Insert into appropriate listener/virtualHost/route configuration
+
+## 5. Bootstrap Config Generation
+
+**Current Implementation Status:**
+- ✅ Bootstrap metadata stored in database (bootstrap_uri field)
+- ❌ Bootstrap config written to file (needs to change to API response)
+- ❌ No dedicated GET endpoint for bootstrap retrieval
+
+### xDS Bootstrap Config API
+**Endpoint:** `GET /api/v1/api-definitions/{id}/bootstrap`
+
+**What it does:**
+- Generates Envoy xDS bootstrap configuration for a specific API definition
+- Returns config that teams can save to file and use to start Envoy proxy
+- Includes node identity, admin interface, and xDS cluster configuration
+- For isolated listeners: Includes listener-specific port information
+- Supports YAML and JSON formats via Accept header
+
+**Why it's important:**
+- Teams need a working Envoy config to connect their proxy to the control plane
+- Eliminates manual bootstrap config writing
+- Ensures correct xDS cluster endpoints and node identifiers
+- Works with listener isolation (returns correct ports)
+
+**Bootstrap Structure (xDS Dynamic Config):**
+```yaml
+node:
+  id: "{team}-{domain}-proxy"
+  cluster: "platform-apis"
+
+admin:
+  access_log_path: /tmp/envoy_admin.log
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901
+
+dynamic_resources:
+  lds_config:
+    ads: {}
+  cds_config:
+    ads: {}
+  ads_config:
+    api_type: GRPC
+    transport_api_version: V3
+    grpc_services:
+      - envoy_grpc:
+          cluster_name: xds_cluster
+
+static_resources:
+  clusters:
+    - name: xds_cluster
+      type: LOGICAL_DNS
+      connect_timeout: 1s
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: xds_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1  # Control plane address
+                      port_value: 18000    # Control plane xDS port
+```
+
+**Query Parameters:**
+- `format` (optional): `yaml` or `json` (default: yaml)
+- `include_metadata` (optional): Include API definition metadata in response (default: false)
+
+**Response Format (with metadata):**
+```json
+{
+  "id": "api-123",
+  "team": "payments",
+  "domain": "api.payments.example.com",
+  "listenerIsolation": true,
+  "listenerPort": 10001,
+  "bootstrapConfig": "<yaml or json string>"
+}
+```
+
+## 6. Logging & Observability
+
+### Log Level Configuration
+**Default Level:** INFO
+**Available Levels:** ERROR, WARN, INFO, DEBUG, TRACE
+
+**What to log at INFO:**
+- API CRUD operations (create/update/delete events)
+- xDS ACK/NACK responses
+- Authentication/authorization events
+- Bootstrap config generation
+- Resource materialization outcomes
+
+**What to avoid:**
+- Per-request logs (too chatty)
+- Debug-level serialization dumps
+- Verbose middleware logs
+
+**How it works:**
+- Structured logging with context (team, domain, resource_id)
+- Request ID tracing across operations
+- Correlation IDs for BFF → native resource tracking
+
+## 7. CLI Extension
+
+### Current State
+- CLI for token management (direct DB access)
+
+### Target State
+**CLI commands calling REST APIs:**
+```bash
+# API Definition Management (with authentication)
+flowplane api create --file api-def.yaml --token $FLOWPLANE_TOKEN
+flowplane api list --team payments --token-file ~/.flowplane/token
+flowplane api get api-123  # Uses config file token
+flowplane api delete api-123
+flowplane api bootstrap api-123 --output /tmp/bootstrap.yaml
+
+# OpenAPI Import
+flowplane api import-openapi --file openapi.yaml --team payments --token $TOKEN
+
+# Native Resource Management
+flowplane cluster create --file cluster.yaml
+flowplane listener list
+flowplane route get route-456
+
+# Token Management (existing - keep as-is)
+cargo run --bin flowplane-cli auth create-token \
+  --name "admin" \
+  --scope tokens:read --scope tokens:write \
+  --scope clusters:read --scope clusters:write \
+  --scope routes:read --scope routes:write \
+  --scope listeners:read --scope listeners:write \
+  --expires-in 90d
+```
+
+**Authentication Options:**
+1. `--token <TOKEN>`: Pass token directly via command line
+2. `--token-file <PATH>`: Read token from file (e.g., `~/.flowplane/token`)
+3. Config file (`~/.flowplane/config.toml`): Store token and base URL permanently
+4. Environment variable: `FLOWPLANE_TOKEN`
+
+**Priority order:** CLI flag `--token` → CLI flag `--token-file` → Config file → Environment variable
+
+**Config File Example (`~/.flowplane/config.toml`):**
+```toml
+[default]
+base_url = "https://localhost:8080"
+token = "fp_your_token_here"
+```
+
+**Note on CLI Token Management:**
+- Current implementation uses direct DB access (works well, keep as-is)
+- New API-based commands will use HTTP with PAT authentication
+- Backward compatible: existing token command stays unchanged
+
+**Why it's important:**
+- Consistent interface for all control plane operations
+- Enables CI/CD integration
+- Human-friendly alternative to curl
+
+**How it works:**
+- CLI makes authenticated HTTP requests to control plane API
+- Uses PAT (Personal Access Token) for authentication
+- Supports config file for base URL and auth token
+
+## 8. Code Refactoring
+
+### Target Improvements
+**What to refactor:**
+- Large handler files → separate modules per resource type
+- Business logic extraction from handlers
+- Repository pattern consistency
+- Domain model separation (request/response DTOs vs domain entities)
+
+**File size targets:**
+- Handlers: < 300 lines per file
+- Business logic: < 500 lines per module
+- One primary responsibility per file
+
+**Modules to create:**
+- `src/api/handlers/api_definitions.rs`
+- `src/api/handlers/native_resources.rs`
+- `src/domain/api_definition.rs`
+- `src/domain/materializer.rs`
+- `src/filters/` (one file per filter type)
+
+## 9. OpenAPI Documentation (utoipa)
+
+**Current Implementation Status:**
+- ✅ utoipa integrated and working
+- ✅ Most endpoints have basic annotations
+- ❌ Some endpoints missing comprehensive examples
+- ❌ Filter schemas need full documentation
+- ❌ Error response schemas incomplete
+
+### Documentation Requirements
+**What to update:**
+- Every CRUD operation must have utoipa annotations
+- Request/response schemas with examples
+- Error response documentation
+- Filter configuration schemas
+- OpenAPI extension documentation
+
+**Example:**
+```rust
+#[utoipa::path(
+    post,
+    path = "/api/v1/api-definitions",
+    request_body = CreateApiDefinitionRequest,
+    responses(
+        (status = 201, description = "API definition created", body = CreateApiDefinitionResponse),
+        (status = 400, description = "Invalid request", body = ApiError),
+        (status = 409, description = "Conflict - API already exists", body = ApiError)
+    ),
+    tag = "platform-api"
+)]
+```
+
+# Technical Architecture
+
+## System Components
+
+### 1. API Layer
+- Axum HTTP server with utoipa documentation
+- Authentication middleware (JWT tokens)
+- Request validation (validator crate)
+- Error handling (thiserror)
+
+### 2. Domain Layer
+- **BFF Materializer:** Transforms API definitions → native resources
+- **OpenAPI Parser:** Converts OpenAPI specs → API definitions
+- **Filter Registry:** Manages HTTP filter configurations
+- **Bootstrap Generator:** Produces Envoy bootstrap configs
+
+### 3. Data Layer
+- **Database:** SQLite (dev) / PostgreSQL (prod)
+- **Repository Pattern:** Abstraction over data access
+- **Schema Design:** See Data Models section
+
+## Data Models
+
+### Unified Schema Design
+
+#### api_definitions (BFF Layer)
+```sql
+CREATE TABLE api_definitions (
+    id TEXT PRIMARY KEY,
+    team TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    listener_isolation INTEGER NOT NULL DEFAULT 0,
+    generated_listener_id TEXT,  -- FK to listeners.id
+    tls_config TEXT,
+    metadata TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE(team, domain),
+    FOREIGN KEY (generated_listener_id) REFERENCES listeners(id) ON DELETE SET NULL
+);
+```
+
+#### api_routes (BFF Layer)
+
+**Terminology Note:** Consider future renaming `routes` → `route_configs` to align with Envoy terminology:
+- **Impact**: Tables (`api_routes`, `routes`), API endpoints (`/routes`), code modules
+- **Complexity**: Medium (requires coordinated migration)
+- **Decision**: Deferred to Phase 6 (refactoring) to avoid disrupting Phases 1-5
+- **Alternative**: Keep current naming for now, document in code comments
+
+```sql
+CREATE TABLE api_routes (
+    id TEXT PRIMARY KEY,
+    api_definition_id TEXT NOT NULL,
+    generated_route_id TEXT,  -- FK to routes.id
+    generated_cluster_id TEXT,  -- FK to clusters.id
+    match_type TEXT NOT NULL,  -- exact, prefix, regex
+    match_value TEXT NOT NULL,
+    upstream_targets TEXT NOT NULL,  -- JSON array
+    filter_config TEXT,  -- JSON filter chain config
+    route_order INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY (api_definition_id) REFERENCES api_definitions(id) ON DELETE CASCADE,
+    FOREIGN KEY (generated_route_id) REFERENCES routes(id) ON DELETE SET NULL,
+    FOREIGN KEY (generated_cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+);
+```
+
+#### listeners (Native Layer - Enhanced)
+```sql
+CREATE TABLE listeners (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL DEFAULT 'native_api',  -- native_api | platform_api
+    address TEXT NOT NULL,
+    port INTEGER,
+    protocol TEXT NOT NULL DEFAULT 'HTTP',
+    configuration TEXT NOT NULL,  -- JSON
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+```
+
+#### routes (Native Layer - Enhanced)
+
+```sql
+CREATE TABLE routes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL DEFAULT 'native_api',
+    path_prefix TEXT NOT NULL,
+    cluster_name TEXT NOT NULL,
+    configuration TEXT NOT NULL,  -- JSON
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY (cluster_name) REFERENCES clusters(name) ON DELETE CASCADE
+);
+```
+
+#### clusters (Native Layer - Enhanced)
+```sql
+CREATE TABLE clusters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL DEFAULT 'native_api',
+    service_name TEXT NOT NULL,
+    configuration TEXT NOT NULL,  -- JSON
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+```
+
+### Data Model Strategy
+**Approach:** Separate tables with foreign key relationships + source tagging
+
+**Benefits:**
+1. Clear ownership tracking (which BFF definition owns which native resources)
+2. Dual query patterns: BFF view (api_definitions) and native view (listeners/routes/clusters)
+3. Cascading deletes work correctly
+4. Audit trail preservation (source column tracks origin)
+5. Mixed usage: BFF and native APIs can coexist
+
+**Domain Model:**
+- Unified domain entities in code (e.g., `ApiDefinition` contains references to generated resources)
+- Repository layer abstracts SQL complexity
+- Materializer handles BFF → native transformation and relationship management
+
+## APIs and Integrations
+
+### REST API Endpoints
+
+**Note on Terminology:** The term "routes" in API endpoints refers to Envoy RouteConfiguration resources. Consider future renaming to `/route-configs` for clarity, but deferred to Phase 6.
+
+```
+Platform API (BFF):
+  POST   /api/v1/api-definitions
+  POST   /api/v1/api-definitions/from-openapi
+  GET    /api/v1/api-definitions
+  GET    /api/v1/api-definitions/{id}
+  GET    /api/v1/api-definitions/{id}/bootstrap
+  PUT    /api/v1/api-definitions/{id}
+  DELETE /api/v1/api-definitions/{id}
+  POST   /api/v1/api-definitions/{id}/routes
+  DELETE /api/v1/api-definitions/{id}/routes/{route_id}
+
+Native API:
+  POST   /api/v1/clusters
+  GET    /api/v1/clusters
+  GET    /api/v1/clusters/{id}
+  PUT    /api/v1/clusters/{id}
+  DELETE /api/v1/clusters/{id}
+
+  POST   /api/v1/listeners
+  GET    /api/v1/listeners
+  GET    /api/v1/listeners/{id}
+  PUT    /api/v1/listeners/{id}
+  DELETE /api/v1/listeners/{id}
+
+  POST   /api/v1/routes
+  GET    /api/v1/routes
+  GET    /api/v1/routes/{id}
+  PUT    /api/v1/routes/{id}
+  DELETE /api/v1/routes/{id}
+
+Authentication:
+  POST   /api/v1/auth/tokens (existing)
+```
+
+### Internal Integrations
+- **xDS Server:** Control plane serves xDS APIs for Envoy proxies
+- **Bootstrap Generator:** Materializes static config from database state
+- **Filter Registry:** Plugin-style filter configuration system
+
+## Infrastructure Requirements
+
+
+### Runtime Dependencies
+- Rust 1.89+ (edition 2021)
+- SQLite 3.35+ or PostgreSQL 13+
+- Envoy Proxy 1.28+ (for bootstrap compatibility)
+
+### Development Dependencies
+- cargo test (unit + integration tests)
+- cargo clippy (linting)
+- sqlx-cli (migrations)
+- utoipa CLI (OpenAPI doc generation)
+
+# Development Roadmap
+
+## Phase 1: Data Model Migration & Core BFF API
+**Goal:** Establish unified data model and basic BFF API functionality
+
+**Deliverables:**
+1. Database migrations for schema changes:
+   - Add `source` column to listeners, routes, clusters
+   - Add `generated_*_id` FKs to api_definitions and api_routes
+   - Add filter_config column to api_routes
+2. Update repository layer to handle new schema
+3. Implement core BFF materializer:
+   - Transform API definition → listeners, routes, clusters
+   - Store relationships in database
+   - Handle listener isolation logic
+4. Update `POST /api/v1/api-definitions` to use new materializer
+5. Update `GET /api/v1/api-definitions` to return BFF + native resource refs
+6. Remove file-writing code, return bootstrap in response
+7. Unit tests for materializer logic
+8. Integration tests for BFF API CRUD
+
+**Success Criteria:**
+- All tests pass
+- BFF API creates native resources correctly
+- Bootstrap config returned in API response
+- Foreign key relationships work correctly
+
+## Phase 2: OpenAPI Import Integration
+**Goal:** Support OpenAPI spec import via `/api/v1/api-definitions/from-openapi`
+
+**Deliverables:**
+1. OpenAPI parser module:
+   - Parse YAML/JSON OpenAPI 3.x specs
+   - Extract paths and convert to route configurations
+   - Auto-detect Envoy path match types
+2. Extension parser for `x-flowplane-*` tags:
+   - Extract listener isolation setting
+   - Parse custom filter configurations
+3. Implement `POST /api/v1/api-definitions/from-openapi` endpoint
+4. OpenAPI → BFF transformation logic
+5. Validation for OpenAPI structures
+6. Tests with sample OpenAPI specs
+7. utoipa documentation for endpoint
+
+**Success Criteria:**
+- OpenAPI specs parsed correctly
+- Paths converted to appropriate Envoy route types
+- Custom extensions extracted and applied
+- Full bootstrap config generated from OpenAPI
+
+## Phase 3: HTTP Filter Framework Expansion
+**Goal:** Expand filter ecosystem beyond existing 3 filters
+
+**Current Status:**
+- ✅ Filter registry architecture exists
+- ✅ CORS filter implemented and tested
+- ✅ JWT Authentication filter implemented and tested
+- ✅ Local Rate Limit filter implemented and tested
+- ✅ Scoped filter config working (route/virtualHost/listener)
+
+**Deliverables:**
+1. Implement priority filters (high user demand):
+   - Rate Limit (x-flowplane-rate-limit) - distributed rate limiting
+   - Rate Limit Quota (x-flowplane-rate-limit-quota) - quota management
+   - Header Mutation (x-flowplane-header-mutation) - request/response header manipulation
+2. Implement secondary filters:
+   - Health Check (x-flowplane-health-check) - active/passive health checking
+   - Credential Injector (x-flowplane-credential-injector) - API key/token injection
+   - Custom Response (x-flowplane-custom-response) - custom error pages
+   - GCP Authentication (x-flowplane-gcp-authn) - Google Cloud auth
+3. OpenAPI extension parser for new filters
+4. Integration with BFF materializer
+5. Tests for each new filter type
+6. Documentation and examples for each filter
+
+**Success Criteria:**
+- 7 new filters implemented (total 10 filters)
+- All filters have OpenAPI extension support
+- Filters apply at correct scopes
+- Filter chains compose correctly
+- utoipa schemas for all filter configs
+- Example OpenAPI specs with filter usage
+
+## Phase 4: CLI Enhancement
+**Goal:** Full-featured CLI for all control plane operations
+
+**Deliverables:**
+1. CLI authentication module (PAT token support)
+2. CLI commands for BFF API:
+   - `api create`, `api list`, `api get`, `api delete`
+   - `api import-openapi`
+   - `api bootstrap` (get bootstrap config)
+3. CLI commands for native API:
+   - `cluster`, `listener`, `route` CRUD operations
+4. Config file support (~/.flowplane/config.toml)
+5. Output formatting (JSON, YAML, table)
+6. Error handling and user-friendly messages
+7. CLI integration tests
+
+**Success Criteria:**
+- All CRUD operations accessible via CLI
+- CLI uses REST API (not direct DB access)
+- Help text comprehensive
+- Works in CI/CD pipelines
+
+## Phase 5: Logging & Observability
+**Goal:** Production-ready logging and monitoring
+
+**Deliverables:**
+1. Structured logging implementation:
+   - Request ID tracing
+   - Context propagation (team, domain, resource_id)
+   - Log level configuration via env vars
+2. Reduce log verbosity:
+   - Remove per-request debug logs
+   - INFO only for significant events (ACK/NACK, CRUD, errors)
+   - DEBUG for troubleshooting mode
+3. Metrics instrumentation (future):
+   - Prometheus metrics for API operations
+   - xDS request/response metrics
+4. Log aggregation readiness:
+   - JSON log format option
+   - Correlation IDs for distributed tracing
+
+**Success Criteria:**
+- Logs are actionable and non-chatty
+- Easy to trace BFF → native resource creation
+- Performance acceptable with INFO logging
+
+## Phase 6: Code Refactoring & Documentation
+**Goal:** Clean, maintainable codebase ready for v0.0.1 release
+
+**Deliverables:**
+1. Refactor large files:
+   - Split handlers into resource-specific modules
+   - Extract business logic from API layer
+   - Consistent repository patterns
+2. Domain model cleanup:
+   - Clear separation: DTOs vs domain entities
+   - Unified error handling
+3. Comprehensive utoipa documentation:
+   - All endpoints documented
+   - Example requests/responses
+   - Filter schemas
+4. Create v0.0.1 documentation:
+   - Architecture overview
+   - API reference (generated from utoipa)
+   - Getting started guide
+   - OpenAPI extension reference
+   - Filter configuration guide
+   - CLI usage guide
+   - Deployment guide
+5. README updates
+
+**Success Criteria:**
+- No file > 500 lines
+- All public APIs documented
+- Documentation site ready
+- Code passes clippy without warnings
+
+# Logical Dependency Chain
+
+## Foundation (Must Build First)
+1. **Data Model Migration** (Phase 1)
+   - Everything depends on unified schema
+   - Must complete before any feature work
+
+2. **Core BFF Materializer** (Phase 1)
+   - Foundational transformation logic
+   - Required for both native and OpenAPI flows
+
+## Progressive Enhancement
+3. **Bootstrap Response Delivery** (Phase 1)
+   - Remove file I/O early
+   - Simplifies testing and deployment
+
+4. **OpenAPI Import** (Phase 2)
+   - Builds on BFF materializer
+   - Can iterate independently from filters
+
+5. **Filter Framework Expansion** (Phase 3)
+   - Architecture already exists (CORS, JWT, Local Rate Limit working)
+   - Implement remaining filters incrementally
+   - Leverage existing patterns from 3 implemented filters
+
+## User-Facing Features
+6. **CLI** (Phase 4)
+   - Depends on stable API endpoints
+   - Build after Phases 1-2 complete
+   - Can proceed in parallel with Phase 3
+
+## Polish & Release Prep
+7. **Logging** (Phase 5)
+   - Can happen anytime but critical for production
+   - Do before v0.0.1 release
+
+8. **Refactoring & Docs** (Phase 6)
+   - Final phase before release
+   - Clean up technical debt
+   - Create user-facing documentation
+
+## Pacing Strategy
+- **Phase 1:** Get to working BFF API ASAP (visible progress)
+- **Phase 2:** Demonstrate OpenAPI import (high user value)
+- **Phase 3:** Build out filters incrementally (can pause after high-priority ones)
+- **Phases 4-6:** Polish for production release
+
+Each phase delivers standalone value while building toward complete vision.
+
+# Risks and Mitigations
+
+## Risk 1: Data Model Complexity
+**Challenge:** Managing foreign key relationships between BFF and native resources
+
+**Mitigation:**
+- Comprehensive repository layer abstractions
+- Integration tests for all relationship scenarios
+- Clear cascading delete policies
+- Source tagging prevents confusion about resource origin
+
+## Risk 2: OpenAPI Parser Robustness
+**Challenge:** Handling diverse OpenAPI specifications and edge cases
+
+**Mitigation:**
+- Use battle-tested OpenAPI parsing library (openapi crate)
+- Start with strict validation, relax as needed
+- Comprehensive test suite with real-world OpenAPI specs
+- Clear error messages for unsupported features
+
+## Risk 3: Filter Configuration Complexity
+**Challenge:** Each filter has unique configuration schema and Envoy integration
+
+**Mitigation:**
+- Plugin architecture isolates filter implementations
+- Incremental delivery (don't need all filters at once)
+- Copy patterns from existing CORS implementation
+- Leverage Envoy's filter documentation
+
+## Risk 4: Bootstrap Config Generation Performance
+**Challenge:** Generating full config on every API call may be slow
+
+**Mitigation:**
+- Benchmark early, optimize if needed
+- Consider caching strategies (version-based cache)
+- Stream large configs if necessary
+- Most configs will be < 1MB, acceptable for response
+
+## Risk 5: CLI Complexity
+**Challenge:** CLI must support all API operations with good UX
+
+**Mitigation:**
+- Use established CLI framework (clap)
+- Follow industry patterns (kubectl, gh, docker)
+- Iterate on UX based on dogfooding
+- Start with essential commands, expand over time
+
+## Risk 6: Logging Too Verbose or Too Sparse
+**Challenge:** Balancing debuggability with performance
+
+**Mitigation:**
+- Start with INFO level, add DEBUG where needed
+- Structured logging makes filtering easy
+- Monitor log volume in testing
+- User feedback on log usefulness
+
+# Appendix
+
+## Research Findings
+
+### Envoy Filter Best Practices
+- Filters should be ordered: authn → authz → rate limiting → mutation
+- Route-level filters override listener-level filters
+- Use typed_per_filter_config for route-specific overrides
+
+### OpenAPI to Envoy Path Mapping
+- OpenAPI path parameters `{id}` → Envoy path template matching
+- Trailing wildcards → prefix matching
+- Exact paths → exact matching
+- Patterns with regex → safe_regex matching
+
+### Listener Isolation Patterns
+- Dedicated listeners: unique port per team
+- Shared listeners: virtual host matching on domain/host header
+- Hybrid: default shared, opt-in dedicated
+
+## Technical Specifications
+
+### Bootstrap Config Schema
+```yaml
+static_resources:
+  listeners:
+    - name: "{team}-{domain}-listener"
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: "{domain}"
+                      domains: ["{domain}"]
+                      routes: [...]
+                http_filters: [...]
+  clusters:
+    - name: "{service_name}"
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: "{service_name}"
+        endpoints: [...]
+```
+
+### Filter Configuration Examples
+
+#### CORS
+```yaml
+x-flowplane-cors:
+  scope: virtualHost
+  allowOrigins: ["*"]
+  allowMethods: ["GET", "POST", "PUT", "DELETE"]
+  allowHeaders: ["Content-Type", "Authorization"]
+  exposeHeaders: ["X-Request-ID"]
+  maxAge: 86400
+```
+
+#### OAuth2
+```yaml
+x-flowplane-oauth2:
+  scope: listener
+  provider: "https://auth.example.com"
+  clientId: "flowplane-client"
+  clientSecretEnv: "OAUTH_CLIENT_SECRET"
+  scopes: ["read", "write"]
+  tokenEndpoint: "https://auth.example.com/oauth/token"
+```
+
+#### Rate Limit
+```yaml
+x-flowplane-rate-limit:
+  scope: route
+  requestsPerUnit: 100
+  unit: "minute"
+  burstMultiplier: 2
+  setHeaders: true
+```
+
+## Migration Path from Current State
+
+### Phase 1: Data Migration
+1. Run migration to add new columns
+2. Backfill source='native_api' for existing resources
+3. No application code changes needed initially
+
+### Phase 2: Dual Mode Operation
+1. New BFF API available alongside native API
+2. Both write to same underlying tables
+3. Gradual migration of users to BFF API
+
+### Phase 3: OpenAPI Import Launch
+1. New endpoint available
+2. Teams can migrate existing OpenAPI specs
+3. Native API still fully supported
+
+### Phase 4: Deprecation Planning
+- No deprecation planned for native API
+- Native and BFF APIs coexist indefinitely
+- Gateway import endpoint (`/api/v1/gateways/openapi`) deprecated in favor of `/api/v1/api-definitions/from-openapi`
+
+</PRD>

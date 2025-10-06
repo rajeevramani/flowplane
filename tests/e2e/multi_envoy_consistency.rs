@@ -66,23 +66,18 @@ async fn multi_envoy_consistency() {
             .await
             .expect("create api");
 
-    async fn probe(env: &EnvoyHandle, host: &str, path: &str) -> bool {
-        let mut ok = false;
-        for _ in 0..60 {
-            match env.proxy_get(host, path).await {
-                Ok((200, body)) if body.starts_with("echo:") => {
-                    ok = true;
-                    break;
-                }
-                _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-            }
-        }
-        ok
-    }
+    // Verify both Envoys can route
+    let body1 = envoy1
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("envoy1 should route successfully");
+    assert!(body1.starts_with("echo:"), "unexpected echo response from envoy1");
 
-    let ok1 = probe(&envoy1, &domain, &route_path).await;
-    let ok2 = probe(&envoy2, &domain, &route_path).await;
-    assert!(ok1 && ok2, "both envoys should route successfully");
+    let body2 = envoy2
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("envoy2 should route successfully");
+    assert!(body2.starts_with("echo:"), "unexpected echo response from envoy2");
 
     echo.stop().await;
     guard.finish(true);

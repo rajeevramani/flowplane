@@ -104,17 +104,11 @@ async fn config_update_change_upstream() {
     assert!(res.status().is_success(), "update routes failed: {}", res.status());
 
     // Probe via Envoy; should be 200 with echo body
-    let mut ok = false;
-    for _ in 0..60 {
-        match envoy.proxy_get("example.local", &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok, "initial routing to echo A failed");
+    let body = envoy
+        .wait_for_route("example.local", &route_path, 200)
+        .await
+        .expect("initial routing to echo A failed");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Start echo B and update cluster to point to echo B
     let echo_b_addr: SocketAddr = format!("127.0.0.1:{}", echo_b).parse().unwrap();
@@ -140,17 +134,11 @@ async fn config_update_change_upstream() {
     // Stop echo A to ensure traffic must shift
     echo1.stop().await;
 
-    let mut ok2 = false;
-    for _ in 0..60 {
-        match envoy.proxy_get("example.local", &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok2 = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
-        }
-    }
-    assert!(ok2, "routing did not recover to echo B after cluster update");
+    let body = envoy
+        .wait_for_route("example.local", &route_path, 200)
+        .await
+        .expect("routing did not recover to echo B after cluster update");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Cleanup
     echo2.stop().await;

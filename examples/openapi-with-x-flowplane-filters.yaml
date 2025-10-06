@@ -1,0 +1,313 @@
+openapi: 3.0.0
+info:
+  title: Sample API with x-flowplane Filter Extensions
+  version: 1.0.0
+  description: |
+    This example demonstrates how to use x-flowplane vendor extensions
+    to configure HTTP filters for your API gateway when importing via
+    the Platform API endpoint: POST /api/v1/api-definitions/from-openapi?listenerIsolation=true
+
+servers:
+  - url: https://httpbin.org
+    description: Production API server
+
+# Global filters applied to ALL routes on this API's listener
+x-flowplane-filters:
+  # CORS filter - allows cross-origin requests
+  - filter:
+      type: cors
+      policy:
+        allow_origin:
+          - type: exact
+            value: "https://app.example.com"
+          - type: exact
+            value: "https://admin.example.com"
+        allow_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        allow_headers:
+          - content-type
+          - authorization
+          - x-api-key
+        expose_headers:
+          - x-request-id
+          - x-correlation-id
+        max_age: 7200
+        allow_credentials: true
+
+  # Header mutation - add global headers to all requests
+  - filter:
+      type: header_mutation
+      request_headers_to_add:
+        - key: x-api-version
+          value: "v1"
+          append: false
+        - key: x-environment
+          value: "production"
+          append: false
+      response_headers_to_add:
+        - key: x-powered-by
+          value: "Flowplane Gateway"
+          append: false
+
+  # Global rate limiting
+  - filter:
+      type: local_rate_limit
+      stat_prefix: api_global_rl
+      token_bucket:
+        max_tokens: 1000
+        tokens_per_fill: 1000
+        fill_interval_ms: 60000  # 1000 requests per minute
+
+paths:
+  # Public endpoint - no authentication required
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns API health status
+      x-flowplane-route-overrides:
+        # Disable authentication for health check
+        authn: disabled
+        # Override rate limit to be more permissive
+        local_rate_limit:
+          stat_prefix: health_rl
+          token_bucket:
+            max_tokens: 10000
+            tokens_per_fill: 10000
+            fill_interval_ms: 60000
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # Protected endpoint - requires authentication
+  /users:
+    get:
+      summary: List all users
+      description: Returns paginated list of users
+      x-flowplane-route-overrides:
+        # Enable JWT authentication
+        authn: jwt-validation
+        # More restrictive rate limit for this endpoint
+        local_rate_limit:
+          stat_prefix: users_list_rl
+          token_bucket:
+            max_tokens: 100
+            tokens_per_fill: 100
+            fill_interval_ms: 60000  # 100 requests per minute
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+
+    post:
+      summary: Create a new user
+      description: Creates a new user account
+      x-flowplane-route-overrides:
+        # Require admin authentication
+        authn: admin-only
+        # Very strict rate limit for user creation
+        local_rate_limit:
+          stat_prefix: users_create_rl
+          token_bucket:
+            max_tokens: 10
+            tokens_per_fill: 10
+            fill_interval_ms: 60000  # 10 requests per minute
+        # Add custom headers for this route
+        header_mutation:
+          request_headers_to_add:
+            - key: x-action
+              value: "create-user"
+              append: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+
+  # Admin endpoint with custom CORS
+  /admin/settings:
+    get:
+      summary: Get admin settings
+      description: Retrieve administrative settings
+      x-flowplane-route-overrides:
+        # Override CORS for admin panel
+        cors:
+          policy:
+            allow_origin:
+              - type: exact
+                value: "https://admin.example.com"
+            allow_methods:
+              - GET
+              - POST
+            allow_credentials: true
+        # Require admin token
+        authn: admin-token
+      responses:
+        '200':
+          description: Admin settings
+          content:
+            application/json:
+              schema:
+                type: object
+
+    post:
+      summary: Update admin settings
+      description: Modify administrative settings
+      x-flowplane-route-overrides:
+        authn: admin-token
+        # Very strict rate limit for settings changes
+        local_rate_limit:
+          stat_prefix: admin_settings_rl
+          token_bucket:
+            max_tokens: 5
+            tokens_per_fill: 5
+            fill_interval_ms: 300000  # 5 requests per 5 minutes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Settings updated
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+
+  # Public API with minimal filtering
+  /public/blog:
+    get:
+      summary: Get blog posts
+      description: Returns public blog posts (no auth required)
+      x-flowplane-route-overrides:
+        # Disable auth but keep other global filters
+        authn: disabled
+      responses:
+        '200':
+          description: List of blog posts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BlogPost'
+
+  # Webhook endpoint with custom headers
+  /webhooks/github:
+    post:
+      summary: GitHub webhook receiver
+      description: Receives webhook events from GitHub
+      x-flowplane-route-overrides:
+        # Use signature validation instead of standard auth
+        authn: webhook-signature
+        # Add webhook-specific headers
+        header_mutation:
+          request_headers_to_add:
+            - key: x-webhook-source
+              value: "github"
+              append: false
+          response_headers_to_add:
+            - key: x-webhook-processed
+              value: "true"
+              append: false
+        # Moderate rate limit
+        local_rate_limit:
+          stat_prefix: webhook_github_rl
+          token_bucket:
+            max_tokens: 100
+            tokens_per_fill: 100
+            fill_interval_ms: 60000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Webhook processed
+        '401':
+          description: Invalid signature
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required:
+        - username
+        - email
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+
+    BlogPost:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        published_at:
+          type: string
+          format: date-time

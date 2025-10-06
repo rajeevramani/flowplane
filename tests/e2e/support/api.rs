@@ -5,8 +5,6 @@ use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 use serde_json::json;
 use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::time::sleep;
 
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
@@ -15,9 +13,8 @@ use flowplane::storage::{create_pool, DatabaseConfig};
 #[allow(dead_code)]
 pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
     let pool = create_pool(&DatabaseConfig::from_env()).await?;
-    let audit = std::sync::Arc::new(
-        flowplane::storage::repository_simple::AuditLogRepository::new(pool.clone()),
-    );
+    let audit =
+        std::sync::Arc::new(flowplane::storage::repository::AuditLogRepository::new(pool.clone()));
     let svc = TokenService::with_sqlx(pool, audit);
     let short = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
     let req = CreateTokenRequest {
@@ -33,12 +30,19 @@ pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
 
 #[allow(dead_code)]
 pub async fn wait_http_ready(addr: SocketAddr) {
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
+    use super::retry::{retry_with_backoff, RetryConfig};
+
+    let config =
+        RetryConfig::fast().with_description(format!("HTTP server at {} to be ready", addr));
+
+    retry_with_backoff(config, || async {
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Connection failed: {}", e))
+    })
+    .await
+    .expect("HTTP server should become ready");
 }
 
 #[allow(dead_code)]

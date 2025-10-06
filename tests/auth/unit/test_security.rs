@@ -1,8 +1,6 @@
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
-use flowplane::storage::repository_simple::{
-    AuditLogRepository, SqlxTokenRepository, TokenRepository,
-};
+use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 use sqlx::sqlite::SqlitePoolOptions;

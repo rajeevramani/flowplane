@@ -20,7 +20,7 @@ use crate::auth::models::{
 use crate::auth::validation::{CreateTokenRequest, UpdateTokenRequest};
 use crate::errors::{Error, Result};
 use crate::observability::metrics;
-use crate::storage::repository_simple::{
+use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
 };
 

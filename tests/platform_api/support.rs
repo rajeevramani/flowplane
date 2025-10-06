@@ -12,7 +12,7 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository_simple::AuditLogRepository, DbPool},
+    storage::{self, repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
 use hyper::Response;

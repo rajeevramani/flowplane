@@ -10,7 +10,7 @@ use flowplane::auth::{
     middleware::{authenticate, ensure_scopes, ScopeState},
     token_service::TokenService,
 };
-use flowplane::storage::repository_simple::{AuditLogRepository, SqlxTokenRepository};
+use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository};
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt;

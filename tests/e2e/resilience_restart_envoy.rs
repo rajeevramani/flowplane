@@ -79,17 +79,11 @@ async fn resilience_restart_envoy() {
     .expect("create api");
 
     // Verify routing via Envoy
-    let mut ok = false;
-    for _ in 0..60 {
-        match envoy.proxy_get(&domain, &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok, "initial routing did not converge");
+    let body = envoy
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("initial routing did not converge");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Restart Envoy (drop handle to kill, then start again)
     drop(envoy);
@@ -97,17 +91,11 @@ async fn resilience_restart_envoy() {
     envoy2.wait_admin_ready().await;
 
     // Verify routing again after restart
-    let mut ok2 = false;
-    for _ in 0..60 {
-        match envoy2.proxy_get(&domain, &route_path).await {
-            Ok((200, body)) if body.starts_with("echo:") => {
-                ok2 = true;
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-        }
-    }
-    assert!(ok2, "routing did not recover after Envoy restart");
+    let body = envoy2
+        .wait_for_route(&domain, &route_path, 200)
+        .await
+        .expect("routing did not recover after Envoy restart");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
 
     echo.stop().await;
     guard.finish(true);

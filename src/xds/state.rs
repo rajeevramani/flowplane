@@ -16,7 +16,7 @@ use crate::{
 };
 use envoy_types::pb::google::protobuf::Any;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Cached Envoy resource along with metadata required for delta semantics.
 #[derive(Clone, Debug)]
@@ -222,11 +222,35 @@ impl XdsState {
 
         let route_rows = repository.list(Some(1000), None).await?;
 
-        let built = if route_rows.is_empty() {
+        let mut built = if route_rows.is_empty() {
             routes_from_config(&self.config)?
         } else {
             routes_from_database_entries(route_rows, "cache_refresh")?
         };
+
+        // IMPORTANT: Merge Platform API route configs with native routes
+        // Platform API routes are generated dynamically and not stored in the routes table
+        // If we don't merge them, they will be removed from the cache
+        if let Some(api_repo) = &self.api_definition_repository {
+            match (api_repo.list_definitions().await, api_repo.list_all_routes().await) {
+                (Ok(definitions), Ok(api_routes)) if !definitions.is_empty() => {
+                    match resources_from_api_definitions(definitions, api_routes) {
+                        Ok(platform_resources) => {
+                            // Only include route resources (skip clusters and listeners)
+                            let platform_routes: Vec<_> = platform_resources
+                                .into_iter()
+                                .filter(|res| res.type_url() == ROUTE_TYPE_URL)
+                                .collect();
+                            built.extend(platform_routes);
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to build Platform API routes during refresh");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
 
         let total_resources = built.len();
         match self.apply_built_resources(ROUTE_TYPE_URL, built) {
@@ -274,9 +298,30 @@ impl XdsState {
             return Ok(());
         }
 
-        let route_resources: Vec<_> =
+        // IMPORTANT: Merge native routes with Platform API routes
+        // Native routes are stored in the routes table, Platform API routes are generated dynamically
+        // If we don't merge them, native routes will be removed from the cache
+        let mut route_resources: Vec<_> =
             built.iter().filter(|res| res.type_url() == ROUTE_TYPE_URL).cloned().collect();
+
         if !route_resources.is_empty() {
+            // Merge native routes from the database
+            if let Some(route_repo) = &self.route_repository {
+                match route_repo.list(Some(1000), None).await {
+                    Ok(route_rows) if !route_rows.is_empty() => {
+                        match routes_from_database_entries(route_rows, "platform_api_refresh") {
+                            Ok(native_routes) => {
+                                route_resources.extend(native_routes);
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to load native routes during Platform API refresh");
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             self.apply_built_resources(ROUTE_TYPE_URL, route_resources);
         }
 
@@ -286,11 +331,10 @@ impl XdsState {
             self.apply_built_resources(LISTENER_TYPE_URL, listener_resources);
         }
 
-        let cluster_resources: Vec<_> =
-            built.iter().filter(|res| res.type_url() == CLUSTER_TYPE_URL).cloned().collect();
-        if !cluster_resources.is_empty() {
-            self.apply_built_resources(CLUSTER_TYPE_URL, cluster_resources);
-        }
+        // NOTE: Cluster resources are NOT sent here to avoid duplicates
+        // Platform API clusters are created in the database by materialize_native_resources()
+        // and loaded via refresh_clusters_from_repository(), just like listeners.
+        // If we send them here too, Envoy will reject the update with "duplicate cluster" errors.
 
         Ok(())
     }

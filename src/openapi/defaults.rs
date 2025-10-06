@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::auth::token_service::TokenService;
 use crate::errors::Error;
 use crate::storage::{
-    repository_simple::AuditLogRepository, CreateClusterRequest, CreateListenerRequest,
+    repository::AuditLogRepository, CreateClusterRequest, CreateListenerRequest,
     CreateRouteRepositoryRequest,
 };
 use crate::xds::XdsState;
