@@ -40,6 +40,7 @@ async fn detecting_domain_collision_for_different_team() {
         match_type: "prefix".into(),
         match_value: "/v1/".into(),
         case_sensitive: true,
+        headers: None,
         rewrite_prefix: None,
         rewrite_regex: None,
         rewrite_substitution: None,

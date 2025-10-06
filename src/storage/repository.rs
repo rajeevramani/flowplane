@@ -210,6 +210,7 @@ struct ApiRouteRow {
     pub match_type: String,
     pub match_value: String,
     pub case_sensitive: i64,
+    pub headers: Option<String>,
     pub rewrite_prefix: Option<String>,
     pub rewrite_regex: Option<String>,
     pub rewrite_substitution: Option<String>,
@@ -233,6 +234,7 @@ pub struct ApiRouteData {
     pub match_type: String,
     pub match_value: String,
     pub case_sensitive: bool,
+    pub headers: Option<serde_json::Value>,
     pub rewrite_prefix: Option<String>,
     pub rewrite_regex: Option<String>,
     pub rewrite_substitution: Option<String>,
@@ -256,6 +258,7 @@ impl From<ApiRouteRow> for ApiRouteData {
             match_type: row.match_type,
             match_value: row.match_value,
             case_sensitive: row.case_sensitive != 0,
+            headers: row.headers.and_then(|json| serde_json::from_str(&json).ok()),
             rewrite_prefix: row.rewrite_prefix,
             rewrite_regex: row.rewrite_regex,
             rewrite_substitution: row.rewrite_substitution,
@@ -292,6 +295,7 @@ pub struct CreateApiRouteRequest {
     pub match_type: String,
     pub match_value: String,
     pub case_sensitive: bool,
+    pub headers: Option<serde_json::Value>,
     pub rewrite_prefix: Option<String>,
     pub rewrite_regex: Option<String>,
     pub rewrite_substitution: Option<String>,
@@ -476,6 +480,7 @@ impl ApiDefinitionRepository {
         let id = Uuid::new_v4().to_string();
         let upstream_json = Self::serialize_required(&request.upstream_targets)?;
         let overrides_json = Self::serialize_optional(&request.override_config)?;
+        let headers_json = Self::serialize_optional(&request.headers)?;
         let case_sensitive = if request.case_sensitive { 1 } else { 0 };
 
         let now = chrono::Utc::now();
@@ -487,6 +492,7 @@ impl ApiDefinitionRepository {
                 match_type,
                 match_value,
                 case_sensitive,
+                headers,
                 rewrite_prefix,
                 rewrite_regex,
                 rewrite_substitution,
@@ -498,7 +504,7 @@ impl ApiDefinitionRepository {
                 created_at,
                 updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
             )",
         )
         .bind(&id)
@@ -506,6 +512,7 @@ impl ApiDefinitionRepository {
         .bind(&request.match_type)
         .bind(&request.match_value)
         .bind(case_sensitive)
+        .bind(headers_json)
         .bind(&request.rewrite_prefix)
         .bind(&request.rewrite_regex)
         .bind(&request.rewrite_substitution)
@@ -529,7 +536,7 @@ impl ApiDefinitionRepository {
     /// Retrieve a route by identifier
     pub async fn get_route(&self, id: &str) -> Result<ApiRouteData> {
         let row = sqlx::query_as::<Sqlite, ApiRouteRow>(
-            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
                     override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes WHERE id = $1",
@@ -549,7 +556,7 @@ impl ApiDefinitionRepository {
     /// List routes for a given definition ordered by insertion order
     pub async fn list_routes(&self, api_definition_id: &str) -> Result<Vec<ApiRouteData>> {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
-            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
                     override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes WHERE api_definition_id = $1
@@ -669,7 +676,7 @@ impl ApiDefinitionRepository {
 
     pub async fn list_all_routes(&self) -> Result<Vec<ApiRouteData>> {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
-            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, rewrite_prefix,
+            "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
                     override_config, deployment_note, route_order, generated_route_id, generated_cluster_id, filter_config, created_at, updated_at
              FROM api_routes ORDER BY api_definition_id, route_order",

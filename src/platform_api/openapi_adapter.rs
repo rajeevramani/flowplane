@@ -2,6 +2,7 @@ use openapiv3::{OpenAPI, PathItem, ReferenceOr};
 use serde_json::json;
 
 use crate::openapi::GatewayError;
+use crate::xds::route::HeaderMatchConfig;
 
 use super::materializer::{ApiDefinitionSpec, ListenerInput, RouteSpec};
 
@@ -52,7 +53,7 @@ pub fn openapi_to_api_definition_spec(
     // Parse global x-flowplane-filters from OpenAPI extensions
     let global_filters = crate::openapi::parse_global_filters(&openapi)?;
 
-    // Convert OpenAPI paths to RouteSpec
+    // Convert OpenAPI paths and operations to RouteSpec (one route per operation)
     let mut routes = Vec::new();
 
     for (path_template, item) in openapi.paths.paths.iter() {
@@ -64,6 +65,10 @@ pub fn openapi_to_api_definition_spec(
         };
 
         let effective_path = combine_base_path(primary_server, path_template);
+
+        // Determine match type: use "template" for paths with parameters, otherwise "prefix"
+        let match_type =
+            if path_template.contains('{') { "template".to_string() } else { "prefix".to_string() };
 
         // Create upstream target configuration
         let upstream_targets = json!({
@@ -77,21 +82,49 @@ pub fn openapi_to_api_definition_spec(
         // Store the raw JSON value in override_config for typed_per_filter_config processing
         let override_config = parse_route_level_filters(path_item)?;
 
-        let route_spec = RouteSpec {
-            match_type: "prefix".to_string(),
-            match_value: effective_path,
-            case_sensitive: true,
-            rewrite_prefix: None,
-            rewrite_regex: None,
-            rewrite_substitution: None,
-            upstream_targets,
-            timeout_seconds: Some(30),
-            override_config,
-            deployment_note: Some(format!("Generated from OpenAPI path: {}", path_template)),
-            route_order: Some(routes.len() as i64),
-        };
+        // Create a route for each HTTP method (operation) present in the path
+        let operations = [
+            ("GET", &path_item.get),
+            ("POST", &path_item.post),
+            ("PUT", &path_item.put),
+            ("DELETE", &path_item.delete),
+            ("PATCH", &path_item.patch),
+            ("HEAD", &path_item.head),
+            ("OPTIONS", &path_item.options),
+            ("TRACE", &path_item.trace),
+        ];
 
-        routes.push(route_spec);
+        for (method, operation) in operations.iter() {
+            if let Some(_op) = operation {
+                // Create :method pseudo-header matcher for HTTP method matching
+                let headers = Some(vec![HeaderMatchConfig {
+                    name: ":method".to_string(),
+                    value: Some(method.to_string()),
+                    regex: None,
+                    present: None,
+                }]);
+
+                let route_spec = RouteSpec {
+                    match_type: match_type.clone(),
+                    match_value: effective_path.clone(),
+                    case_sensitive: true,
+                    headers,
+                    rewrite_prefix: None,
+                    rewrite_regex: None,
+                    rewrite_substitution: None,
+                    upstream_targets: upstream_targets.clone(),
+                    timeout_seconds: Some(30),
+                    override_config: override_config.clone(),
+                    deployment_note: Some(format!(
+                        "Generated from OpenAPI {} {}",
+                        method, path_template
+                    )),
+                    route_order: Some(routes.len() as i64),
+                };
+
+                routes.push(route_spec);
+            }
+        }
     }
 
     if routes.is_empty() {

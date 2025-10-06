@@ -29,14 +29,26 @@ pub fn validate_domain_availability(
 }
 
 /// Validate that a new route matcher does not collide with an existing matcher.
+/// Routes with the same path but different headers (e.g., different HTTP methods) are allowed.
 pub fn validate_route_uniqueness(
     existing_routes: &[ApiRouteData],
     match_type: &str,
     match_value: &str,
+    headers: Option<&serde_json::Value>,
 ) -> Result<()> {
     let collision = existing_routes.iter().any(|route| {
-        route.match_type.eq_ignore_ascii_case(match_type)
-            && route.match_value.eq_ignore_ascii_case(match_value)
+        // Routes match if they have the same match_type, match_value, AND headers
+        let type_match = route.match_type.eq_ignore_ascii_case(match_type);
+        let value_match = route.match_value.eq_ignore_ascii_case(match_value);
+
+        // Compare headers: routes with different headers don't collide
+        let headers_match = match (&route.headers, headers) {
+            (None, None) => true,  // Both have no headers - collision
+            (Some(existing), Some(new)) => existing == new,  // Same headers - collision
+            _ => false,  // One has headers, one doesn't - no collision
+        };
+
+        type_match && value_match && headers_match
     });
 
     if collision {
@@ -74,6 +86,7 @@ mod tests {
             match_type: match_type.into(),
             match_value: match_value.into(),
             case_sensitive: true,
+            headers: None,
             rewrite_prefix: None,
             rewrite_regex: None,
             rewrite_substitution: None,
@@ -115,7 +128,7 @@ mod tests {
     #[test]
     fn detects_route_collision() {
         let routes = vec![sample_route("prefix", "/v1/")];
-        let result = validate_route_uniqueness(&routes, "prefix", "/v1/");
+        let result = validate_route_uniqueness(&routes, "prefix", "/v1/", None);
         assert!(result.is_err(), "matching route should be rejected");
     }
 
