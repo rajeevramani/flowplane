@@ -71,6 +71,7 @@ pub struct UpdateRouteRequest {
 }
 
 /// Repository for route configuration persistence
+#[derive(Debug, Clone)]
 pub struct RouteRepository {
     pool: DbPool,
 }
