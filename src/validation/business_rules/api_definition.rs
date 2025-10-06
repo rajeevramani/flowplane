@@ -43,9 +43,9 @@ pub fn validate_route_uniqueness(
 
         // Compare headers: routes with different headers don't collide
         let headers_match = match (&route.headers, headers) {
-            (None, None) => true,  // Both have no headers - collision
-            (Some(existing), Some(new)) => existing == new,  // Same headers - collision
-            _ => false,  // One has headers, one doesn't - no collision
+            (None, None) => true, // Both have no headers - collision
+            (Some(existing), Some(new)) => existing == new, // Same headers - collision
+            _ => false,           // One has headers, one doesn't - no collision
         };
 
         type_match && value_match && headers_match

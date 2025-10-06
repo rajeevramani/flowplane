@@ -157,7 +157,8 @@ impl PlatformApiMaterializer {
 
         let mut created_routes = Vec::with_capacity(spec.routes.len());
         for (idx, route_spec) in spec.routes.iter().cloned().enumerate() {
-            let headers_json = route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
+            let headers_json =
+                route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
             ensure_route_available(
                 &self.repository,
                 &definition.id,
@@ -321,7 +322,8 @@ impl PlatformApiMaterializer {
         // Create new API routes
         let mut created_routes = Vec::with_capacity(updated_routes.len());
         for (idx, route_spec) in updated_routes.iter().cloned().enumerate() {
-            let headers_json = route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
+            let headers_json =
+                route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
             ensure_route_available(
                 &self.repository,
                 definition_id,
