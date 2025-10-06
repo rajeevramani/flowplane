@@ -15,6 +15,7 @@ use support::ports::PortAllocator;
 use support::teardown::{ArtifactMode, TeardownGuard};
 
 /// Helper to create Platform API definition via HTTP
+#[allow(clippy::too_many_arguments)]
 async fn post_create_platform_api_isolated(
     api_addr: SocketAddr,
     bearer: &str,
