@@ -16,7 +16,7 @@ use crate::{
 };
 use envoy_types::pb::google::protobuf::Any;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Cached Envoy resource along with metadata required for delta semantics.
 #[derive(Clone, Debug)]
@@ -202,7 +202,7 @@ impl XdsState {
                 }
             }
             None => {
-                info!(
+                debug!(
                     phase = "cache_refresh",
                     type_url = CLUSTER_TYPE_URL,
                     total_resources,
@@ -268,7 +268,7 @@ impl XdsState {
                 }
             }
             None => {
-                info!(
+                debug!(
                     phase = "cache_refresh",
                     type_url = ROUTE_TYPE_URL,
                     total_resources,
@@ -370,7 +370,7 @@ impl XdsState {
                 }
             }
             None => {
-                info!(
+                debug!(
                     phase = "cache_refresh",
                     type_url = LISTENER_TYPE_URL,
                     total_resources,
