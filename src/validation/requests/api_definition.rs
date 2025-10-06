@@ -13,10 +13,43 @@ use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "team": "payments",
+    "domain": "payments.example.com",
+    "listenerIsolation": false,
+    "targetListeners": ["default-gateway-listener"],
+    "routes": [{
+        "match": {
+            "prefix": "/api/v1/payments"
+        },
+        "cluster": {
+            "name": "payments-backend",
+            "endpoint": "payments-backend.svc.cluster.local:8080"
+        },
+        "timeoutSeconds": 30,
+        "rewrite": {
+            "prefix": "/internal/v1"
+        },
+        "filters": {
+            "cors": {
+                "allowOrigin": ["https://example.com"],
+                "allowMethods": ["GET", "POST", "PUT"],
+                "allowCredentials": true
+            },
+            "rateLimit": {
+                "requestsPerUnit": 100,
+                "unit": "minute"
+            }
+        }
+    }]
+}))]
 pub struct CreateApiDefinitionBody {
+    #[schema(example = "payments")]
     pub team: String,
+    #[schema(example = "payments.example.com")]
     pub domain: String,
     #[serde(default)]
+    #[schema(example = false)]
     pub listener_isolation: bool,
     #[serde(default)]
     pub listener: Option<IsolationListenerBody>,
@@ -45,19 +78,61 @@ pub struct IsolationListenerBody {
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "route": {
+        "match": {
+            "prefix": "/api/v2/checkout"
+        },
+        "cluster": {
+            "name": "checkout-service",
+            "endpoint": "checkout.svc.cluster.local:8080"
+        },
+        "timeoutSeconds": 15,
+        "filters": {
+            "headerMutation": {
+                "requestAdd": [{
+                    "header": {"key": "X-Service-Version"},
+                    "value": "v2"
+                }]
+            }
+        }
+    },
+    "deploymentNote": "Rolling out new checkout API v2"
+}))]
 pub struct AppendRouteBody {
     pub route: RouteBody,
     #[serde(default)]
+    #[schema(example = "Rolling out new checkout API v2")]
     pub deployment_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "match": {
+        "prefix": "/api/v1/users"
+    },
+    "cluster": {
+        "name": "user-service",
+        "endpoint": "users.svc.cluster.local:8080"
+    },
+    "timeoutSeconds": 30,
+    "rewrite": {
+        "prefix": "/internal/users"
+    },
+    "filters": {
+        "jwtAuth": {
+            "issuer": "https://auth.example.com",
+            "audiences": ["api.example.com"]
+        }
+    }
+}))]
 pub struct RouteBody {
     #[serde(rename = "match")]
     pub matcher: RouteMatchBody,
     pub cluster: RouteClusterBody,
     #[serde(default)]
+    #[schema(example = 30, minimum = 1, maximum = 3600)]
     pub timeout_seconds: Option<i64>,
     #[serde(default)]
     pub rewrite: Option<RouteRewriteBody>,
@@ -66,28 +141,45 @@ pub struct RouteBody {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[schema(example = json!({
+    "prefix": "/api/v1/"
+}))]
 pub struct RouteMatchBody {
     #[serde(default)]
+    #[schema(example = "/api/v1/")]
     pub prefix: Option<String>,
     #[serde(default)]
+    #[schema(example = "/health")]
     pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "name": "backend-service",
+    "endpoint": "backend.svc.cluster.local:8080"
+}))]
 pub struct RouteClusterBody {
+    #[schema(example = "backend-service")]
     pub name: String,
+    #[schema(example = "backend.svc.cluster.local:8080")]
     pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "prefix": "/internal/v1"
+}))]
 pub struct RouteRewriteBody {
     #[serde(default)]
+    #[schema(example = "/internal/v1")]
     pub prefix: Option<String>,
     #[serde(default)]
+    #[schema(example = "^/api/v1/(.*)")]
     pub regex: Option<String>,
     #[serde(default)]
+    #[schema(example = "/service/$1")]
     pub substitution: Option<String>,
 }
 

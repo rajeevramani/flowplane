@@ -3,7 +3,6 @@
 pub mod api_definitions;
 pub mod auth;
 pub mod clusters;
-pub mod gateways;
 pub mod listeners;
 pub mod routes;
 
@@ -20,7 +19,6 @@ pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
 };
-pub use gateways::create_gateway_from_openapi_handler;
 pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,
     update_listener_handler,

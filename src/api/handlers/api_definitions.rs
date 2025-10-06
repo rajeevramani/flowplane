@@ -7,6 +7,8 @@ use axum::{
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde::Serialize;
+#[allow(unused_imports)]
+use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::storage::repository::ApiDefinitionData;
@@ -22,31 +24,67 @@ use axum::response::Response;
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "id": "api-def-abc123",
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "routes": ["route-xyz789", "route-uvw456"]
+}))]
 pub struct CreateApiDefinitionResponse {
+    #[schema(example = "api-def-abc123")]
     id: String,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: String,
+    #[schema(example = json!(["route-xyz789", "route-uvw456"]))]
     routes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "apiId": "api-def-abc123",
+    "routeId": "route-new999",
+    "revision": 2,
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap"
+}))]
 pub struct AppendRouteResponse {
+    #[schema(example = "api-def-abc123")]
     api_id: String,
+    #[schema(example = "route-new999")]
     route_id: String,
+    #[schema(example = 2)]
     revision: i64,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "id": "api-def-abc123",
+    "team": "payments",
+    "domain": "payments.example.com",
+    "listenerIsolation": false,
+    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "version": 1,
+    "createdAt": "2025-10-06T09:00:00Z",
+    "updatedAt": "2025-10-06T09:00:00Z"
+}))]
 pub struct ApiDefinitionSummary {
+    #[schema(example = "api-def-abc123")]
     id: String,
+    #[schema(example = "payments")]
     team: String,
+    #[schema(example = "payments.example.com")]
     domain: String,
+    #[schema(example = false)]
     listener_isolation: bool,
+    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: Option<String>,
+    #[schema(example = 1)]
     version: i64,
+    #[schema(example = "2025-10-06T09:00:00Z")]
     created_at: String,
+    #[schema(example = "2025-10-06T09:00:00Z")]
     updated_at: String,
 }
 
@@ -88,7 +126,9 @@ pub struct ListDefinitionsQuery {
     path = "/api/v1/api-definitions",
     params(ListDefinitionsQuery),
     responses(
-        (status = 200, description = "List API definitions", body = [ApiDefinitionSummary])
+        (status = 200, description = "Successfully retrieved list of API definitions", body = [ApiDefinitionSummary]),
+        (status = 500, description = "Internal server error"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -107,10 +147,12 @@ pub async fn list_api_definitions_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/api-definitions/{id}",
-    params(("id" = String, Path, description = "API definition ID")),
+    params(("id" = String, Path, description = "API definition ID", example = "api-def-abc123")),
     responses(
-        (status = 200, description = "API definition", body = ApiDefinitionSummary),
-        (status = 404, description = "Not found")
+        (status = 200, description = "Successfully retrieved API definition", body = ApiDefinitionSummary),
+        (status = 404, description = "API definition not found with the specified ID"),
+        (status = 500, description = "Internal server error"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -146,10 +188,15 @@ pub struct BootstrapQuery {
 #[utoipa::path(
     get,
     path = "/api/v1/api-definitions/{id}/bootstrap",
-    params(("id" = String, Path, description = "API definition ID"), BootstrapQuery),
+    params(
+        ("id" = String, Path, description = "API definition ID", example = "api-def-abc123"),
+        BootstrapQuery
+    ),
     responses(
-        (status = 200, description = "Envoy bootstrap"),
-        (status = 404, description = "Not found")
+        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format", content_type = "application/yaml"),
+        (status = 404, description = "API definition not found with the specified ID"),
+        (status = 500, description = "Internal server error during bootstrap generation"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -242,10 +289,12 @@ pub async fn get_bootstrap_handler(
     path = "/api/v1/api-definitions",
     request_body = CreateApiDefinitionBody,
     responses(
-        (status = 201, description = "API definition created", body = CreateApiDefinitionResponse),
-        (status = 400, description = "Invalid request"),
-        (status = 409, description = "Collision detected"),
-        (status = 403, description = "Forbidden")
+        (status = 201, description = "API definition successfully created with routes and clusters", body = CreateApiDefinitionResponse),
+        (status = 400, description = "Invalid request: validation error in payload (e.g., empty team, invalid domain, missing routes, malformed endpoint)"),
+        (status = 409, description = "Conflict: domain already registered by another team or route collision detected"),
+        (status = 403, description = "Forbidden: insufficient permissions"),
+        (status = 500, description = "Internal server error"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -276,13 +325,15 @@ pub async fn create_api_definition_handler(
 #[utoipa::path(
     post,
     path = "/api/v1/api-definitions/{id}/routes",
-    params(("id" = String, Path, description = "API definition ID")),
+    params(("id" = String, Path, description = "API definition ID", example = "api-def-abc123")),
     request_body = AppendRouteBody,
     responses(
-        (status = 202, description = "Route appended", body = AppendRouteResponse),
-        (status = 400, description = "Invalid request"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict")
+        (status = 202, description = "Route successfully appended to API definition", body = AppendRouteResponse),
+        (status = 400, description = "Invalid request: validation error in route payload (e.g., invalid path, missing cluster, timeout out of range)"),
+        (status = 404, description = "API definition not found with the specified ID"),
+        (status = 409, description = "Conflict: route with same match pattern already exists for this API definition"),
+        (status = 500, description = "Internal server error"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -331,7 +382,7 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
     path = "/api/v1/api-definitions/from-openapi",
     params(ImportOpenApiQuery),
     request_body(
-        description = "OpenAPI 3.0 document in JSON or YAML format",
+        description = "OpenAPI 3.0 document in JSON or YAML format with optional x-flowplane-* extensions for filter configuration",
         content(
             (OpenApiSpecBody = "application/yaml"),
             (OpenApiSpecBody = "application/x-yaml"),
@@ -339,10 +390,11 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
         )
     ),
     responses(
-        (status = 201, description = "API definition created from OpenAPI document", body = CreateApiDefinitionResponse),
-        (status = 400, description = "Invalid OpenAPI specification"),
-        (status = 409, description = "API definition conflicts"),
-        (status = 500, description = "Internal server error")
+        (status = 201, description = "API definition successfully created from OpenAPI document with routes and filters", body = CreateApiDefinitionResponse),
+        (status = 400, description = "Invalid request: malformed OpenAPI spec, unsupported version, invalid x-flowplane extensions, or missing required fields"),
+        (status = 409, description = "Conflict: domain from OpenAPI info already registered or route paths conflict with existing routes"),
+        (status = 500, description = "Internal server error during OpenAPI parsing or materialization"),
+        (status = 503, description = "API definition repository not configured")
     ),
     tag = "platform-api"
 )]

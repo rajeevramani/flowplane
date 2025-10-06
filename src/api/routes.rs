@@ -17,14 +17,14 @@ use super::{
     docs,
     handlers::{
         append_route_handler, create_api_definition_handler, create_cluster_handler,
-        create_gateway_from_openapi_handler, create_listener_handler, create_route_handler,
-        create_token_handler, delete_cluster_handler, delete_listener_handler,
-        delete_route_handler, get_api_definition_handler, get_bootstrap_handler,
-        get_cluster_handler, get_listener_handler, get_route_handler, get_token_handler,
-        import_openapi_handler, list_api_definitions_handler, list_clusters_handler,
-        list_listeners_handler, list_routes_handler, list_tokens_handler, revoke_token_handler,
-        rotate_token_handler, update_cluster_handler, update_listener_handler,
-        update_route_handler, update_token_handler,
+        create_listener_handler, create_route_handler, create_token_handler,
+        delete_cluster_handler, delete_listener_handler, delete_route_handler,
+        get_api_definition_handler, get_bootstrap_handler, get_cluster_handler,
+        get_listener_handler, get_route_handler, get_token_handler, import_openapi_handler,
+        list_api_definitions_handler, list_clusters_handler, list_listeners_handler,
+        list_routes_handler, list_tokens_handler, revoke_token_handler, rotate_token_handler,
+        update_cluster_handler, update_listener_handler, update_route_handler,
+        update_token_handler,
     },
 };
 
@@ -189,11 +189,6 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
             Router::new()
                 .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
                 .route_layer(scope_layer(vec!["listeners:write"])),
-        )
-        .merge(
-            Router::new()
-                .route("/api/v1/gateways/openapi", post(create_gateway_from_openapi_handler))
-                .route_layer(scope_layer(vec!["gateways:import"])),
         )
         .with_state(api_state)
         .layer(auth_layer);
