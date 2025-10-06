@@ -2,6 +2,15 @@ openapi: 3.0.0
 info:
   title: Custom Response Filter Demo
   version: 1.0.0
+  description: |
+    NOTE: The custom_response filter requires complex matcher tree configuration
+    to define which status codes to intercept and what body to return.
+
+    Currently, the matcher configuration requires base64-encoded protobuf, which
+    is not practical to configure via OpenAPI. This example shows the structure,
+    but a full implementation would need Native API or enhanced OpenAPI support.
+
+    The route-level override (disabled) works and is demonstrated in /health.
 
 servers:
   - url: https://httpbin.org
@@ -9,6 +18,10 @@ servers:
 x-flowplane-filters:
   - filter:
       type: custom_response
+      # TODO: Matcher configuration needed here to specify:
+      # - Which status codes to match (e.g., 400, 500)
+      # - What response body to return (e.g., {"error": "bad request"})
+      # This requires complex protobuf matcher tree configuration
   - filter:
       type: cors
       policy:
@@ -31,29 +44,21 @@ paths:
 
   /status/400:
     get:
-      summary: Bad request with custom response
+      summary: Bad request (would return custom response if matcher configured)
       responses:
         '400':
           description: Bad Request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /status/500:
     get:
-      summary: Server error with custom response
+      summary: Server error (would return custom response if matcher configured)
       responses:
         '500':
           description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /health:
     get:
-      summary: Health check with custom_response disabled
+      summary: Health check with custom_response disabled (WORKS)
       x-flowplane-route-overrides:
         custom_response: disabled
       responses:
