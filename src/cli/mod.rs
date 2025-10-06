@@ -1,7 +1,9 @@
 //! # Command Line Interface
 //!
-//! Provides CLI commands for database management and personal access token administration.
+//! Provides CLI commands for database management, personal access token administration,
+//! and API definition management via HTTP client.
 
+pub mod api_definition;
 pub mod auth;
 pub mod client;
 pub mod config;
@@ -26,6 +28,22 @@ pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Personal access token for API authentication
+    #[arg(long, global = true)]
+    pub token: Option<String>,
+
+    /// Path to file containing personal access token
+    #[arg(long, global = true)]
+    pub token_file: Option<std::path::PathBuf>,
+
+    /// Base URL for the Flowplane API
+    #[arg(long, global = true)]
+    pub base_url: Option<String>,
+
+    /// Request timeout in seconds
+    #[arg(long, global = true)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -40,6 +58,12 @@ pub enum Commands {
     Auth {
         #[command(subcommand)]
         command: auth::AuthCommands,
+    },
+
+    /// API definition management commands
+    Api {
+        #[command(subcommand)]
+        command: api_definition::ApiCommands,
     },
 }
 
@@ -76,6 +100,17 @@ pub async fn run_cli() -> anyhow::Result<()> {
     match cli.command {
         Commands::Database { command } => handle_database_command(command, &database).await?,
         Commands::Auth { command } => auth::handle_auth_command(command, &database).await?,
+        Commands::Api { command } => {
+            api_definition::handle_api_command(
+                command,
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )
+            .await?
+        }
     }
 
     Ok(())
