@@ -3,6 +3,8 @@
 //! Provides CLI commands for database management and personal access token administration.
 
 pub mod auth;
+pub mod client;
+pub mod config;
 
 use crate::config::DatabaseConfig;
 use crate::storage::{create_pool, run_db_migrations, validate_migrations, MigrationInfo};
