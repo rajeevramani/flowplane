@@ -233,7 +233,7 @@ pub fn resources_from_api_definitions(
         }
 
         let route_config_name = format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(&definition.id));
-        tracing::info!(
+        tracing::debug!(
             route_config_name = %route_config_name,
             definition_id = %definition.id,
             num_routes = virtual_host.routes.len(),
@@ -525,7 +525,7 @@ pub fn routes_from_database_entries(
     }
 
     if !built.is_empty() {
-        info!(
+        debug!(
             phase,
             route_count = built.len(),
             total_bytes,
@@ -654,7 +654,7 @@ pub fn listeners_from_database_entries(
     }
 
     if !resources.is_empty() {
-        info!(
+        debug!(
             phase = context,
             listener_count = resources.len(),
             total_bytes,
@@ -699,7 +699,7 @@ pub fn clusters_from_database_entries(
     }
 
     if !resources.is_empty() {
-        info!(
+        debug!(
             phase = context,
             cluster_count = resources.len(),
             total_bytes,
