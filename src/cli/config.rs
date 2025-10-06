@@ -26,11 +26,7 @@ pub struct CliConfig {
 
 impl Default for CliConfig {
     fn default() -> Self {
-        Self {
-            token: None,
-            base_url: None,
-            timeout: None,
-        }
+        Self { token: None, base_url: None, timeout: None }
     }
 }
 
@@ -86,8 +82,7 @@ impl CliConfig {
                 .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         }
 
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize configuration")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize configuration")?;
 
         std::fs::write(&path, contents)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
@@ -103,8 +98,7 @@ impl CliConfig {
                 .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         }
 
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize configuration")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize configuration")?;
 
         std::fs::write(path, contents)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;

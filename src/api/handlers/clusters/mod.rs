@@ -8,9 +8,8 @@ mod validation;
 
 // Re-export public types for backward compatibility
 pub use types::{
-    CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse,
-    CreateClusterBody, EndpointRequest, HealthCheckRequest, ListClustersQuery,
-    OutlierDetectionRequest,
+    CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
+    EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
 };
 
 use axum::{

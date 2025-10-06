@@ -4,10 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::xds::{
-    filters::http::HttpFilterConfigEntry,
-    listener::ListenerConfig,
-};
+use crate::xds::{filters::http::HttpFilterConfigEntry, listener::ListenerConfig};
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

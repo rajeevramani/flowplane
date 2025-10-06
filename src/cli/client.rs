@@ -64,9 +64,7 @@ impl FlowplaneClient {
         let url = format!("{}{}", self.config.base_url, path);
         debug!("GET {}", url);
 
-        self.client
-            .get(&url)
-            .bearer_auth(&self.config.token)
+        self.client.get(&url).bearer_auth(&self.config.token)
     }
 
     /// Build a POST request with authentication
@@ -74,9 +72,7 @@ impl FlowplaneClient {
         let url = format!("{}{}", self.config.base_url, path);
         debug!("POST {}", url);
 
-        self.client
-            .post(&url)
-            .bearer_auth(&self.config.token)
+        self.client.post(&url).bearer_auth(&self.config.token)
     }
 
     /// Build a PUT request with authentication
@@ -84,9 +80,7 @@ impl FlowplaneClient {
         let url = format!("{}{}", self.config.base_url, path);
         debug!("PUT {}", url);
 
-        self.client
-            .put(&url)
-            .bearer_auth(&self.config.token)
+        self.client.put(&url).bearer_auth(&self.config.token)
     }
 
     /// Build a DELETE request with authentication
@@ -94,17 +88,12 @@ impl FlowplaneClient {
         let url = format!("{}{}", self.config.base_url, path);
         debug!("DELETE {}", url);
 
-        self.client
-            .delete(&url)
-            .bearer_auth(&self.config.token)
+        self.client.delete(&url).bearer_auth(&self.config.token)
     }
 
     /// Send a GET request and deserialize the JSON response
     pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let response = self.get(path)
-            .send()
-            .await
-            .context("Failed to send GET request")?;
+        let response = self.get(path).send().await.context("Failed to send GET request")?;
 
         self.handle_response(response).await
     }
@@ -121,11 +110,8 @@ impl FlowplaneClient {
             trace!("Request body:\n{}", body_json);
         }
 
-        let response = self.post(path)
-            .json(body)
-            .send()
-            .await
-            .context("Failed to send POST request")?;
+        let response =
+            self.post(path).json(body).send().await.context("Failed to send POST request")?;
 
         self.handle_response(response).await
     }
@@ -142,21 +128,15 @@ impl FlowplaneClient {
             trace!("Request body:\n{}", body_json);
         }
 
-        let response = self.put(path)
-            .json(body)
-            .send()
-            .await
-            .context("Failed to send PUT request")?;
+        let response =
+            self.put(path).json(body).send().await.context("Failed to send PUT request")?;
 
         self.handle_response(response).await
     }
 
     /// Send a DELETE request and handle the response
     pub async fn delete_json<R: DeserializeOwned>(&self, path: &str) -> Result<R> {
-        let response = self.delete(path)
-            .send()
-            .await
-            .context("Failed to send DELETE request")?;
+        let response = self.delete(path).send().await.context("Failed to send DELETE request")?;
 
         self.handle_response(response).await
     }
@@ -167,10 +147,8 @@ impl FlowplaneClient {
         debug!("Response status: {}", status);
 
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<unable to read error>".to_string());
+            let error_text =
+                response.text().await.unwrap_or_else(|_| "<unable to read error>".to_string());
 
             if self.config.verbose {
                 trace!("Error response:\n{}", error_text);
@@ -179,10 +157,7 @@ impl FlowplaneClient {
             anyhow::bail!("HTTP request failed with status {}: {}", status, error_text);
         }
 
-        let body = response
-            .text()
-            .await
-            .context("Failed to read response body")?;
+        let body = response.text().await.context("Failed to read response body")?;
 
         if self.config.verbose {
             trace!("Response body:\n{}", body);
