@@ -1,8 +1,17 @@
 //! # Command Line Interface
 //!
-//! Provides CLI commands for database management and personal access token administration.
+//! Provides CLI commands for database management, personal access token administration,
+//! API definition management, and native resource management via HTTP client.
 
+pub mod api_definition;
 pub mod auth;
+pub mod client;
+pub mod clusters;
+pub mod config;
+pub mod config_cmd;
+pub mod listeners;
+pub mod output;
+pub mod routes;
 
 use crate::config::DatabaseConfig;
 use crate::storage::{create_pool, run_db_migrations, validate_migrations, MigrationInfo};
@@ -24,6 +33,22 @@ pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Personal access token for API authentication
+    #[arg(long, global = true)]
+    pub token: Option<String>,
+
+    /// Path to file containing personal access token
+    #[arg(long, global = true)]
+    pub token_file: Option<std::path::PathBuf>,
+
+    /// Base URL for the Flowplane API
+    #[arg(long, global = true)]
+    pub base_url: Option<String>,
+
+    /// Request timeout in seconds
+    #[arg(long, global = true)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -38,6 +63,36 @@ pub enum Commands {
     Auth {
         #[command(subcommand)]
         command: auth::AuthCommands,
+    },
+
+    /// API definition management commands
+    Api {
+        #[command(subcommand)]
+        command: api_definition::ApiCommands,
+    },
+
+    /// Cluster management commands
+    Cluster {
+        #[command(subcommand)]
+        command: clusters::ClusterCommands,
+    },
+
+    /// Listener management commands
+    Listener {
+        #[command(subcommand)]
+        command: listeners::ListenerCommands,
+    },
+
+    /// Route management commands
+    Route {
+        #[command(subcommand)]
+        command: routes::RouteCommands,
+    },
+
+    /// Configuration management commands
+    Config {
+        #[command(subcommand)]
+        command: config_cmd::ConfigCommands,
     },
 }
 
@@ -74,9 +129,68 @@ pub async fn run_cli() -> anyhow::Result<()> {
     match cli.command {
         Commands::Database { command } => handle_database_command(command, &database).await?,
         Commands::Auth { command } => auth::handle_auth_command(command, &database).await?,
+        Commands::Api { command } => {
+            api_definition::handle_api_command(
+                command,
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )
+            .await?
+        }
+        Commands::Cluster { command } => {
+            let client = create_http_client(
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )?;
+            clusters::handle_cluster_command(command, &client).await?
+        }
+        Commands::Listener { command } => {
+            let client = create_http_client(
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )?;
+            listeners::handle_listener_command(command, &client).await?
+        }
+        Commands::Route { command } => {
+            let client = create_http_client(
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )?;
+            routes::handle_route_command(command, &client).await?
+        }
+        Commands::Config { command } => config_cmd::handle_config_command(command).await?,
     }
 
     Ok(())
+}
+
+/// Create HTTP client with resolved authentication
+fn create_http_client(
+    token: Option<String>,
+    token_file: Option<std::path::PathBuf>,
+    base_url: Option<String>,
+    timeout: Option<u64>,
+    verbose: bool,
+) -> anyhow::Result<client::FlowplaneClient> {
+    let token = config::resolve_token(token, token_file)?;
+    let base_url = config::resolve_base_url(base_url);
+    let timeout = config::resolve_timeout(timeout);
+
+    let config = client::ClientConfig { base_url, token, timeout, verbose };
+
+    client::FlowplaneClient::new(config)
 }
 
 fn initialise_logging(verbose: bool) -> anyhow::Result<()> {

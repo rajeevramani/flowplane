@@ -238,8 +238,8 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     use types::{
-        CreateListenerBody, ListenerFilterChainInput, ListenerFilterInput,
-        ListenerFilterTypeInput, UpdateListenerBody,
+        CreateListenerBody, ListenerFilterChainInput, ListenerFilterInput, ListenerFilterTypeInput,
+        UpdateListenerBody,
     };
     use validation::convert_filter_type;
 
