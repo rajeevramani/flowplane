@@ -241,13 +241,13 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = CliConfig {
-            token: Some("test_token".to_string()),
+            token: Some("fake-token-for-testing".to_string()),
             base_url: Some("http://example.com".to_string()),
             timeout: Some(60),
         };
 
         let toml_str = toml::to_string(&config).unwrap();
-        assert!(toml_str.contains("token = \"test_token\""));
+        assert!(toml_str.contains("token = \"fake-token-for-testing\""));
         assert!(toml_str.contains("base_url = \"http://example.com\""));
         assert!(toml_str.contains("timeout = 60"));
     }
@@ -255,13 +255,13 @@ mod tests {
     #[test]
     fn test_config_deserialization() {
         let toml_str = r#"
-            token = "test_token"
+            token = "fake-token-for-testing"
             base_url = "http://example.com"
             timeout = 60
         "#;
 
         let config: CliConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.token, Some("test_token".to_string()));
+        assert_eq!(config.token, Some("fake-token-for-testing".to_string()));
         assert_eq!(config.base_url, Some("http://example.com".to_string()));
         assert_eq!(config.timeout, Some(60));
     }
@@ -272,7 +272,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.toml");
 
         let config = CliConfig {
-            token: Some("test_token".to_string()),
+            token: Some("fake-token-for-testing".to_string()),
             base_url: Some("http://example.com".to_string()),
             timeout: Some(60),
         };
