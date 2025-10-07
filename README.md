@@ -13,6 +13,8 @@ Flowplane is an Envoy control plane that keeps listener, route, and cluster conf
 - SQLite (for the default embedded database)
 - Envoy proxy (when you are ready to point a data-plane instance at the control plane)
 
+**Quick Start with Docker:** For the fastest way to get started, see [README-DOCKER.md](README-DOCKER.md) for Docker Compose instructions.
+
 ### Launch the Control Plane
 ```bash
 FLOWPLANE_XDS_PORT=18003 \
