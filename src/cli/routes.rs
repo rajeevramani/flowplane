@@ -11,63 +11,86 @@ use super::client::FlowplaneClient;
 
 #[derive(Subcommand)]
 pub enum RouteCommands {
-    /// Create a new route
+    /// Create a new route configuration
+    #[command(
+        long_about = "Create a new route by providing a JSON file with the route specification.\n\nThe JSON file should contain fields like name, path_prefix, cluster_name, and optional match conditions.",
+        after_help = "EXAMPLES:\n    # Create a route from a JSON file\n    flowplane-cli route create --file route-spec.json\n\n    # Create and output as YAML\n    flowplane-cli route create --file route-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli route create --file route-spec.json --token your-token"
+    )]
     Create {
         /// Path to JSON file with route spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// List all routes
+    /// List all route configurations
+    #[command(
+        long_about = "List all route configurations in the system with optional filtering and pagination.\n\nRoutes define path matching and routing rules for traffic to clusters.",
+        after_help = "EXAMPLES:\n    # List all routes\n    flowplane-cli route list\n\n    # List with table output\n    flowplane-cli route list --output table\n\n    # Filter by cluster name\n    flowplane-cli route list --cluster backend-api\n\n    # Paginate results\n    flowplane-cli route list --limit 10 --offset 20"
+    )]
     List {
         /// Filter by cluster name
-        #[arg(long)]
+        #[arg(long, value_name = "CLUSTER")]
         cluster: Option<String>,
 
         /// Maximum number of results
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         limit: Option<i32>,
 
         /// Offset for pagination
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         offset: Option<i32>,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "table")]
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Get a specific route by name
+    /// Get details of a specific route by name
+    #[command(
+        long_about = "Retrieve detailed information about a specific route configuration by its name.\n\nShows path matching rules, cluster association, and metadata.",
+        after_help = "EXAMPLES:\n    # Get route details in JSON format\n    flowplane-cli route get my-api-route\n\n    # Get route in YAML format\n    flowplane-cli route get my-api-route --output yaml\n\n    # With authentication\n    flowplane-cli route get my-api-route --token your-token --base-url https://api.example.com"
+    )]
     Get {
         /// Route name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Update a route
+    /// Update an existing route configuration
+    #[command(
+        long_about = "Update an existing route configuration by providing a JSON file with the updated specification.\n\nYou can modify path matching, cluster association, and other route properties.",
+        after_help = "EXAMPLES:\n    # Update a route from JSON file\n    flowplane-cli route update my-api-route --file updated-route.json\n\n    # Update and output as YAML\n    flowplane-cli route update my-api-route --file updated-route.json --output yaml\n\n    # With authentication\n    flowplane-cli route update my-api-route --file updated-route.json --token your-token"
+    )]
     Update {
         /// Route name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Path to JSON file with update spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Delete a route
+    /// Delete a route configuration
+    #[command(
+        long_about = "Delete a route configuration by name.\n\nThis removes the route and stops traffic matching from being routed to the associated cluster.",
+        after_help = "EXAMPLES:\n    # Delete a route (with confirmation)\n    flowplane-cli route delete my-api-route\n\n    # Delete without confirmation prompt\n    flowplane-cli route delete my-api-route --yes\n\n    # With authentication\n    flowplane-cli route delete my-api-route --token your-token"
+    )]
     Delete {
         /// Route name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Skip confirmation prompt

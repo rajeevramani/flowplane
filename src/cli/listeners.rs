@@ -12,62 +12,85 @@ use super::client::FlowplaneClient;
 #[derive(Subcommand)]
 pub enum ListenerCommands {
     /// Create a new Envoy listener configuration
+    #[command(
+        long_about = "Create a new listener by providing a JSON file with the listener specification.\n\nListeners define how Envoy accepts incoming connections, including address, port, protocol, and filter chains.",
+        after_help = "EXAMPLES:\n    # Create a listener from a JSON file\n    flowplane-cli listener create --file listener-spec.json\n\n    # Create and output as YAML\n    flowplane-cli listener create --file listener-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli listener create --file listener-spec.json --token your-token"
+    )]
     Create {
         /// Path to JSON file with listener spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
     /// List all listener configurations
+    #[command(
+        long_about = "List all listener configurations in the system with optional filtering and pagination.\n\nListeners define network listeners that accept incoming connections.",
+        after_help = "EXAMPLES:\n    # List all listeners\n    flowplane-cli listener list\n\n    # List with table output\n    flowplane-cli listener list --output table\n\n    # Filter by protocol\n    flowplane-cli listener list --protocol http\n\n    # Paginate results\n    flowplane-cli listener list --limit 10 --offset 20"
+    )]
     List {
         /// Filter by protocol
-        #[arg(long)]
+        #[arg(long, value_name = "PROTOCOL")]
         protocol: Option<String>,
 
         /// Maximum number of results
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         limit: Option<i32>,
 
         /// Offset for pagination
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         offset: Option<i32>,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "table")]
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
     /// Get details of a specific listener by name
+    #[command(
+        long_about = "Retrieve detailed information about a specific listener configuration by its name.\n\nShows address, port, protocol, filter chains, and metadata.",
+        after_help = "EXAMPLES:\n    # Get listener details in JSON format\n    flowplane-cli listener get http-listener\n\n    # Get listener in YAML format\n    flowplane-cli listener get http-listener --output yaml\n\n    # With authentication\n    flowplane-cli listener get http-listener --token your-token --base-url https://api.example.com"
+    )]
     Get {
         /// Listener name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
     /// Update an existing listener configuration
+    #[command(
+        long_about = "Update an existing listener configuration by providing a JSON file with the updated specification.\n\nYou can modify address, port, protocol, filter chains, and other listener properties.",
+        after_help = "EXAMPLES:\n    # Update a listener from JSON file\n    flowplane-cli listener update http-listener --file updated-listener.json\n\n    # Update and output as YAML\n    flowplane-cli listener update http-listener --file updated-listener.json --output yaml\n\n    # With authentication\n    flowplane-cli listener update http-listener --file updated-listener.json --token your-token"
+    )]
     Update {
         /// Listener name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Path to JSON file with update spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
     /// Delete a listener configuration
+    #[command(
+        long_about = "Delete a listener configuration by name.\n\nThis removes the listener and stops Envoy from accepting connections on the associated address and port.",
+        after_help = "EXAMPLES:\n    # Delete a listener (with confirmation)\n    flowplane-cli listener delete http-listener\n\n    # Delete without confirmation prompt\n    flowplane-cli listener delete http-listener --yes\n\n    # With authentication\n    flowplane-cli listener delete http-listener --token your-token"
+    )]
     Delete {
         /// Listener name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Skip confirmation prompt
