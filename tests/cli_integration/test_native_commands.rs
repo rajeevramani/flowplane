@@ -77,10 +77,13 @@ async fn test_cluster_list_table() {
     assert!(result.is_ok(), "Cluster list with table output should succeed");
     let output = result.unwrap();
 
-    // Table output should have headers
+    // Table output should have headers or indicate no results
     assert!(
-        output.contains("Name") || output.contains("ID") || output.is_empty(),
-        "Table output should have headers or be empty: {}",
+        output.contains("Name")
+            || output.contains("ID")
+            || output.is_empty()
+            || output.contains("No clusters found"),
+        "Table output should have headers, be empty, or indicate no results: {}",
         output
     );
 }

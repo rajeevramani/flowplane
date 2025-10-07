@@ -121,7 +121,7 @@ servers
 #[tokio::test]
 async fn test_missing_required_argument() {
     // Try to import API without specifying file
-    let result = run_cli_command(&["api", "import", "--token", "test-token"]).await;
+    let result = run_cli_command(&["api", "import-openapi", "--token", "test-token"]).await;
 
     assert!(result.is_err(), "Should fail with missing required argument");
     let error = result.unwrap_err();
