@@ -8,27 +8,31 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
+          generate_release_notes: true
 
   build:
     name: Build Release Binaries
     needs: create-release
+    permissions:
+      contents: write
     strategy:
       matrix:
         target:
@@ -62,24 +66,22 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../../../flowplane-${{ matrix.target }}.zip flowplane.exe
+            7z a ../../../flowplane-${{ matrix.target }}.zip flowplane.exe flowplane-cli.exe
           else
-            tar czvf ../../../flowplane-${{ matrix.target }}.tar.gz flowplane
+            tar czvf ../../../flowplane-${{ matrix.target }}.tar.gz flowplane flowplane-cli
           fi
           cd -
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./flowplane-${{ matrix.target }}.tar.gz
-          asset_name: flowplane-${{ matrix.target }}.tar.gz
-          asset_content_type: application/gzip
+          files: ./flowplane-${{ matrix.target }}.tar.gz
 
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
