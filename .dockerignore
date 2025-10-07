@@ -49,3 +49,12 @@ coverage/
 # Claude Code
 .claude/
 CLAUDE.md
+
+# Task Master
+.taskmaster/
+.codex/
+.local/
+data/
+examples/
+specs/
+docs/

@@ -1,0 +1,39 @@
+services:
+  # Flowplane Control Plane
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowplane-control-plane
+    environment:
+      # Database configuration (SQLite)
+      DATABASE_URL: sqlite:///app/data/flowplane.db
+
+      # Server configuration
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 50051
+
+      # Logging
+      RUST_LOG: info,flowplane=debug
+
+      # Observability
+      FLOWPLANE_ENABLE_METRICS: "true"
+      FLOWPLANE_ENABLE_TRACING: "false"
+    ports:
+      - "8080:8080"   # HTTP API
+      - "50051:50051" # xDS gRPC
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - flowplane_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  flowplane_data:
+    driver: local
