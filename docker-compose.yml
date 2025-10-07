@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Flowplane Control Plane
   control-plane:
@@ -12,8 +10,9 @@ services:
       DATABASE_URL: sqlite:///app/data/flowplane.db
 
       # Server configuration
-      FLOWPLANE_HOST: 0.0.0.0
-      FLOWPLANE_PORT: 8080
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
       FLOWPLANE_XDS_PORT: 50051
 
       # Logging
