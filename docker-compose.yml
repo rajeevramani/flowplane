@@ -1,36 +1,15 @@
 version: '3.8'
 
 services:
-  # PostgreSQL database
-  postgres:
-    image: postgres:16-alpine
-    container_name: flowplane-postgres
-    environment:
-      POSTGRES_USER: flowplane
-      POSTGRES_PASSWORD: flowplane_dev
-      POSTGRES_DB: flowplane
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flowplane"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # Flowplane Control Plane
   control-plane:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: flowplane-control-plane
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      # Database configuration
-      DATABASE_URL: postgres://flowplane:flowplane_dev@postgres:5432/flowplane
+      # Database configuration (SQLite)
+      DATABASE_URL: sqlite:///app/data/flowplane.db
 
       # Server configuration
       FLOWPLANE_HOST: 0.0.0.0
@@ -52,8 +31,10 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+    volumes:
+      - flowplane_data:/app/data
     restart: unless-stopped
 
 volumes:
-  postgres_data:
+  flowplane_data:
     driver: local
