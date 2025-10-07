@@ -128,15 +128,22 @@ fn get_cli_binary_path() -> &'static PathBuf {
 pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
     use std::process::Command;
 
-    // Use tokio spawn_blocking to run the command without blocking the async runtime
+    // Capture environment BEFORE spawning thread to ensure test env is captured
+    let current_env: Vec<(String, String)> = std::env::vars().collect();
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let cli_path = get_cli_binary_path().clone();
 
     tokio::task::spawn_blocking(move || {
-        let output = Command::new(cli_path)
-            .args(&args_owned)
-            .output()
-            .expect("failed to execute CLI command");
+        let mut cmd = Command::new(cli_path);
+        cmd.args(&args_owned);
+
+        // Clear environment and set from captured vars to ensure test env is used
+        cmd.env_clear();
+        for (key, value) in current_env {
+            cmd.env(key, value);
+        }
+
+        let output = cmd.output().expect("failed to execute CLI command");
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -157,8 +164,16 @@ pub struct TempConfig {
 impl TempConfig {
     pub fn new() -> Self {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let path = temp_dir.path().join("config.toml");
+        // CLI expects config at $HOME/.flowplane/config.toml
+        let flowplane_dir = temp_dir.path().join(".flowplane");
+        std::fs::create_dir_all(&flowplane_dir).expect("create .flowplane directory");
+        let path = flowplane_dir.join("config.toml");
         TempConfig { path, _temp_dir: temp_dir }
+    }
+
+    /// Get the home directory path to use for HOME env var
+    pub fn home_dir(&self) -> &std::path::Path {
+        self._temp_dir.path()
     }
 
     pub fn write_config(&self, token: &str, base_url: &str) {
