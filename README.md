@@ -9,7 +9,7 @@ The Aim of the CP is initially to provide a resultful interface for Envoy. We wi
 Flowplane is an Envoy control plane that keeps listener, route, and cluster configuration in structured Rust/JSON models. Each payload is validated and then translated into Envoy protobufs through `envoy-types`, so you can assemble advanced filter chains—JWT auth, rate limiting, TLS, tracing—without hand-crafting `Any` blobs.
 
 ### Before You Start
-- Rust toolchain (1.75+ recommended)
+- Rust toolchain (1.89+ required)
 - SQLite (for the default embedded database)
 - Envoy proxy (when you are ready to point a data-plane instance at the control plane)
 
@@ -17,11 +17,16 @@ Flowplane is an Envoy control plane that keeps listener, route, and cluster conf
 
 ### Launch the Control Plane
 ```bash
-FLOWPLANE_XDS_PORT=18003 \
-FLOWPLANE_CLUSTER_NAME=my_cluster \
-FLOWPLANE_BACKEND_PORT=9090 \
-FLOWPLANE_LISTENER_PORT=8080 \
-FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
+# Minimal production start
+DATABASE_URL=sqlite://./data/flowplane.db \
+FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
+cargo run --bin flowplane
+
+# With custom ports (optional)
+DATABASE_URL=sqlite://./data/flowplane.db \
+FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
+FLOWPLANE_API_PORT=8080 \
+FLOWPLANE_XDS_PORT=50051 \
 cargo run --bin flowplane
 ```
 
@@ -38,11 +43,12 @@ Protect Envoy → control plane traffic with TLS or mutual TLS by exporting the 
 Example launch with mutual TLS:
 
 ```bash
-FLOWPLANE_XDS_PORT=18003 \
+DATABASE_URL=sqlite://./data/flowplane.db \
+FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
+FLOWPLANE_XDS_PORT=50051 \
 FLOWPLANE_XDS_TLS_CERT_PATH=certs/xds-server.pem \
 FLOWPLANE_XDS_TLS_KEY_PATH=certs/xds-server.key \
 FLOWPLANE_XDS_TLS_CLIENT_CA_PATH=certs/xds-ca.pem \
-FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
 cargo run --bin flowplane
 ```
 
@@ -63,8 +69,16 @@ When these variables are present the server binds HTTPS, logs the certificate su
 ### Authenticate API Calls
 Flowplane now protects every REST endpoint with bearer authentication:
 
-1. Start the control plane. On first launch a bootstrap admin token is emitted once in the logs and
-   recorded as `auth.token.seeded` in the audit log.
+1. Start the control plane. On first launch, a bootstrap admin token is **displayed in a prominent banner**
+   with security warnings and also recorded as `auth.token.seeded` in the audit log.
+
+   ```bash
+   # Extract the token from Docker logs
+   docker-compose logs control-plane 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+'
+
+   # Or from local logs
+   cargo run --bin flowplane 2>&1 | grep "Token:"
+   ```
 2. Store the value securely (e.g., in a secrets manager) and use it to create scoped tokens via the
    API or CLI:
 
@@ -102,7 +116,8 @@ If you already have an OpenAPI 3.0 spec, Flowplane can generate clusters, routes
 
 ```bash
 curl -sS \
-  -X POST "http://127.0.0.1:8080/api/v1/gateways/openapi?name=example" \
+  -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=example" \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @openapi.json
 ```
@@ -118,6 +133,131 @@ Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
 - **Route-specific** limits: attach a Local Rate Limit scoped config via `typedPerFilterConfig` on routes, virtual hosts, or weighted clusters to tailor traffic policies.
 
 See [docs/filters.md](docs/filters.md#local-rate-limit) for detailed examples of both patterns, including how to combine Local Rate Limit with JWT authentication.
+
+### Environment Variables Reference
+
+#### Core Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | *required* | SQLite or PostgreSQL connection string (e.g., `sqlite://./data/flowplane.db`) |
+| `FLOWPLANE_API_BIND_ADDRESS` | `127.0.0.1` | API server bind address (use `0.0.0.0` for Docker/remote access) |
+| `FLOWPLANE_API_PORT` | `8080` | HTTP API server port |
+| `FLOWPLANE_XDS_BIND_ADDRESS` | `0.0.0.0` | xDS gRPC server bind address |
+| `FLOWPLANE_XDS_PORT` | `50051` | xDS gRPC server port |
+
+#### TLS Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLOWPLANE_API_TLS_ENABLED` | `false` | Enable HTTPS for API (set to `true`, `1`, `yes`, or `on`) |
+| `FLOWPLANE_API_TLS_CERT_PATH` | - | PEM-encoded API server certificate |
+| `FLOWPLANE_API_TLS_KEY_PATH` | - | PEM-encoded API server private key |
+| `FLOWPLANE_API_TLS_CHAIN_PATH` | - | Optional intermediate certificate chain |
+| `FLOWPLANE_XDS_TLS_CERT_PATH` | - | PEM-encoded xDS server certificate |
+| `FLOWPLANE_XDS_TLS_KEY_PATH` | - | PEM-encoded xDS server private key |
+| `FLOWPLANE_XDS_TLS_CLIENT_CA_PATH` | - | CA bundle for validating Envoy client certificates |
+| `FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT` | `true` | Require client certificate for mTLS |
+
+#### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Logging level (`error`, `warn`, `info`, `debug`, `trace`) |
+| `FLOWPLANE_LOG_LEVEL` | `info` | Alternative logging level configuration |
+| `FLOWPLANE_ENABLE_METRICS` | `true` | Enable Prometheus metrics export |
+| `FLOWPLANE_ENABLE_TRACING` | `false` | Enable OpenTelemetry tracing |
+| `FLOWPLANE_SERVICE_NAME` | `flowplane` | Service name for tracing |
+| `FLOWPLANE_JAEGER_ENDPOINT` | - | Jaeger collector endpoint for traces |
+
+#### CLI Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLOWPLANE_TOKEN` | - | Personal access token for CLI authentication |
+| `FLOWPLANE_BASE_URL` | `http://127.0.0.1:8080` | Control plane API base URL for CLI |
+
+#### Legacy Development Variables
+
+These variables are for simple development mode only (not needed for production):
+
+| Variable | Description |
+|----------|-------------|
+| `FLOWPLANE_CLUSTER_NAME` | Demo cluster name (dev only) |
+| `FLOWPLANE_ROUTE_NAME` | Demo route name (dev only) |
+| `FLOWPLANE_LISTENER_NAME` | Demo listener name (dev only) |
+| `FLOWPLANE_BACKEND_ADDRESS` | Demo backend address (dev only) |
+| `FLOWPLANE_BACKEND_PORT` | Demo backend port (dev only) |
+| `FLOWPLANE_LISTENER_PORT` | Demo listener port (dev only) |
+
+### API Endpoints
+
+Flowplane exposes a comprehensive REST API for managing all control plane resources. All endpoints require bearer authentication except for Swagger UI.
+
+#### Interactive Documentation
+- **Swagger UI:** `http://127.0.0.1:8080/swagger-ui/`
+- **OpenAPI JSON:** `http://127.0.0.1:8080/api-docs/openapi.json`
+
+#### Authentication & Tokens
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| POST | `/api/v1/tokens` | Create new token | `tokens:write` |
+| GET | `/api/v1/tokens` | List all tokens | `tokens:read` |
+| GET | `/api/v1/tokens/{id}` | Get token details | `tokens:read` |
+| PATCH | `/api/v1/tokens/{id}` | Update token scopes/name | `tokens:write` |
+| DELETE | `/api/v1/tokens/{id}` | Revoke token | `tokens:write` |
+| POST | `/api/v1/tokens/{id}/rotate` | Rotate token secret | `tokens:write` |
+
+#### Clusters
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| POST | `/api/v1/clusters` | Create cluster | `clusters:write` |
+| GET | `/api/v1/clusters` | List clusters | `clusters:read` |
+| GET | `/api/v1/clusters/{name}` | Get cluster | `clusters:read` |
+| PUT | `/api/v1/clusters/{name}` | Update cluster | `clusters:write` |
+| DELETE | `/api/v1/clusters/{name}` | Delete cluster | `clusters:write` |
+
+#### Routes
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| POST | `/api/v1/routes` | Create route | `routes:write` |
+| GET | `/api/v1/routes` | List routes | `routes:read` |
+| GET | `/api/v1/routes/{name}` | Get route | `routes:read` |
+| PUT | `/api/v1/routes/{name}` | Update route | `routes:write` |
+| DELETE | `/api/v1/routes/{name}` | Delete route | `routes:write` |
+
+#### Listeners
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| POST | `/api/v1/listeners` | Create listener | `listeners:write` |
+| GET | `/api/v1/listeners` | List listeners | `listeners:read` |
+| GET | `/api/v1/listeners/{name}` | Get listener | `listeners:read` |
+| PUT | `/api/v1/listeners/{name}` | Update listener | `listeners:write` |
+| DELETE | `/api/v1/listeners/{name}` | Delete listener | `listeners:write` |
+
+#### API Definitions (BFF/Platform API)
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| POST | `/api/v1/api-definitions` | Create BFF API definition | `routes:write` |
+| GET | `/api/v1/api-definitions` | List API definitions | `routes:read` |
+| GET | `/api/v1/api-definitions/{id}` | Get API definition | `routes:read` |
+| POST | `/api/v1/api-definitions/from-openapi` | Import OpenAPI spec | `routes:write` |
+| POST | `/api/v1/api-definitions/{id}/routes` | Append route to API | `routes:write` |
+| GET | `/api/v1/api-definitions/{id}/bootstrap` | Get Envoy bootstrap config | `routes:read` |
+
+#### Token Scopes
+
+Scopes control access to API groups:
+
+- `tokens:read`, `tokens:write` - Token management
+- `clusters:read`, `clusters:write` - Cluster resources
+- `routes:read`, `routes:write` - Route and API definition resources
+- `listeners:read`, `listeners:write` - Listener resources
 
 ### Documentation Map
 - [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
