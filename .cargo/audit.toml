@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack in rsa 0.9.8
+    # Justification: Transitive dependency through sqlx-mysql which we don't use
+    # We only use SQLite and PostgreSQL backends, not MySQL
+    # The vulnerability is in RSA PKCS#1 v1.5 decryption which is only used
+    # in MySQL TLS handshakes that we never execute
+    # No fixed version available as of 2025-10-07
+    "RUSTSEC-2023-0071",
+]
