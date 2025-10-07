@@ -49,6 +49,26 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
     let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
     let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
     if let Some(secret) = token_service.ensure_bootstrap_token().await? {
+        // Print prominent banner to ensure token is visible
+        eprintln!("\n{}", "=".repeat(80));
+        eprintln!("🔐 BOOTSTRAP ADMIN TOKEN GENERATED");
+        eprintln!("{}", "=".repeat(80));
+        eprintln!();
+        eprintln!("  Token ID: {}", secret.id);
+        eprintln!("  Token:    {}", secret.token);
+        eprintln!();
+        eprintln!("⚠️  IMPORTANT: Save this token securely!");
+        eprintln!("   - This token has full admin access");
+        eprintln!("   - It is only shown ONCE on first startup");
+        eprintln!("   - Store it in a password manager or secure vault");
+        eprintln!();
+        eprintln!("To use with CLI:");
+        eprintln!("  export FLOWPLANE_TOKEN='{}'", secret.token);
+        eprintln!();
+        eprintln!("{}", "=".repeat(80));
+        eprintln!();
+
+        // Also log it for structured logging systems
         warn!(
             token_id = %secret.id,
             token = %secret.token,
