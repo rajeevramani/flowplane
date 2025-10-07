@@ -11,7 +11,7 @@ use super::client::FlowplaneClient;
 
 #[derive(Subcommand)]
 pub enum ListenerCommands {
-    /// Create a new listener
+    /// Create a new Envoy listener configuration
     Create {
         /// Path to JSON file with listener spec
         #[arg(short, long)]
@@ -22,7 +22,7 @@ pub enum ListenerCommands {
         output: String,
     },
 
-    /// List all listeners
+    /// List all listener configurations
     List {
         /// Filter by protocol
         #[arg(long)]
@@ -41,7 +41,7 @@ pub enum ListenerCommands {
         output: String,
     },
 
-    /// Get a specific listener by name
+    /// Get details of a specific listener by name
     Get {
         /// Listener name
         name: String,
@@ -51,7 +51,7 @@ pub enum ListenerCommands {
         output: String,
     },
 
-    /// Update a listener
+    /// Update an existing listener configuration
     Update {
         /// Listener name
         name: String,
@@ -65,7 +65,7 @@ pub enum ListenerCommands {
         output: String,
     },
 
-    /// Delete a listener
+    /// Delete a listener configuration
     Delete {
         /// Listener name
         name: String,

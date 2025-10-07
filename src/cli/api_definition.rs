@@ -13,65 +13,83 @@ use super::config::{resolve_base_url, resolve_timeout, resolve_token};
 
 #[derive(Subcommand)]
 pub enum ApiCommands {
-    /// Create a new API definition
+    /// Create a new API definition from a JSON specification file
+    #[command(
+        long_about = "Create a new API definition by providing a JSON file with the specification.\n\nThe JSON file should contain fields like name, team, domain, and specification details.",
+        after_help = "EXAMPLES:\n    # Create an API definition from a JSON file\n    flowplane-cli api create --file api-spec.json\n\n    # Create and output as YAML\n    flowplane-cli api create --file api-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli api create --file api-spec.json --token your-token"
+    )]
     Create {
         /// Path to JSON file with API definition spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// List all API definitions
+    /// List all API definitions with optional filtering
+    #[command(
+        long_about = "List all API definitions in the system. Supports filtering by team, domain, and pagination.",
+        after_help = "EXAMPLES:\n    # List all API definitions\n    flowplane-cli api list\n\n    # List with table output\n    flowplane-cli api list --output table\n\n    # Filter by team\n    flowplane-cli api list --team platform\n\n    # Filter by team and domain\n    flowplane-cli api list --team platform --domain users\n\n    # Paginate results\n    flowplane-cli api list --limit 10 --offset 20"
+    )]
     List {
         /// Filter by team name
-        #[arg(long)]
+        #[arg(long, value_name = "TEAM")]
         team: Option<String>,
 
         /// Filter by domain
-        #[arg(long)]
+        #[arg(long, value_name = "DOMAIN")]
         domain: Option<String>,
 
         /// Maximum number of results
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         limit: Option<i32>,
 
         /// Offset for pagination
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         offset: Option<i32>,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "table")]
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Get a specific API definition by ID
+    /// Get a specific API definition by its ID
+    #[command(
+        long_about = "Retrieve detailed information about a specific API definition using its unique ID.",
+        after_help = "EXAMPLES:\n    # Get an API definition by ID\n    flowplane-cli api get abc123\n\n    # Get with YAML output\n    flowplane-cli api get abc123 --output yaml\n\n    # Get with table output\n    flowplane-cli api get abc123 --output table"
+    )]
     Get {
         /// API definition ID
+        #[arg(value_name = "ID")]
         id: String,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Get bootstrap configuration for an API definition
+    /// Get Envoy bootstrap configuration for an API definition
+    #[command(
+        long_about = "Generate and retrieve the Envoy bootstrap configuration for a specific API definition.\n\nThe bootstrap config includes static resources like listeners, routes, and clusters that Envoy needs to start.",
+        after_help = "EXAMPLES:\n    # Get bootstrap config in YAML format\n    flowplane-cli api bootstrap abc123\n\n    # Get bootstrap config in JSON\n    flowplane-cli api bootstrap abc123 --format json\n\n    # Scope to team listeners only\n    flowplane-cli api bootstrap abc123 --scope team\n\n    # Use allowlist scope\n    flowplane-cli api bootstrap abc123 --scope allowlist --allowlist listener1,listener2\n\n    # Include default listeners in team scope\n    flowplane-cli api bootstrap abc123 --scope team --include-default"
+    )]
     Bootstrap {
         /// API definition ID
+        #[arg(value_name = "ID")]
         id: String,
 
         /// Output format (yaml or json)
-        #[arg(short, long, default_value = "yaml")]
+        #[arg(short, long, default_value = "yaml", value_parser = ["yaml", "json"])]
         format: String,
 
         /// Scoping mode (all, team, or allowlist)
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = "all", value_parser = ["all", "team", "allowlist"])]
         scope: String,
 
         /// Listener allowlist (comma-separated) when scope=allowlist
-        #[arg(long)]
+        #[arg(long, value_name = "LISTENERS")]
         allowlist: Option<String>,
 
         /// Include default listeners in team scope
@@ -79,35 +97,48 @@ pub enum ApiCommands {
         include_default: bool,
     },
 
-    /// Import API definition from OpenAPI spec
+    /// Import an API definition from an OpenAPI 3.0 specification
+    #[command(
+        long_about = "Import an API definition by parsing an OpenAPI 3.0 specification file.\n\nSupports both JSON and YAML formats. Can include x-flowplane-* extensions for filter configurations.",
+        after_help = "EXAMPLES:\n    # Import from OpenAPI YAML file\n    flowplane-cli api import-openapi --file openapi.yaml\n\n    # Import from OpenAPI JSON file\n    flowplane-cli api import-openapi --file openapi.json\n\n    # Import with YAML output\n    flowplane-cli api import-openapi --file openapi.yaml --output yaml\n\n    # Import with authentication\n    flowplane-cli api import-openapi --file openapi.yaml --token your-token"
+    )]
     ImportOpenapi {
         /// Path to OpenAPI spec file (JSON or YAML)
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Validate x-flowplane-filters in an OpenAPI spec before import
+    /// Validate x-flowplane-filters syntax in an OpenAPI spec before importing
+    #[command(
+        long_about = "Validate the syntax of x-flowplane-filters extension in an OpenAPI spec file.\n\nThis is useful to check filter configurations before actually importing the API definition.\nNo authentication required - validation is performed locally.",
+        after_help = "EXAMPLES:\n    # Validate filters in OpenAPI file\n    flowplane-cli api validate-filters --file openapi-with-filters.yaml\n\n    # Validate with JSON output\n    flowplane-cli api validate-filters --file openapi.yaml --output json\n\n    # No authentication required (local validation)\n    flowplane-cli api validate-filters --file myapi.yaml"
+    )]
     ValidateFilters {
         /// Path to OpenAPI spec file (JSON or YAML)
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "table")]
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Show filter configurations from an imported API definition
+    /// Show deployed filter configurations from an API definition
+    #[command(
+        long_about = "Retrieve and display the HTTP filter configurations that are currently deployed for a specific API definition.",
+        after_help = "EXAMPLES:\n    # Show filters for an API definition\n    flowplane-cli api show-filters abc123\n\n    # Show filters as JSON\n    flowplane-cli api show-filters abc123 --output json\n\n    # Show filters as table\n    flowplane-cli api show-filters abc123 --output table"
+    )]
     ShowFilters {
         /// API definition ID
+        #[arg(value_name = "ID")]
         id: String,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "yaml")]
+        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 }

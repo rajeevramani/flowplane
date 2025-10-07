@@ -11,63 +11,86 @@ use super::client::FlowplaneClient;
 
 #[derive(Subcommand)]
 pub enum ClusterCommands {
-    /// Create a new cluster
+    /// Create a new Envoy cluster configuration
+    #[command(
+        long_about = "Create a new cluster configuration that defines upstream service endpoints.\n\nClusters specify how to connect to backend services, including endpoints, load balancing, and health checking.",
+        after_help = "EXAMPLES:\n    # Create a cluster from JSON file\n    flowplane-cli cluster create --file cluster-spec.json\n\n    # Create with YAML output\n    flowplane-cli cluster create --file cluster.json --output yaml\n\n    # With authentication\n    flowplane-cli cluster create --file cluster.json --token your-token"
+    )]
     Create {
         /// Path to JSON file with cluster spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// List all clusters
+    /// List all cluster configurations
+    #[command(
+        long_about = "List all cluster configurations in the system with optional filtering and pagination.",
+        after_help = "EXAMPLES:\n    # List all clusters\n    flowplane-cli cluster list\n\n    # List with table output\n    flowplane-cli cluster list --output table\n\n    # Filter by service name\n    flowplane-cli cluster list --service backend-api\n\n    # Paginate results\n    flowplane-cli cluster list --limit 10 --offset 20"
+    )]
     List {
         /// Filter by service name
-        #[arg(long)]
+        #[arg(long, value_name = "SERVICE")]
         service: Option<String>,
 
         /// Maximum number of results
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         limit: Option<i32>,
 
         /// Offset for pagination
-        #[arg(long)]
+        #[arg(long, value_name = "NUMBER")]
         offset: Option<i32>,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "table")]
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Get a specific cluster by name
+    /// Get details of a specific cluster by name
+    #[command(
+        long_about = "Retrieve detailed information about a specific cluster configuration.",
+        after_help = "EXAMPLES:\n    # Get cluster details\n    flowplane-cli cluster get my-backend-cluster\n\n    # Get with YAML output\n    flowplane-cli cluster get my-cluster --output yaml\n\n    # Get with table output\n    flowplane-cli cluster get my-cluster --output table"
+    )]
     Get {
         /// Cluster name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Update a cluster
+    /// Update an existing cluster configuration
+    #[command(
+        long_about = "Update an existing cluster configuration with new settings.\n\nProvide a JSON file with the updated configuration fields.",
+        after_help = "EXAMPLES:\n    # Update a cluster\n    flowplane-cli cluster update my-cluster --file updated-cluster.json\n\n    # Update with YAML output\n    flowplane-cli cluster update my-cluster --file update.json --output yaml"
+    )]
     Update {
         /// Cluster name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Path to JSON file with update spec
-        #[arg(short, long)]
+        #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json")]
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 
-    /// Delete a cluster
+    /// Delete a cluster configuration
+    #[command(
+        long_about = "Delete a specific cluster configuration from the system.\n\nWARNING: This will remove the cluster and may affect routing if it's in use.",
+        after_help = "EXAMPLES:\n    # Delete a cluster (with confirmation prompt)\n    flowplane-cli cluster delete my-cluster\n\n    # Delete without confirmation\n    flowplane-cli cluster delete my-cluster --yes"
+    )]
     Delete {
         /// Cluster name
+        #[arg(value_name = "NAME")]
         name: String,
 
         /// Skip confirmation prompt
