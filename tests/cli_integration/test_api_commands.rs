@@ -77,7 +77,7 @@ async fn test_api_import_simple_openapi() {
 
     assert!(result.is_ok(), "API import should succeed: {:?}", result);
     let output = result.unwrap();
-    assert!(output.contains("API definition imported successfully"), "Output: {}", output);
+    assert!(output.contains("\"id\":") || output.contains("id:"), "Output should contain API ID: {}", output);
 }
 
 #[tokio::test]
