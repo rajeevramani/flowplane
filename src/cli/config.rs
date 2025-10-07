@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tracing::debug;
 
 /// CLI configuration stored in ~/.flowplane/config.toml
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CliConfig {
     /// Personal access token
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,12 +22,6 @@ pub struct CliConfig {
     /// Request timeout in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
-}
-
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self { token: None, base_url: None, timeout: None }
-    }
 }
 
 impl CliConfig {

@@ -113,8 +113,8 @@ async fn create_listener(client: &FlowplaneClient, file: PathBuf, output: &str) 
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let response: ListenerResponse = client.post_json("/api/v1/listeners", &body).await?;
 
@@ -177,8 +177,8 @@ async fn update_listener(
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let path = format!("/api/v1/listeners/{}", name);
     let response: ListenerResponse = client.put_json(&path, &body).await?;

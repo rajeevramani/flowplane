@@ -59,15 +59,9 @@ async fn test_auth_with_env_var() {
     // Set environment variable
     std::env::set_var("FLOWPLANE_TOKEN", &token_response.token);
 
-    let result = run_cli_command(&[
-        "api",
-        "list",
-        "--base-url",
-        &server.base_url(),
-        "--output",
-        "json",
-    ])
-    .await;
+    let result =
+        run_cli_command(&["api", "list", "--base-url", &server.base_url(), "--output", "json"])
+            .await;
 
     // Clean up environment variable
     std::env::remove_var("FLOWPLANE_TOKEN");
@@ -96,10 +90,7 @@ async fn test_auth_precedence_token_flag_over_file() {
     ])
     .await;
 
-    assert!(
-        result.is_ok(),
-        "CLI should use --token flag over --token-file when both are provided"
-    );
+    assert!(result.is_ok(), "CLI should use --token flag over --token-file when both are provided");
 }
 
 #[tokio::test]
@@ -164,8 +155,9 @@ async fn test_auth_failure_with_no_token() {
     // Ensure no env var is set
     std::env::remove_var("FLOWPLANE_TOKEN");
 
-    let result = run_cli_command(&["api", "list", "--base-url", &server.base_url(), "--output", "json"])
-        .await;
+    let result =
+        run_cli_command(&["api", "list", "--base-url", &server.base_url(), "--output", "json"])
+            .await;
 
     assert!(result.is_err(), "CLI should fail when no authentication is provided");
     let error = result.unwrap_err();

@@ -106,8 +106,8 @@ servers
 "#;
     let openapi_file = TempOpenApiFile::new(malformed_yaml);
 
-    let result = run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()])
-        .await;
+    let result =
+        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
 
     assert!(result.is_err(), "Should fail with malformed YAML");
     let error = result.unwrap_err();
@@ -207,8 +207,8 @@ async fn test_json_parse_error_in_openapi() {
 "#; // Missing closing brace for info object
     let openapi_file = TempOpenApiFile::new(invalid_json);
 
-    let result = run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()])
-        .await;
+    let result =
+        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
 
     assert!(result.is_err(), "Should fail with invalid JSON");
     let error = result.unwrap_err();

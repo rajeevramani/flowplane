@@ -111,7 +111,10 @@ pub struct ClusterResponse {
 }
 
 /// Handle cluster commands
-pub async fn handle_cluster_command(command: ClusterCommands, client: &FlowplaneClient) -> Result<()> {
+pub async fn handle_cluster_command(
+    command: ClusterCommands,
+    client: &FlowplaneClient,
+) -> Result<()> {
     match command {
         ClusterCommands::Create { file, output } => create_cluster(client, file, &output).await?,
         ClusterCommands::List { service, limit, offset, output } => {
@@ -131,8 +134,8 @@ async fn create_cluster(client: &FlowplaneClient, file: PathBuf, output: &str) -
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let response: ClusterResponse = client.post_json("/api/v1/clusters", &body).await?;
 
@@ -195,8 +198,8 @@ async fn update_cluster(
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let path = format!("/api/v1/clusters/{}", name);
     let response: ClusterResponse = client.put_json(&path, &body).await?;
@@ -247,10 +250,7 @@ fn print_clusters_table(clusters: &[ClusterResponse]) {
     }
 
     println!();
-    println!(
-        "{:<30} {:<30} {:<10}",
-        "Name", "Service", "Version"
-    );
+    println!("{:<30} {:<30} {:<10}", "Name", "Service", "Version");
     println!("{}", "-".repeat(75));
 
     for cluster in clusters {

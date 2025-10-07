@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 /// Test server instance
 pub struct TestServer {
     pub addr: SocketAddr,
+    #[allow(dead_code)]
     pub pool: DbPool,
     pub token_service: TokenService,
     _handle: JoinHandle<()>,
@@ -35,9 +36,7 @@ impl TestServer {
             .await
             .expect("create sqlite pool");
 
-        storage::run_migrations(&pool)
-            .await
-            .expect("run migrations for CLI integration tests");
+        storage::run_migrations(&pool).await.expect("run migrations for CLI integration tests");
 
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
@@ -46,15 +45,12 @@ impl TestServer {
         let router = flowplane::api::routes::build_router(state.clone());
 
         // Bind to a random port
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind to random port");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind to random port");
         let addr = listener.local_addr().expect("get local addr");
 
         let handle = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .await
-                .expect("server error");
+            axum::serve(listener, router).await.expect("server error");
         });
 
         // Give the server time to start and be ready to accept connections
@@ -68,12 +64,7 @@ impl TestServer {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        TestServer {
-            addr,
-            pool,
-            token_service,
-            _handle: handle,
-        }
+        TestServer { addr, pool, token_service, _handle: handle }
     }
 
     /// Issue a test token with specified scopes
@@ -99,7 +90,6 @@ impl TestServer {
 /// Run a CLI command and capture output
 pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
     use std::process::Command;
-    use std::time::Duration;
 
     // Use tokio spawn_blocking to run the command without blocking the async runtime
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -135,10 +125,7 @@ impl TempConfig {
     pub fn new() -> Self {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join("config.toml");
-        TempConfig {
-            path,
-            _temp_dir: temp_dir,
-        }
+        TempConfig { path, _temp_dir: temp_dir }
     }
 
     pub fn write_config(&self, token: &str, base_url: &str) {
@@ -151,10 +138,6 @@ timeout = 30
             token, base_url
         );
         fs::write(&self.path, content).expect("write config file");
-    }
-
-    pub fn path_str(&self) -> String {
-        self.path.to_str().unwrap().to_string()
     }
 }
 
@@ -169,10 +152,7 @@ impl TempTokenFile {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join("token.txt");
         std::fs::write(&path, token).expect("write token file");
-        TempTokenFile {
-            path,
-            _temp_dir: temp_dir,
-        }
+        TempTokenFile { path, _temp_dir: temp_dir }
     }
 
     pub fn path_str(&self) -> String {
@@ -191,10 +171,7 @@ impl TempOpenApiFile {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let path = temp_dir.path().join("openapi.yaml");
         std::fs::write(&path, content).expect("write openapi file");
-        TempOpenApiFile {
-            path,
-            _temp_dir: temp_dir,
-        }
+        TempOpenApiFile { path, _temp_dir: temp_dir }
     }
 
     pub fn path_str(&self) -> String {

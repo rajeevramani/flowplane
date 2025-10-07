@@ -176,11 +176,8 @@ pub async fn handle_api_command(
     verbose: bool,
 ) -> Result<()> {
     // Handle commands that don't require authentication
-    match &command {
-        ApiCommands::ValidateFilters { file, output } => {
-            return validate_filters(file.clone(), output).await;
-        }
-        _ => {}
+    if let ApiCommands::ValidateFilters { file, output } = &command {
+        return validate_filters(file.clone(), output).await;
     }
 
     // Resolve configuration from multiple sources for commands that need API access
@@ -188,17 +185,14 @@ pub async fn handle_api_command(
     let base_url = resolve_base_url(base_url);
     let timeout = resolve_timeout(timeout);
 
-    let config = ClientConfig {
-        base_url,
-        token,
-        timeout,
-        verbose,
-    };
+    let config = ClientConfig { base_url, token, timeout, verbose };
 
     let client = FlowplaneClient::new(config)?;
 
     match command {
-        ApiCommands::Create { file, output } => create_api_definition(&client, file, &output).await?,
+        ApiCommands::Create { file, output } => {
+            create_api_definition(&client, file, &output).await?
+        }
         ApiCommands::List { team, domain, limit, offset, output } => {
             list_api_definitions(&client, team, domain, limit, offset, &output).await?
         }
@@ -206,7 +200,9 @@ pub async fn handle_api_command(
         ApiCommands::Bootstrap { id, format, scope, allowlist, include_default } => {
             get_bootstrap_config(&client, &id, &format, &scope, allowlist, include_default).await?
         }
-        ApiCommands::ImportOpenapi { file, output } => import_openapi(&client, file, &output).await?,
+        ApiCommands::ImportOpenapi { file, output } => {
+            import_openapi(&client, file, &output).await?
+        }
         ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
         ApiCommands::ShowFilters { id, output } => show_filters(&client, &id, &output).await?,
     }
@@ -222,8 +218,8 @@ async fn create_api_definition(
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let response: CreateApiDefinitionResponse =
         client.post_json("/api/v1/api-definitions", &body).await?;
@@ -290,7 +286,8 @@ async fn get_bootstrap_config(
     allowlist: Option<String>,
     include_default: bool,
 ) -> Result<()> {
-    let mut path = format!("/api/v1/api-definitions/{}/bootstrap?format={}&scope={}", id, format, scope);
+    let mut path =
+        format!("/api/v1/api-definitions/{}/bootstrap?format={}&scope={}", id, format, scope);
 
     if include_default {
         path.push_str("&includeDefault=true");
@@ -315,8 +312,8 @@ async fn get_bootstrap_config(
 }
 
 async fn import_openapi(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
-    let contents = std::fs::read(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+    let contents =
+        std::fs::read(&file).with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let response = client
         .post("/api/v1/api-definitions/from-openapi")
@@ -333,8 +330,8 @@ async fn import_openapi(client: &FlowplaneClient, file: PathBuf, output: &str) -
     }
 
     let body = response.text().await.context("Failed to read response body")?;
-    let parsed: CreateApiDefinitionResponse = serde_json::from_str(&body)
-        .context("Failed to parse response as JSON")?;
+    let parsed: CreateApiDefinitionResponse =
+        serde_json::from_str(&body).context("Failed to parse response as JSON")?;
 
     print_output(&parsed, output)?;
     Ok(())
@@ -364,10 +361,7 @@ fn print_definitions_table(definitions: &[ApiDefinitionSummary]) {
     }
 
     println!();
-    println!(
-        "{:<40} {:<15} {:<30} {:<10} {:<8}",
-        "ID", "Team", "Domain", "Isolation", "Version"
-    );
+    println!("{:<40} {:<15} {:<30} {:<10} {:<8}", "ID", "Team", "Domain", "Isolation", "Version");
     println!("{}", "-".repeat(110));
 
     for def in definitions {
@@ -411,7 +405,9 @@ async fn validate_filters(file: PathBuf, output: &str) -> Result<()> {
         Ok(filters) => {
             if filters.is_empty() {
                 println!("✅ No x-flowplane-filters found in OpenAPI spec");
-                println!("\nTo add filters, include the x-flowplane-filters extension at the top level:");
+                println!(
+                    "\nTo add filters, include the x-flowplane-filters extension at the top level:"
+                );
                 println!("\nExample:");
                 println!("  x-flowplane-filters:");
                 println!("    - filter:");
@@ -456,8 +452,8 @@ async fn validate_filters(file: PathBuf, output: &str) -> Result<()> {
 async fn show_filters(client: &FlowplaneClient, id: &str, output: &str) -> Result<()> {
     // Fetch bootstrap config which contains materialized filter configurations
     let path = format!("/api/v1/api-definitions/{}/bootstrap?scope=all&format=json", id);
-    let bootstrap: serde_json::Value = client.get_json(&path).await
-        .context("Failed to fetch bootstrap configuration")?;
+    let bootstrap: serde_json::Value =
+        client.get_json(&path).await.context("Failed to fetch bootstrap configuration")?;
 
     // Extract filter configurations from Envoy bootstrap config
     let filters = extract_filters_from_bootstrap(&bootstrap)?;
@@ -477,8 +473,8 @@ async fn show_filters(client: &FlowplaneClient, id: &str, output: &str) -> Resul
     } else if output == "table" {
         print_bootstrap_filters_table(&filters);
     } else {
-        let yaml = serde_yaml::to_string(&filters)
-            .context("Failed to serialize filters to YAML")?;
+        let yaml =
+            serde_yaml::to_string(&filters).context("Failed to serialize filters to YAML")?;
         println!("{}", yaml);
     }
 
@@ -494,12 +490,17 @@ fn extract_filters_from_bootstrap(bootstrap: &serde_json::Value) -> Result<Vec<s
     if let Some(static_resources) = bootstrap.get("static_resources") {
         if let Some(listeners) = static_resources.get("listeners").and_then(|v| v.as_array()) {
             for listener in listeners {
-                if let Some(filter_chains) = listener.get("filter_chains").and_then(|v| v.as_array()) {
+                if let Some(filter_chains) =
+                    listener.get("filter_chains").and_then(|v| v.as_array())
+                {
                     for chain in filter_chains {
-                        if let Some(chain_filters) = chain.get("filters").and_then(|v| v.as_array()) {
+                        if let Some(chain_filters) = chain.get("filters").and_then(|v| v.as_array())
+                        {
                             for filter in chain_filters {
                                 if let Some(typed_config) = filter.get("typed_config") {
-                                    if let Some(http_filters) = typed_config.get("http_filters").and_then(|v| v.as_array()) {
+                                    if let Some(http_filters) =
+                                        typed_config.get("http_filters").and_then(|v| v.as_array())
+                                    {
                                         for http_filter in http_filters {
                                             filters.push(http_filter.clone());
                                         }
@@ -518,18 +519,18 @@ fn extract_filters_from_bootstrap(bootstrap: &serde_json::Value) -> Result<Vec<s
 
 /// Print filters in a table format for validation command
 fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEntry]) {
-    println!("{:<5} {:<30} {}", "No.", "Filter Type", "Configuration");
+    println!("{:<5} {:<30} Configuration", "No.", "Filter Type");
     println!("{}", "-".repeat(80));
 
     for (i, filter) in filters.iter().enumerate() {
         let filter_json = serde_json::to_value(filter).unwrap_or(serde_json::Value::Null);
-        let filter_type = filter_json.get("filter")
+        let filter_type = filter_json
+            .get("filter")
             .and_then(|f| f.get("type"))
             .and_then(|t| t.as_str())
             .unwrap_or("unknown");
 
-        let config_preview = serde_json::to_string(&filter)
-            .unwrap_or_else(|_| "{}".to_string());
+        let config_preview = serde_json::to_string(&filter).unwrap_or_else(|_| "{}".to_string());
         let truncated = truncate(&config_preview, 45);
 
         println!("{:<5} {:<30} {}", i + 1, filter_type, truncated);
@@ -539,14 +540,13 @@ fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEnt
 
 /// Print bootstrap filters in a table format for show-filters command
 fn print_bootstrap_filters_table(filters: &[serde_json::Value]) {
-    println!("{:<5} {:<30} {}", "No.", "Filter Name", "Type URL");
+    println!("{:<5} {:<30} Type URL", "No.", "Filter Name");
     println!("{}", "-".repeat(80));
 
     for (i, filter) in filters.iter().enumerate() {
-        let name = filter.get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("unknown");
-        let type_url = filter.get("typed_config")
+        let name = filter.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+        let type_url = filter
+            .get("typed_config")
             .and_then(|tc| tc.get("@type"))
             .and_then(|t| t.as_str())
             .unwrap_or("unknown");

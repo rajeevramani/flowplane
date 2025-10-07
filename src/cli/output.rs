@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::str::FromStr;
 
 /// Output format options
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,24 +15,24 @@ pub enum OutputFormat {
     Table,
 }
 
-impl OutputFormat {
-    /// Parse output format from string
-    pub fn from_str(s: &str) -> Result<Self> {
+impl FromStr for OutputFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "json" => Ok(OutputFormat::Json),
             "yaml" => Ok(OutputFormat::Yaml),
             "table" => Ok(OutputFormat::Table),
-            _ => anyhow::bail!(
-                "Unsupported output format: '{}'. Use 'json', 'yaml', or 'table'.",
-                s
-            ),
+            _ => {
+                anyhow::bail!("Unsupported output format: '{}'. Use 'json', 'yaml', or 'table'.", s)
+            }
         }
     }
 }
 
 /// Print data in the specified format
 pub fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
-    let format = OutputFormat::from_str(format)?;
+    let format = format.parse::<OutputFormat>()?;
     print_output_format(data, format)
 }
 
@@ -110,19 +111,13 @@ mod tests {
 
     #[test]
     fn test_print_json() {
-        let data = TestData {
-            name: "test".to_string(),
-            value: 42,
-        };
+        let data = TestData { name: "test".to_string(), value: 42 };
         assert!(print_json(&data).is_ok());
     }
 
     #[test]
     fn test_print_yaml() {
-        let data = TestData {
-            name: "test".to_string(),
-            value: 42,
-        };
+        let data = TestData { name: "test".to_string(), value: 42 };
         assert!(print_yaml(&data).is_ok());
     }
 

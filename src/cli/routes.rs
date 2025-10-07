@@ -109,8 +109,8 @@ async fn create_route(client: &FlowplaneClient, file: PathBuf, output: &str) -> 
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let response: RouteResponse = client.post_json("/api/v1/routes", &body).await?;
 
@@ -173,8 +173,8 @@ async fn update_route(
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let body: serde_json::Value = serde_json::from_str(&contents)
-        .context("Failed to parse JSON from file")?;
+    let body: serde_json::Value =
+        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
     let path = format!("/api/v1/routes/{}", name);
     let response: RouteResponse = client.put_json(&path, &body).await?;
@@ -225,10 +225,7 @@ fn print_routes_table(routes: &[RouteResponse]) {
     }
 
     println!();
-    println!(
-        "{:<30} {:<25} {:<25} {:<10}",
-        "Name", "Path Prefix", "Cluster", "Version"
-    );
+    println!("{:<30} {:<25} {:<25} {:<10}", "Name", "Path Prefix", "Cluster", "Version");
     println!("{}", "-".repeat(95));
 
     for route in routes {

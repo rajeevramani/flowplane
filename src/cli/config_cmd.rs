@@ -104,9 +104,8 @@ async fn set_config(key: &str, value: &str) -> Result<()> {
             println!("✅ Base URL set to: {}", value);
         }
         "timeout" => {
-            let timeout: u64 = value
-                .parse()
-                .context("Invalid timeout value. Must be a number in seconds")?;
+            let timeout: u64 =
+                value.parse().context("Invalid timeout value. Must be a number in seconds")?;
             config.timeout = Some(timeout);
             println!("✅ Timeout set to: {} seconds", timeout);
         }
@@ -137,26 +136,20 @@ fn print_config_table(config: &CliConfig) {
     println!("{:<15} {:<50}", "Key", "Value");
     output::print_separator(65);
 
-    println!(
-        "{:<15} {}",
-        "token",
-        config.token.as_deref().unwrap_or("<not set>")
-    );
-    println!(
-        "{:<15} {}",
-        "base_url",
-        config.base_url.as_deref().unwrap_or("<not set>")
-    );
+    println!("{:<15} {}", "token", config.token.as_deref().unwrap_or("<not set>"));
+    println!("{:<15} {}", "base_url", config.base_url.as_deref().unwrap_or("<not set>"));
     println!(
         "{:<15} {}",
         "timeout",
-        config
-            .timeout
-            .map(|t| format!("{} seconds", t))
-            .unwrap_or_else(|| "<not set>".to_string())
+        config.timeout.map(|t| format!("{} seconds", t)).unwrap_or_else(|| "<not set>".to_string())
     );
 
     println!();
-    println!("Config file: {}", CliConfig::config_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "<unknown>".to_string()));
+    println!(
+        "Config file: {}",
+        CliConfig::config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string())
+    );
     println!();
 }

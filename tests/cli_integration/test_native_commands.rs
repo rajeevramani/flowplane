@@ -307,13 +307,7 @@ async fn test_native_resource_without_auth() {
     // Remove any env var
     std::env::remove_var("FLOWPLANE_TOKEN");
 
-    let result = run_cli_command(&[
-        "cluster",
-        "list",
-        "--base-url",
-        &server.base_url(),
-    ])
-    .await;
+    let result = run_cli_command(&["cluster", "list", "--base-url", &server.base_url()]).await;
 
     assert!(result.is_err(), "Native resource commands should fail without auth");
     let error = result.unwrap_err();

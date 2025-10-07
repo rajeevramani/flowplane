@@ -117,7 +117,7 @@ async fn test_api_list_json_output() {
     // Verify JSON output is valid
     let json: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
     assert!(json.is_array(), "Output should be a JSON array");
-    assert!(json.as_array().unwrap().len() > 0, "Should have at least one API");
+    assert!(!json.as_array().unwrap().is_empty(), "Should have at least one API");
 }
 
 #[tokio::test]
@@ -148,7 +148,8 @@ async fn test_api_list_yaml_output() {
 #[tokio::test]
 async fn test_api_get_by_id() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-get-token", &["routes:read", "routes:write"]).await;
+    let token_response =
+        server.issue_token("api-get-token", &["routes:read", "routes:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -215,7 +216,8 @@ async fn test_api_get_by_id() {
 #[tokio::test]
 async fn test_api_delete() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-delete-token", &["routes:read", "routes:write"]).await;
+    let token_response =
+        server.issue_token("api-delete-token", &["routes:read", "routes:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -267,7 +269,8 @@ async fn test_api_delete() {
 #[tokio::test]
 async fn test_api_bootstrap() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-bootstrap-token", &["routes:read", "routes:write"]).await;
+    let token_response =
+        server.issue_token("api-bootstrap-token", &["routes:read", "routes:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -348,13 +351,8 @@ async fn test_api_validate_filters_success() {
 async fn test_api_validate_filters_no_filters() {
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
-    let result = run_cli_command(&[
-        "api",
-        "validate-filters",
-        "--file",
-        &openapi_file.path_str(),
-    ])
-    .await;
+    let result =
+        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
 
     assert!(result.is_ok(), "Validation should succeed even with no filters");
     let output = result.unwrap();
@@ -383,13 +381,8 @@ paths:
 "#;
     let openapi_file = TempOpenApiFile::new(invalid_filters);
 
-    let result = run_cli_command(&[
-        "api",
-        "validate-filters",
-        "--file",
-        &openapi_file.path_str(),
-    ])
-    .await;
+    let result =
+        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
 
     assert!(result.is_err(), "Validation should fail with invalid filter syntax");
     let error = result.unwrap_err();

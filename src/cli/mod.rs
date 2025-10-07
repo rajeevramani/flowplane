@@ -170,9 +170,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
             )?;
             routes::handle_route_command(command, &client).await?
         }
-        Commands::Config { command } => {
-            config_cmd::handle_config_command(command).await?
-        }
+        Commands::Config { command } => config_cmd::handle_config_command(command).await?,
     }
 
     Ok(())
@@ -190,12 +188,7 @@ fn create_http_client(
     let base_url = config::resolve_base_url(base_url);
     let timeout = config::resolve_timeout(timeout);
 
-    let config = client::ClientConfig {
-        base_url,
-        token,
-        timeout,
-        verbose,
-    };
+    let config = client::ClientConfig { base_url, token, timeout, verbose };
 
     client::FlowplaneClient::new(config)
 }
