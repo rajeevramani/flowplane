@@ -1,705 +1,1079 @@
 # CLI Usage Guide
 
-Flowplane provides both a dedicated CLI tool and curl-based workflows for managing the control plane. This guide covers both approaches for common operations.
+Flowplane provides a comprehensive command-line interface (`flowplane-cli`) for managing Envoy control plane resources, authentication tokens, and API definitions. This guide covers installation, configuration, and practical usage.
 
-## Authentication
+## Installation
 
-All CLI operations require authentication. Export your token as an environment variable:
+### From Source
 
 ```bash
-# Export token for CLI/curl usage
-export FLOWPLANE_TOKEN="fp_pat_..."
+# Clone the repository
+git clone https://github.com/your-org/flowplane.git
+cd flowplane
 
-# Or for direct CLI
+# Build the CLI binary
+cargo build --release --bin flowplane-cli
+
+# Install to system path (optional)
+cargo install --path . --bin flowplane-cli
+```
+
+### Verify Installation
+
+```bash
+flowplane-cli --version
+flowplane-cli --help
+```
+
+## Configuration
+
+### Initial Setup
+
+The CLI requires authentication to interact with the Flowplane API. You can provide credentials using:
+
+1. **Configuration file** (recommended for persistent settings)
+2. **Environment variables** (recommended for CI/CD)
+3. **Command-line flags** (recommended for ad-hoc commands)
+
+### Configuration File Setup
+
+Initialize the configuration file:
+
+```bash
+flowplane-cli config init
+```
+
+This creates `~/.flowplane/config.toml`. Set your credentials:
+
+```bash
+# Set authentication token
+flowplane-cli config set token fp_pat_your_token_here
+
+# Set API base URL (default: http://127.0.0.1:8080)
+flowplane-cli config set base_url https://api.flowplane.io
+
+# Set request timeout in seconds (default: 30)
+flowplane-cli config set timeout 60
+```
+
+View current configuration:
+
+```bash
+# Show as YAML (default)
+flowplane-cli config show
+
+# Show as JSON
+flowplane-cli config show --output json
+
+# Show as table
+flowplane-cli config show --output table
+
+# Show config file location
+flowplane-cli config path
+```
+
+### Environment Variables
+
+```bash
+export FLOWPLANE_TOKEN="fp_pat_your_token_here"
 export FLOWPLANE_BASE_URL="http://127.0.0.1:8080"
-export FLOWPLANE_TOKEN="fp_pat_..."
+export FLOWPLANE_TIMEOUT="30"
 ```
 
-## Getting Started
+### Command-Line Flags
 
-### First-Time Setup
-
-On first startup, Flowplane displays a bootstrap admin token:
+Override configuration for specific commands:
 
 ```bash
-# Start control plane
-DATABASE_URL=sqlite://./data/flowplane.db \
-FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-cargo run --bin flowplane
-
-# Extract token from output (look for ASCII banner)
-# Token: fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.xJ9k...
-
-# Export for use
-export FLOWPLANE_TOKEN="fp_pat_..."
+flowplane-cli cluster list \
+  --token fp_pat_your_token_here \
+  --base-url https://api.example.com \
+  --timeout 60
 ```
 
-See [authentication.md](authentication.md) for complete token management workflows.
+### Token File Authentication
 
-## Resource Management
-
-### Clusters
-
-**List Clusters:**
+Store token in a file for enhanced security:
 
 ```bash
-# Using curl
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters | jq
+echo "fp_pat_your_token_here" > ~/.flowplane/token
+chmod 600 ~/.flowplane/token
 
-# With pagination
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/clusters?limit=10&offset=0" | jq
+flowplane-cli cluster list --token-file ~/.flowplane/token
 ```
 
-**Create Cluster:**
+## Core Commands
+
+The CLI is organized into seven main command groups:
+
+| Command | Description |
+|---------|-------------|
+| `database` | Database migration and schema management |
+| `auth` | Personal access token (PAT) administration |
+| `config` | CLI configuration management |
+| `api` | API definition and OpenAPI import management |
+| `cluster` | Cluster (upstream service) management |
+| `listener` | Listener (network socket) management |
+| `route` | Route configuration management |
+
+## Database Management
+
+Manage database schema migrations and validation.
+
+### Run Migrations
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "backend-api",
-    "serviceName": "api",
-    "endpoints": [
-      {"host": "api.example.com", "port": 443}
-    ],
-    "connectTimeoutSeconds": 5,
-    "useTls": true,
-    "tlsServerName": "api.example.com",
-    "healthCheck": {
-      "path": "/healthz",
-      "intervalSeconds": 30,
-      "timeoutSeconds": 5,
-      "unhealthyThreshold": 3,
-      "healthyThreshold": 2
-    }
-  }' | jq
+# Apply pending migrations
+flowplane-cli database migrate
+
+# Dry run to preview migrations
+flowplane-cli database migrate --dry-run
+
+# Override database URL
+flowplane-cli database migrate --database-url sqlite://./flowplane.db
 ```
 
-**Get Cluster:**
+### Check Migration Status
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters/backend-api | jq
+# Verify schema is up to date
+flowplane-cli database status
+
+# List all applied migrations
+flowplane-cli database list
+
+# Validate database schema integrity
+flowplane-cli database validate
 ```
 
-**Update Cluster:**
+## Authentication Token Management
+
+Manage personal access tokens (PATs) for API authentication.
+
+### Create Tokens
 
 ```bash
-curl -sS -X PUT http://127.0.0.1:8080/api/v1/clusters/backend-api \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "backend-api",
-    "serviceName": "api",
-    "endpoints": [
-      {"host": "api1.example.com", "port": 443},
-      {"host": "api2.example.com", "port": 443}
-    ],
-    "connectTimeoutSeconds": 5,
-    "useTls": true,
-    "tlsServerName": "api.example.com"
-  }' | jq
+# Create token with specific scopes
+flowplane-cli auth create-token \
+  --name "prod-deployment" \
+  --scope "clusters:*" \
+  --scope "routes:*" \
+  --scope "listeners:*" \
+  --expires-in 90d
+
+# Create token with absolute expiration
+flowplane-cli auth create-token \
+  --name "temporary-access" \
+  --scope "clusters:read" \
+  --expires-at "2025-12-31T23:59:59Z" \
+  --description "Read-only access for auditing"
+
+# Create token with creator metadata
+flowplane-cli auth create-token \
+  --name "ci-pipeline" \
+  --scope "api-definitions:*" \
+  --created-by "platform-team"
 ```
 
-**Delete Cluster:**
-
-```bash
-curl -sS -X DELETE \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters/backend-api
-```
-
-### Routes
-
-**List Routes:**
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/routes | jq
-```
-
-**Create Route:**
-
-```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "api-routes",
-    "virtualHosts": [{
-      "name": "api-host",
-      "domains": ["api.example.com"],
-      "routes": [{
-        "name": "users-route",
-        "match": {
-          "path": {"type": "prefix", "value": "/users"},
-          "methods": ["GET", "POST"]
-        },
-        "action": {
-          "type": "forward",
-          "cluster": "backend-api",
-          "timeoutSeconds": 30
-        }
-      }]
-    }]
-  }' | jq
-```
-
-**Update Route:**
-
-```bash
-curl -sS -X PUT http://127.0.0.1:8080/api/v1/routes/api-routes \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d @route-config.json | jq
-```
-
-**Delete Route:**
-
-```bash
-curl -sS -X DELETE \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/routes/api-routes
-```
-
-### Listeners
-
-**List Listeners:**
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/listeners | jq
-```
-
-**Create Listener:**
-
-```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "api-listener",
-    "address": "0.0.0.0",
-    "port": 8080,
-    "protocol": "HTTP",
-    "filterChains": [{
-      "name": "default",
-      "filters": [{
-        "name": "envoy.filters.network.http_connection_manager",
-        "type": "httpConnectionManager",
-        "routeConfigName": "api-routes",
-        "httpFilters": [
-          {
-            "name": "envoy.filters.http.cors",
-            "filter": {
-              "type": "cors",
-              "allow_origin_string_match": [{"exact": "https://app.example.com"}],
-              "allow_methods": ["GET", "POST", "PUT", "DELETE"]
-            }
-          },
-          {
-            "name": "envoy.filters.http.router",
-            "filter": {"type": "router"}
-          }
-        ]
-      }]
-    }]
-  }' | jq
-```
-
-**Delete Listener:**
-
-```bash
-curl -sS -X DELETE \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/listeners/api-listener
-```
-
-## Token Management
-
-### Create Token
-
-```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/tokens \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "ci-pipeline",
-    "description": "Token for CI/CD automation",
-    "scopes": ["clusters:write", "routes:write", "listeners:read"],
-    "expiresAt": "2026-12-31T23:59:59Z"
-  }' | jq
-
-# Save the returned token immediately!
-# Response: {"id": "...", "token": "fp_pat_..."}
-```
+**Available Scopes:**
+- `clusters:*` / `clusters:read` / `clusters:write`
+- `routes:*` / `routes:read` / `routes:write`
+- `listeners:*` / `listeners:read` / `listeners:write`
+- `api-definitions:*` / `api-definitions:read` / `api-definitions:write`
+- `tokens:*` / `tokens:read` / `tokens:write`
 
 ### List Tokens
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/tokens?limit=20&offset=0" | jq
+# List all tokens (default: table format)
+flowplane-cli auth list-tokens
+
+# Limit results
+flowplane-cli auth list-tokens --limit 10 --offset 20
+
+# List with JSON output
+flowplane-cli auth list-tokens --output json
 ```
 
-### Get Token Details
+### Revoke Tokens
 
 ```bash
-TOKEN_ID="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/tokens/$TOKEN_ID" | jq
+# Revoke a token by ID
+flowplane-cli auth revoke-token pat_abc123xyz
 ```
 
-### Update Token
+### Rotate Tokens
 
 ```bash
-TOKEN_ID="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-
-curl -sS -X PATCH "http://127.0.0.1:8080/api/v1/tokens/$TOKEN_ID" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "ci-pipeline-updated",
-    "scopes": ["clusters:write", "routes:write", "listeners:write"],
-    "status": "active"
-  }' | jq
+# Generate new secret for existing token
+flowplane-cli auth rotate-token pat_abc123xyz
 ```
 
-### Rotate Token
+## Cluster Management
+
+Manage upstream service cluster configurations.
+
+### Create Clusters
 
 ```bash
-TOKEN_ID="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# Create from JSON file
+cat > backend-cluster.json <<EOF
+{
+  "name": "backend-api",
+  "serviceName": "backend",
+  "type": "STRICT_DNS",
+  "endpoints": [
+    {"host": "backend1.internal", "port": 8080},
+    {"host": "backend2.internal", "port": 8080}
+  ],
+  "connectTimeoutSeconds": 5,
+  "useTls": true,
+  "tlsServerName": "backend.internal",
+  "healthCheck": {
+    "path": "/health",
+    "intervalSeconds": 10,
+    "timeoutSeconds": 2,
+    "unhealthyThreshold": 3,
+    "healthyThreshold": 2
+  },
+  "circuitBreakers": {
+    "maxConnections": 1000,
+    "maxRequests": 1000,
+    "maxRetries": 3
+  }
+}
+EOF
 
-curl -sS -X POST "http://127.0.0.1:8080/api/v1/tokens/$TOKEN_ID/rotate" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" | jq
+flowplane-cli cluster create --file backend-cluster.json
 
-# Response contains new token - update immediately!
-# Previous token stops working immediately
+# Create with YAML output
+flowplane-cli cluster create --file backend-cluster.json --output yaml
 ```
 
-### Revoke Token
+### List Clusters
 
 ```bash
-TOKEN_ID="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# List all clusters (table format)
+flowplane-cli cluster list
 
-curl -sS -X DELETE "http://127.0.0.1:8080/api/v1/tokens/$TOKEN_ID" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN"
+# Filter by service name
+flowplane-cli cluster list --service backend
+
+# Paginate results
+flowplane-cli cluster list --limit 10 --offset 20
+
+# JSON output
+flowplane-cli cluster list --output json
 ```
 
-## OpenAPI Import (Platform API)
-
-### Import OpenAPI Spec
-
-**Basic Import (Shared Listener):**
+### Get Cluster Details
 
 ```bash
-# Import to default-gateway-listener (port 10000)
-curl -sS -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=myteam" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data-binary @openapi.json | jq
+# Get cluster by name
+flowplane-cli cluster get backend-api
+
+# Get with YAML output
+flowplane-cli cluster get backend-api --output yaml
+
+# Get with table output
+flowplane-cli cluster get backend-api --output table
 ```
 
-**Dedicated Listener:**
+### Update Clusters
 
 ```bash
-# Create dedicated listener for team
-curl -sS -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=myteam&listener=myteam-gateway&port=8080" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data-binary @openapi.json | jq
+# Update from JSON file
+cat > updated-cluster.json <<EOF
+{
+  "connectTimeoutSeconds": 10,
+  "healthCheck": {
+    "path": "/healthz",
+    "intervalSeconds": 15
+  }
+}
+EOF
+
+flowplane-cli cluster update backend-api --file updated-cluster.json
 ```
 
-**YAML Format:**
+### Delete Clusters
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=myteam" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/yaml" \
-  --data-binary @openapi.yaml | jq
+# Delete with confirmation prompt
+flowplane-cli cluster delete backend-api
+
+# Delete without confirmation
+flowplane-cli cluster delete backend-api --yes
+```
+
+## Route Management
+
+Manage HTTP routing configurations.
+
+### Create Routes
+
+```bash
+cat > api-routes.json <<EOF
+{
+  "name": "api-routes",
+  "virtualHosts": [
+    {
+      "name": "api-host",
+      "domains": ["api.example.com", "*.api.example.com"],
+      "routes": [
+        {
+          "name": "users-api",
+          "match": {
+            "path": {"type": "prefix", "value": "/api/users"}
+          },
+          "action": {
+            "type": "forward",
+            "cluster": "backend-api",
+            "timeout": "30s"
+          }
+        },
+        {
+          "name": "products-api",
+          "match": {
+            "path": {"type": "prefix", "value": "/api/products"}
+          },
+          "action": {
+            "type": "forward",
+            "cluster": "products-cluster"
+          }
+        }
+      ]
+    }
+  ]
+}
+EOF
+
+flowplane-cli route create --file api-routes.json
+```
+
+### List Routes
+
+```bash
+# List all routes
+flowplane-cli route list
+
+# Filter by cluster
+flowplane-cli route list --cluster backend-api
+
+# JSON output
+flowplane-cli route list --output json
+```
+
+### Get Route Details
+
+```bash
+flowplane-cli route get api-routes
+flowplane-cli route get api-routes --output yaml
+```
+
+### Update Routes
+
+```bash
+flowplane-cli route update api-routes --file updated-routes.json
+```
+
+### Delete Routes
+
+```bash
+flowplane-cli route delete api-routes
+flowplane-cli route delete api-routes --yes
+```
+
+## Listener Management
+
+Manage network listener configurations.
+
+### Create Listeners
+
+```bash
+cat > http-listener.json <<EOF
+{
+  "name": "http-listener",
+  "address": "0.0.0.0",
+  "port": 8080,
+  "protocol": "HTTP",
+  "filterChains": [
+    {
+      "name": "default",
+      "filters": [
+        {
+          "name": "envoy.filters.network.http_connection_manager",
+          "type": "httpConnectionManager",
+          "routeConfigName": "api-routes",
+          "httpFilters": [
+            {
+              "name": "envoy.filters.http.router",
+              "filter": {"type": "router"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+EOF
+
+flowplane-cli listener create --file http-listener.json
+```
+
+### List Listeners
+
+```bash
+# List all listeners
+flowplane-cli listener list
+
+# Filter by protocol
+flowplane-cli listener list --protocol HTTP
+
+# JSON output
+flowplane-cli listener list --output json
+```
+
+### Get Listener Details
+
+```bash
+flowplane-cli listener get http-listener
+flowplane-cli listener get http-listener --output yaml
+```
+
+### Update Listeners
+
+```bash
+flowplane-cli listener update http-listener --file updated-listener.json
+```
+
+### Delete Listeners
+
+```bash
+flowplane-cli listener delete http-listener
+flowplane-cli listener delete http-listener --yes
+```
+
+## API Definition Management
+
+Manage high-level API definitions and OpenAPI imports.
+
+### Create API Definitions
+
+```bash
+cat > api-definition.json <<EOF
+{
+  "team": "platform",
+  "domain": "users-api",
+  "spec": {
+    "openapi": "3.0.0",
+    "info": {"title": "Users API", "version": "1.0.0"}
+  }
+}
+EOF
+
+flowplane-cli api create --file api-definition.json
+```
+
+### Import from OpenAPI
+
+```bash
+# Import OpenAPI YAML specification
+flowplane-cli api import-openapi \
+  --file openapi.yaml \
+  --team platform
+
+# Import OpenAPI JSON specification
+flowplane-cli api import-openapi \
+  --file openapi.json \
+  --team platform \
+  --output json
+```
+
+**OpenAPI Import Features:**
+- Automatically generates clusters from `servers[].url`
+- Creates routes for all `paths` entries
+- Supports `x-flowplane-filters` extension for filter configuration
+- Supports `x-flowplane-custom-response` extension for error responses
+
+### Validate x-flowplane-filters
+
+Validate filter syntax before importing:
+
+```bash
+# Validate filters in OpenAPI spec
+flowplane-cli api validate-filters --file openapi-with-filters.yaml
+
+# JSON output
+flowplane-cli api validate-filters --file openapi.yaml --output json
 ```
 
 ### List API Definitions
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/api-definitions | jq
+# List all API definitions
+flowplane-cli api list
+
+# Filter by team
+flowplane-cli api list --team platform
+
+# Filter by team and domain
+flowplane-cli api list --team platform --domain users
+
+# Paginate results
+flowplane-cli api list --limit 10 --offset 20
 ```
 
 ### Get API Definition
 
 ```bash
-API_DEF_ID="myteam-api-v1"
-
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/api-definitions/$API_DEF_ID" | jq
+flowplane-cli api get api_def_abc123xyz
+flowplane-cli api get api_def_abc123xyz --output yaml
 ```
 
-### Get Envoy Bootstrap for API
+### Get Bootstrap Configuration
+
+Generate Envoy bootstrap configuration for an API definition:
 
 ```bash
-API_DEF_ID="myteam-api-v1"
+# Get bootstrap config in YAML (default)
+flowplane-cli api bootstrap api_def_abc123xyz
 
-curl -sS \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/api-definitions/$API_DEF_ID/bootstrap" | jq
+# Get in JSON format
+flowplane-cli api bootstrap api_def_abc123xyz --format json
+
+# Scope to team listeners only
+flowplane-cli api bootstrap api_def_abc123xyz --scope team
+
+# Use allowlist scope with specific listeners
+flowplane-cli api bootstrap api_def_abc123xyz \
+  --scope allowlist \
+  --allowlist http-listener,https-listener
+
+# Include default listeners in team scope
+flowplane-cli api bootstrap api_def_abc123xyz \
+  --scope team \
+  --include-default
 ```
 
-## Health & Monitoring
+### Show Deployed Filters
 
-### Health Check
+View HTTP filter configurations for an API definition:
 
 ```bash
-# Control plane health (no auth required)
-curl -sS http://127.0.0.1:8080/healthz
+# Show filters as YAML (default)
+flowplane-cli api show-filters api_def_abc123xyz
 
-# Expected: 200 OK
+# Show as JSON
+flowplane-cli api show-filters api_def_abc123xyz --output json
+
+# Show as table
+flowplane-cli api show-filters api_def_abc123xyz --output table
 ```
 
-### Prometheus Metrics
+## Output Formats
+
+All CLI commands support multiple output formats:
+
+| Format | Description | Best For |
+|--------|-------------|----------|
+| `json` | Machine-readable JSON | Scripting, automation |
+| `yaml` | Human-readable YAML | Configuration inspection |
+| `table` | Formatted table (default for list commands) | Terminal viewing |
+
+Specify format with `--output` or `-o`:
 
 ```bash
-# Metrics endpoint (no auth required if enabled)
-curl -sS http://127.0.0.1:8080/metrics
-
-# Filter specific metrics
-curl -sS http://127.0.0.1:8080/metrics | grep http_requests_total
-```
-
-### OpenAPI Specification
-
-```bash
-# Get OpenAPI JSON spec
-curl -sS http://127.0.0.1:8080/api-docs/openapi.json | jq
-
-# Access Swagger UI (browser)
-open http://127.0.0.1:8080/swagger-ui
-```
-
-## Scripting & Automation
-
-### Bash Scripts
-
-**Complete Gateway Setup Script:**
-
-```bash
-#!/bin/bash
-set -e
-
-FLOWPLANE_TOKEN="${FLOWPLANE_TOKEN:?Environment variable FLOWPLANE_TOKEN is required}"
-FLOWPLANE_URL="${FLOWPLANE_URL:-http://127.0.0.1:8080}"
-
-echo "Creating cluster..."
-curl -sS -X POST "$FLOWPLANE_URL/api/v1/clusters" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "backend",
-    "serviceName": "backend",
-    "endpoints": [{"host": "backend.internal", "port": 8080}],
-    "connectTimeoutSeconds": 5
-  }' | jq -r '.name'
-
-echo "Creating routes..."
-curl -sS -X POST "$FLOWPLANE_URL/api/v1/routes" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "backend-routes",
-    "virtualHosts": [{
-      "name": "backend-host",
-      "domains": ["*"],
-      "routes": [{
-        "name": "all-traffic",
-        "match": {"path": {"type": "prefix", "value": "/"}},
-        "action": {"type": "forward", "cluster": "backend"}
-      }]
-    }]
-  }' | jq -r '.name'
-
-echo "Creating listener..."
-curl -sS -X POST "$FLOWPLANE_URL/api/v1/listeners" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "backend-listener",
-    "address": "0.0.0.0",
-    "port": 10000,
-    "protocol": "HTTP",
-    "filterChains": [{
-      "name": "default",
-      "filters": [{
-        "name": "envoy.filters.network.http_connection_manager",
-        "type": "httpConnectionManager",
-        "routeConfigName": "backend-routes",
-        "httpFilters": [
-          {"name": "envoy.filters.http.router", "filter": {"type": "router"}}
-        ]
-      }]
-    }]
-  }' | jq -r '.name'
-
-echo "Gateway setup complete!"
-```
-
-**Backup All Resources:**
-
-```bash
-#!/bin/bash
-BACKUP_DIR="./flowplane-backup-$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-
-echo "Backing up resources to $BACKUP_DIR..."
-
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters > "$BACKUP_DIR/clusters.json"
-
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/routes > "$BACKUP_DIR/routes.json"
-
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/listeners > "$BACKUP_DIR/listeners.json"
-
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/tokens > "$BACKUP_DIR/tokens.json"
-
-echo "Backup complete: $BACKUP_DIR"
-```
-
-**Restore Resources:**
-
-```bash
-#!/bin/bash
-BACKUP_DIR="${1:?Usage: $0 <backup-dir>}"
-
-echo "Restoring from $BACKUP_DIR..."
-
-# Restore clusters
-jq -c '.[]' "$BACKUP_DIR/clusters.json" | while read -r cluster; do
-  curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
-    -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$cluster" || echo "Failed to restore cluster"
-done
-
-# Restore routes
-jq -c '.[]' "$BACKUP_DIR/routes.json" | while read -r route; do
-  curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
-    -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$route" || echo "Failed to restore route"
-done
-
-# Restore listeners
-jq -c '.[]' "$BACKUP_DIR/listeners.json" | while read -r listener; do
-  curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
-    -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$listener" || echo "Failed to restore listener"
-done
-
-echo "Restore complete!"
-```
-
-### Python Script Example
-
-```python
-#!/usr/bin/env python3
-import os
-import requests
-import json
-
-class FlowplaneClient:
-    def __init__(self, base_url=None, token=None):
-        self.base_url = base_url or os.getenv('FLOWPLANE_BASE_URL', 'http://127.0.0.1:8080')
-        self.token = token or os.getenv('FLOWPLANE_TOKEN')
-        if not self.token:
-            raise ValueError("FLOWPLANE_TOKEN environment variable is required")
-
-        self.headers = {
-            'Authorization': f'Bearer {self.token}',
-            'Content-Type': 'application/json'
-        }
-
-    def list_clusters(self):
-        response = requests.get(f'{self.base_url}/api/v1/clusters', headers=self.headers)
-        response.raise_for_status()
-        return response.json()
-
-    def create_cluster(self, config):
-        response = requests.post(
-            f'{self.base_url}/api/v1/clusters',
-            headers=self.headers,
-            json=config
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def delete_cluster(self, name):
-        response = requests.delete(
-            f'{self.base_url}/api/v1/clusters/{name}',
-            headers=self.headers
-        )
-        response.raise_for_status()
-
-if __name__ == '__main__':
-    client = FlowplaneClient()
-
-    # Create cluster
-    cluster = client.create_cluster({
-        'name': 'python-example',
-        'serviceName': 'example',
-        'endpoints': [{'host': 'example.com', 'port': 443}],
-        'connectTimeoutSeconds': 5,
-        'useTls': True
-    })
-    print(f"Created cluster: {cluster['name']}")
-
-    # List clusters
-    clusters = client.list_clusters()
-    print(f"Total clusters: {len(clusters)}")
+flowplane-cli cluster list --output json
+flowplane-cli route get my-route --output yaml
+flowplane-cli listener list --output table
 ```
 
 ## Common Workflows
 
-### Initial Setup Workflow
+### Initial System Setup
 
 ```bash
-# 1. Start control plane and capture bootstrap token
-docker-compose up -d
-BOOTSTRAP_TOKEN=$(docker-compose logs control-plane 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+')
+# 1. Initialize database
+flowplane-cli database migrate
 
-# 2. Create service token for automation
-SERVICE_TOKEN=$(curl -sS -X POST http://127.0.0.1:8080/api/v1/tokens \
-  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "automation",
-    "scopes": ["clusters:write", "routes:write", "listeners:write"]
-  }' | jq -r '.token')
+# 2. Initialize CLI configuration
+flowplane-cli config init
 
-# 3. Store service token
-echo "FLOWPLANE_TOKEN=$SERVICE_TOKEN" >> ~/.flowplane.env
+# 3. Create bootstrap admin token using database
+flowplane-cli auth create-token \
+  --name "admin-bootstrap" \
+  --scope "tokens:*" \
+  --scope "clusters:*" \
+  --scope "routes:*" \
+  --scope "listeners:*" \
+  --scope "api-definitions:*"
 
-# 4. Revoke bootstrap token
-BOOTSTRAP_ID=$(echo $BOOTSTRAP_TOKEN | cut -d. -f1 | sed 's/fp_pat_//')
-curl -sS -X DELETE "http://127.0.0.1:8080/api/v1/tokens/$BOOTSTRAP_ID" \
-  -H "Authorization: Bearer $SERVICE_TOKEN"
+# 4. Store token in config
+flowplane-cli config set token fp_pat_generated_token_here
 ```
 
 ### OpenAPI Import Workflow
 
 ```bash
-# 1. Prepare OpenAPI spec
-cat > my-api.yaml <<EOF
-openapi: 3.0.0
-info:
-  title: My API
-  version: 1.0.0
-servers:
-  - url: https://api.example.com
-paths:
-  /users:
-    get:
-      summary: List users
-      responses:
-        '200':
-          description: Success
-EOF
+# 1. Validate filters syntax first
+flowplane-cli api validate-filters --file openapi.yaml
 
-# 2. Import to Flowplane
-curl -sS -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=myteam" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/yaml" \
-  --data-binary @my-api.yaml | jq
+# 2. Import OpenAPI specification
+flowplane-cli api import-openapi \
+  --file openapi.yaml \
+  --team my-team
 
-# 3. Verify resources created
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters | jq '.[] | .name'
+# Output includes:
+# {
+#   "id": "api_def_abc123",
+#   "bootstrapUri": "/api/v1/api-definitions/api_def_abc123/bootstrap?scope=team",
+#   "routes": ["route1", "route2"]
+# }
 
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/listeners | jq '.[] | .name'
+# 3. Get bootstrap configuration for Envoy
+flowplane-cli api bootstrap api_def_abc123 > envoy-bootstrap.yaml
+
+# 4. Verify generated filters
+flowplane-cli api show-filters api_def_abc123
 ```
 
-### CI/CD Integration
+### Multi-Environment Deployment
 
 ```bash
-# .gitlab-ci.yml or GitHub Actions
-deploy_gateway:
-  script:
-    - |
-      curl -sS -X POST "$FLOWPLANE_URL/api/v1/api-definitions/from-openapi?team=$CI_PROJECT_NAME" \
-        -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data-binary @openapi.json
-    - |
-      # Verify deployment
-      curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-        "$FLOWPLANE_URL/api/v1/clusters" | jq '.[] | select(.name | contains("'"$CI_PROJECT_NAME"'"))'
+# Development environment
+flowplane-cli cluster create \
+  --file cluster-dev.json \
+  --base-url http://dev.flowplane.internal \
+  --token $DEV_TOKEN
+
+# Staging environment
+flowplane-cli cluster create \
+  --file cluster-staging.json \
+  --base-url http://staging.flowplane.internal \
+  --token $STAGING_TOKEN
+
+# Production environment
+flowplane-cli cluster create \
+  --file cluster-prod.json \
+  --base-url https://api.flowplane.io \
+  --token $PROD_TOKEN
 ```
 
-## Troubleshooting CLI Issues
+### Batch Resource Creation
+
+```bash
+#!/bin/bash
+set -e
+
+# Create multiple clusters
+for cluster_file in clusters/*.json; do
+  echo "Creating cluster from $cluster_file"
+  flowplane-cli cluster create --file "$cluster_file"
+done
+
+# Create routes
+for route_file in routes/*.json; do
+  echo "Creating route from $route_file"
+  flowplane-cli route create --file "$route_file"
+done
+
+# Create listeners
+for listener_file in listeners/*.json; do
+  echo "Creating listener from $listener_file"
+  flowplane-cli listener create --file "$listener_file"
+done
+```
+
+## Scripting & Automation
+
+### Shell Script Example
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Configuration
+FLOWPLANE_TOKEN="${FLOWPLANE_TOKEN:?Environment variable FLOWPLANE_TOKEN is required}"
+FLOWPLANE_BASE_URL="${FLOWPLANE_BASE_URL:-http://127.0.0.1:8080}"
+TEAM="${TEAM:-platform}"
+
+# Function to wait for cluster health
+wait_for_cluster() {
+  local cluster_name=$1
+  local max_attempts=30
+  local attempt=0
+
+  echo "Waiting for cluster '$cluster_name' to be healthy..."
+
+  while [ $attempt -lt $max_attempts ]; do
+    if flowplane-cli cluster get "$cluster_name" --output json >/dev/null 2>&1; then
+      echo "✅ Cluster '$cluster_name' is ready"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+
+  echo "❌ Cluster '$cluster_name' failed health check"
+  return 1
+}
+
+# Deploy backend service
+echo "Creating backend cluster..."
+flowplane-cli cluster create \
+  --file backend-cluster.json \
+  --output json | jq -r '.name'
+
+wait_for_cluster "backend-api"
+
+# Import OpenAPI specification
+echo "Importing OpenAPI specification..."
+API_DEF_ID=$(flowplane-cli api import-openapi \
+  --file openapi.yaml \
+  --team "$TEAM" \
+  --output json | jq -r '.id')
+
+echo "✅ API definition created: $API_DEF_ID"
+
+# Generate bootstrap configuration
+echo "Generating Envoy bootstrap configuration..."
+flowplane-cli api bootstrap "$API_DEF_ID" \
+  --scope team \
+  --format yaml > envoy-bootstrap.yaml
+
+echo "✅ Bootstrap configuration saved to envoy-bootstrap.yaml"
+```
+
+### Python Client Example
+
+```python
+#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from typing import Dict, List, Optional
+
+class FlowplaneCLI:
+    """Wrapper for flowplane-cli commands"""
+
+    def __init__(self, base_url: Optional[str] = None, token: Optional[str] = None):
+        self.base_url = base_url or os.getenv('FLOWPLANE_BASE_URL', 'http://127.0.0.1:8080')
+        self.token = token or os.getenv('FLOWPLANE_TOKEN')
+
+        if not self.token:
+            raise ValueError("FLOWPLANE_TOKEN environment variable or token parameter required")
+
+    def _run_command(self, args: List[str]) -> Dict:
+        """Execute CLI command and return JSON output"""
+        cmd = ['flowplane-cli'] + args + [
+            '--base-url', self.base_url,
+            '--token', self.token,
+            '--output', 'json'
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+
+    def create_cluster(self, config_file: str) -> Dict:
+        """Create cluster from JSON file"""
+        return self._run_command(['cluster', 'create', '--file', config_file])
+
+    def list_clusters(self, service: Optional[str] = None) -> List[Dict]:
+        """List all clusters with optional service filter"""
+        args = ['cluster', 'list']
+        if service:
+            args.extend(['--service', service])
+        return self._run_command(args)
+
+    def import_openapi(self, spec_file: str, team: str) -> Dict:
+        """Import OpenAPI specification"""
+        return self._run_command([
+            'api', 'import-openapi',
+            '--file', spec_file,
+            '--team', team
+        ])
+
+    def get_bootstrap(self, api_def_id: str, scope: str = 'all') -> str:
+        """Get bootstrap configuration as YAML"""
+        cmd = [
+            'flowplane-cli', 'api', 'bootstrap', api_def_id,
+            '--base-url', self.base_url,
+            '--token', self.token,
+            '--scope', scope,
+            '--format', 'yaml'
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return result.stdout
+
+def main():
+    # Initialize client
+    client = FlowplaneCLI()
+
+    # Create cluster
+    print("Creating backend cluster...")
+    cluster = client.create_cluster('backend-cluster.json')
+    print(f"✅ Created cluster: {cluster['name']}")
+
+    # List clusters
+    print("\nListing all clusters...")
+    clusters = client.list_clusters()
+    for c in clusters:
+        print(f"  - {c['name']} (service: {c['serviceName']})")
+
+    # Import OpenAPI
+    print("\nImporting OpenAPI specification...")
+    api_def = client.import_openapi('openapi.yaml', 'platform')
+    print(f"✅ API definition created: {api_def['id']}")
+
+    # Get bootstrap config
+    print("\nGenerating bootstrap configuration...")
+    bootstrap = client.get_bootstrap(api_def['id'], scope='team')
+
+    with open('envoy-bootstrap.yaml', 'w') as f:
+        f.write(bootstrap)
+    print("✅ Bootstrap saved to envoy-bootstrap.yaml")
+
+if __name__ == '__main__':
+    main()
+```
+
+## CI/CD Integration
+
+### GitHub Actions Example
+
+```yaml
+name: Deploy to Flowplane
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Flowplane CLI
+        run: |
+          cargo install --git https://github.com/your-org/flowplane.git flowplane-cli
+
+      - name: Deploy Resources
+        env:
+          FLOWPLANE_TOKEN: ${{ secrets.FLOWPLANE_TOKEN }}
+          FLOWPLANE_BASE_URL: https://api.flowplane.io
+        run: |
+          # Validate OpenAPI spec
+          flowplane-cli api validate-filters --file openapi.yaml
+
+          # Import specification
+          API_DEF_ID=$(flowplane-cli api import-openapi \
+            --file openapi.yaml \
+            --team production \
+            --output json | jq -r '.id')
+
+          echo "Deployed API definition: $API_DEF_ID"
+
+          # Generate bootstrap config
+          flowplane-cli api bootstrap "$API_DEF_ID" \
+            --scope team \
+            --format yaml > envoy-bootstrap.yaml
+
+          # Upload to artifact storage or deploy to Envoy instances
+```
+
+### GitLab CI Example
+
+```yaml
+stages:
+  - validate
+  - deploy
+
+variables:
+  FLOWPLANE_BASE_URL: https://api.flowplane.io
+
+validate_openapi:
+  stage: validate
+  script:
+    - flowplane-cli api validate-filters --file openapi.yaml
+
+deploy_production:
+  stage: deploy
+  only:
+    - main
+  script:
+    - |
+      API_DEF_ID=$(flowplane-cli api import-openapi \
+        --file openapi.yaml \
+        --team production \
+        --output json | jq -r '.id')
+
+      flowplane-cli api bootstrap "$API_DEF_ID" \
+        --scope team \
+        --format yaml > envoy-bootstrap.yaml
+
+      # Deploy to production Envoy instances
+      kubectl create configmap envoy-bootstrap \
+        --from-file=envoy-bootstrap.yaml \
+        --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    name: production
+```
+
+## Troubleshooting
 
 ### Authentication Errors
 
+**Problem**: `401 Unauthorized` errors
+
+**Solutions**:
 ```bash
-# Test token validity
-curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/healthz
+# 1. Verify token is set
+flowplane-cli config show
 
-# If 401 Unauthorized:
-# - Token may be expired
-# - Token may be revoked
-# - Token format incorrect (should be fp_pat_...)
+# 2. Test token with simple command
+flowplane-cli cluster list
 
-# Check token in database (requires admin access)
-# psql -U flowplane -d flowplane -c "SELECT * FROM tokens WHERE token_id = 'your-token-id';"
+# 3. Check token expiration
+flowplane-cli auth list-tokens | grep your-token-name
+
+# 4. Rotate expired token
+flowplane-cli auth rotate-token pat_abc123xyz
 ```
 
 ### Connection Errors
 
+**Problem**: `Connection refused` or timeout errors
+
+**Solutions**:
 ```bash
-# Test connectivity
-curl -v http://127.0.0.1:8080/healthz
+# 1. Verify base URL is correct
+flowplane-cli config show | grep base_url
 
-# If connection refused:
-# - Control plane may not be running
-# - Wrong port (check FLOWPLANE_API_PORT)
-# - Firewall blocking connection
+# 2. Test API server is running
+curl http://127.0.0.1:8080/health
 
-# Check control plane logs
-docker logs flowplane-cp
+# 3. Check network connectivity
+ping api.flowplane.io
+
+# 4. Increase timeout for slow connections
+flowplane-cli config set timeout 120
 ```
 
 ### Invalid JSON Errors
 
+**Problem**: `Failed to parse JSON from file`
+
+**Solutions**:
 ```bash
-# Validate JSON before sending
-echo '{"name": "test"}' | jq empty
+# 1. Validate JSON syntax
+cat cluster.json | jq .
 
-# Use jq to format from file
-jq . cluster-config.json > /dev/null && echo "Valid JSON"
+# 2. Check file encoding (must be UTF-8)
+file cluster.json
 
-# Pretty-print response errors
-curl -sS ... | jq .
+# 3. Use verbose mode for detailed errors
+flowplane-cli cluster create --file cluster.json --verbose
+
+# 4. Validate against schema
+# (Check examples/ directory for valid schemas)
+```
+
+### Database Migration Failures
+
+**Problem**: `Migration failed` or schema errors
+
+**Solutions**:
+```bash
+# 1. Check current migration status
+flowplane-cli database status
+
+# 2. List applied migrations
+flowplane-cli database list
+
+# 3. Validate database integrity
+flowplane-cli database validate
+
+# 4. Override database URL if needed
+flowplane-cli database migrate \
+  --database-url postgresql://user:pass@localhost/flowplane
+```
+
+### Permission Errors
+
+**Problem**: `403 Forbidden` errors
+
+**Solutions**:
+```bash
+# 1. Check token scopes
+flowplane-cli auth list-tokens --output json | jq '.[] | {name, scopes}'
+
+# 2. Create token with required scopes
+flowplane-cli auth create-token \
+  --name "full-access" \
+  --scope "clusters:*" \
+  --scope "routes:*" \
+  --scope "listeners:*" \
+  --scope "api-definitions:*"
+
+# 3. Use token with appropriate permissions
+flowplane-cli cluster list --token fp_pat_your_admin_token
+```
+
+## Debug Information
+
+### Enable Verbose Logging
+
+```bash
+# CLI verbose mode
+flowplane-cli cluster list --verbose
+
+# Rust debug logging
+RUST_LOG=debug flowplane-cli cluster list
+
+# Trace-level logging
+RUST_LOG=trace flowplane-cli cluster create --file cluster.json
+```
+
+### Collect Debug Information
+
+```bash
+#!/bin/bash
+# Collect diagnostic information for support
+
+echo "=== Flowplane CLI Version ==="
+flowplane-cli --version
+
+echo -e "\n=== Configuration ==="
+flowplane-cli config show --output json
+
+echo -e "\n=== Database Status ==="
+flowplane-cli database status
+
+echo -e "\n=== Cluster List ==="
+flowplane-cli cluster list --output json
+
+echo -e "\n=== Route List ==="
+flowplane-cli route list --output json
+
+echo -e "\n=== Listener List ==="
+flowplane-cli listener list --output json
+
+echo -e "\n=== Environment ==="
+env | grep FLOWPLANE
 ```
 
 ## Additional Resources
 
-- [API Reference](api.md) - Complete endpoint documentation
-- [Authentication](authentication.md) - Token management and scopes
-- [Token Management CLI](token-management.md) - Dedicated CLI tool
-- [Getting Started](getting-started.md) - Step-by-step tutorial
-- [Operations Guide](operations.md) - Production deployment
-- [Swagger UI](http://127.0.0.1:8080/swagger-ui) - Interactive API explorer
+- **Getting Started**: [getting-started.md](getting-started.md) - Initial setup tutorial
+- **API Reference**: [api.md](api.md) - REST API documentation
+- **Configuration**: [config-model.md](config-model.md) - Configuration schema reference
+- **Filters**: [filters.md](filters.md) - HTTP filter configuration
+- **Architecture**: [architecture.md](architecture.md) - System design overview
+- **Operations**: [operations.md](operations.md) - Production deployment guide
+- **Tutorials**: [tutorials.md](tutorials.md) - Step-by-step tutorials
+- **Interactive Docs**: http://127.0.0.1:8080/swagger-ui - Live API exploration
