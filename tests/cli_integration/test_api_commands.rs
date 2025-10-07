@@ -77,13 +77,18 @@ async fn test_api_import_simple_openapi() {
 
     assert!(result.is_ok(), "API import should succeed: {:?}", result);
     let output = result.unwrap();
-    assert!(output.contains("\"id\":") || output.contains("id:"), "Output should contain API ID: {}", output);
+    assert!(
+        output.contains("\"id\":") || output.contains("id:"),
+        "Output should contain API ID: {}",
+        output
+    );
 }
 
 #[tokio::test]
 async fn test_api_list_json_output() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-list-token", &["routes:read", "routes:write"]).await;
+    let token_response =
+        server.issue_token("api-list-token", &["routes:read", "routes:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API first

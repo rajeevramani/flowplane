@@ -315,7 +315,12 @@ async fn get_bootstrap_config(
     Ok(())
 }
 
-async fn import_openapi(client: &FlowplaneClient, file: PathBuf, team: &str, output: &str) -> Result<()> {
+async fn import_openapi(
+    client: &FlowplaneClient,
+    file: PathBuf,
+    team: &str,
+    output: &str,
+) -> Result<()> {
     let contents =
         std::fs::read(&file).with_context(|| format!("Failed to read file: {}", file.display()))?;
 
