@@ -87,37 +87,26 @@ impl TestServer {
     }
 }
 
-/// Get or build the CLI binary path (cached after first build)
+/// Get the CLI binary path (already built by cargo test)
 fn get_cli_binary_path() -> &'static PathBuf {
-    use std::process::Command;
     use std::sync::OnceLock;
 
     static CLI_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     CLI_PATH.get_or_init(|| {
-        // Build the CLI binary once
-        let build_output = Command::new("cargo")
-            .args(["build", "--bin", "flowplane-cli"])
-            .output()
-            .expect("failed to build CLI binary");
-
-        if !build_output.status.success() {
-            panic!(
-                "CLI binary build failed: {}",
-                String::from_utf8_lossy(&build_output.stderr)
-            );
-        }
-
-        // Determine the binary path based on build profile
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
+        // cargo test already builds all binaries before running tests
+        // We just need to find the pre-built binary
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let mut binary_path = PathBuf::from(manifest_dir);
         binary_path.push("target");
         binary_path.push("debug"); // Tests use debug builds
         binary_path.push("flowplane-cli");
 
         if !binary_path.exists() {
-            panic!("CLI binary not found at {:?}", binary_path);
+            panic!(
+                "CLI binary not found at {:?}. Run 'cargo build --bin flowplane-cli' first.",
+                binary_path
+            );
         }
 
         binary_path
