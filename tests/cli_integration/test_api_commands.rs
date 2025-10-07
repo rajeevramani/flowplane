@@ -63,7 +63,7 @@ async fn test_api_import_simple_openapi() {
 
     let result = run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         &openapi_file.path_str(),
         "--token",
@@ -87,7 +87,7 @@ async fn test_api_list_json_output() {
     // Import an API first
     run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         &openapi_file.path_str(),
         "--token",
@@ -155,7 +155,7 @@ async fn test_api_get_by_id() {
     // Import an API
     let import_result = run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         &openapi_file.path_str(),
         "--token",
@@ -223,7 +223,7 @@ async fn test_api_delete() {
     // Import an API
     run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         &openapi_file.path_str(),
         "--token",
@@ -276,7 +276,7 @@ async fn test_api_bootstrap() {
     // Import an API
     run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         &openapi_file.path_str(),
         "--token",
@@ -396,7 +396,7 @@ async fn test_api_import_invalid_file() {
 
     let result = run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         "/nonexistent/file.yaml",
         "--token",

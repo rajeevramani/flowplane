@@ -176,7 +176,7 @@ async fn test_auth_with_insufficient_scopes() {
 
     let result = run_cli_command(&[
         "api",
-        "import",
+        "import-openapi",
         "--file",
         "examples/httpbin-simple.yaml",
         "--token",
