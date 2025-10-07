@@ -67,7 +67,11 @@ async fn test_auth_with_env_var() {
     // Clean up environment variable
     std::env::remove_var("FLOWPLANE_TOKEN");
 
-    assert!(result.is_ok(), "CLI command should succeed with FLOWPLANE_TOKEN env var: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "CLI command should succeed with FLOWPLANE_TOKEN env var: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
