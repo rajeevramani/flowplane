@@ -66,6 +66,8 @@ async fn test_api_import_simple_openapi() {
         "import-openapi",
         "--file",
         &openapi_file.path_str(),
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",
@@ -81,7 +83,7 @@ async fn test_api_import_simple_openapi() {
 #[tokio::test]
 async fn test_api_list_json_output() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-list-token", &["routes:read"]).await;
+    let token_response = server.issue_token("api-list-token", &["routes:read", "routes:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API first
@@ -90,6 +92,8 @@ async fn test_api_list_json_output() {
         "import-openapi",
         "--file",
         &openapi_file.path_str(),
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",
@@ -158,6 +162,8 @@ async fn test_api_get_by_id() {
         "import-openapi",
         "--file",
         &openapi_file.path_str(),
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",
@@ -226,6 +232,8 @@ async fn test_api_delete() {
         "import-openapi",
         "--file",
         &openapi_file.path_str(),
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",
@@ -279,6 +287,8 @@ async fn test_api_bootstrap() {
         "import-openapi",
         "--file",
         &openapi_file.path_str(),
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",
@@ -399,6 +409,8 @@ async fn test_api_import_invalid_file() {
         "import-openapi",
         "--file",
         "/nonexistent/file.yaml",
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",

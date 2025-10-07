@@ -179,6 +179,8 @@ async fn test_auth_with_insufficient_scopes() {
         "import-openapi",
         "--file",
         "examples/httpbin-simple.yaml",
+        "--team",
+        "test-team",
         "--token",
         &token_response.token,
         "--base-url",

@@ -107,6 +107,10 @@ pub enum ApiCommands {
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
+        /// Team name for the API definition
+        #[arg(short, long)]
+        team: String,
+
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
@@ -200,8 +204,8 @@ pub async fn handle_api_command(
         ApiCommands::Bootstrap { id, format, scope, allowlist, include_default } => {
             get_bootstrap_config(&client, &id, &format, &scope, allowlist, include_default).await?
         }
-        ApiCommands::ImportOpenapi { file, output } => {
-            import_openapi(&client, file, &output).await?
+        ApiCommands::ImportOpenapi { file, team, output } => {
+            import_openapi(&client, file, &team, &output).await?
         }
         ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
         ApiCommands::ShowFilters { id, output } => show_filters(&client, &id, &output).await?,
@@ -311,12 +315,13 @@ async fn get_bootstrap_config(
     Ok(())
 }
 
-async fn import_openapi(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
+async fn import_openapi(client: &FlowplaneClient, file: PathBuf, team: &str, output: &str) -> Result<()> {
     let contents =
         std::fs::read(&file).with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let response = client
         .post("/api/v1/api-definitions/from-openapi")
+        .query(&[("team", team)])
         .header("Content-Type", "application/octet-stream")
         .body(contents)
         .send()
