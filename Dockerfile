@@ -55,9 +55,9 @@ RUN chown -R flowplane:flowplane /app
 # Switch to app user
 USER flowplane
 
-# Health check
+# Health check using Swagger UI endpoint
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8080/swagger-ui/ || exit 1
 
 # Expose ports
 # 8080: HTTP API
