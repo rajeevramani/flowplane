@@ -126,8 +126,7 @@ pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
         let mut cmd = Command::new(cli_path);
         cmd.args(&args_owned);
 
-        // Clear environment and set from captured vars to ensure test env is used
-        cmd.env_clear();
+        // Set captured environment vars (this adds/overrides, doesn't replace)
         for (key, value) in current_env {
             cmd.env(key, value);
         }
