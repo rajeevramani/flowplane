@@ -2,7 +2,29 @@
 
 This walkthrough takes you from an empty database to a working Envoy listener that enforces global and per-route rate limits. All API calls use `curl`, and the examples assume the control plane is running on `http://127.0.0.1:8080` (see the [README](../README.md) for the launch command).
 
-> **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/gateways/openapi?name=<gateway>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
+## Authentication
+
+All API endpoints require bearer authentication. On first startup, Flowplane displays a bootstrap admin token in a **prominent banner**:
+
+```bash
+# Start the control plane and capture the token
+DATABASE_URL=sqlite://./data/flowplane.db \
+FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
+cargo run --bin flowplane
+
+# Extract from Docker logs (if using Docker)
+docker-compose logs control-plane 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+'
+```
+
+Export the token for use in the examples below:
+
+```bash
+export FLOWPLANE_TOKEN="fp_pat_..."
+```
+
+See [authentication.md](authentication.md) for creating scoped tokens and managing access.
+
+> **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/api-definitions/from-openapi?team=<team>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
 >
 > Imports join the shared listener `default-gateway-listener` on port `10000`, so multiple teams can onboard specs without thinking about ports. Provide query parameters like `listener`, `port`, `bind_address`, or `protocol` when calling the import endpoint if you prefer a dedicated listener for a gateway.
 
@@ -14,6 +36,7 @@ Clusters describe upstream backends. This example creates a TLS-enabled cluster 
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "demo-cluster",
@@ -36,6 +59,7 @@ Routes map request prefixes to clusters. Here we forward everything under `/` to
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "demo-routes",
@@ -76,11 +100,12 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
 Listeners bind ports and assemble filter chains. This example:
 
 1. Adds a listener-wide Local Rate Limit (100 requests/second).
-2. Enables Envoy’s router filter (appended automatically if omitted, but included here for clarity).
+2. Enables Envoy's router filter (appended automatically if omitted, but included here for clarity).
 3. Points the HTTP connection manager at `demo-routes`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "demo-listener",
@@ -125,7 +150,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
 > **Want JWT authentication?** See [docs/filters.md](filters.md#jwt-authentication) for the provider and requirement fields. You can add the `jwt_authn` filter into the same `httpFilters` list before the router entry.
 
 ## 5. Point Envoy at the Control Plane
-Configure an Envoy bootstrap with ADS pointing at `127.0.0.1:18003` (the `FLOWPLANE_XDS_PORT` value). If you enabled TLS/mTLS on the control plane, mount the relevant certificates inside the Envoy runtime and reference them below. For plaintext setups, drop the `transport_socket` block.
+Configure an Envoy bootstrap with ADS pointing at `127.0.0.1:50051` (the `FLOWPLANE_XDS_PORT` value). If you enabled TLS/mTLS on the control plane, mount the relevant certificates inside the Envoy runtime and reference them below. For plaintext setups, drop the `transport_socket` block.
 
 Mutual TLS example:
 
@@ -150,7 +175,7 @@ static_resources:
                   address:
                     socket_address:
                       address: 127.0.0.1
-                      port_value: 18003
+                      port_value: 50051
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
