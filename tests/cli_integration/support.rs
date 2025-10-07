@@ -87,23 +87,51 @@ impl TestServer {
     }
 }
 
+/// Get the CLI binary path (already built by cargo test)
+fn get_cli_binary_path() -> &'static PathBuf {
+    use std::sync::OnceLock;
+
+    static CLI_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    CLI_PATH.get_or_init(|| {
+        // cargo test already builds all binaries before running tests
+        // We just need to find the pre-built binary
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        let mut binary_path = PathBuf::from(manifest_dir);
+        binary_path.push("target");
+        binary_path.push("debug"); // Tests use debug builds
+        binary_path.push("flowplane-cli");
+
+        if !binary_path.exists() {
+            panic!(
+                "CLI binary not found at {:?}. Run 'cargo build --bin flowplane-cli' first.",
+                binary_path
+            );
+        }
+
+        binary_path
+    })
+}
+
 /// Run a CLI command and capture output
 pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
     use std::process::Command;
 
-    // Use tokio spawn_blocking to run the command without blocking the async runtime
+    // Capture environment BEFORE spawning thread to ensure test env is captured
+    let current_env: Vec<(String, String)> = std::env::vars().collect();
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let cli_path = get_cli_binary_path().clone();
 
     tokio::task::spawn_blocking(move || {
-        let output = Command::new("cargo")
-            .arg("run")
-            .arg("--quiet")
-            .arg("--bin")
-            .arg("flowplane-cli")
-            .arg("--")
-            .args(&args_owned)
-            .output()
-            .expect("failed to execute CLI command");
+        let mut cmd = Command::new(cli_path);
+        cmd.args(&args_owned);
+
+        // Set captured environment vars (this adds/overrides, doesn't replace)
+        for (key, value) in current_env {
+            cmd.env(key, value);
+        }
+
+        let output = cmd.output().expect("failed to execute CLI command");
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -124,8 +152,16 @@ pub struct TempConfig {
 impl TempConfig {
     pub fn new() -> Self {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let path = temp_dir.path().join("config.toml");
+        // CLI expects config at $HOME/.flowplane/config.toml
+        let flowplane_dir = temp_dir.path().join(".flowplane");
+        std::fs::create_dir_all(&flowplane_dir).expect("create .flowplane directory");
+        let path = flowplane_dir.join("config.toml");
         TempConfig { path, _temp_dir: temp_dir }
+    }
+
+    /// Get the home directory path to use for HOME env var
+    pub fn home_dir(&self) -> &std::path::Path {
+        self._temp_dir.path()
     }
 
     pub fn write_config(&self, token: &str, base_url: &str) {
