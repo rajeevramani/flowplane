@@ -1,0 +1,52 @@
+# Dockerfile for Flowplane CLI
+# Multi-stage build for optimized image size
+
+# Build stage
+FROM rust:1.89-slim as builder
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy project files
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+# Build the CLI application
+RUN cargo build --release --bin flowplane-cli
+
+# Runtime stage
+FROM debian:trixie-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -r -s /bin/false -m -d /app flowplane
+
+WORKDIR /app
+
+# Copy the binary from builder stage
+COPY --from=builder /app/target/release/flowplane-cli /usr/local/bin/flowplane
+
+# Change ownership
+RUN chown -R flowplane:flowplane /app
+
+# Switch to app user
+USER flowplane
+
+# Set environment variables
+ENV RUST_LOG=info
+
+# Default command shows help
+CMD ["flowplane", "--help"]
