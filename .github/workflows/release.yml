@@ -64,13 +64,12 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../../../flowplane-${{ matrix.target }}.zip flowplane.exe flowplane-cli.exe
-          else
-            tar czvf ../../../flowplane-${{ matrix.target }}.tar.gz flowplane flowplane-cli
-          fi
-          cd -
+          mkdir -p flowplane-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/flowplane flowplane-${{ matrix.target }}/
+          cp target/${{ matrix.target }}/release/flowplane-cli flowplane-${{ matrix.target }}/
+          cp -r migrations flowplane-${{ matrix.target }}/
+          tar czvf flowplane-${{ matrix.target }}.tar.gz flowplane-${{ matrix.target }}/
+          rm -rf flowplane-${{ matrix.target }}
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
