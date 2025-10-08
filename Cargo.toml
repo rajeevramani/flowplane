@@ -51,7 +51,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 simple_asn1 = "0.6"
 tokio-rustls = "0.26"
 hyper-util = { version = "0.1", features = ["server", "client", "http1", "http2"] }
-openssl = { version = "0.10", features = ["vendored"] }
 
 # Observability and monitoring - enhanced like PoC
 tracing = "0.1"
