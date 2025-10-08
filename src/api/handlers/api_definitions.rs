@@ -220,6 +220,7 @@ pub async fn get_bootstrap_handler(
     let xds_addr = state.xds_state.config.bind_address.clone();
     let xds_port = state.xds_state.config.port;
     let node_id = format!("team={}/dp-{}", def.team, uuid::Uuid::new_v4());
+    let node_cluster = format!("{}-cluster", def.team);
 
     let metadata = match scope.as_str() {
         "team" => serde_json::json!({
@@ -238,7 +239,7 @@ pub async fn get_bootstrap_handler(
             "access_log_path": "/tmp/envoy_admin.log",
             "address": { "socket_address": { "address": "127.0.0.1", "port_value": 9901 } }
         },
-        "node": { "id": node_id, "metadata": metadata },
+        "node": { "id": node_id, "cluster": node_cluster, "metadata": metadata },
         "dynamic_resources": {
             "lds_config": { "ads": {} },
             "cds_config": { "ads": {} },
