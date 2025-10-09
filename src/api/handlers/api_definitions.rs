@@ -11,15 +11,17 @@ use serde::Serialize;
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::storage::repository::ApiDefinitionData;
 use crate::storage::repositories::api_definition::UpdateApiDefinitionRequest;
+use crate::storage::repository::ApiDefinitionData;
 use crate::{
     api::{error::ApiError, routes::ApiState},
     platform_api::{
         materializer::{AppendRouteOutcome, CreateDefinitionOutcome, PlatformApiMaterializer},
         openapi_adapter,
     },
-    validation::requests::api_definition::{AppendRouteBody, CreateApiDefinitionBody, UpdateApiDefinitionBody},
+    validation::requests::api_definition::{
+        AppendRouteBody, CreateApiDefinitionBody, UpdateApiDefinitionBody,
+    },
 };
 use axum::response::Response;
 
@@ -370,7 +372,7 @@ pub async fn create_api_definition_handler(
     params(("id" = String, Path, description = "API definition ID to update", example = "api-def-abc123")),
     request_body = UpdateApiDefinitionBody,
     responses(
-        (status = 200, description = "API definition successfully updated. The version number is incremented and xDS cache is refreshed.", body = ApiDefinitionSummary),
+        (status = 200, description = "API definition successfully updated. The version number is incremented and xDS cache is refreshed. When routes are provided, existing routes are deleted and replaced atomically (cascade update), triggering cleanup of orphaned native resources and xDS refresh.", body = ApiDefinitionSummary),
         (status = 400, description = "Invalid request: validation error (e.g., invalid domain format, empty routes array, invalid listener names)"),
         (status = 404, description = "API definition not found with the specified ID"),
         (status = 409, description = "Conflict: updated domain already registered for another API definition"),
@@ -392,7 +394,9 @@ pub async fn update_api_definition_handler(
         .xds_state
         .api_definition_repository
         .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("API definition repository is not configured"))?
+        .ok_or_else(|| {
+            ApiError::service_unavailable("API definition repository is not configured")
+        })?
         .clone();
 
     // Convert to repository request
@@ -403,14 +407,38 @@ pub async fn update_api_definition_handler(
     };
 
     // Update the definition
-    let updated = repo
-        .update_definition(&api_definition_id, update_request)
-        .await
-        .map_err(ApiError::from)?;
+    let updated =
+        repo.update_definition(&api_definition_id, update_request).await.map_err(ApiError::from)?;
 
-    // TODO: If routes are provided, we need to handle route updates
-    // This would involve deleting existing routes and creating new ones
-    // For now, we only update the definition-level fields
+    // Handle route cascade updates if routes are provided
+    if let Some(routes_payload) = payload.routes {
+        tracing::info!(
+            api_definition_id = %api_definition_id,
+            route_count = routes_payload.len(),
+            "Processing route cascade updates in PATCH endpoint"
+        );
+
+        // Convert RouteBody payloads to RouteSpec format
+        let mut route_specs = Vec::with_capacity(routes_payload.len());
+        for (idx, route_body) in routes_payload.into_iter().enumerate() {
+            let route_spec =
+                route_body.into_route_spec(Some(idx as i64), None).map_err(ApiError::from)?;
+            route_specs.push(route_spec);
+        }
+
+        // Use the materializer to handle route cascade updates
+        // This will delete existing routes, create new ones, and handle native resource cleanup
+        let materializer =
+            PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
+
+        let _outcome = materializer
+            .update_definition(&api_definition_id, route_specs)
+            .await
+            .map_err(ApiError::from)?;
+
+        // Return updated definition from the outcome (includes incremented version)
+        return Ok((StatusCode::OK, Json(ApiDefinitionSummary::from(_outcome.definition))));
+    }
 
     // Trigger xDS snapshot updates to propagate changes to Envoy
     // Order matters: clusters -> routes -> platform API -> listeners

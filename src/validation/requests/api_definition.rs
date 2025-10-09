@@ -339,7 +339,7 @@ impl RouteBody {
         Ok(())
     }
 
-    fn into_route_spec(
+    pub fn into_route_spec(
         self,
         order: Option<i64>,
         deployment_note: Option<String>,
@@ -512,9 +512,7 @@ impl UpdateApiDefinitionBody {
             && self.tls.is_none()
             && self.routes.is_none()
         {
-            return Err(Error::validation(
-                "at least one field must be provided for update",
-            ));
+            return Err(Error::validation("at least one field must be provided for update"));
         }
 
         Ok(())
