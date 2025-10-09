@@ -412,6 +412,41 @@ pub async fn update_api_definition_handler(
     // This would involve deleting existing routes and creating new ones
     // For now, we only update the definition-level fields
 
+    // Trigger xDS snapshot updates to propagate changes to Envoy
+    // Order matters: clusters -> routes -> platform API -> listeners
+    tracing::info!(
+        api_definition_id = %api_definition_id,
+        "Triggering xDS updates after API definition update"
+    );
+
+    state.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (clusters)");
+        ApiError::from(err)
+    })?;
+
+    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (routes)");
+        ApiError::from(err)
+    })?;
+
+    state.xds_state.refresh_platform_api_resources().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (platform API)");
+        ApiError::from(err)
+    })?;
+
+    // Refresh listeners if using listener isolation mode
+    if updated.listener_isolation {
+        state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+            tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
+            ApiError::from(err)
+        })?;
+    }
+
+    tracing::info!(
+        api_definition_id = %api_definition_id,
+        "xDS updates completed successfully"
+    );
+
     // Return updated definition summary
     Ok((StatusCode::OK, Json(ApiDefinitionSummary::from(updated))))
 }
