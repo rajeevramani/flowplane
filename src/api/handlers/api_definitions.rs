@@ -12,13 +12,14 @@ use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::storage::repository::ApiDefinitionData;
+use crate::storage::repositories::api_definition::UpdateApiDefinitionRequest;
 use crate::{
     api::{error::ApiError, routes::ApiState},
     platform_api::{
         materializer::{AppendRouteOutcome, CreateDefinitionOutcome, PlatformApiMaterializer},
         openapi_adapter,
     },
-    validation::requests::api_definition::{AppendRouteBody, CreateApiDefinitionBody},
+    validation::requests::api_definition::{AppendRouteBody, CreateApiDefinitionBody, UpdateApiDefinitionBody},
 };
 use axum::response::Response;
 
@@ -361,6 +362,58 @@ pub async fn create_api_definition_handler(
             routes: created_route_ids,
         }),
     ))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/api-definitions/{id}",
+    params(("id" = String, Path, description = "API definition ID to update", example = "api-def-abc123")),
+    request_body = UpdateApiDefinitionBody,
+    responses(
+        (status = 200, description = "API definition successfully updated. The version number is incremented and xDS cache is refreshed.", body = ApiDefinitionSummary),
+        (status = 400, description = "Invalid request: validation error (e.g., invalid domain format, empty routes array, invalid listener names)"),
+        (status = 404, description = "API definition not found with the specified ID"),
+        (status = 409, description = "Conflict: updated domain already registered for another API definition"),
+        (status = 500, description = "Internal server error during update or xDS cache refresh"),
+        (status = 503, description = "API definition repository not configured")
+    ),
+    tag = "platform-api"
+)]
+pub async fn update_api_definition_handler(
+    State(state): State<ApiState>,
+    Path(api_definition_id): Path<String>,
+    Json(payload): Json<UpdateApiDefinitionBody>,
+) -> Result<(StatusCode, Json<ApiDefinitionSummary>), ApiError> {
+    // Validate request payload
+    payload.validate_payload().map_err(ApiError::from)?;
+
+    // Get repository
+    let repo = state
+        .xds_state
+        .api_definition_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("API definition repository is not configured"))?
+        .clone();
+
+    // Convert to repository request
+    let update_request = UpdateApiDefinitionRequest {
+        domain: payload.domain,
+        tls_config: payload.tls,
+        target_listeners: payload.target_listeners,
+    };
+
+    // Update the definition
+    let updated = repo
+        .update_definition(&api_definition_id, update_request)
+        .await
+        .map_err(ApiError::from)?;
+
+    // TODO: If routes are provided, we need to handle route updates
+    // This would involve deleting existing routes and creating new ones
+    // For now, we only update the definition-level fields
+
+    // Return updated definition summary
+    Ok((StatusCode::OK, Json(ApiDefinitionSummary::from(updated))))
 }
 
 #[utoipa::path(

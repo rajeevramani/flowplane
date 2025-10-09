@@ -52,6 +52,7 @@ use crate::xds::{
         crate::api::handlers::api_definitions::append_route_handler,
         crate::api::handlers::api_definitions::list_api_definitions_handler,
         crate::api::handlers::api_definitions::get_api_definition_handler,
+        crate::api::handlers::api_definitions::update_api_definition_handler,
         crate::api::handlers::api_definitions::get_bootstrap_handler
     ),
     components(

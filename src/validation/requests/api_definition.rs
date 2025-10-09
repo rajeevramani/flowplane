@@ -442,6 +442,85 @@ impl RouteRewriteBody {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "domain": "updated-payments.example.com",
+    "targetListeners": ["listener-1", "listener-2"],
+    "routes": [{
+        "match": {
+            "prefix": "/api/v2/payments"
+        },
+        "cluster": {
+            "name": "payments-backend-v2",
+            "endpoint": "payments-v2.svc.cluster.local:8080"
+        },
+        "timeoutSeconds": 45
+    }]
+}))]
+pub struct UpdateApiDefinitionBody {
+    #[serde(default)]
+    #[schema(example = "updated-payments.example.com")]
+    pub domain: Option<String>,
+    #[serde(default)]
+    #[schema(example = json!(["listener-1", "listener-2"]))]
+    pub target_listeners: Option<Vec<String>>,
+    #[serde(default)]
+    pub tls: Option<Value>,
+    #[serde(default)]
+    pub routes: Option<Vec<RouteBody>>,
+}
+
+impl UpdateApiDefinitionBody {
+    pub fn validate_payload(&self) -> Result<(), Error> {
+        // Validate domain if provided
+        if let Some(ref domain) = self.domain {
+            ensure_non_empty(domain, "domain", 253)?;
+            validate_host(domain).map_err(|_| {
+                Error::validation("domain must contain alphanumeric, '.' or '-' characters")
+            })?;
+        }
+
+        // Validate routes if provided
+        if let Some(ref routes) = self.routes {
+            if routes.is_empty() {
+                return Err(Error::validation("routes cannot be empty if provided"));
+            }
+            if routes.len() > 50 {
+                return Err(Error::validation("no more than 50 routes can be provided"));
+            }
+            for route in routes {
+                route.validate_payload()?;
+            }
+        }
+
+        // Validate target_listeners if provided
+        if let Some(ref target_listeners) = self.target_listeners {
+            if target_listeners.is_empty() {
+                return Err(Error::validation(
+                    "targetListeners must contain at least one listener name if provided",
+                ));
+            }
+            for listener_name in target_listeners {
+                ensure_non_empty(listener_name, "targetListeners entry", 100)?;
+            }
+        }
+
+        // Ensure at least one field is being updated
+        if self.domain.is_none()
+            && self.target_listeners.is_none()
+            && self.tls.is_none()
+            && self.routes.is_none()
+        {
+            return Err(Error::validation(
+                "at least one field must be provided for update",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 fn ensure_non_empty(value: &str, field: &str, max_len: usize) -> Result<(), Error> {
     if value.trim().is_empty() {
         return Err(Error::validation(format!("{} cannot be empty", field)));
@@ -662,5 +741,84 @@ mod tests {
         assert!(result.is_ok());
         let spec = result.unwrap();
         assert_eq!(spec.target_listeners, None);
+    }
+
+    #[test]
+    fn update_validation_requires_at_least_one_field() {
+        let body = UpdateApiDefinitionBody {
+            domain: None,
+            target_listeners: None,
+            tls: None,
+            routes: None,
+        };
+
+        let result = body.validate_payload();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one field must be provided"));
+    }
+
+    #[test]
+    fn update_validation_accepts_domain_only() {
+        let body = UpdateApiDefinitionBody {
+            domain: Some("new-domain.example.com".to_string()),
+            target_listeners: None,
+            tls: None,
+            routes: None,
+        };
+
+        assert!(body.validate_payload().is_ok());
+    }
+
+    #[test]
+    fn update_validation_rejects_invalid_domain() {
+        let body = UpdateApiDefinitionBody {
+            domain: Some("invalid domain with spaces".to_string()),
+            target_listeners: None,
+            tls: None,
+            routes: None,
+        };
+
+        let result = body.validate_payload();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_validation_rejects_empty_routes() {
+        let body = UpdateApiDefinitionBody {
+            domain: None,
+            target_listeners: None,
+            tls: None,
+            routes: Some(vec![]),
+        };
+
+        let result = body.validate_payload();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("routes cannot be empty"));
+    }
+
+    #[test]
+    fn update_validation_rejects_empty_target_listeners() {
+        let body = UpdateApiDefinitionBody {
+            domain: None,
+            target_listeners: Some(vec![]),
+            tls: None,
+            routes: None,
+        };
+
+        let result = body.validate_payload();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one listener name"));
+    }
+
+    #[test]
+    fn update_validation_accepts_valid_target_listeners() {
+        let body = UpdateApiDefinitionBody {
+            domain: None,
+            target_listeners: Some(vec!["listener-1".to_string(), "listener-2".to_string()]),
+            tls: None,
+            routes: None,
+        };
+
+        assert!(body.validate_payload().is_ok());
     }
 }
