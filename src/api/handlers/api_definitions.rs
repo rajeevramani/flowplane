@@ -193,10 +193,10 @@ pub struct BootstrapQuery {
         BootstrapQuery
     ),
     responses(
-        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format", content_type = "application/yaml"),
+        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format with listener information. The response includes a 'listeners' array containing listener details (name, address, port, protocol) for the API definition. For isolated listeners, this will be the generated dedicated listener. For shared listeners, this will include all target listeners.", content_type = "application/yaml"),
         (status = 404, description = "API definition not found with the specified ID"),
         (status = 500, description = "Internal server error during bootstrap generation"),
-        (status = 503, description = "API definition repository not configured")
+        (status = 503, description = "API definition repository or listener repository not configured")
     ),
     tag = "platform-api"
 )]
@@ -222,6 +222,45 @@ pub async fn get_bootstrap_handler(
     let node_id = format!("team={}/dp-{}", def.team, uuid::Uuid::new_v4());
     let node_cluster = format!("{}-cluster", def.team);
 
+    // Gather listener information
+    let listener_repo =
+        state.xds_state.listener_repository.as_ref().cloned().ok_or_else(|| {
+            ApiError::service_unavailable("Listener repository is not configured")
+        })?;
+
+    let mut listeners_info = Vec::new();
+
+    // If isolated listener mode, get the generated listener
+    if def.listener_isolation {
+        if let Some(listener_id) = &def.generated_listener_id {
+            if let Ok(listener) = listener_repo.get_by_id(listener_id).await {
+                listeners_info.push(serde_json::json!({
+                    "name": listener.name,
+                    "address": listener.address,
+                    "port": listener.port,
+                    "protocol": listener.protocol,
+                }));
+            }
+        }
+    } else {
+        // If shared listener mode, get all target listeners (or default)
+        let target_listeners = def
+            .target_listeners
+            .clone()
+            .unwrap_or_else(|| vec!["default-gateway-listener".to_string()]);
+
+        for listener_name in target_listeners {
+            if let Ok(listener) = listener_repo.get_by_name(&listener_name).await {
+                listeners_info.push(serde_json::json!({
+                    "name": listener.name,
+                    "address": listener.address,
+                    "port": listener.port,
+                    "protocol": listener.protocol,
+                }));
+            }
+        }
+    }
+
     let metadata = match scope.as_str() {
         "team" => serde_json::json!({
             "team": def.team,
@@ -235,6 +274,7 @@ pub async fn get_bootstrap_handler(
     };
 
     let bootstrap = serde_json::json!({
+        "listeners": listeners_info,
         "admin": {
             "access_log_path": "/tmp/envoy_admin.log",
             "address": { "socket_address": { "address": "127.0.0.1", "port_value": 9901 } }
