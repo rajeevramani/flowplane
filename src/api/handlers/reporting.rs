@@ -20,7 +20,6 @@ use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
 use crate::auth::authorization::{extract_team_scopes, require_resource_access};
 use crate::auth::models::AuthContext;
-use crate::errors::Error;
 use crate::storage::repositories::ReportingRepository;
 use crate::xds::ClusterSpec;
 
@@ -137,7 +136,7 @@ pub async fn list_route_flows_handler(
     let (rows, total) = reporting_repo
         .list_route_flows(&team_scopes, limit, offset)
         .await
-        .map_err(|e| ApiError::from(Error::from(e)))?;
+        .map_err(ApiError::from)?;
 
     // Convert database rows to API response format
     let route_flows = rows
