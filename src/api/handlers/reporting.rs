@@ -18,8 +18,11 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
-use crate::auth::authorization::require_resource_access;
+use crate::auth::authorization::{extract_team_scopes, require_resource_access};
 use crate::auth::models::AuthContext;
+use crate::errors::Error;
+use crate::storage::repositories::ReportingRepository;
+use crate::xds::ClusterSpec;
 
 // ============================================================================
 // Request/Response DTOs
@@ -107,7 +110,7 @@ pub struct ListRouteFlowsResponse {
     tag = "reports"
 )]
 pub async fn list_route_flows_handler(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Query(params): Query<ListRouteFlowsQuery>,
 ) -> Result<Json<ListRouteFlowsResponse>, ApiError> {
@@ -118,10 +121,67 @@ pub async fn list_route_flows_handler(
     let limit = params.limit.unwrap_or(50).clamp(1, 1000);
     let offset = params.offset.unwrap_or(0).max(0);
 
-    // TODO: Implement repository query to fetch route flows
-    // For now, return empty response
-    let route_flows = vec![];
-    let total = 0;
+    // Get repository from state
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Cluster repository unavailable"))?;
+
+    let reporting_repo = ReportingRepository::new(cluster_repo.pool().clone());
+
+    // Extract team scopes from auth context for filtering
+    let team_scopes = extract_team_scopes(&context);
+
+    // Fetch route flows from repository
+    let (rows, total) = reporting_repo
+        .list_route_flows(&team_scopes, limit, offset)
+        .await
+        .map_err(|e| ApiError::from(Error::from(e)))?;
+
+    // Convert database rows to API response format
+    let route_flows = rows
+        .into_iter()
+        .filter_map(|row| {
+            // Parse cluster configuration to extract endpoints
+            let cluster_spec: ClusterSpec = match serde_json::from_str(&row.cluster_configuration) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    tracing::warn!(
+                        cluster = %row.cluster_name,
+                        error = %e,
+                        "Failed to parse cluster configuration"
+                    );
+                    return None;
+                }
+            };
+
+            // Extract endpoint strings from cluster spec
+            let endpoints: Vec<String> = cluster_spec
+                .endpoints
+                .iter()
+                .map(|ep| match ep {
+                    crate::xds::EndpointSpec::Address { host, port } => {
+                        format!("{}:{}", host, port)
+                    }
+                    crate::xds::EndpointSpec::String(s) => s.clone(),
+                })
+                .collect();
+
+            Some(RouteFlowEntry {
+                route_name: row.route_name,
+                path: row.path_prefix,
+                cluster: row.cluster_name,
+                endpoints,
+                listener: RouteFlowListener {
+                    name: row.listener_name,
+                    port: row.listener_port.unwrap_or(0) as u16,
+                    address: row.listener_address,
+                },
+                team: row.route_team,
+            })
+        })
+        .collect();
 
     Ok(Json(ListRouteFlowsResponse { route_flows, total, offset, limit }))
 }
