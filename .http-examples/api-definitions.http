@@ -1,0 +1,55 @@
+### Variables
+@base_url = http://localhost:8080
+@token = fp_pat_your-token-id-here.your-secret-here
+@api_definition_id = replace-with-actual-id
+
+### Import OpenAPI (httpbin-simple.yaml)
+# < /Users/rajeevramani/workspace/projects/flowplane/examples/httpbin-simple.yaml
+POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true
+Authorization: Bearer {{token}}
+Content-Type: application/yaml
+
+< ../../../examples/httpbin-simple.yaml
+
+### List API Definitions
+GET {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+
+### Get API Definition
+# Replace {{api_definition_id}} with actual ID from import response
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
+Authorization: Bearer {{token}}
+
+### Get Bootstrap Configuration
+# Replace {{api_definition_id}} with actual ID from import response
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/bootstrap
+Authorization: Bearer {{token}}
+
+### Update API Definition (PATCH)
+# Replace {{api_definition_id}} with actual ID
+PATCH {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "metadata": {
+    "description": "Updated description"
+  }
+}
+
+### Append Routes to API Definition
+# Replace {{api_definition_id}} with actual ID
+POST {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/routes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "routes": [
+    {
+      "name": "new-endpoint",
+      "path": "/new-endpoint",
+      "method": "GET",
+      "cluster_name": "test-cluster"
+    }
+  ]
+}

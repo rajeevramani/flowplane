@@ -1,0 +1,79 @@
+### Variables
+@base_url = http://localhost:8080
+@token = fp_pat_your-token-id-here.your-secret-here
+@route_name = test-routes
+@cluster_name = test-cluster
+
+### Create Route
+POST {{base_url}}/api/v1/routes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{route_name}}",
+  "virtualHosts": [
+    {
+      "name": "default",
+      "domains": ["*"],
+      "routes": [
+        {
+          "name": "test-route",
+          "match": {
+            "path": {
+              "type": "prefix",
+              "value": "/api"
+            }
+          },
+          "action": {
+            "type": "forward",
+            "cluster": "{{cluster_name}}",
+            "timeoutSeconds": 5
+          }
+        }
+      ]
+    }
+  ]
+}
+
+### List Routes
+GET {{base_url}}/api/v1/routes
+Authorization: Bearer {{token}}
+
+### Get Route
+GET {{base_url}}/api/v1/routes/{{route_name}}
+Authorization: Bearer {{token}}
+
+### Update Route
+PUT {{base_url}}/api/v1/routes/{{route_name}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{route_name}}",
+  "virtualHosts": [
+    {
+      "name": "default",
+      "domains": ["*"],
+      "routes": [
+        {
+          "name": "test-route",
+          "match": {
+            "path": {
+              "type": "prefix",
+              "value": "/api/v1"
+            }
+          },
+          "action": {
+            "type": "forward",
+            "cluster": "{{cluster_name}}",
+            "timeoutSeconds": 10
+          }
+        }
+      ]
+    }
+  ]
+}
+
+### Delete Route
+DELETE {{base_url}}/api/v1/routes/{{route_name}}
+Authorization: Bearer {{token}}

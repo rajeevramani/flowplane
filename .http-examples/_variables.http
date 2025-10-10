@@ -1,0 +1,15 @@
+### Environment Variables
+# Update these values to match your local setup
+
+@base_url = http://localhost:8080
+@envoy_port = 10000
+
+# Bootstrap token - get this from server logs on first startup or use CLI
+# Example: cargo run --bin flowplane-cli auth create-token --name "test" --scope admin:all
+@token = fp_pat_your-token-id-here.your-secret-here
+
+# Test resource names (keep consistent across tests)
+@cluster_name = test-cluster
+@route_name = test-routes
+@listener_name = test-listener
+@api_definition_id = test-api-def

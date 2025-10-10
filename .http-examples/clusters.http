@@ -1,0 +1,52 @@
+### Variables
+@base_url = http://localhost:8080
+@token = fp_pat_your-token-id-here.your-secret-here
+@cluster_name = test-cluster
+
+### Create Cluster
+POST {{base_url}}/api/v1/clusters
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{cluster_name}}",
+  "connectTimeoutSeconds": 5,
+  "endpoints": [
+    {
+      "host": "httpbin.org",
+      "port": 443
+    }
+  ]
+}
+
+### List Clusters
+GET {{base_url}}/api/v1/clusters
+Authorization: Bearer {{token}}
+
+### Get Cluster
+GET {{base_url}}/api/v1/clusters/{{cluster_name}}
+Authorization: Bearer {{token}}
+
+### Update Cluster
+PUT {{base_url}}/api/v1/clusters/{{cluster_name}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{cluster_name}}",
+  "connectTimeoutSeconds": 10,
+  "endpoints": [
+    {
+      "host": "httpbin.org",
+      "port": 443
+    },
+    {
+      "host": "backup.httpbin.org",
+      "port": 443
+    }
+  ]
+}
+
+### Delete Cluster
+DELETE {{base_url}}/api/v1/clusters/{{cluster_name}}
+Authorization: Bearer {{token}}

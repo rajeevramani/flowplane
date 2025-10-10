@@ -1,0 +1,44 @@
+### Variables
+@base_url = http://localhost:8080
+@token = fp_pat_your-token-id-here.your-secret-here
+
+### Create Token
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "test-token",
+  "description": "Test token for development",
+  "scopes": ["clusters:read", "clusters:write", "routes:read", "routes:write"]
+}
+
+### List Tokens
+GET {{base_url}}/api/v1/tokens
+Authorization: Bearer {{token}}
+
+### Get Token
+# Replace {id} with actual token ID from create response
+GET {{base_url}}/api/v1/tokens/{id}
+Authorization: Bearer {{token}}
+
+### Update Token
+# Replace {id} with actual token ID
+PATCH {{base_url}}/api/v1/tokens/{id}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "description": "Updated description",
+  "status": "active"
+}
+
+### Rotate Token
+# Replace {id} with actual token ID
+POST {{base_url}}/api/v1/tokens/{id}/rotate
+Authorization: Bearer {{token}}
+
+### Revoke Token
+# Replace {id} with actual token ID
+DELETE {{base_url}}/api/v1/tokens/{id}
+Authorization: Bearer {{token}}

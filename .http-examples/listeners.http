@@ -1,0 +1,79 @@
+### Variables
+@base_url = http://localhost:8080
+@token = fp_pat_your-token-id-here.your-secret-here
+@listener_name = test-listener
+@route_name = test-routes
+
+### Create Listener
+POST {{base_url}}/api/v1/listeners
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{listener_name}}",
+  "address": "0.0.0.0",
+  "port": 10000,
+  "protocol": "HTTP",
+  "filterChains": [
+    {
+      "name": "default",
+      "filters": [
+        {
+          "name": "envoy.filters.network.http_connection_manager",
+          "type": "httpConnectionManager",
+          "routeConfigName": "{{route_name}}",
+          "httpFilters": [
+            {
+              "filter": {
+                "type": "router"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+### List Listeners
+GET {{base_url}}/api/v1/listeners
+Authorization: Bearer {{token}}
+
+### Get Listener
+GET {{base_url}}/api/v1/listeners/{{listener_name}}
+Authorization: Bearer {{token}}
+
+### Update Listener
+PUT {{base_url}}/api/v1/listeners/{{listener_name}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "{{listener_name}}",
+  "address": "0.0.0.0",
+  "port": 10001,
+  "protocol": "HTTP",
+  "filterChains": [
+    {
+      "name": "default",
+      "filters": [
+        {
+          "name": "envoy.filters.network.http_connection_manager",
+          "type": "httpConnectionManager",
+          "routeConfigName": "{{route_name}}",
+          "httpFilters": [
+            {
+              "filter": {
+                "type": "router"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+### Delete Listener
+DELETE {{base_url}}/api/v1/listeners/{{listener_name}}
+Authorization: Bearer {{token}}
