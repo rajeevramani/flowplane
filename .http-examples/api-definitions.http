@@ -3,29 +3,124 @@
 @token = {{$processEnv API_TOKEN}}
 @api_definition_id = replace-with-actual-id
 
-### Import OpenAPI (httpbin-simple.yaml)
-# < /Users/rajeevramani/workspace/projects/flowplane/examples/httpbin-simple.yaml
+# =============================================================================
+# CREATE (Direct API Definition)
+# =============================================================================
+
+### Create API Definition WITHOUT Listener Isolation (uses existing default listener)
+POST {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "team": "demo",
+  "domain": "demo.example.com",
+  "listenerIsolation": false,
+  "targetListeners": ["default-listener"],
+  "routes": [
+    {
+      "name": "health-check",
+      "path": "/health",
+      "method": "GET",
+      "cluster": "health-cluster"
+    },
+    {
+      "name": "api-endpoint",
+      "path": "/api/v1/users",
+      "method": "GET",
+      "cluster": "users-cluster"
+    }
+  ]
+}
+
+### Create API Definition WITH Listener Isolation (creates dedicated listener)
+POST {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "team": "payments",
+  "domain": "payments.example.com",
+  "listenerIsolation": true,
+  "listener": {
+    "name": "payments-isolated-listener",
+    "bindAddress": "0.0.0.0",
+    "port": 10020,
+    "protocol": "HTTP"
+  },
+  "routes": [
+    {
+      "name": "payment-create",
+      "path": "/payments",
+      "method": "POST",
+      "cluster": "payment-processor"
+    },
+    {
+      "name": "payment-status",
+      "path": "/payments/:id",
+      "method": "GET",
+      "cluster": "payment-processor"
+    }
+  ]
+}
+
+# =============================================================================
+# IMPORT (OpenAPI Spec)
+# =============================================================================
+
+### Import OpenAPI WITHOUT Listener Isolation (shared listener)
+POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false
+Authorization: Bearer {{token}}
+Content-Type: application/yaml
+
+< ../../../examples/httpbin-simple.yaml
+
+### Import OpenAPI WITH Listener Isolation (dedicated listener)
 POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true
 Authorization: Bearer {{token}}
 Content-Type: application/yaml
 
 < ../../../examples/httpbin-simple.yaml
 
-### List API Definitions
+### Import OpenAPI with Custom Port (listener isolation required)
+POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true&port=10030
+Authorization: Bearer {{token}}
+Content-Type: application/yaml
+
+< ../../../examples/httpbin-simple.yaml
+
+# =============================================================================
+# READ
+# =============================================================================
+
+### List All API Definitions
 GET {{base_url}}/api/v1/api-definitions
 Authorization: Bearer {{token}}
 
-### Get API Definition
-# Replace {{api_definition_id}} with actual ID from import response
+### List API Definitions with Pagination
+GET {{base_url}}/api/v1/api-definitions?limit=10&offset=0
+Authorization: Bearer {{token}}
+
+### List API Definitions by Team
+GET {{base_url}}/api/v1/api-definitions?team=demo
+Authorization: Bearer {{token}}
+
+### Get API Definition by ID
+# Replace {{api_definition_id}} with actual ID from create/import response
 GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
 Authorization: Bearer {{token}}
 
 ### Get Bootstrap Configuration
-# Replace {{api_definition_id}} with actual ID from import response
+# Returns Envoy bootstrap config for this API definition
+# Use this to find the assigned listener port
 GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/bootstrap
 Authorization: Bearer {{token}}
 
-### Update API Definition (PATCH)
+# =============================================================================
+# UPDATE
+# =============================================================================
+
+### Update API Definition Metadata
 # Replace {{api_definition_id}} with actual ID
 PATCH {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
 Authorization: Bearer {{token}}
@@ -33,11 +128,13 @@ Content-Type: application/json
 
 {
   "metadata": {
-    "description": "Updated description"
+    "description": "Updated API definition for demo team",
+    "version": "v2.0",
+    "contact": "demo-team@example.com"
   }
 }
 
-### Append Routes to API Definition
+### Append Routes to Existing API Definition
 # Replace {{api_definition_id}} with actual ID
 POST {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/routes
 Authorization: Bearer {{token}}
@@ -49,7 +146,56 @@ Content-Type: application/json
       "name": "new-endpoint",
       "path": "/new-endpoint",
       "method": "GET",
-      "cluster_name": "test-cluster"
+      "cluster": "test-cluster"
+    },
+    {
+      "name": "another-endpoint",
+      "path": "/another",
+      "method": "POST",
+      "cluster": "test-cluster"
     }
   ]
 }
+
+# =============================================================================
+# TESTING
+# =============================================================================
+
+### Test API through Envoy (after getting port from bootstrap)
+# First get the bootstrap config to find your listener port
+# Then test: curl http://localhost:{PORT}/health -H "Host: demo.example.com"
+
+# For OpenAPI imports with httpbin:
+# curl http://localhost:{PORT}/get -H "Host: httpbin.org"
+# curl http://localhost:{PORT}/headers -H "Host: httpbin.org"
+
+# =============================================================================
+# NOTES
+# =============================================================================
+
+# Listener Isolation Modes:
+#
+# 1. WITHOUT Listener Isolation (listenerIsolation: false)
+#    - Routes added to existing shared listener(s)
+#    - Requires targetListeners to be specified
+#    - Multiple APIs can share the same listener
+#    - Lower resource usage
+#    - Use case: Multiple small APIs, development, testing
+#
+# 2. WITH Listener Isolation (listenerIsolation: true)
+#    - Creates dedicated listener for this API
+#    - Must specify listener configuration (name, bindAddress, port)
+#    - Each API gets its own listener
+#    - Better isolation, independent port
+#    - Use case: Production APIs, team isolation, security requirements
+#
+# Query Parameters for Import:
+#    - team: Team name for RBAC (required)
+#    - listenerIsolation: true/false (default: false)
+#    - port: Custom port (only with listenerIsolation=true)
+#
+# After Creating/Importing:
+#    1. Get the ID from the response
+#    2. Call GET /api/v1/api-definitions/{id}/bootstrap
+#    3. Find the port in the bootstrap config
+#    4. Test with curl using the Host header
