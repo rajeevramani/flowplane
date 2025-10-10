@@ -16,12 +16,14 @@ pub use types::{
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
+    auth::authorization::require_resource_access,
+    auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
     storage::{CreateRouteRepositoryRequest, UpdateRouteRepositoryRequest},
@@ -47,8 +49,12 @@ use validation::{
 )]
 pub async fn create_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<RouteDefinition>,
 ) -> Result<(StatusCode, Json<RouteResponse>), ApiError> {
+    // Authorization: require routes:write scope
+    require_resource_access(&context, "routes", "write", None)?;
+
     validate_route_payload(&payload)?;
 
     let route_repository = require_route_repository(&state)?;
@@ -65,6 +71,7 @@ pub async fn create_route_handler(
         path_prefix,
         cluster_name: cluster_summary,
         configuration,
+        team: None, // Native API routes don't have team assignment by default
     };
 
     let created = route_repository.create(request).await.map_err(ApiError::from)?;
@@ -101,8 +108,12 @@ pub async fn create_route_handler(
 )]
 pub async fn list_routes_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<types::ListRoutesQuery>,
 ) -> Result<Json<Vec<RouteResponse>>, ApiError> {
+    // Authorization: require routes:read scope
+    require_resource_access(&context, "routes", "read", None)?;
+
     let repository = require_route_repository(&state)?;
     let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
 
@@ -127,8 +138,12 @@ pub async fn list_routes_handler(
 )]
 pub async fn get_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<Json<RouteResponse>, ApiError> {
+    // Authorization: require routes:read scope
+    require_resource_access(&context, "routes", "read", None)?;
+
     let repository = require_route_repository(&state)?;
     let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
     Ok(Json(route_response_from_data(route)?))
@@ -149,9 +164,13 @@ pub async fn get_route_handler(
 )]
 pub async fn update_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
     Json(payload): Json<RouteDefinition>,
 ) -> Result<Json<RouteResponse>, ApiError> {
+    // Authorization: require routes:write scope
+    require_resource_access(&context, "routes", "write", None)?;
+
     validate_route_payload(&payload)?;
 
     if payload.name != name {
@@ -174,6 +193,7 @@ pub async fn update_route_handler(
         path_prefix: Some(path_prefix.clone()),
         cluster_name: Some(cluster_summary.clone()),
         configuration: Some(configuration),
+        team: None, // Don't modify team on update unless explicitly set
     };
 
     let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
@@ -208,8 +228,12 @@ pub async fn update_route_handler(
 )]
 pub async fn delete_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // Authorization: require routes:write scope (delete is a write operation)
+    require_resource_access(&context, "routes", "write", None)?;
+
     if is_default_gateway_route(&name) {
         return Err(ApiError::Conflict(
             "The default gateway route configuration cannot be deleted".to_string(),
@@ -236,12 +260,13 @@ pub async fn delete_route_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State, Json};
+    use axum::{extract::State, Extension, Json};
     use serde_json::json;
     use sqlx::Executor;
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use crate::auth::models::AuthContext;
     use crate::config::SimpleXdsConfig;
     use crate::storage::{create_pool, CreateClusterRequest, DatabaseConfig};
     use crate::xds::filters::http::{
@@ -258,6 +283,11 @@ mod tests {
         PathMatchDefinition, RouteActionDefinition, RouteDefinition, RouteMatchDefinition,
         RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
     };
+
+    /// Create an admin AuthContext for testing with full permissions
+    fn admin_context() -> AuthContext {
+        AuthContext::new("test-token".to_string(), "test-admin".to_string(), vec!["admin:all".to_string()])
+    }
 
     async fn setup_state() -> ApiState {
         let pool = create_pool(&DatabaseConfig {
@@ -277,6 +307,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -290,6 +321,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -313,6 +345,7 @@ mod tests {
                 configuration: json!({
                     "endpoints": ["127.0.0.1:8080"]
                 }),
+                team: None, // Test cluster without team assignment
             })
             .await
             .expect("seed cluster");
@@ -324,6 +357,7 @@ mod tests {
                 configuration: json!({
                     "endpoints": ["127.0.0.1:8181"]
                 }),
+                team: None, // Test cluster without team assignment
             })
             .await
             .expect("seed shadow cluster");
@@ -363,7 +397,7 @@ mod tests {
 
         let payload = sample_route_definition();
         let (status, Json(created)) =
-            create_route_handler(State(state.clone()), Json(payload.clone()))
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
                 .await
                 .expect("create route");
 
@@ -383,10 +417,10 @@ mod tests {
 
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let response = list_routes_handler(State(state), Query(types::ListRoutesQuery::default()))
+        let response = list_routes_handler(State(state), Extension(admin_context()), Query(types::ListRoutesQuery::default()))
             .await
             .expect("list routes");
 
@@ -399,10 +433,10 @@ mod tests {
         let state = setup_state().await;
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let response = get_route_handler(State(state), Path("primary-routes".into()))
+        let response = get_route_handler(State(state), Extension(admin_context()), Path("primary-routes".into()))
             .await
             .expect("get route");
 
@@ -414,7 +448,7 @@ mod tests {
     async fn update_route_applies_changes() {
         let state = setup_state().await;
         let mut payload = sample_route_definition();
-        let (status, _) = create_route_handler(State(state.clone()), Json(payload.clone()))
+        let (status, _) = create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
             .await
             .expect("create route");
         assert_eq!(status, StatusCode::CREATED);
@@ -463,6 +497,7 @@ mod tests {
 
         let response = update_route_handler(
             State(state.clone()),
+            Extension(admin_context()),
             Path("primary-routes".into()),
             Json(payload.clone()),
         )
@@ -496,10 +531,10 @@ mod tests {
         let state = setup_state().await;
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let status = delete_route_handler(State(state.clone()), Path("primary-routes".into()))
+        let status = delete_route_handler(State(state.clone()), Extension(admin_context()), Path("primary-routes".into()))
             .await
             .expect("delete route");
 
@@ -525,7 +560,7 @@ mod tests {
         };
 
         let (status, Json(created)) =
-            create_route_handler(State(state.clone()), Json(payload.clone()))
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
                 .await
                 .expect("create template route");
 

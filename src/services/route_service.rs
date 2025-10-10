@@ -51,6 +51,7 @@ impl RouteService {
             path_prefix,
             cluster_name: cluster_summary,
             configuration: config,
+            team: None, // Native API routes don't have team assignment by default
         };
 
         let created = repository.create(request).await?;
@@ -97,6 +98,7 @@ impl RouteService {
             path_prefix: Some(path_prefix),
             cluster_name: Some(cluster_summary),
             configuration: Some(config),
+            team: None, // Don't modify team on update unless explicitly set
         };
 
         let updated = repository.update(&existing.id, update_request).await?;

@@ -19,6 +19,7 @@ struct RouteRow {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    pub team: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -33,6 +34,7 @@ pub struct RouteData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    pub team: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -47,6 +49,7 @@ impl From<RouteRow> for RouteData {
             configuration: row.configuration,
             version: row.version,
             source: row.source,
+            team: row.team,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -60,6 +63,7 @@ pub struct CreateRouteRequest {
     pub path_prefix: String,
     pub cluster_name: String,
     pub configuration: serde_json::Value,
+    pub team: Option<String>,
 }
 
 /// Update route request
@@ -68,6 +72,7 @@ pub struct UpdateRouteRequest {
     pub path_prefix: Option<String>,
     pub cluster_name: Option<String>,
     pub configuration: Option<serde_json::Value>,
+    pub team: Option<Option<String>>,
 }
 
 /// Repository for route configuration persistence
@@ -89,13 +94,14 @@ impl RouteRepository {
         let now = chrono::Utc::now();
 
         let result = sqlx::query(
-            "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)"
+            "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8)"
         )
         .bind(&id)
         .bind(&request.name)
         .bind(&request.path_prefix)
         .bind(&request.cluster_name)
         .bind(&configuration_json)
+        .bind(&request.team)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -119,7 +125,7 @@ impl RouteRepository {
 
     pub async fn get_by_id(&self, id: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes WHERE id = $1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -140,7 +146,7 @@ impl RouteRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -182,7 +188,7 @@ impl RouteRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -193,6 +199,62 @@ impl RouteRepository {
             FlowplaneError::Database {
                 source: e,
                 context: "Failed to list routes".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(RouteData::from).collect())
+    }
+
+    /// List routes filtered by team names (for team-scoped tokens)
+    /// If teams list is empty, returns all routes (for admin:all or resource-level scopes)
+    pub async fn list_by_teams(
+        &self,
+        teams: &[String],
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<RouteData>> {
+        // If no teams specified, return all routes (admin:all or resource-level scope)
+        if teams.is_empty() {
+            return self.list(limit, offset).await;
+        }
+
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        // Build the query with IN clause for team filtering
+        let placeholders = teams
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query_str = format!(
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at \
+             FROM routes \
+             WHERE team IN ({}) OR team IS NULL \
+             ORDER BY created_at DESC \
+             LIMIT ${} OFFSET ${}",
+            placeholders,
+            teams.len() + 1,
+            teams.len() + 2
+        );
+
+        let mut query = sqlx::query_as::<Sqlite, RouteRow>(&query_str);
+
+        // Bind team names
+        for team in teams {
+            query = query.bind(team);
+        }
+
+        // Bind limit and offset
+        query = query.bind(limit).bind(offset);
+
+        let rows = query.fetch_all(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, teams = ?teams, "Failed to list routes by teams");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list routes for teams: {:?}", teams),
             }
         })?;
 
@@ -211,17 +273,19 @@ impl RouteRepository {
         } else {
             current.configuration
         };
+        let new_team = request.team.unwrap_or(current.team);
 
         let now = chrono::Utc::now();
         let new_version = current.version + 1;
 
         let result = sqlx::query(
-            "UPDATE routes SET path_prefix = $1, cluster_name = $2, configuration = $3, version = $4, updated_at = $5 WHERE id = $6"
+            "UPDATE routes SET path_prefix = $1, cluster_name = $2, configuration = $3, version = $4, team = $5, updated_at = $6 WHERE id = $7"
         )
         .bind(&new_path_prefix)
         .bind(&new_cluster_name)
         .bind(&new_configuration)
         .bind(new_version)
+        .bind(&new_team)
         .bind(now)
         .bind(id)
         .execute(&self.pool)

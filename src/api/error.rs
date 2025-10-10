@@ -1,6 +1,7 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
+use crate::auth::models::AuthError;
 use crate::errors::Error;
 
 #[derive(Debug)]
@@ -81,6 +82,34 @@ impl From<Error> for ApiError {
                 ApiError::Internal(msg)
             }
             Error::Io(err) => ApiError::Internal(err.to_string()),
+        }
+    }
+}
+
+impl From<AuthError> for ApiError {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::MissingBearer => {
+                ApiError::Unauthorized("Unauthorized: missing bearer token".to_string())
+            }
+            AuthError::MalformedBearer => {
+                ApiError::Unauthorized("Unauthorized: malformed bearer token".to_string())
+            }
+            AuthError::TokenNotFound => {
+                ApiError::Unauthorized("Unauthorized: token not found".to_string())
+            }
+            AuthError::InactiveToken => {
+                ApiError::Unauthorized("Unauthorized: token is inactive".to_string())
+            }
+            AuthError::ExpiredToken => {
+                ApiError::Unauthorized("Unauthorized: token has expired".to_string())
+            }
+            AuthError::Forbidden => {
+                ApiError::Forbidden("Forbidden: insufficient permissions".to_string())
+            }
+            AuthError::Persistence(err) => {
+                ApiError::Internal(format!("Authentication error: {}", err))
+            }
         }
     }
 }

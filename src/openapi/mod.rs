@@ -193,6 +193,7 @@ pub fn build_gateway_plan(
             path_prefix: "/".to_string(),
             cluster_name: default_cluster_name,
             configuration: route_config_value,
+            team: None, // OpenAPI Gateway routes are not team-scoped by default
         };
 
         let listener_config = ListenerConfig {
@@ -225,6 +226,7 @@ pub fn build_gateway_plan(
             port: Some(options.port as i64),
             protocol: Some(options.protocol),
             configuration: listener_config_value,
+            team: None, // OpenAPI Gateway listeners are not team-scoped by default
         };
 
         Ok(GatewayPlan {
@@ -304,6 +306,7 @@ fn cluster_from_server(
         name: cluster_name.clone(),
         service_name: cluster_name.clone(),
         configuration,
+        team: None, // OpenAPI Gateway clusters are not team-scoped by default
     };
 
     let domain = host.to_string();

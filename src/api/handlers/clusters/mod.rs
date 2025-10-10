@@ -15,11 +15,13 @@ pub use types::{
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
+    auth::authorization::require_resource_access,
+    auth::models::AuthContext,
     errors::Error,
     services::ClusterService,
 };
@@ -41,8 +43,12 @@ use validation::{cluster_parts_from_body, cluster_response_from_data, ClusterCon
 )]
 pub async fn create_cluster_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
+    // Authorization: require clusters:write scope
+    require_resource_access(&context, "clusters", "write", None)?;
+
     use validator::Validate;
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
@@ -77,8 +83,12 @@ pub async fn create_cluster_handler(
 )]
 pub async fn list_clusters_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<types::ListClustersQuery>,
 ) -> Result<Json<Vec<types::ClusterResponse>>, ApiError> {
+    // Authorization: require clusters:read scope
+    require_resource_access(&context, "clusters", "read", None)?;
+
     let service = ClusterService::new(state.xds_state.clone());
     let rows = service.list_clusters(params.limit, params.offset).await.map_err(ApiError::from)?;
 
@@ -103,8 +113,12 @@ pub async fn list_clusters_handler(
 )]
 pub async fn get_cluster_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
+    // Authorization: require clusters:read scope
+    require_resource_access(&context, "clusters", "read", None)?;
+
     let service = ClusterService::new(state.xds_state.clone());
     let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;
     let response = cluster_response_from_data(&service, cluster)?;
@@ -126,9 +140,13 @@ pub async fn get_cluster_handler(
 )]
 pub async fn update_cluster_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
+    // Authorization: require clusters:write scope
+    require_resource_access(&context, "clusters", "write", None)?;
+
     use validator::Validate;
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
@@ -163,8 +181,12 @@ pub async fn update_cluster_handler(
 )]
 pub async fn delete_cluster_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // Authorization: require clusters:write scope (delete is a write operation)
+    require_resource_access(&context, "clusters", "write", None)?;
+
     let service = ClusterService::new(state.xds_state.clone());
     service.delete_cluster(&name).await.map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
@@ -177,11 +199,12 @@ mod tests {
     use super::*;
     use axum::extract::{Path, Query, State};
     use axum::response::IntoResponse;
-    use axum::Json;
+    use axum::{Extension, Json};
     use serde_json::Value;
     use sqlx::Executor;
     use std::sync::Arc;
 
+    use crate::auth::models::AuthContext;
     use crate::config::SimpleXdsConfig;
     use crate::storage::{create_pool, DatabaseConfig};
     use crate::xds::XdsState;
@@ -190,6 +213,11 @@ mod tests {
         CircuitBreakerThresholdsRequest, CircuitBreakersRequest, CreateClusterBody,
         EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
     };
+
+    /// Create an admin AuthContext for testing with full permissions
+    fn admin_context() -> AuthContext {
+        AuthContext::new("test-token".to_string(), "test-admin".to_string(), vec!["admin:all".to_string()])
+    }
 
     fn create_test_config() -> DatabaseConfig {
         DatabaseConfig {
@@ -212,6 +240,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -269,7 +298,7 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let response = create_cluster_handler(State(state.clone()), Json(body.clone()))
+        let response = create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body.clone()))
             .await
             .expect("handler response");
 
@@ -294,7 +323,7 @@ mod tests {
         let mut body = sample_request();
         body.endpoints.clear();
 
-        let err = create_cluster_handler(State(state), Json(body))
+        let err = create_cluster_handler(State(state), Extension(admin_context()), Json(body))
             .await
             .expect_err("expected validation error");
 
@@ -308,10 +337,10 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let response = list_clusters_handler(State(state), Query(ListClustersQuery::default()))
+        let response = list_clusters_handler(State(state), Extension(admin_context()), Query(ListClustersQuery::default()))
             .await
             .expect("list clusters");
 
@@ -326,10 +355,10 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let response = get_cluster_handler(State(state), Path("api-cluster".to_string()))
+        let response = get_cluster_handler(State(state), Extension(admin_context()), Path("api-cluster".to_string()))
             .await
             .expect("get cluster");
 
@@ -344,7 +373,7 @@ mod tests {
         let mut body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Json(body.clone()))
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body.clone()))
                 .await
                 .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
@@ -354,6 +383,7 @@ mod tests {
 
         let response = update_cluster_handler(
             State(state.clone()),
+            Extension(admin_context()),
             Path("api-cluster".to_string()),
             Json(body),
         )
@@ -375,10 +405,10 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let status = delete_cluster_handler(State(state.clone()), Path("api-cluster".to_string()))
+        let status = delete_cluster_handler(State(state.clone()), Extension(admin_context()), Path("api-cluster".to_string()))
             .await
             .expect("delete cluster");
         assert_eq!(status, StatusCode::NO_CONTENT);

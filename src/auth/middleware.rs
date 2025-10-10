@@ -12,6 +12,7 @@ use axum::{
 
 use crate::api::error::ApiError;
 use crate::auth::auth_service::AuthService;
+use crate::auth::authorization::{action_from_http_method, require_resource_access, resource_from_path};
 use crate::auth::models::{AuthContext, AuthError};
 use tracing::{field, info_span, warn};
 
@@ -91,6 +92,72 @@ pub async fn ensure_scopes(
         "scope check failed"
     );
     Err(ApiError::forbidden("forbidden: missing required scope"))
+}
+
+/// Middleware that dynamically derives required scopes from the HTTP method and path.
+///
+/// This middleware automatically determines the resource and action from the request,
+/// then checks if the authenticated user has the required permissions.
+///
+/// # How it works
+///
+/// 1. Extracts the resource from the path (e.g., `/api/v1/routes` → "routes")
+/// 2. Derives the action from the HTTP method (e.g., GET → "read", POST → "write")
+/// 3. Checks permissions using `require_resource_access`
+///
+/// # Examples
+///
+/// - GET /api/v1/routes → requires "routes:read"
+/// - POST /api/v1/clusters → requires "clusters:write"
+/// - DELETE /api/v1/listeners/foo → requires "listeners:delete"
+pub async fn ensure_dynamic_scopes(
+    Extension(context): Extension<AuthContext>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let correlation_id = uuid::Uuid::new_v4();
+
+    // Extract resource from path
+    let resource = match resource_from_path(&path) {
+        Some(r) => r,
+        None => {
+            // Path doesn't match expected pattern, allow request to continue
+            // (e.g., /health, /docs, etc.)
+            return Ok(next.run(request).await);
+        }
+    };
+
+    // Derive action from HTTP method
+    let action = action_from_http_method(method.as_str());
+
+    let span = info_span!(
+        "auth_middleware.ensure_dynamic_scopes",
+        http.method = %method,
+        http.path = %path,
+        auth.token_id = %context.token_id,
+        resource = %resource,
+        action = %action,
+        correlation_id = %correlation_id
+    );
+    let _guard = span.enter();
+
+    // Check if user has required permission
+    // Note: team-scoped access will be checked at the handler level
+    // where we have access to the actual team from the resource
+    if let Err(err) = require_resource_access(&context, resource, action, None) {
+        warn!(
+            %correlation_id,
+            resource = %resource,
+            action = %action,
+            token_id = %context.token_id,
+            "dynamic scope check failed"
+        );
+        return Err(map_auth_error(err));
+    }
+
+    Ok(next.run(request).await)
 }
 
 fn map_auth_error(err: AuthError) -> ApiError {

@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::{header, Request, StatusCode},
-    Json,
+    Extension, Json,
 };
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -11,6 +11,8 @@ use serde::Serialize;
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::auth::authorization::require_resource_access;
+use crate::auth::models::AuthContext;
 use crate::storage::repositories::api_definition::UpdateApiDefinitionRequest;
 use crate::storage::repository::ApiDefinitionData;
 use crate::{
@@ -137,8 +139,12 @@ pub struct ListDefinitionsQuery {
 )]
 pub async fn list_api_definitions_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(_q): Query<ListDefinitionsQuery>,
 ) -> Result<Json<Vec<ApiDefinitionSummary>>, ApiError> {
+    // Authorization: require api-definitions:read scope
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
@@ -161,8 +167,13 @@ pub async fn list_api_definitions_handler(
 )]
 pub async fn get_api_definition_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiDefinitionSummary>, ApiError> {
+    // Authorization: require api-definitions:read scope
+    // Team-scoped validation will be added in subtask 24.4 (database-level filtering)
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
@@ -205,9 +216,13 @@ pub struct BootstrapQuery {
 )]
 pub async fn get_bootstrap_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
     Query(q): Query<BootstrapQuery>,
 ) -> Result<Response, ApiError> {
+    // Authorization: require api-definitions:read scope for bootstrap access
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
@@ -344,8 +359,12 @@ pub async fn get_bootstrap_handler(
 )]
 pub async fn create_api_definition_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<CreateApiDefinitionBody>,
 ) -> Result<(StatusCode, Json<CreateApiDefinitionResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let spec = payload.into_spec().map_err(ApiError::from)?;
 
     let materializer =
@@ -383,9 +402,13 @@ pub async fn create_api_definition_handler(
 )]
 pub async fn update_api_definition_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(api_definition_id): Path<String>,
     Json(payload): Json<UpdateApiDefinitionBody>,
 ) -> Result<(StatusCode, Json<ApiDefinitionSummary>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     // Validate request payload
     payload.validate_payload().map_err(ApiError::from)?;
 
@@ -496,9 +519,13 @@ pub async fn update_api_definition_handler(
 )]
 pub async fn append_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(api_definition_id): Path<String>,
     Json(payload): Json<AppendRouteBody>,
 ) -> Result<(StatusCode, Json<AppendRouteResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let materializer =
         PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
 
@@ -557,9 +584,13 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
 )]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> Result<(StatusCode, Json<CreateApiDefinitionResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope for OpenAPI import
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let (parts, body) = request.into_parts();
     let collected = body
         .collect()

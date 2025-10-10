@@ -18,6 +18,7 @@ struct ClusterRow {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    pub team: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -31,6 +32,7 @@ pub struct ClusterData {
     pub configuration: String, // JSON serialized
     pub version: i64,
     pub source: String,
+    pub team: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -44,6 +46,7 @@ impl From<ClusterRow> for ClusterData {
             configuration: row.configuration,
             version: row.version,
             source: row.source,
+            team: row.team,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -56,6 +59,7 @@ pub struct CreateClusterRequest {
     pub name: String,
     pub service_name: String,
     pub configuration: serde_json::Value,
+    pub team: Option<String>,
 }
 
 /// Update cluster request
@@ -63,6 +67,7 @@ pub struct CreateClusterRequest {
 pub struct UpdateClusterRequest {
     pub service_name: Option<String>,
     pub configuration: Option<serde_json::Value>,
+    pub team: Option<Option<String>>,
 }
 
 /// Repository for cluster data access (simplified version)
@@ -87,12 +92,13 @@ impl ClusterRepository {
 
         // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
         let result = sqlx::query(
-            "INSERT INTO clusters (id, name, service_name, configuration, version, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6)"
+            "INSERT INTO clusters (id, name, service_name, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)"
         )
         .bind(&id)
         .bind(&request.name)
         .bind(&request.service_name)
         .bind(&configuration_json)
+        .bind(&request.team)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -123,7 +129,7 @@ impl ClusterRepository {
     /// Get cluster by ID
     pub async fn get_by_id(&self, id: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters WHERE id = $1"
+            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -145,7 +151,7 @@ impl ClusterRepository {
     /// Get cluster by name
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -172,7 +178,7 @@ impl ClusterRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -183,6 +189,64 @@ impl ClusterRepository {
             FlowplaneError::Database {
                 source: e,
                 context: "Failed to list clusters".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(ClusterData::from).collect())
+    }
+
+    /// List clusters filtered by team names (for team-scoped tokens)
+    /// If teams list is empty, returns all clusters (for admin:all or resource-level scopes)
+    pub async fn list_by_teams(
+        &self,
+        teams: &[String],
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<ClusterData>> {
+        // If no teams specified, return all clusters (admin:all or resource-level scope)
+        if teams.is_empty() {
+            return self.list(limit, offset).await;
+        }
+
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        // Build the query with IN clause for team filtering
+        // Use positional parameters for the limit and offset,
+        // and bind team names dynamically
+        let placeholders = teams
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query_str = format!(
+            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at \
+             FROM clusters \
+             WHERE team IN ({}) OR team IS NULL \
+             ORDER BY created_at DESC \
+             LIMIT ${} OFFSET ${}",
+            placeholders,
+            teams.len() + 1,
+            teams.len() + 2
+        );
+
+        let mut query = sqlx::query_as::<Sqlite, ClusterRow>(&query_str);
+
+        // Bind team names
+        for team in teams {
+            query = query.bind(team);
+        }
+
+        // Bind limit and offset
+        query = query.bind(limit).bind(offset);
+
+        let rows = query.fetch_all(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, teams = ?teams, "Failed to list clusters by teams");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list clusters for teams: {:?}", teams),
             }
         })?;
 
@@ -202,16 +266,18 @@ impl ClusterRepository {
         } else {
             current.configuration
         };
+        let new_team = request.team.unwrap_or(current.team);
 
         let now = chrono::Utc::now();
         let new_version = current.version + 1;
 
         let result = sqlx::query(
-            "UPDATE clusters SET service_name = $1, configuration = $2, version = $3, updated_at = $4 WHERE id = $5"
+            "UPDATE clusters SET service_name = $1, configuration = $2, version = $3, team = $4, updated_at = $5 WHERE id = $6"
         )
         .bind(&new_service_name)
         .bind(&new_configuration)
         .bind(new_version)
+        .bind(&new_team)
         .bind(now)
         .bind(id)
         .execute(&self.pool)

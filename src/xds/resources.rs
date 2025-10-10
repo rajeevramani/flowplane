@@ -1474,6 +1474,7 @@ mod tests {
             configuration: serde_json::to_string(&listener_config).unwrap(),
             version: 1,
             source: "native_api".to_string(),
+            team: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
