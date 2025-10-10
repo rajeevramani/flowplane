@@ -25,6 +25,15 @@ fn install_rustls_provider() {
 async fn main() -> Result<()> {
     install_rustls_provider();
 
+    // Load .env file if it exists (optional - won't fail if missing)
+    // This must happen before any config is read from environment
+    if let Err(e) = dotenvy::dotenv() {
+        // Only warn if the error is NOT "file not found"
+        if !e.to_string().contains("not found") {
+            eprintln!("Warning: Error loading .env file: {}", e);
+        }
+    }
+
     let observability_config = ObservabilityConfig::from_env();
     let _health_checker = init_observability(&observability_config).await?;
 
