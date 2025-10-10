@@ -1,6 +1,6 @@
 ### Variables
 @base_url = http://localhost:8080
-@token = fp_pat_your-token-id-here.your-secret-here
+@token = {{$processEnv API_TOKEN}}
 
 ### List Route Flows
 GET {{base_url}}/api/v1/reports/route-flows

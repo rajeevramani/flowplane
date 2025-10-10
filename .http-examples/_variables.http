@@ -4,9 +4,9 @@
 @base_url = http://localhost:8080
 @envoy_port = 10000
 
-# Bootstrap token - get this from server logs on first startup or use CLI
-# Example: cargo run --bin flowplane-cli auth create-token --name "test" --scope admin:all
-@token = fp_pat_your-token-id-here.your-secret-here
+# API Token - reads from .env file (API_TOKEN variable)
+# See README.md for setup instructions
+@token = {{$processEnv API_TOKEN}}
 
 # Test resource names (keep consistent across tests)
 @cluster_name = test-cluster

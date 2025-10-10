@@ -1,6 +1,6 @@
 ### Variables
 @base_url = http://localhost:8080
-@token = fp_pat_your-token-id-here.your-secret-here
+@token = {{$processEnv API_TOKEN}}
 @cluster_name = test-cluster
 
 ### Create Cluster

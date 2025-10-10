@@ -9,24 +9,61 @@ Interactive HTTP tests for the Flowplane Control Plane API using VSCode REST Cli
    - Install "REST Client" extension by Huachao Mao
    - Search for `humao.rest-client` in Extensions
 
-2. **Start Flowplane Server**
+2. **Set Up .env File**
+   ```bash
+   # Copy .env.example to .env
+   cp .env.example .env
+
+   # Generate a secure bootstrap token
+   openssl rand -base64 32
+
+   # Update BOOTSTRAP_TOKEN in .env with the generated value
+   ```
+
+3. **Start Flowplane Server**
    ```bash
    cargo run
    ```
 
-3. **Get Bootstrap Token**
-   - Check server logs on first startup for the bootstrap token
-   - OR create a token using the CLI:
+4. **Get API Token**
+
+   The server will log the bootstrap token on first startup:
+   ```
+   Bootstrap token created: fp_pat_abc-123-def-456.your-secret-here
+   ```
+
+   **Copy this token and add it to your .env file:**
+   ```bash
+   # In your .env file, add:
+   API_TOKEN="fp_pat_abc-123-def-456.your-secret-here"
+   ```
+
+   Alternatively, create a token using the CLI:
    ```bash
    cargo run --bin flowplane-cli auth create-token \
      --name "test" \
      --scope admin:all \
      --expires-in 90d
    ```
+   Then add the output token to `.env` as `API_TOKEN`.
 
-4. **Update Token in Test Files**
-   - Replace `fp_pat_your-token-id-here.your-secret-here` with your actual token
-   - Update in `_variables.http` OR in individual test files
+5. **Load Environment Variables**
+
+   VSCode REST Client reads from environment variables. You have two options:
+
+   **Option A: Source .env before starting VSCode (Recommended)**
+   ```bash
+   # Load .env file and start VSCode
+   set -a && source .env && set +a && code .
+   ```
+
+   **Option B: Export variables manually**
+   ```bash
+   export API_TOKEN="fp_pat_abc-123-def-456.your-secret-here"
+   code .
+   ```
+
+   The `.http` files use `{{$processEnv API_TOKEN}}` to read the token from your environment.
 
 ## File Organization
 
@@ -50,13 +87,20 @@ Interactive HTTP tests for the Flowplane Control Plane API using VSCode REST Cli
 
 ### Variables
 
-Each file has inline variables at the top:
-```http
-@base_url = http://localhost:8080
-@token = fp_pat_your-token-id-here.your-secret-here
-```
+Each file reads variables from:
 
-Update these or use the shared `_variables.http` file.
+1. **Environment variables** (via .env file):
+   ```http
+   @token = {{$processEnv API_TOKEN}}
+   ```
+
+2. **Inline variables**:
+   ```http
+   @base_url = http://localhost:8080
+   @cluster_name = test-cluster
+   ```
+
+The shared `_variables.http` file defines common variables used across all test files.
 
 ### Typical Workflow
 
