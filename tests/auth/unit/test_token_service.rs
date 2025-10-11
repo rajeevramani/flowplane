@@ -107,6 +107,31 @@ async fn create_token_returns_secret_and_persists() {
 }
 
 #[tokio::test]
+async fn create_token_without_expiry_defaults_to_30_days() {
+    let (service, repo, _, _) = setup_service().await;
+    let request = CreateTokenRequest {
+        name: "no-expiry-test".into(),
+        description: Some("Test default expiry".into()),
+        expires_at: None, // Explicitly no expiry provided
+        scopes: vec!["clusters:read".into()],
+        created_by: Some("unit".into()),
+    };
+
+    let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();
+    let stored = repo.get_token(&id).await.unwrap();
+
+    // Verify that expires_at was set to ~30 days from now
+    assert!(stored.expires_at.is_some(), "Expected expires_at to be set with default value");
+    let expires_at = stored.expires_at.unwrap();
+    let now = Utc::now();
+    let expected_expiry = now + chrono::Duration::days(30);
+
+    // Allow 5 second tolerance for test execution time
+    let diff = (expires_at - expected_expiry).num_seconds().abs();
+    assert!(diff < 5, "Expected expiry to be ~30 days from now, but difference was {} seconds", diff);
+}
+
+#[tokio::test]
 async fn update_and_revoke_token() {
     let (service, repo, _, _) = setup_service().await;
     let secret = service.create_token(sample_create_request()).await.unwrap();

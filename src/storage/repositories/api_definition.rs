@@ -583,18 +583,44 @@ impl ApiDefinitionRepository {
         self.get_definition(definition_id).await
     }
 
-    pub async fn list_definitions(&self) -> Result<Vec<ApiDefinitionData>> {
-        let rows = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
+    pub async fn list_definitions(
+        &self,
+        team: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<ApiDefinitionData>> {
+        let base_query =
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
                     bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
-             FROM api_definitions",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| FlowplaneError::Database {
-            source: e,
-            context: "Failed to list API definitions".to_string(),
-        })?;
+             FROM api_definitions";
+
+        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(base_query);
+
+        if let Some(ref t) = team {
+            query_builder.push(" WHERE team = ");
+            query_builder.push_bind(t);
+        }
+
+        query_builder.push(" ORDER BY created_at DESC");
+
+        if let Some(lim) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(lim);
+        }
+
+        if let Some(off) = offset {
+            query_builder.push(" OFFSET ");
+            query_builder.push_bind(off);
+        }
+
+        let rows = query_builder
+            .build_query_as::<ApiDefinitionRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to list API definitions".to_string(),
+            })?;
 
         Ok(rows.into_iter().map(ApiDefinitionData::from).collect())
     }
