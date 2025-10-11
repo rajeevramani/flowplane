@@ -132,9 +132,8 @@ impl TokenService {
         let hashed_secret = self.hash_secret(&secret)?;
 
         // Apply default 30-day expiry if not specified
-        let expires_at = payload.expires_at.or_else(|| {
-            Some(Utc::now() + chrono::Duration::days(30))
-        });
+        let expires_at =
+            payload.expires_at.or_else(|| Some(Utc::now() + chrono::Duration::days(30)));
 
         let new_token = NewPersonalAccessToken {
             id: id.clone(),

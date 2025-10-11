@@ -128,7 +128,11 @@ async fn create_token_without_expiry_defaults_to_30_days() {
 
     // Allow 5 second tolerance for test execution time
     let diff = (expires_at - expected_expiry).num_seconds().abs();
-    assert!(diff < 5, "Expected expiry to be ~30 days from now, but difference was {} seconds", diff);
+    assert!(
+        diff < 5,
+        "Expected expiry to be ~30 days from now, but difference was {} seconds",
+        diff
+    );
 }
 
 #[tokio::test]

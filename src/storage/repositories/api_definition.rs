@@ -618,9 +618,9 @@ impl ApiDefinitionRepository {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| FlowplaneError::Database {
-                source: e,
-                context: "Failed to list API definitions".to_string(),
-            })?;
+            source: e,
+            context: "Failed to list API definitions".to_string(),
+        })?;
 
         Ok(rows.into_iter().map(ApiDefinitionData::from).collect())
     }
