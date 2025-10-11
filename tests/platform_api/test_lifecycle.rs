@@ -6,7 +6,7 @@ use super::support::{read_json, send_request, setup_platform_api_app};
 #[tokio::test]
 async fn platform_api_create_append_and_persist_routes() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("lifecycle", &["routes:write"]).await;
+    let token = app.issue_token("lifecycle", &["api-definitions:write"]).await;
 
     let create_payload = json!({
         "team": "payments",

@@ -9,7 +9,7 @@ use super::support::{read_json, setup_platform_api_app};
 #[tokio::test]
 async fn import_openapi_json_creates_api_definition() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("api-importer", &["routes:write"]).await;
+    let token = app.issue_token("api-importer", &["api-definitions:write"]).await;
 
     let openapi_spec = r#"{
         "openapi": "3.0.0",
@@ -93,7 +93,7 @@ async fn import_openapi_json_creates_api_definition() {
 #[tokio::test]
 async fn import_openapi_yaml_creates_api_definition() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("yaml-importer", &["routes:write"]).await;
+    let token = app.issue_token("yaml-importer", &["api-definitions:write"]).await;
 
     let openapi_spec = r#"
 openapi: 3.0.0
@@ -161,7 +161,7 @@ paths:
 #[tokio::test]
 async fn import_openapi_rejects_empty_body() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("test-token", &["routes:write"]).await;
+    let token = app.issue_token("test-token", &["api-definitions:write"]).await;
 
     let request = Request::builder()
         .method(Method::POST)
@@ -179,7 +179,7 @@ async fn import_openapi_rejects_empty_body() {
 #[tokio::test]
 async fn import_openapi_rejects_invalid_spec() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bad-spec-importer", &["routes:write"]).await;
+    let token = app.issue_token("bad-spec-importer", &["api-definitions:write"]).await;
 
     let invalid_spec = r#"{
         "openapi": "3.0.0",
@@ -204,7 +204,7 @@ async fn import_openapi_rejects_invalid_spec() {
 #[tokio::test]
 async fn import_openapi_with_base_path_combines_paths() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("basepath-tester", &["routes:write"]).await;
+    let token = app.issue_token("basepath-tester", &["api-definitions:write"]).await;
 
     let openapi_spec = r#"{
         "openapi": "3.0.0",

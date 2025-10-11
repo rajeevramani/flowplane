@@ -87,8 +87,9 @@ async fn test_api_import_simple_openapi() {
 #[tokio::test]
 async fn test_api_list_json_output() {
     let server = TestServer::start().await;
-    let token_response =
-        server.issue_token("api-list-token", &["api-definitions:read", "api-definitions:write"]).await;
+    let token_response = server
+        .issue_token("api-list-token", &["api-definitions:read", "api-definitions:write"])
+        .await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API first
@@ -157,8 +158,9 @@ async fn test_api_list_yaml_output() {
 #[tokio::test]
 async fn test_api_get_by_id() {
     let server = TestServer::start().await;
-    let token_response =
-        server.issue_token("api-get-token", &["api-definitions:read", "api-definitions:write"]).await;
+    let token_response = server
+        .issue_token("api-get-token", &["api-definitions:read", "api-definitions:write"])
+        .await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -228,8 +230,9 @@ async fn test_api_get_by_id() {
 #[ignore = "API delete command not yet implemented in CLI"]
 async fn test_api_delete() {
     let server = TestServer::start().await;
-    let token_response =
-        server.issue_token("api-delete-token", &["api-definitions:read", "api-definitions:write"]).await;
+    let token_response = server
+        .issue_token("api-delete-token", &["api-definitions:read", "api-definitions:write"])
+        .await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -283,8 +286,9 @@ async fn test_api_delete() {
 #[tokio::test]
 async fn test_api_bootstrap() {
     let server = TestServer::start().await;
-    let token_response =
-        server.issue_token("api-bootstrap-token", &["api-definitions:read", "api-definitions:write"]).await;
+    let token_response = server
+        .issue_token("api-bootstrap-token", &["api-definitions:read", "api-definitions:write"])
+        .await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
     // Import an API
@@ -408,7 +412,8 @@ paths:
 #[tokio::test]
 async fn test_api_import_invalid_file() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("api-import-invalid-token", &["api-definitions:write"]).await;
+    let token_response =
+        server.issue_token("api-import-invalid-token", &["api-definitions:write"]).await;
 
     let result = run_cli_command(&[
         "api",

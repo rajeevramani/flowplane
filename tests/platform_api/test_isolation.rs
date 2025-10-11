@@ -8,7 +8,7 @@ use flowplane::storage::repository::{CreateListenerRequest, ListenerRepository};
 async fn create_isolated_api_creates_dedicated_listener() {
     let app = setup_platform_api_app().await;
     let token =
-        app.issue_token("platform-admin", &["routes:write", "routes:read", "listeners:read"]).await;
+        app.issue_token("platform-admin", &["api-definitions:write", "api-definitions:read", "listeners:read"]).await;
 
     let payload = json!({
         "team": "payments",
@@ -59,7 +59,7 @@ async fn create_isolated_api_creates_dedicated_listener() {
 #[tokio::test]
 async fn isolated_port_conflict_rolls_back_definition() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("platform-admin", &["routes:write", "listeners:write"]).await;
+    let token = app.issue_token("platform-admin", &["api-definitions:write", "listeners:write"]).await;
 
     // Seed a conflicting listener at 0.0.0.0:10012
     let repo = ListenerRepository::new(app.pool.clone());

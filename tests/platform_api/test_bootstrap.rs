@@ -6,7 +6,7 @@ use serde_json::json;
 #[tokio::test]
 async fn bootstrap_returns_yaml_with_team_scope_defaults() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap", &["routes:write", "routes:read"]).await;
+    let token = app.issue_token("bootstrap", &["api-definitions:write", "api-definitions:read"]).await;
 
     // Create a minimal API definition (non-isolated is fine for bootstrap generation)
     let payload = json!({
@@ -43,7 +43,7 @@ async fn bootstrap_returns_yaml_with_team_scope_defaults() {
 #[tokio::test]
 async fn bootstrap_returns_json_format() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap-json", &["routes:write", "routes:read"]).await;
+    let token = app.issue_token("bootstrap-json", &["api-definitions:write", "api-definitions:read"]).await;
 
     // Create API definition
     let payload = json!({
@@ -86,7 +86,7 @@ async fn bootstrap_returns_json_format() {
 #[tokio::test]
 async fn bootstrap_defaults_to_yaml_format() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap-default", &["routes:write", "routes:read"]).await;
+    let token = app.issue_token("bootstrap-default", &["api-definitions:write", "api-definitions:read"]).await;
 
     // Create API definition
     let payload = json!({
@@ -122,7 +122,7 @@ async fn bootstrap_defaults_to_yaml_format() {
 #[tokio::test]
 async fn bootstrap_returns_404_for_nonexistent_definition() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap-404", &["routes:read"]).await;
+    let token = app.issue_token("bootstrap-404", &["api-definitions:read"]).await;
 
     let path = "/api/v1/api-definitions/nonexistent-id/bootstrap";
     let resp = send_request(&app, Method::GET, path, Some(&token.token), None).await;
