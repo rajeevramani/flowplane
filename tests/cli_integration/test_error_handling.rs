@@ -250,7 +250,7 @@ async fn test_version_flag() {
 #[tokio::test]
 async fn test_concurrent_requests_handling() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("concurrent-test-token", &["routes:read"]).await;
+    let token_response = server.issue_token("concurrent-test-token", &["api-definitions:read"]).await;
 
     // Make multiple concurrent requests
     let handles: Vec<_> = (0..5)
