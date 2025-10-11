@@ -651,6 +651,7 @@ impl PlatformApiMaterializer {
                     port: Some(params.port as i64),
                     protocol: Some(params.protocol.clone()),
                     configuration: listener_value,
+                    team: None, // Platform API listeners inherit team from API definition
                 })
                 .await?;
 
@@ -827,6 +828,7 @@ impl PlatformApiMaterializer {
                         path_prefix: None,
                         cluster_name: None,
                         configuration: Some(updated_config),
+                        team: None, // Don't modify team on route config update
                     },
                 )
                 .await?;
@@ -917,6 +919,7 @@ impl PlatformApiMaterializer {
                     name: cluster_name.clone(),
                     service_name: cluster_name.clone(),
                     configuration: cluster_config,
+                    team: None, // Platform API clusters inherit team from API definition
                 })
                 .await?;
 
@@ -966,6 +969,7 @@ impl PlatformApiMaterializer {
                     path_prefix: api_route.match_value.clone(),
                     cluster_name,
                     configuration: route_config,
+                    team: None, // Platform API routes inherit team from API definition
                 })
                 .await?;
 
@@ -1116,6 +1120,7 @@ impl PlatformApiMaterializer {
                             path_prefix: None,
                             cluster_name: None,
                             configuration: Some(updated_config),
+                            team: None, // Don't modify team on route config update
                         },
                     )
                     .await?;

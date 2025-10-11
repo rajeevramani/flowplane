@@ -152,11 +152,16 @@ async fn rotate_generates_new_secret() {
 #[tokio::test]
 async fn ensure_bootstrap_token_creates_when_empty() {
     let (service, _, _, pool) = setup_service().await;
-    let maybe_token = service.ensure_bootstrap_token().await.unwrap();
+    let bootstrap_secret = "test-bootstrap-token-min-32-characters-long";
+    let maybe_token = service.ensure_bootstrap_token(bootstrap_secret).await.unwrap();
     assert!(maybe_token.is_some());
 
+    let token = maybe_token.unwrap();
+    assert!(token.starts_with("fp_pat_"));
+    assert!(token.contains(bootstrap_secret));
+
     // Subsequent call is a no-op.
-    assert!(service.ensure_bootstrap_token().await.unwrap().is_none());
+    assert!(service.ensure_bootstrap_token(bootstrap_secret).await.unwrap().is_none());
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
         .fetch_one(&pool)
@@ -164,10 +169,11 @@ async fn ensure_bootstrap_token_creates_when_empty() {
         .unwrap();
     assert_eq!(count, 1);
 
-    let seeded_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.seeded'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let seeded_events: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.bootstrap_seeded'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(seeded_events, 1);
 }

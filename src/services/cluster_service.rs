@@ -49,6 +49,7 @@ impl ClusterService {
             name: name.clone(),
             service_name: service_name.clone(),
             configuration,
+            team: None, // Native API clusters don't have team assignment by default
         };
 
         let created = repository.create(request).await?;
@@ -94,6 +95,7 @@ impl ClusterService {
         let update_request = UpdateClusterRequest {
             service_name: Some(service_name),
             configuration: Some(configuration),
+            team: None, // Don't modify team on update unless explicitly set
         };
 
         let updated = repository.update(&existing.id, update_request).await?;

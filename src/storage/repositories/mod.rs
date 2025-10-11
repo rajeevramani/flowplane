@@ -7,6 +7,7 @@ pub mod api_definition;
 pub mod audit_log;
 pub mod cluster;
 pub mod listener;
+pub mod reporting;
 pub mod route;
 pub mod token;
 
@@ -20,5 +21,6 @@ pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateCl
 pub use listener::{
     CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest,
 };
+pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
 pub use token::{SqlxTokenRepository, TokenRepository};

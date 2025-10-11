@@ -48,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "endpoints": ["127.0.0.1:8080", "127.0.0.1:8081"],
             "connect_timeout_seconds": 10
         }),
+        team: None, // Test cluster without team assignment
     };
 
     let created_cluster = repo.create(create_request).await?;

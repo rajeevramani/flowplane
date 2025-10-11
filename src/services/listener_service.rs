@@ -54,6 +54,7 @@ impl ListenerService {
             port: Some(port as i64),
             protocol: Some(protocol.clone()),
             configuration,
+            team: None, // Native API listeners don't have team assignment by default
         };
 
         let created = repository.create(request).await?;
@@ -106,6 +107,7 @@ impl ListenerService {
             port: Some(Some(port as i64)),
             protocol: Some(protocol),
             configuration: Some(configuration),
+            team: None, // Don't modify team on update unless explicitly set
         };
 
         let updated = repository.update(&existing.id, update_request).await?;

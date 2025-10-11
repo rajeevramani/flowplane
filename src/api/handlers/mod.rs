@@ -4,6 +4,7 @@ pub mod api_definitions;
 pub mod auth;
 pub mod clusters;
 pub mod listeners;
+pub mod reporting;
 pub mod routes;
 
 // Re-export handler functions for backward compatibility
@@ -24,6 +25,7 @@ pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,
     update_listener_handler,
 };
+pub use reporting::list_route_flows_handler;
 pub use routes::{
     create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
     update_route_handler,

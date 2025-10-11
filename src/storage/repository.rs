@@ -58,6 +58,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -78,6 +79,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -99,6 +101,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -125,6 +128,7 @@ mod tests {
                 "type": "EDS",
                 "endpoints": ["127.0.0.1:8080"]
             }),
+            team: None,
         };
 
         let created = repo.create(create_request).await.unwrap();
@@ -148,6 +152,7 @@ mod tests {
                 "type": "EDS",
                 "endpoints": ["127.0.0.1:9090"]
             })),
+            team: None,
         };
 
         let updated = repo.update(&created.id, update_request).await.unwrap();
@@ -219,6 +224,7 @@ mod tests {
                     }
                 ]
             }),
+            team: None,
         };
 
         let created = repo.create(create_request).await.unwrap();
@@ -259,6 +265,7 @@ mod tests {
                     }
                 ]
             })),
+            team: None,
         };
 
         let updated = repo.update(&created.id, update_request).await.unwrap();
@@ -288,6 +295,7 @@ mod tests {
                 "address": "0.0.0.0",
                 "port": 8080
             }),
+            team: None,
         };
 
         let created = repo.create(create_request).await.unwrap();
@@ -311,6 +319,7 @@ mod tests {
                 "address": "127.0.0.1",
                 "port": 9090
             })),
+            team: None,
         };
 
         let updated = repo.update(&created.id, update_request).await.unwrap();

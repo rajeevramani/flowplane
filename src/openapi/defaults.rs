@@ -46,33 +46,78 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         None => return Ok(()),
     };
 
+    // Read BOOTSTRAP_TOKEN from environment - REQUIRED for startup
+    let bootstrap_token = std::env::var("BOOTSTRAP_TOKEN").map_err(|_| {
+        Error::internal(
+            "BOOTSTRAP_TOKEN environment variable is required but not set.\n\
+            \n\
+            Please add BOOTSTRAP_TOKEN to your .env file:\n\
+            \n\
+            1. Generate a secure token:\n\
+               openssl rand -base64 32\n\
+            \n\
+            2. Add to .env file:\n\
+               BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
+            \n\
+            SECURITY: Token must be at least 32 characters long.\n\
+            "
+            .to_string(),
+        )
+    })?;
+
+    // Validate minimum length (32 characters for security)
+    if bootstrap_token.len() < 32 {
+        return Err(Error::internal(format!(
+            "BOOTSTRAP_TOKEN must be at least 32 characters long (current: {} chars).\n\
+            \n\
+            Generate a secure token with:\n\
+            openssl rand -base64 32\n\
+            ",
+            bootstrap_token.len()
+        )));
+    }
+
+    // Prevent use of the example/default token
+    if bootstrap_token == "change-me-to-secure-token-min-32-characters-long" {
+        return Err(Error::internal(
+            "BOOTSTRAP_TOKEN is set to the example value.\n\
+            \n\
+            Please generate a secure token:\n\
+            openssl rand -base64 32\n\
+            \n\
+            Then update .env with:\n\
+            BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
+            "
+            .to_string(),
+        ));
+    }
+
     let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
     let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
-    if let Some(secret) = token_service.ensure_bootstrap_token().await? {
+
+    if let Some(token_value) = token_service.ensure_bootstrap_token(&bootstrap_token).await? {
         // Print prominent banner to ensure token is visible
         eprintln!("\n{}", "=".repeat(80));
-        eprintln!("🔐 BOOTSTRAP ADMIN TOKEN GENERATED");
+        eprintln!("🔐 BOOTSTRAP ADMIN TOKEN CREATED");
         eprintln!("{}", "=".repeat(80));
         eprintln!();
-        eprintln!("  Token ID: {}", secret.id);
-        eprintln!("  Token:    {}", secret.token);
+        eprintln!("  Token: {}", token_value);
         eprintln!();
         eprintln!("⚠️  IMPORTANT: Save this token securely!");
-        eprintln!("   - This token has full admin access");
-        eprintln!("   - It is only shown ONCE on first startup");
+        eprintln!("   - This token has full admin access (admin:all scope)");
+        eprintln!("   - It is created from your BOOTSTRAP_TOKEN environment variable");
         eprintln!("   - Store it in a password manager or secure vault");
         eprintln!();
         eprintln!("To use with CLI:");
-        eprintln!("  export FLOWPLANE_TOKEN='{}'", secret.token);
+        eprintln!("  export FLOWPLANE_TOKEN='{}'", token_value);
         eprintln!();
         eprintln!("{}", "=".repeat(80));
         eprintln!();
 
         // Also log it for structured logging systems
         warn!(
-            token_id = %secret.id,
-            token = %secret.token,
-            "Seeded bootstrap admin personal access token; store it securely"
+            token = %token_value,
+            "Seeded bootstrap admin personal access token from environment; store it securely"
         );
     }
 
@@ -98,6 +143,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             service_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             configuration: cluster_config,
+            team: None, // Default gateway cluster is not team-scoped
         };
 
         cluster_repo.create(request).await?;
@@ -140,6 +186,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             path_prefix: "/".to_string(),
             cluster_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             configuration: route_configuration,
+            team: None, // Default gateway routes are not team-scoped
         };
 
         route_repo.create(request).await?;
@@ -208,6 +255,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             port: Some(DEFAULT_GATEWAY_PORT as i64),
             protocol: Some("HTTP".to_string()),
             configuration: listener_configuration,
+            team: None, // Default gateway listener is not team-scoped
         };
 
         listener_repo.create(request).await?;

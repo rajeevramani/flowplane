@@ -12,6 +12,7 @@ use validator::Validate;
 
 use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
+use crate::auth::authorization::require_resource_access;
 use crate::auth::{
     models::{AuthContext, PersonalAccessToken},
     token_service::{TokenSecretResponse, TokenService},
@@ -107,6 +108,9 @@ pub async fn create_token_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<CreateTokenBody>,
 ) -> Result<(StatusCode, Json<TokenSecretResponse>), ApiError> {
+    // Authorization: require tokens:write scope
+    require_resource_access(&context, "tokens", "write", None)?;
+
     payload.validate().map_err(|err| convert_error(Error::from(err)))?;
 
     let request = payload.into_request(&context);
@@ -131,8 +135,12 @@ pub async fn create_token_handler(
 )]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<ListTokensQuery>,
 ) -> Result<Json<Vec<PersonalAccessToken>>, ApiError> {
+    // Authorization: require tokens:read scope
+    require_resource_access(&context, "tokens", "read", None)?;
+
     let limit = params.limit.unwrap_or(50).clamp(1, 1000);
     let offset = params.offset.unwrap_or(0).max(0);
 
@@ -156,8 +164,12 @@ pub async fn list_tokens_handler(
 )]
 pub async fn get_token_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<PersonalAccessToken>, ApiError> {
+    // Authorization: require tokens:read scope
+    require_resource_access(&context, "tokens", "read", None)?;
+
     let service = token_service_for_state(&state)?;
     let token = service.get_token(&id).await.map_err(convert_error)?;
     Ok(Json(token))
@@ -179,9 +191,13 @@ pub async fn get_token_handler(
 )]
 pub async fn update_token_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
     Json(payload): Json<UpdateTokenBody>,
 ) -> Result<Json<PersonalAccessToken>, ApiError> {
+    // Authorization: require tokens:write scope
+    require_resource_access(&context, "tokens", "write", None)?;
+
     let request = payload.into_request();
     request.validate().map_err(|err| convert_error(Error::from(err)))?;
 
@@ -205,8 +221,12 @@ pub async fn update_token_handler(
 )]
 pub async fn revoke_token_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<PersonalAccessToken>, ApiError> {
+    // Authorization: require tokens:write scope (revoke is a write operation)
+    require_resource_access(&context, "tokens", "write", None)?;
+
     let service = token_service_for_state(&state)?;
     let token = service.revoke_token(&id).await.map_err(convert_error)?;
     Ok(Json(token))
@@ -226,8 +246,12 @@ pub async fn revoke_token_handler(
 )]
 pub async fn rotate_token_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<TokenSecretResponse>, ApiError> {
+    // Authorization: require tokens:write scope for rotation
+    require_resource_access(&context, "tokens", "write", None)?;
+
     let service = token_service_for_state(&state)?;
     let secret = service.rotate_token(&id).await.map_err(convert_error)?;
     Ok(Json(secret))

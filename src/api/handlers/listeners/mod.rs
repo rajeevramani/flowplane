@@ -16,12 +16,14 @@ pub use types::{
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
+    auth::authorization::require_resource_access,
+    auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_listener,
     storage::{CreateListenerRequest, UpdateListenerRequest},
@@ -47,8 +49,12 @@ use validation::{
 )]
 pub async fn create_listener_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<types::CreateListenerBody>,
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
+    // Authorization: require listeners:write scope
+    require_resource_access(&context, "listeners", "write", None)?;
+
     validate_create_listener_body(&payload)?;
 
     let repository = require_listener_repository(&state)?;
@@ -66,6 +72,7 @@ pub async fn create_listener_handler(
         port: Some(payload.port as i64),
         protocol: payload.protocol.clone(),
         configuration,
+        team: None, // Native API listeners don't have team assignment by default
     };
 
     let created = repository.create(request).await.map_err(ApiError::from)?;
@@ -95,8 +102,12 @@ pub async fn create_listener_handler(
 )]
 pub async fn list_listeners_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<types::ListListenersQuery>,
 ) -> Result<Json<Vec<types::ListenerResponse>>, ApiError> {
+    // Authorization: require listeners:read scope
+    require_resource_access(&context, "listeners", "read", None)?;
+
     let repository = require_listener_repository(&state)?;
     let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
 
@@ -121,8 +132,12 @@ pub async fn list_listeners_handler(
 )]
 pub async fn get_listener_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
+    // Authorization: require listeners:read scope
+    require_resource_access(&context, "listeners", "read", None)?;
+
     let repository = require_listener_repository(&state)?;
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
     let response = listener_response_from_data(listener)?;
@@ -144,9 +159,13 @@ pub async fn get_listener_handler(
 )]
 pub async fn update_listener_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
     Json(payload): Json<types::UpdateListenerBody>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
+    // Authorization: require listeners:write scope
+    require_resource_access(&context, "listeners", "write", None)?;
+
     validate_update_listener_body(&payload)?;
 
     let repository = require_listener_repository(&state)?;
@@ -165,6 +184,7 @@ pub async fn update_listener_handler(
         port: Some(Some(payload.port as i64)),
         protocol: payload.protocol.clone(),
         configuration: Some(configuration),
+        team: None, // Don't modify team on update unless explicitly set
     };
 
     let updated = repository.update(&existing.id, request).await.map_err(ApiError::from)?;
@@ -193,8 +213,12 @@ pub async fn update_listener_handler(
 )]
 pub async fn delete_listener_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // Authorization: require listeners:write scope (delete is a write operation)
+    require_resource_access(&context, "listeners", "write", None)?;
+
     if is_default_gateway_listener(&name) {
         return Err(ApiError::Conflict(
             "The default gateway listener cannot be deleted".to_string(),
@@ -225,6 +249,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
+        auth::models::AuthContext,
         config::SimpleXdsConfig,
         storage::DbPool,
         xds::resources::LISTENER_TYPE_URL,
@@ -234,6 +259,7 @@ mod tests {
         },
         xds::XdsState,
     };
+    use axum::Extension;
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::time::{sleep, Duration};
 
@@ -242,6 +268,15 @@ mod tests {
         UpdateListenerBody,
     };
     use validation::convert_filter_type;
+
+    /// Create an admin AuthContext for testing with full permissions
+    fn admin_context() -> AuthContext {
+        AuthContext::new(
+            "test-token".to_string(),
+            "test-admin".to_string(),
+            vec!["admin:all".to_string()],
+        )
+    }
 
     async fn create_test_pool() -> DbPool {
         let pool = SqlitePoolOptions::new()
@@ -259,6 +294,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -278,6 +314,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -298,6 +335,7 @@ mod tests {
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -400,9 +438,13 @@ mod tests {
             }],
         };
 
-        let (status, Json(resp)) = create_listener_handler(State(api_state.clone()), Json(payload))
-            .await
-            .expect("create listener");
+        let (status, Json(resp)) = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(resp.name, "edge-listener");
@@ -441,9 +483,13 @@ mod tests {
             }],
         };
 
-        let _ = create_listener_handler(State(api_state.clone()), Json(initial))
-            .await
-            .expect("seed listener");
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_context()),
+            Json(initial),
+        )
+        .await
+        .expect("seed listener");
 
         let update_payload = UpdateListenerBody {
             address: "127.0.0.1".to_string(),
@@ -467,6 +513,7 @@ mod tests {
 
         let Json(updated) = update_listener_handler(
             State(api_state.clone()),
+            Extension(admin_context()),
             Path("edge-listener".to_string()),
             Json(update_payload),
         )
