@@ -78,6 +78,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
             name: "native-test-cluster".to_string(),
             service_name: "native-backend".to_string(),
             configuration: serde_json::to_value(&native_cluster_spec).unwrap(),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -116,6 +117,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
                 path_prefix: None,
                 cluster_name: None,
                 configuration: Some(serde_json::to_value(&native_route_config).unwrap()),
+                team: None,
             },
         )
         .await
@@ -268,6 +270,7 @@ async fn test_native_api_update_preserves_platform_api_routes() {
                 path_prefix: None,
                 cluster_name: None,
                 configuration: Some(serde_json::to_value(&route_config).unwrap()),
+                team: None,
             },
         )
         .await

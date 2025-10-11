@@ -70,6 +70,7 @@ async fn isolated_port_conflict_rolls_back_definition() {
             port: Some(10012),
             protocol: Some("HTTP".into()),
             configuration: serde_json::json!({"note":"seed"}),
+            team: Some("test".into()),
         })
         .await
         .expect("seed listener");
