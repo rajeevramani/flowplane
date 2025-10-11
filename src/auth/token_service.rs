@@ -91,7 +91,7 @@ impl TokenService {
             expires_at: None,
             created_by: Some("system".into()),
             scopes: vec![
-                "admin:all".into(),  // Grant full admin access
+                "admin:all".into(), // Grant full admin access
             ],
         };
 

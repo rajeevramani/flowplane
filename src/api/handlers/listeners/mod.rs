@@ -271,7 +271,11 @@ mod tests {
 
     /// Create an admin AuthContext for testing with full permissions
     fn admin_context() -> AuthContext {
-        AuthContext::new("test-token".to_string(), "test-admin".to_string(), vec!["admin:all".to_string()])
+        AuthContext::new(
+            "test-token".to_string(),
+            "test-admin".to_string(),
+            vec!["admin:all".to_string()],
+        )
     }
 
     async fn create_test_pool() -> DbPool {
@@ -434,9 +438,13 @@ mod tests {
             }],
         };
 
-        let (status, Json(resp)) = create_listener_handler(State(api_state.clone()), Extension(admin_context()), Json(payload))
-            .await
-            .expect("create listener");
+        let (status, Json(resp)) = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(resp.name, "edge-listener");
@@ -475,9 +483,13 @@ mod tests {
             }],
         };
 
-        let _ = create_listener_handler(State(api_state.clone()), Extension(admin_context()), Json(initial))
-            .await
-            .expect("seed listener");
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_context()),
+            Json(initial),
+        )
+        .await
+        .expect("seed listener");
 
         let update_payload = UpdateListenerBody {
             address: "127.0.0.1".to_string(),

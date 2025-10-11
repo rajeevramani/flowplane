@@ -286,7 +286,11 @@ mod tests {
 
     /// Create an admin AuthContext for testing with full permissions
     fn admin_context() -> AuthContext {
-        AuthContext::new("test-token".to_string(), "test-admin".to_string(), vec!["admin:all".to_string()])
+        AuthContext::new(
+            "test-token".to_string(),
+            "test-admin".to_string(),
+            vec!["admin:all".to_string()],
+        )
     }
 
     async fn setup_state() -> ApiState {
@@ -396,10 +400,13 @@ mod tests {
         let state = setup_state().await;
 
         let payload = sample_route_definition();
-        let (status, Json(created)) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
-                .await
-                .expect("create route");
+        let (status, Json(created)) = create_route_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create route");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created.name, "primary-routes");
@@ -417,12 +424,18 @@ mod tests {
 
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
+                .await
+                .expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let response = list_routes_handler(State(state), Extension(admin_context()), Query(types::ListRoutesQuery::default()))
-            .await
-            .expect("list routes");
+        let response = list_routes_handler(
+            State(state),
+            Extension(admin_context()),
+            Query(types::ListRoutesQuery::default()),
+        )
+        .await
+        .expect("list routes");
 
         assert_eq!(response.0.len(), 1);
         assert_eq!(response.0[0].name, "primary-routes");
@@ -433,12 +446,18 @@ mod tests {
         let state = setup_state().await;
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
+                .await
+                .expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let response = get_route_handler(State(state), Extension(admin_context()), Path("primary-routes".into()))
-            .await
-            .expect("get route");
+        let response = get_route_handler(
+            State(state),
+            Extension(admin_context()),
+            Path("primary-routes".into()),
+        )
+        .await
+        .expect("get route");
 
         assert_eq!(response.0.name, "primary-routes");
         assert_eq!(response.0.config.virtual_hosts[0].routes.len(), 1);
@@ -448,9 +467,13 @@ mod tests {
     async fn update_route_applies_changes() {
         let state = setup_state().await;
         let mut payload = sample_route_definition();
-        let (status, _) = create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
-            .await
-            .expect("create route");
+        let (status, _) = create_route_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
         payload.virtual_hosts[0].routes[0].action = RouteActionDefinition::Weighted {
@@ -531,12 +554,18 @@ mod tests {
         let state = setup_state().await;
         let payload = sample_route_definition();
         let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload)).await.expect("create route");
+            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
+                .await
+                .expect("create route");
         assert_eq!(status, StatusCode::CREATED);
 
-        let status = delete_route_handler(State(state.clone()), Extension(admin_context()), Path("primary-routes".into()))
-            .await
-            .expect("delete route");
+        let status = delete_route_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Path("primary-routes".into()),
+        )
+        .await
+        .expect("delete route");
 
         assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -559,10 +588,13 @@ mod tests {
             template_rewrite: Some("/users/{user_id}".into()),
         };
 
-        let (status, Json(created)) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload.clone()))
-                .await
-                .expect("create template route");
+        let (status, Json(created)) = create_route_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create template route");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created.name, "template-route");

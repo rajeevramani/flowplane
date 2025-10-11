@@ -216,7 +216,11 @@ mod tests {
 
     /// Create an admin AuthContext for testing with full permissions
     fn admin_context() -> AuthContext {
-        AuthContext::new("test-token".to_string(), "test-admin".to_string(), vec!["admin:all".to_string()])
+        AuthContext::new(
+            "test-token".to_string(),
+            "test-admin".to_string(),
+            vec!["admin:all".to_string()],
+        )
     }
 
     fn create_test_config() -> DatabaseConfig {
@@ -298,9 +302,13 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let response = create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body.clone()))
-            .await
-            .expect("handler response");
+        let response = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(body.clone()),
+        )
+        .await
+        .expect("handler response");
 
         assert_eq!(response.0, StatusCode::CREATED);
         let payload = response.1 .0;
@@ -337,12 +345,18 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
+                .await
+                .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let response = list_clusters_handler(State(state), Extension(admin_context()), Query(ListClustersQuery::default()))
-            .await
-            .expect("list clusters");
+        let response = list_clusters_handler(
+            State(state),
+            Extension(admin_context()),
+            Query(ListClustersQuery::default()),
+        )
+        .await
+        .expect("list clusters");
 
         let clusters = response.0;
         assert_eq!(clusters.len(), 1);
@@ -355,12 +369,18 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
+                .await
+                .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let response = get_cluster_handler(State(state), Extension(admin_context()), Path("api-cluster".to_string()))
-            .await
-            .expect("get cluster");
+        let response = get_cluster_handler(
+            State(state),
+            Extension(admin_context()),
+            Path("api-cluster".to_string()),
+        )
+        .await
+        .expect("get cluster");
 
         let cluster = response.0;
         assert_eq!(cluster.name, "api-cluster");
@@ -372,10 +392,13 @@ mod tests {
         let state = setup_state().await;
         let mut body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body.clone()))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(body.clone()),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         body.service_name = Some("renamed".into());
@@ -405,12 +428,18 @@ mod tests {
         let body = sample_request();
 
         let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body)).await.expect("create cluster");
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
+                .await
+                .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
-        let status = delete_cluster_handler(State(state.clone()), Extension(admin_context()), Path("api-cluster".to_string()))
-            .await
-            .expect("delete cluster");
+        let status = delete_cluster_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Path("api-cluster".to_string()),
+        )
+        .await
+        .expect("delete cluster");
         assert_eq!(status, StatusCode::NO_CONTENT);
 
         let repo = state.xds_state.cluster_repository.as_ref().cloned().expect("repository");

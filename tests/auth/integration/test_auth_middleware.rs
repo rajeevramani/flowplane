@@ -62,8 +62,7 @@ async fn dynamic_scope_derivation_post_requires_write() {
         }]
     });
     let response =
-        send_request(&app, Method::POST, "/api/v1/routes", Some(&token.token), Some(payload))
-            .await;
+        send_request(&app, Method::POST, "/api/v1/routes", Some(&token.token), Some(payload)).await;
     // Expect 201 CREATED or error due to missing cluster, but NOT 403 (scope check passes)
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }

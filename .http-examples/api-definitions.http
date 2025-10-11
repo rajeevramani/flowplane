@@ -1,96 +1,323 @@
 ### Variables
 @base_url = http://localhost:8080
-@token = {{$processEnv API_TOKEN}}
-@api_definition_id = replace-with-actual-id
+@token = {{$dotenv API_TOKEN}}
+
+# Port Allocations
+@envoy_port_api_def_test_1 = 10016
+@envoy_port_api_def_test_2 = 10000
+@envoy_port_api_def_test_3 = 10018
+@envoy_port_api_def_patch = 10019
+
+# API Definition test resources
+@api_team_1 = team-test-1
+@api_team_2 = team-test-2
+@api_team_3 = team-test-3
+@api_domain_1 = api-test-1.httpbin.org
+@api_domain_2 = api-test-2.httpbin.org
+@api_domain_3 = api-test-3.httpbin.org
+
+# HTTPBin upstream
+@httpbin_endpoint = httpbin.org:443
 
 # =============================================================================
-# CREATE (Direct API Definition)
+# Test 1: API Definition with Listener Isolation
 # =============================================================================
 
-### Create API Definition WITHOUT Listener Isolation (uses existing default listener)
+### Step 1.1: Create API Definition with Listener Isolation (dedicated listener)
+# @name createApiDef1
 POST {{base_url}}/api/v1/api-definitions
 Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "team": "demo",
-  "domain": "demo.example.com",
-  "listenerIsolation": false,
-  "targetListeners": ["default-listener"],
-  "routes": [
-    {
-      "name": "health-check",
-      "path": "/health",
-      "method": "GET",
-      "cluster": "health-cluster"
-    },
-    {
-      "name": "api-endpoint",
-      "path": "/api/v1/users",
-      "method": "GET",
-      "cluster": "users-cluster"
-    }
-  ]
-}
-
-### Create API Definition WITH Listener Isolation (creates dedicated listener)
-POST {{base_url}}/api/v1/api-definitions
-Authorization: Bearer {{token}}
-Content-Type: application/json
-
-{
-  "team": "payments",
-  "domain": "payments.example.com",
+  "team": "{{api_team_1}}",
+  "domain": "{{api_domain_1}}",
   "listenerIsolation": true,
   "listener": {
-    "name": "payments-isolated-listener",
+    "name": "api-def-listener-1",
     "bindAddress": "0.0.0.0",
-    "port": 10020,
+    "port": {{envoy_port_api_def_test_1}},
     "protocol": "HTTP"
   },
   "routes": [
     {
-      "name": "payment-create",
-      "path": "/payments",
-      "method": "POST",
-      "cluster": "payment-processor"
+      "match": {
+        "prefix": "/test1/get"
+      },
+      "cluster": {
+        "name": "httpbin-cluster-api-1",
+        "endpoint": "{{httpbin_endpoint}}"
+      },
+      "rewrite": {
+        "prefix": "/get"
+      },
+      "timeoutSeconds": 30
     },
     {
-      "name": "payment-status",
-      "path": "/payments/:id",
-      "method": "GET",
-      "cluster": "payment-processor"
+      "match": {
+        "prefix": "/test1/status"
+      },
+      "cluster": {
+        "name": "httpbin-cluster-api-1",
+        "endpoint": "{{httpbin_endpoint}}"
+      },
+      "rewrite": {
+        "prefix": "/status/200"
+      },
+      "timeoutSeconds": 30
     }
   ]
 }
 
+### Step 1.2: Extract API Definition ID from response
+@api_definition_1_id = {{createApiDef1.response.body.id}}
+
+### Step 1.3: Get Bootstrap Configuration
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_1_id}}/bootstrap
+Authorization: Bearer {{token}}
+
+### Step 1.4: Test through Envoy - /test1/get endpoint (rewrites to /get)
+GET http://localhost:{{envoy_port_api_def_test_1}}/test1/get
+Host: {{api_domain_1}}
+
+### Step 1.5: Test through Envoy - /test1/status endpoint (rewrites to /status/200)
+GET http://localhost:{{envoy_port_api_def_test_1}}/test1/status
+Host: {{api_domain_1}}
+
 # =============================================================================
-# IMPORT (OpenAPI Spec)
+# Test 2: API Definition without Listener Isolation (uses default-gateway-listener)
 # =============================================================================
 
-### Import OpenAPI WITHOUT Listener Isolation (shared listener)
-POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false
+### Step 2.1: Create API Definition without Listener Isolation (uses default-gateway-listener)
+# @name createApiDef2
+POST {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "team": "{{api_team_2}}",
+  "domain": "{{api_domain_2}}",
+  "listenerIsolation": false,
+  "targetListeners": ["default-gateway-listener"],
+  "routes": [
+    {
+      "match": {
+        "prefix": "/test2/json"
+      },
+      "cluster": {
+        "name": "httpbin-cluster-api-2",
+        "endpoint": "{{httpbin_endpoint}}"
+      },
+      "rewrite": {
+        "prefix": "/json"
+      },
+      "timeoutSeconds": 30
+    }
+  ]
+}
+
+### Step 2.2: Extract API Definition ID from response
+@api_definition_2_id = {{createApiDef2.response.body.id}}
+
+### Step 2.3: Test through Envoy - /test2/json endpoint (rewrites to /json)
+GET http://localhost:{{envoy_port_api_def_test_2}}/test2/json
+Host: {{api_domain_2}}
+
+# =============================================================================
+# Test 3: Import OpenAPI with Listener Isolation
+# =============================================================================
+
+### Step 3.1: Import OpenAPI with Listener Isolation
+# @name importApiDef3
+POST {{base_url}}/api/v1/api-definitions/from-openapi?team={{api_team_3}}&listenerIsolation=true&port={{envoy_port_api_def_test_3}}
 Authorization: Bearer {{token}}
 Content-Type: application/yaml
 
-< ../../../examples/httpbin-simple.yaml
+< ../examples/httpbin-basic.yaml
 
-### Import OpenAPI WITH Listener Isolation (dedicated listener)
-POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true
+### Step 3.2: Extract API Definition ID from response
+@api_definition_3_id = {{importApiDef3.response.body.id}}
+
+### Step 3.3: Get Bootstrap Configuration
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_3_id}}/bootstrap
 Authorization: Bearer {{token}}
-Content-Type: application/yaml
 
-< ../../../examples/httpbin-simple.yaml
-
-### Import OpenAPI with Custom Port (listener isolation required)
-POST {{base_url}}/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true&port=10030
-Authorization: Bearer {{token}}
-Content-Type: application/yaml
-
-< ../../../examples/httpbin-simple.yaml
+### Step 3.4: Test through Envoy - OpenAPI imported route
+GET http://localhost:{{envoy_port_api_def_test_3}}/get
+Host: httpbin.org
 
 # =============================================================================
-# READ
+# PATCH Test 1: Update Domain and Verify with Envoy
+# =============================================================================
+
+### Step 4.1: Create API Definition for PATCH testing
+# @name createApiDefPatch
+POST {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "team": "patch-test-team",
+  "domain": "original.httpbin.org",
+  "listenerIsolation": true,
+  "listener": {
+    "name": "api-def-patch-listener",
+    "bindAddress": "0.0.0.0",
+    "port": {{envoy_port_api_def_patch}},
+    "protocol": "HTTP"
+  },
+  "routes": [
+    {
+      "match": {
+        "prefix": "/patchtest/initial"
+      },
+      "cluster": {
+        "name": "httpbin-cluster-patch",
+        "endpoint": "{{httpbin_endpoint}}"
+      },
+      "rewrite": {
+        "prefix": "/get"
+      },
+      "timeoutSeconds": 30
+    }
+  ]
+}
+
+### Step 4.2: Extract API Definition ID from response
+@api_definition_patch_id = {{createApiDefPatch.response.body.$.id}}
+
+### Step 4.3: Test with ORIGINAL domain - should work
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/initial
+Host: original.httpbin.org
+
+### Step 4.4: PATCH - Update domain from original.httpbin.org to updated.httpbin.org
+PATCH {{base_url}}/api/v1/api-definitions/{{api_definition_patch_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "domain": "updated.httpbin.org"
+}
+
+### Step 4.5: Verify OLD domain FAILS after patch
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/initial
+Host: original.httpbin.org
+
+### Step 4.6: Verify NEW domain WORKS after patch
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/initial
+Host: updated.httpbin.org
+
+# =============================================================================
+# PATCH Test 2: Add New Routes and Verify with Envoy
+# =============================================================================
+
+### Step 5.1: Get current API definition
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_patch_id}}
+Authorization: Bearer {{token}}
+
+### Step 5.2: Test OLD route still works with updated domain
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/initial
+Host: updated.httpbin.org
+
+### Step 5.3: Test NEW route BEFORE adding it (should fail - 404)
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/uuid
+Host: updated.httpbin.org
+
+### Step 5.4a: POST - Append /patchtest/uuid route
+POST {{base_url}}/api/v1/api-definitions/{{api_definition_patch_id}}/routes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "route": {
+    "match": {
+      "prefix": "/patchtest/uuid"
+    },
+    "cluster": {
+      "name": "httpbin-cluster-patch",
+      "endpoint": "{{httpbin_endpoint}}"
+    },
+    "rewrite": {
+      "prefix": "/uuid"
+    },
+    "timeoutSeconds": 30
+  }
+}
+
+### Step 5.4b: POST - Append /patchtest/headers route
+POST {{base_url}}/api/v1/api-definitions/{{api_definition_patch_id}}/routes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "route": {
+    "match": {
+      "prefix": "/patchtest/headers"
+    },
+    "cluster": {
+      "name": "httpbin-cluster-patch",
+      "endpoint": "{{httpbin_endpoint}}"
+    },
+    "rewrite": {
+      "prefix": "/headers"
+    },
+    "timeoutSeconds": 30
+  }
+}
+
+### Step 5.5: Verify NEW route /patchtest/uuid WORKS after adding
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/uuid
+Host: updated.httpbin.org
+
+### Step 5.6: Verify NEW route /patchtest/headers WORKS after adding
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/headers
+Host: updated.httpbin.org
+
+### Step 5.7: Verify ORIGINAL route still works
+GET http://localhost:{{envoy_port_api_def_patch}}/patchtest/initial
+Host: updated.httpbin.org
+
+# =============================================================================
+# Test 4: Advanced Features - Path Rewriting
+# =============================================================================
+
+### Step 6.1: Create API Definition with path rewrite (uses default-gateway-listener)
+# @name createApiDef4
+POST {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "team": "advanced-test",
+  "domain": "advanced.httpbin.org",
+  "listenerIsolation": false,
+  "targetListeners": ["default-gateway-listener"],
+  "routes": [
+    {
+      "match": {
+        "prefix": "/test4/data"
+      },
+      "cluster": {
+        "name": "httpbin-cluster-advanced",
+        "endpoint": "{{httpbin_endpoint}}"
+      },
+      "rewrite": {
+        "prefix": "/get"
+      },
+      "timeoutSeconds": 30
+    }
+  ]
+}
+
+### Step 6.2: Extract API Definition ID from response
+@api_definition_4_id = {{createApiDef4.response.body.id}}
+
+### Step 6.3: Test path rewrite - request to /test4/data should rewrite to /get
+GET http://localhost:{{envoy_port_api_def_test_2}}/test4/data
+Host: advanced.httpbin.org
+
+# =============================================================================
+# READ Operations
 # =============================================================================
 
 ### List All API Definitions
@@ -98,104 +325,97 @@ GET {{base_url}}/api/v1/api-definitions
 Authorization: Bearer {{token}}
 
 ### List API Definitions with Pagination
-GET {{base_url}}/api/v1/api-definitions?limit=10&offset=0
+GET {{base_url}}/api/v1/api-definitions?limit=2&offset=0
 Authorization: Bearer {{token}}
 
 ### List API Definitions by Team
-GET {{base_url}}/api/v1/api-definitions?team=demo
+GET {{base_url}}/api/v1/api-definitions?team={{api_team_1}}
 Authorization: Bearer {{token}}
 
-### Get API Definition by ID
-# Replace {{api_definition_id}} with actual ID from create/import response
-GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
+### Get Specific API Definition
+GET {{base_url}}/api/v1/api-definitions/{{api_definition_1_id}}
 Authorization: Bearer {{token}}
-
-### Get Bootstrap Configuration
-# Returns Envoy bootstrap config for this API definition
-# Use this to find the assigned listener port
-GET {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/bootstrap
-Authorization: Bearer {{token}}
-
-# =============================================================================
-# UPDATE
-# =============================================================================
-
-### Update API Definition Metadata
-# Replace {{api_definition_id}} with actual ID
-PATCH {{base_url}}/api/v1/api-definitions/{{api_definition_id}}
-Authorization: Bearer {{token}}
-Content-Type: application/json
-
-{
-  "metadata": {
-    "description": "Updated API definition for demo team",
-    "version": "v2.0",
-    "contact": "demo-team@example.com"
-  }
-}
-
-### Append Routes to Existing API Definition
-# Replace {{api_definition_id}} with actual ID
-POST {{base_url}}/api/v1/api-definitions/{{api_definition_id}}/routes
-Authorization: Bearer {{token}}
-Content-Type: application/json
-
-{
-  "routes": [
-    {
-      "name": "new-endpoint",
-      "path": "/new-endpoint",
-      "method": "GET",
-      "cluster": "test-cluster"
-    },
-    {
-      "name": "another-endpoint",
-      "path": "/another",
-      "method": "POST",
-      "cluster": "test-cluster"
-    }
-  ]
-}
-
-# =============================================================================
-# TESTING
-# =============================================================================
-
-### Test API through Envoy (after getting port from bootstrap)
-# First get the bootstrap config to find your listener port
-# Then test: curl http://localhost:{PORT}/health -H "Host: demo.example.com"
-
-# For OpenAPI imports with httpbin:
-# curl http://localhost:{PORT}/get -H "Host: httpbin.org"
-# curl http://localhost:{PORT}/headers -H "Host: httpbin.org"
 
 # =============================================================================
 # NOTES
 # =============================================================================
 
-# Listener Isolation Modes:
+# API Definition Payload Structure:
 #
-# 1. WITHOUT Listener Isolation (listenerIsolation: false)
-#    - Routes added to existing shared listener(s)
-#    - Requires targetListeners to be specified
-#    - Multiple APIs can share the same listener
-#    - Lower resource usage
-#    - Use case: Multiple small APIs, development, testing
+# {
+#   "team": "string",                    // Required: Team name for RBAC
+#   "domain": "string",                  // Required: Domain for this API
+#   "listenerIsolation": boolean,        // Required: true = dedicated listener, false = shared
+#   "listener": { ... },                 // Required when listenerIsolation = true
+#   "targetListeners": ["string"],       // Required when listenerIsolation = false
+#   "routes": [
+#     {
+#       "match": {
+#         "prefix": "/api/path"          // Route matching prefix
+#       },
+#       "cluster": {
+#         "name": "cluster-name",        // Cluster identifier
+#         "endpoint": "host:port"        // Single endpoint in "host:port" format
+#       },
+#       "rewrite": {                     // Optional: Path rewriting
+#         "prefix": "/new/path"
+#       },
+#       "timeoutSeconds": 30             // Optional: Request timeout
+#       // NOTE: Filters (cors, rateLimit) may not be fully supported yet
+#       // "filters": {                   // Optional: Route-level filters (if supported)
+#       //   "cors": { ... },             // CORS configuration
+#       //   "rateLimit": { ... }         // Rate limiting
+#       // }
+#     }
+#   ]
+# }
 #
-# 2. WITH Listener Isolation (listenerIsolation: true)
-#    - Creates dedicated listener for this API
-#    - Must specify listener configuration (name, bindAddress, port)
-#    - Each API gets its own listener
-#    - Better isolation, independent port
-#    - Use case: Production APIs, team isolation, security requirements
+# Test 1: API Definition WITH Listener Isolation
+#   - Creates dedicated listener on port {{envoy_port_api_def_test_1}}
+#   - Domain: {{api_domain_1}}
+#   - Routes: /test1/get (→ /get), /test1/status (→ /status/200)
 #
-# Query Parameters for Import:
-#    - team: Team name for RBAC (required)
-#    - listenerIsolation: true/false (default: false)
-#    - port: Custom port (only with listenerIsolation=true)
+# Test 2: API Definition WITHOUT Listener Isolation
+#   - Uses default-gateway-listener (port 10000)
+#   - Domain: {{api_domain_2}}
+#   - Routes: /test2/json (→ /json)
 #
-# After Creating/Importing:
-#    1. Get the ID from the response
-#    2. Call GET /api/v1/api-definitions/{id}/bootstrap
-#    3. Find the port in the bootstrap config
-#    4. Test with curl using the Host header
+# Test 3: Import OpenAPI with Listener Isolation
+#   - Imports from httpbin-basic.yaml
+#   - Creates dedicated listener on port {{envoy_port_api_def_test_3}}
+#   - Routes: /get, /headers, /post, /put, /status/200, /json, /uuid (from OpenAPI)
+#
+# PATCH Test 1: Domain Update
+#   - Updates domain from original.httpbin.org to updated.httpbin.org
+#   - Routes: /patchtest/initial (→ /get)
+#   - Verifies OLD domain fails and NEW domain works
+#
+# PATCH Test 2: Route Addition
+#   - Appends /patchtest/uuid (→ /uuid) and /patchtest/headers (→ /headers) routes
+#   - Note: Routes are added one at a time using POST with "route" (singular) field
+#   - Verifies new routes work and original routes still work
+#
+# Test 4: Advanced Features - Path Rewriting
+#   - Uses default-gateway-listener (port 10000)
+#   - Routes: /test4/data (→ /get)
+#   - Tests path rewrite functionality
+#
+# Path Uniqueness:
+#   - All tests use unique path prefixes to avoid conflicts
+#   - Test 1: /test1/* paths
+#   - Test 2: /test2/* paths (shares default-gateway-listener)
+#   - Test 3: OpenAPI paths (isolated listener)
+#   - PATCH Test: /patchtest/* paths
+#   - Test 4: /test4/* paths (shares default-gateway-listener)
+#
+# Supported PATCH Fields:
+#   - domain: Update the domain for the API definition
+#   - Note: metadata updates are NOT currently supported
+#   - Routes can be added using POST /api/v1/api-definitions/{id}/routes with "route" (singular) field
+#
+# Variable Extraction:
+#   - Uses # @name annotation before POST requests
+#   - Automatically extracts IDs: {{requestName.response.body.$.id}}
+#   - No manual ID copying required!
+#
+# Use cleanup.http to delete all resources when done.

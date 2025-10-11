@@ -12,7 +12,9 @@ use axum::{
 
 use crate::api::error::ApiError;
 use crate::auth::auth_service::AuthService;
-use crate::auth::authorization::{action_from_http_method, require_resource_access, resource_from_path};
+use crate::auth::authorization::{
+    action_from_http_method, require_resource_access, resource_from_path,
+};
 use crate::auth::models::{AuthContext, AuthError};
 use tracing::{field, info_span, warn};
 

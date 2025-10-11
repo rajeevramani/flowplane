@@ -120,8 +120,7 @@ impl ExtProcConfig {
             response_header_mode: parse_header_send_mode(pm.response_header_mode.as_deref())
                 .unwrap_or(1), // Default to SEND
             request_body_mode: parse_body_send_mode(pm.request_body_mode.as_deref()).unwrap_or(0), // Default to NONE
-            response_body_mode: parse_body_send_mode(pm.response_body_mode.as_deref())
-                .unwrap_or(0), // Default to NONE
+            response_body_mode: parse_body_send_mode(pm.response_body_mode.as_deref()).unwrap_or(0), // Default to NONE
             request_trailer_mode: parse_header_send_mode(pm.request_trailer_mode.as_deref())
                 .unwrap_or(2), // Default to SKIP
             response_trailer_mode: parse_header_send_mode(pm.response_trailer_mode.as_deref())
@@ -177,11 +176,7 @@ impl ExtProcConfig {
                     envoy_grpc,
                 ),
             ) => envoy_grpc.cluster_name.clone(),
-            _ => {
-                return Err(invalid_config(
-                    "ExtProc only supports EnvoyGrpc target specifier",
-                ))
-            }
+            _ => return Err(invalid_config("ExtProc only supports EnvoyGrpc target specifier")),
         };
 
         let timeout_seconds =
@@ -198,9 +193,10 @@ impl ExtProcConfig {
         });
 
         // Extract message timeout
-        let message_timeout_ms = proto.message_timeout.as_ref().map(|duration| {
-            (duration.seconds as u64) * 1000 + (duration.nanos as u64) / 1_000_000
-        });
+        let message_timeout_ms = proto
+            .message_timeout
+            .as_ref()
+            .map(|duration| (duration.seconds as u64) * 1000 + (duration.nanos as u64) / 1_000_000);
 
         let config = Self {
             grpc_service: GrpcServiceConfig { target_uri, timeout_seconds },

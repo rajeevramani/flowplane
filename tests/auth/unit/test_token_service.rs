@@ -169,10 +169,11 @@ async fn ensure_bootstrap_token_creates_when_empty() {
         .unwrap();
     assert_eq!(count, 1);
 
-    let seeded_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.bootstrap_seeded'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let seeded_events: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.bootstrap_seeded'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(seeded_events, 1);
 }

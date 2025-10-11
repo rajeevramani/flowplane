@@ -4,8 +4,8 @@
 //! level, ensuring proper data isolation between teams.
 
 use flowplane::storage::{
-    ClusterRepository, CreateClusterRequest, CreateListenerRequest,
-    CreateRouteRepositoryRequest, DbPool, ListenerRepository, RouteRepository,
+    ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest,
+    DbPool, ListenerRepository, RouteRepository,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -18,10 +18,7 @@ async fn setup_pool() -> DbPool {
         .expect("in-memory sqlite");
 
     // Run migrations to create tables with team columns
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrations should apply");
+    sqlx::migrate!("./migrations").run(&pool).await.expect("migrations should apply");
 
     pool
 }
@@ -67,10 +64,7 @@ async fn cluster_repository_filters_by_team() {
     repo.create(global_cluster).await.unwrap();
 
     // Test: Team A should see only their cluster + global cluster
-    let team_a_results = repo
-        .list_by_teams(&["team-a".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_a_results = repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-a-cluster"));
@@ -78,10 +72,7 @@ async fn cluster_repository_filters_by_team() {
     assert!(!names.contains(&"team-b-cluster"));
 
     // Test: Team B should see only their cluster + global cluster
-    let team_b_results = repo
-        .list_by_teams(&["team-b".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_b_results = repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-b-cluster"));
@@ -189,10 +180,8 @@ async fn route_repository_filters_by_team() {
     route_repo.create(global_route).await.unwrap();
 
     // Test: Team A should see only their route + global route
-    let team_a_results = route_repo
-        .list_by_teams(&["team-a".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_a_results =
+        route_repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-a-routes"));
@@ -200,10 +189,8 @@ async fn route_repository_filters_by_team() {
     assert!(!names.contains(&"team-b-routes"));
 
     // Test: Team B should see only their route + global route
-    let team_b_results = route_repo
-        .list_by_teams(&["team-b".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_b_results =
+        route_repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-b-routes"));
@@ -275,10 +262,7 @@ async fn listener_repository_filters_by_team() {
     repo.create(global_listener).await.unwrap();
 
     // Test: Team A should see only their listener + global listener
-    let team_a_results = repo
-        .list_by_teams(&["team-a".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_a_results = repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-a-listener"));
@@ -286,10 +270,7 @@ async fn listener_repository_filters_by_team() {
     assert!(!names.contains(&"team-b-listener"));
 
     // Test: Team B should see only their listener + global listener
-    let team_b_results = repo
-        .list_by_teams(&["team-b".to_string()], None, None)
-        .await
-        .unwrap();
+    let team_b_results = repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-b-listener"));
@@ -328,16 +309,10 @@ async fn team_filtering_respects_pagination() {
     }
 
     // Test pagination with limit
-    let page1 = repo
-        .list_by_teams(&["team-a".to_string()], Some(2), Some(0))
-        .await
-        .unwrap();
+    let page1 = repo.list_by_teams(&["team-a".to_string()], Some(2), Some(0)).await.unwrap();
     assert_eq!(page1.len(), 2);
 
-    let page2 = repo
-        .list_by_teams(&["team-a".to_string()], Some(2), Some(2))
-        .await
-        .unwrap();
+    let page2 = repo.list_by_teams(&["team-a".to_string()], Some(2), Some(2)).await.unwrap();
     assert_eq!(page2.len(), 2);
 
     // Verify we got different clusters

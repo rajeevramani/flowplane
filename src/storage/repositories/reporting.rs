@@ -77,11 +77,12 @@ impl ReportingRepository {
                     SELECT DISTINCT listener_name
                     FROM api_routes ar
                     INNER JOIN api_definitions ad ON ar.api_definition_id = ad.id
-                    WHERE ar.name = r.name
+                    WHERE ar.generated_route_id = r.id
                 )
                 ORDER BY r.created_at DESC
                 LIMIT $1 OFFSET $2
-            "#.to_string();
+            "#
+            .to_string();
 
             let rows = sqlx::query_as::<Sqlite, RouteFlowRow>(&query_str)
                 .bind(limit)
@@ -125,7 +126,7 @@ impl ReportingRepository {
                     SELECT DISTINCT listener_name
                     FROM api_routes ar
                     INNER JOIN api_definitions ad ON ar.api_definition_id = ad.id
-                    WHERE ar.name = r.name
+                    WHERE ar.generated_route_id = r.id
                 ))
                 ORDER BY r.created_at DESC
                 LIMIT ${} OFFSET ${}

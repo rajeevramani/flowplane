@@ -60,7 +60,8 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
                BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
             \n\
             SECURITY: Token must be at least 32 characters long.\n\
-            ".to_string()
+            "
+            .to_string(),
         )
     })?;
 
@@ -86,7 +87,8 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             \n\
             Then update .env with:\n\
             BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
-            ".to_string()
+            "
+            .to_string(),
         ));
     }
 

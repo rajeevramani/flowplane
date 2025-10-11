@@ -1,0 +1,249 @@
+### Variables
+@base_url = http://localhost:8080
+@token = {{$processEnv API_TOKEN}}
+
+# Resource Names
+@cluster_name_1 = httpbin-cluster-1
+@cluster_name_2 = httpbin-cluster-2
+@route_name_1 = httpbin-routes-1
+@route_name_2 = httpbin-routes-2
+@listener_name_1 = httpbin-listener-1
+@listener_name_2 = httpbin-listener-2
+@listener_name_3 = httpbin-listener-3
+
+# Note: API Definition IDs are populated from api-definitions.http using # @name annotations
+# Run api-definitions.http BEFORE running this cleanup file
+
+# =============================================================================
+# CLEANUP - API Definitions (Delete First)
+# =============================================================================
+# Note: These variables are automatically populated when running api-definitions.http
+# They are extracted using # @name annotations and JSONPath from responses
+
+### Delete API Definition 1 (from api-definitions.http Test 1)
+# Uses: @api_definition_1_id = {{createApiDef1.response.body.$.id}}
+DELETE {{base_url}}/api/v1/api-definitions/{{api_definition_1_id}}
+Authorization: Bearer {{token}}
+
+### Delete API Definition 2 (from api-definitions.http Test 2)
+# Uses: @api_definition_2_id = {{createApiDef2.response.body.$.id}}
+DELETE {{base_url}}/api/v1/api-definitions/{{api_definition_2_id}}
+Authorization: Bearer {{token}}
+
+### Delete API Definition 3 (from api-definitions.http Test 3)
+# Uses: @api_definition_3_id = {{importApiDef3.response.body.$.id}}
+DELETE {{base_url}}/api/v1/api-definitions/{{api_definition_3_id}}
+Authorization: Bearer {{token}}
+
+### Delete API Definition PATCH Test (from api-definitions.http PATCH tests)
+# Uses: @api_definition_patch_id = {{createApiDefPatch.response.body.$.id}}
+DELETE {{base_url}}/api/v1/api-definitions/{{api_definition_patch_id}}
+Authorization: Bearer {{token}}
+
+### Delete API Definition 4 (from api-definitions.http Test 4 - Advanced Features)
+# Uses: @api_definition_4_id = {{createApiDef4.response.body.$.id}}
+DELETE {{base_url}}/api/v1/api-definitions/{{api_definition_4_id}}
+Authorization: Bearer {{token}}
+
+# =============================================================================
+# CLEANUP - Listeners
+# =============================================================================
+
+### Delete Listener from clusters.http Test 1
+DELETE {{base_url}}/api/v1/listeners/{{listener_name_1}}
+Authorization: Bearer {{token}}
+
+### Delete Listener from clusters.http Test 2
+DELETE {{base_url}}/api/v1/listeners/{{listener_name_2}}
+Authorization: Bearer {{token}}
+
+### Delete Listener from routes.http Test 1
+DELETE {{base_url}}/api/v1/listeners/httpbin-listener-route-1
+Authorization: Bearer {{token}}
+
+### Delete Listener from routes.http Test 2
+DELETE {{base_url}}/api/v1/listeners/httpbin-listener-route-2
+Authorization: Bearer {{token}}
+
+### Delete Listener from listeners.http Test 1 (duplicate of clusters test 1)
+# Will return 404 if already deleted above - this is expected
+DELETE {{base_url}}/api/v1/listeners/{{listener_name_1}}
+Authorization: Bearer {{token}}
+
+### Delete Listener from listeners.http Test 2 (duplicate of clusters test 2)
+# Will return 404 if already deleted above - this is expected
+DELETE {{base_url}}/api/v1/listeners/{{listener_name_2}}
+Authorization: Bearer {{token}}
+
+### Delete Listener from listeners.http Test 3
+DELETE {{base_url}}/api/v1/listeners/{{listener_name_3}}
+Authorization: Bearer {{token}}
+
+### Delete Listener from api-definitions.http Test 1 (isolated listener)
+DELETE {{base_url}}/api/v1/listeners/api-def-listener-1
+Authorization: Bearer {{token}}
+
+### Delete Listener from api-definitions.http PATCH tests
+DELETE {{base_url}}/api/v1/listeners/api-def-patch-listener
+Authorization: Bearer {{token}}
+
+# =============================================================================
+# CLEANUP - Routes
+# =============================================================================
+
+### Delete Routes from clusters.http Test 1
+DELETE {{base_url}}/api/v1/routes/{{route_name_1}}
+Authorization: Bearer {{token}}
+
+### Delete Routes from clusters.http Test 2
+DELETE {{base_url}}/api/v1/routes/{{route_name_2}}
+Authorization: Bearer {{token}}
+
+### Delete Routes from routes.http Test 1 (duplicate of clusters test 1)
+# Will return 404 if already deleted above - this is expected
+DELETE {{base_url}}/api/v1/routes/{{route_name_1}}
+Authorization: Bearer {{token}}
+
+### Delete Routes from routes.http Test 2 (duplicate of clusters test 2)
+# Will return 404 if already deleted above - this is expected
+DELETE {{base_url}}/api/v1/routes/{{route_name_2}}
+Authorization: Bearer {{token}}
+
+### Delete Routes from listeners.http Test 1
+DELETE {{base_url}}/api/v1/routes/httpbin-routes-listener-1
+Authorization: Bearer {{token}}
+
+### Delete Routes from listeners.http Test 2
+DELETE {{base_url}}/api/v1/routes/httpbin-routes-listener-2
+Authorization: Bearer {{token}}
+
+### Delete Routes from listeners.http Test 3
+DELETE {{base_url}}/api/v1/routes/httpbin-routes-listener-3
+Authorization: Bearer {{token}}
+
+# =============================================================================
+# CLEANUP - Clusters
+# =============================================================================
+
+### Delete Cluster from clusters.http Test 1
+DELETE {{base_url}}/api/v1/clusters/{{cluster_name_1}}
+Authorization: Bearer {{token}}
+
+### Delete Cluster from clusters.http Test 2
+DELETE {{base_url}}/api/v1/clusters/{{cluster_name_2}}
+Authorization: Bearer {{token}}
+
+### Delete Cluster from routes.http Test 1
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-route-1
+Authorization: Bearer {{token}}
+
+### Delete Cluster from routes.http Test 2
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-route-2
+Authorization: Bearer {{token}}
+
+### Delete Cluster from listeners.http Test 1
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-listener-1
+Authorization: Bearer {{token}}
+
+### Delete Cluster from listeners.http Test 2
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-listener-2
+Authorization: Bearer {{token}}
+
+### Delete Cluster from listeners.http Test 3
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-listener-3
+Authorization: Bearer {{token}}
+
+### Delete Cluster from api-definitions.http Test 1
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-api-1
+Authorization: Bearer {{token}}
+
+### Delete Cluster from api-definitions.http Test 2
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-api-2
+Authorization: Bearer {{token}}
+
+### Delete Cluster from api-definitions.http PATCH tests
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-patch
+Authorization: Bearer {{token}}
+
+### Delete Cluster from api-definitions.http Test 4 (Advanced Features)
+DELETE {{base_url}}/api/v1/clusters/httpbin-cluster-advanced
+Authorization: Bearer {{token}}
+
+# =============================================================================
+# VERIFICATION
+# =============================================================================
+
+### Verify All Listeners Deleted
+GET {{base_url}}/api/v1/listeners
+Authorization: Bearer {{token}}
+
+### Verify All Routes Deleted
+GET {{base_url}}/api/v1/routes
+Authorization: Bearer {{token}}
+
+### Verify All Clusters Deleted
+GET {{base_url}}/api/v1/clusters
+Authorization: Bearer {{token}}
+
+### Verify All API Definitions Deleted
+GET {{base_url}}/api/v1/api-definitions
+Authorization: Bearer {{token}}
+
+# =============================================================================
+# NOTES
+# =============================================================================
+
+# Cleanup Order:
+# 1. API Definitions (highest level resources)
+# 2. Listeners (depend on routes)
+# 3. Routes (depend on clusters)
+# 4. Clusters (lowest level resources)
+#
+# Important Notes:
+# - API Definition IDs are automatically populated from api-definitions.http
+# - Run api-definitions.http BEFORE running this cleanup file
+# - The variables are extracted using # @name annotations and JSONPath
+# - Some DELETE operations may fail if resources don't exist (404 errors are OK)
+# - Some resources may have been auto-deleted if created via API definitions
+# - Run verification commands at the end to ensure cleanup was successful
+# - Some DELETE operations are duplicates (e.g., listener_name_1 appears in multiple tests)
+#   This is intentional - the second DELETE will return 404 if already deleted
+#
+# Automatic Variable Extraction:
+#   From api-definitions.http:
+#     - @api_definition_1_id = {{createApiDef1.response.body.$.id}}
+#     - @api_definition_2_id = {{createApiDef2.response.body.$.id}}
+#     - @api_definition_3_id = {{importApiDef3.response.body.$.id}}
+#     - @api_definition_patch_id = {{createApiDefPatch.response.body.$.id}}
+#     - @api_definition_4_id = {{createApiDef4.response.body.$.id}}
+#
+# Covered Resources:
+#
+# From clusters.http:
+#   - Listeners: httpbin-listener-1, httpbin-listener-2
+#   - Routes: httpbin-routes-1, httpbin-routes-2
+#   - Clusters: httpbin-cluster-1, httpbin-cluster-2
+#
+# From routes.http:
+#   - Listeners: httpbin-listener-route-1, httpbin-listener-route-2
+#   - Routes: httpbin-routes-1, httpbin-routes-2 (same names as clusters.http)
+#   - Clusters: httpbin-cluster-route-1, httpbin-cluster-route-2
+#
+# From listeners.http:
+#   - Listeners: httpbin-listener-1, httpbin-listener-2, httpbin-listener-3
+#   - Routes: httpbin-routes-listener-1, httpbin-routes-listener-2, httpbin-routes-listener-3
+#   - Clusters: httpbin-cluster-listener-1, httpbin-cluster-listener-2, httpbin-cluster-listener-3
+#
+# From api-definitions.http:
+#   - API Definitions: 5 definitions (IDs automatically extracted)
+#     * Test 1: With listener isolation (creates api-def-listener-1)
+#     * Test 2: Without listener isolation (uses default-gateway-listener)
+#     * Test 3: OpenAPI import (creates dedicated listener)
+#     * PATCH Test: Domain and route updates (creates api-def-patch-listener)
+#     * Test 4: Advanced features - path rewrite (uses default-gateway-listener)
+#   - Listeners: api-def-listener-1, api-def-patch-listener
+#   - Routes: Created automatically via API definitions
+#   - Clusters: httpbin-cluster-api-1, httpbin-cluster-api-2, httpbin-cluster-patch, httpbin-cluster-advanced
+#
+# Note: Test 2 and Test 4 use the existing default-gateway-listener (port 10000)
+#       which is created when the application starts. No cleanup needed for this listener.

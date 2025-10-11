@@ -1,6 +1,6 @@
 ### Variables
 @base_url = http://localhost:8080
-@token = {{$processEnv API_TOKEN}}
+@token = {{$dotenv API_TOKEN}}
 
 ### List Route Flows
 GET {{base_url}}/api/v1/reports/route-flows
