@@ -19,7 +19,10 @@ struct TestContext {
 
 async fn create_test_context() -> TestContext {
     // Set BOOTSTRAP_TOKEN for tests that need default gateway resources
-    std::env::set_var("BOOTSTRAP_TOKEN", "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=");
+    std::env::set_var(
+        "BOOTSTRAP_TOKEN",
+        "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=",
+    );
 
     // Use in-memory database without cache=shared to ensure test isolation
     let pool = SqlitePoolOptions::new()

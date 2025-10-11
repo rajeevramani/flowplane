@@ -14,9 +14,7 @@ async fn setup_pool() -> DbPool {
         .expect("create sqlite pool");
 
     // Use actual migrations instead of manual schema to avoid drift
-    flowplane::storage::run_migrations(&pool)
-        .await
-        .expect("run migrations");
+    flowplane::storage::run_migrations(&pool).await.expect("run migrations");
 
     pool
 }
@@ -24,7 +22,10 @@ async fn setup_pool() -> DbPool {
 #[tokio::test]
 async fn ensure_default_gateway_resources_seeds_bootstrap_token() {
     // Set BOOTSTRAP_TOKEN for test
-    std::env::set_var("BOOTSTRAP_TOKEN", "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=");
+    std::env::set_var(
+        "BOOTSTRAP_TOKEN",
+        "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=",
+    );
 
     let pool = setup_pool().await;
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
@@ -38,15 +39,18 @@ async fn ensure_default_gateway_resources_seeds_bootstrap_token() {
     assert_eq!(token_count, 1);
 
     // Check all audit log entries to see what was created
-    let all_audit_entries: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, resource_type FROM audit_log",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let all_audit_entries: Vec<(String, String)> =
+        sqlx::query_as("SELECT action, resource_type FROM audit_log")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     // The bootstrap token seeding should create an audit log entry
     // But the exact action/resource_type might have changed, so let's just verify
     // that at least one audit entry was created
-    assert!(!all_audit_entries.is_empty(), "Expected at least one audit log entry, found: {:?}", all_audit_entries);
+    assert!(
+        !all_audit_entries.is_empty(),
+        "Expected at least one audit log entry, found: {:?}",
+        all_audit_entries
+    );
 }

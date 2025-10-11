@@ -6,7 +6,8 @@ use serde_json::json;
 #[tokio::test]
 async fn bootstrap_returns_yaml_with_team_scope_defaults() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap", &["api-definitions:write", "api-definitions:read"]).await;
+    let token =
+        app.issue_token("bootstrap", &["api-definitions:write", "api-definitions:read"]).await;
 
     // Create a minimal API definition (non-isolated is fine for bootstrap generation)
     let payload = json!({
@@ -43,7 +44,8 @@ async fn bootstrap_returns_yaml_with_team_scope_defaults() {
 #[tokio::test]
 async fn bootstrap_returns_json_format() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap-json", &["api-definitions:write", "api-definitions:read"]).await;
+    let token =
+        app.issue_token("bootstrap-json", &["api-definitions:write", "api-definitions:read"]).await;
 
     // Create API definition
     let payload = json!({
@@ -86,7 +88,9 @@ async fn bootstrap_returns_json_format() {
 #[tokio::test]
 async fn bootstrap_defaults_to_yaml_format() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("bootstrap-default", &["api-definitions:write", "api-definitions:read"]).await;
+    let token = app
+        .issue_token("bootstrap-default", &["api-definitions:write", "api-definitions:read"])
+        .await;
 
     // Create API definition
     let payload = json!({
