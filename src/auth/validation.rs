@@ -8,7 +8,11 @@ use validator::{Validate, ValidationError, ValidationErrors};
 
 lazy_static! {
     static ref NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]{3,64}$").unwrap();
-    static ref SCOPE_REGEX: Regex = Regex::new(r"^[a-z]+:[a-z]+$").unwrap();
+    // Scope patterns:
+    // - admin:all (global admin)
+    // - {resource}:{action} (e.g., routes:read, api-definitions:write)
+    // - team:{team}:{resource}:{action} (e.g., team:platform:routes:read)
+    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$").unwrap();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -100,8 +104,24 @@ mod tests {
 
     #[test]
     fn scope_validation() {
+        // Resource-level scopes
         assert!(validate_scope("clusters:read").is_ok());
-        assert!(validate_scope("bad_scope").is_err());
+        assert!(validate_scope("routes:write").is_ok());
+        assert!(validate_scope("api-definitions:read").is_ok());
+        assert!(validate_scope("api-definitions:write").is_ok());
+
+        // Admin scope
+        assert!(validate_scope("admin:all").is_ok());
+
+        // Team-scoped scopes
+        assert!(validate_scope("team:platform:routes:read").is_ok());
+        assert!(validate_scope("team:eng-team:api-definitions:write").is_ok());
+
+        // Invalid patterns
+        assert!(validate_scope("bad_scope").is_err()); // No colon
+        assert!(validate_scope("routes:read:extra").is_err()); // Too many parts for resource-level
+        assert!(validate_scope("team:only-two").is_err()); // Team scope needs 4 parts
+        assert!(validate_scope("UPPERCASE:READ").is_err()); // Must be lowercase
     }
 
     #[test]
