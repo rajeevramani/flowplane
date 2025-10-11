@@ -6,7 +6,7 @@ use super::support::{read_json, send_request, setup_platform_api_app};
 #[tokio::test]
 async fn create_api_definition_persists_record_and_returns_bootstrap() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("platform-admin", &["routes:write"]).await;
+    let token = app.issue_token("platform-admin", &["api-definitions:write"]).await;
 
     let payload = json!({
         "team": "payments",

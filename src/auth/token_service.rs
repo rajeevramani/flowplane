@@ -131,13 +131,17 @@ impl TokenService {
         let token_value = format!("fp_pat_{}.{}", id, secret);
         let hashed_secret = self.hash_secret(&secret)?;
 
+        // Apply default 30-day expiry if not specified
+        let expires_at =
+            payload.expires_at.or_else(|| Some(Utc::now() + chrono::Duration::days(30)));
+
         let new_token = NewPersonalAccessToken {
             id: id.clone(),
             name: payload.name.clone(),
             description: payload.description.clone(),
             hashed_secret,
             status: TokenStatus::Active,
-            expires_at: payload.expires_at,
+            expires_at,
             created_by: payload.created_by.clone(),
             scopes: payload.scopes.clone(),
         };

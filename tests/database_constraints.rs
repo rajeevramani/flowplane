@@ -45,6 +45,7 @@ async fn test_source_enum_constraint_on_routes() {
             name: "test-cluster".to_string(),
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -90,6 +91,7 @@ async fn test_valid_source_values_accepted() {
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "test"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -101,6 +103,7 @@ async fn test_valid_source_values_accepted() {
             name: "test-cluster".to_string(),
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -113,6 +116,7 @@ async fn test_valid_source_values_accepted() {
             path_prefix: "/".to_string(),
             cluster_name: "test-cluster".to_string(),
             configuration: serde_json::json!({"name": "test"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -134,6 +138,7 @@ async fn test_api_definition_listener_fk_on_delete_set_null() {
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "test"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -184,6 +189,7 @@ async fn test_api_route_fk_on_delete_set_null() {
             name: "test-cluster".to_string(),
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -195,6 +201,7 @@ async fn test_api_route_fk_on_delete_set_null() {
             path_prefix: "/api".to_string(),
             cluster_name: "test-cluster".to_string(),
             configuration: serde_json::json!({"name": "test"}),
+            team: Some("test".into()),
         })
         .await
         .unwrap();

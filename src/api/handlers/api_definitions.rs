@@ -140,7 +140,7 @@ pub struct ListDefinitionsQuery {
 pub async fn list_api_definitions_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(_q): Query<ListDefinitionsQuery>,
+    Query(q): Query<ListDefinitionsQuery>,
 ) -> Result<Json<Vec<ApiDefinitionSummary>>, ApiError> {
     // Authorization: require api-definitions:read scope
     require_resource_access(&context, "api-definitions", "read", None)?;
@@ -149,7 +149,7 @@ pub async fn list_api_definitions_handler(
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
 
-    let items = repo.list_definitions().await.map_err(ApiError::from)?;
+    let items = repo.list_definitions(q.team, q.limit, q.offset).await.map_err(ApiError::from)?;
     Ok(Json(items.into_iter().map(ApiDefinitionSummary::from).collect()))
 }
 
@@ -554,6 +554,9 @@ pub struct ImportOpenApiQuery {
     /// Enable dedicated listener for this API (default: false, uses shared listener)
     #[serde(default)]
     pub listener_isolation: Option<bool>,
+    /// Port for the isolated listener (only used when listenerIsolation=true)
+    #[serde(default)]
+    pub port: Option<u32>,
 }
 
 /// Binary OpenAPI payload accepted by the import endpoint.
@@ -620,6 +623,7 @@ pub async fn import_openapi_handler(
         document,
         params.team.clone(),
         listener_isolation,
+        params.port,
     )
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 

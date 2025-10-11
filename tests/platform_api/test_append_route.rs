@@ -6,7 +6,7 @@ use super::support::{read_json, send_request, setup_platform_api_app};
 #[tokio::test]
 async fn append_route_to_existing_definition() {
     let app = setup_platform_api_app().await;
-    let token = app.issue_token("platform-admin", &["routes:write"]).await;
+    let token = app.issue_token("platform-admin", &["api-definitions:write"]).await;
 
     let create_payload = json!({
         "team": "payments",
