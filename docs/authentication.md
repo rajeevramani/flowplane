@@ -55,19 +55,56 @@ Tokens are always returned with a status:
 ### Scopes
 
 Scopes govern which API groups a token may call. The HTTP router layers a scope check over every
-protected route (see `src/api/routes.rs`). The available scopes are:
+protected route (see `src/api/routes.rs`). Flowplane supports three types of scopes:
 
-| Scope             | Grants access to                                |
-|-------------------|--------------------------------------------------|
-| `tokens:read`     | `GET /api/v1/tokens`, `GET /api/v1/tokens/{id}`  |
-| `tokens:write`    | `POST/PATCH/DELETE /api/v1/tokens*`              |
-| `clusters:read`   | `GET /api/v1/clusters*`                          |
-| `clusters:write`  | `POST/PUT/DELETE /api/v1/clusters*`              |
-| `routes:read`     | `GET /api/v1/routes*`                            |
-| `routes:write`    | `POST/PUT/DELETE /api/v1/routes*`                |
-| `listeners:read`  | `GET /api/v1/listeners*`                         |
-| `listeners:write` | `POST/PUT/DELETE /api/v1/listeners*`             |
-| `gateways:import` | `POST /api/v1/gateways/openapi`                  |
+1. **Admin bypass scope**: `admin:all` grants full access across all teams and resources
+2. **Resource-level scopes**: `{resource}:{action}` grants access to all resources of that type
+3. **Team-scoped permissions**: `team:{name}:{resource}:{action}` grants access only to that team's resources
+
+#### Available Scopes
+
+| Scope Pattern | Example | Grants Access To |
+|---------------|---------|------------------|
+| `admin:all` | `admin:all` | Full access to all resources across all teams (bypass) |
+| `{resource}:read` | `routes:read` | Read all resources of this type across all teams |
+| `{resource}:write` | `clusters:write` | Create/update/delete all resources of this type across all teams |
+| `team:{name}:{resource}:read` | `team:platform:routes:read` | Read only the specified team's resources |
+| `team:{name}:{resource}:write` | `team:platform:clusters:write` | Create/update/delete only the specified team's resources |
+
+#### Resource Types
+
+| Resource | Endpoints | Notes |
+|----------|-----------|-------|
+| `tokens` | `/api/v1/tokens*` | Token management operations |
+| `clusters` | `/api/v1/clusters*` | Envoy cluster configurations |
+| `routes` | `/api/v1/routes*` | Envoy route configurations |
+| `listeners` | `/api/v1/listeners*` | Envoy listener configurations |
+| `api-definitions` | `/api/v1/api-definitions*` | API definition (Platform API) resources |
+| `reports` | `/api/v1/reports/*` | Reporting and analytics endpoints |
+
+#### Authorization Hierarchy
+
+When checking permissions, Flowplane evaluates scopes in this order:
+
+1. **Admin bypass**: If token has `admin:all`, access is granted immediately
+2. **Resource-level**: If token has `{resource}:{action}`, access is granted for all teams
+3. **Team-scoped**: If token has `team:{name}:{resource}:{action}`, access is granted only for that team
+
+#### Team Isolation
+
+Resources created by team-scoped tokens are automatically tagged with the team name and filtered at the database level:
+
+```bash
+# Team-scoped token can only see its own resources
+curl -H "Authorization: Bearer fp_pat_...<team:platform:routes:read>" \
+  http://127.0.0.1:8080/api/v1/routes
+# Returns only routes with team='platform'
+
+# Admin token sees all resources
+curl -H "Authorization: Bearer fp_pat_...<admin:all>" \
+  http://127.0.0.1:8080/api/v1/routes
+# Returns all routes regardless of team
+```
 
 Tokens may carry any subset of scopes. Flowplane persists them in `token_scopes` and caches them in
 memory when authenticating.
@@ -100,6 +137,116 @@ There are two supported workflows:
 
 Both paths funnel through the same service layer, guaranteeing consistent hashing, validation, audit
 logging, and metrics.
+
+### Creating Tokens with RBAC
+
+#### Admin Token
+
+Create a token with full admin access (bypass all team restrictions):
+
+```bash
+curl -sS \
+  -X POST http://127.0.0.1:8080/api/v1/tokens \
+  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "admin-token",
+    "description": "Full admin access for operations team",
+    "scopes": ["admin:all"],
+    "expiresAt": "2026-01-01T00:00:00Z"
+  }'
+```
+
+#### Resource-Level Token
+
+Create a token with read-only access to all routes across all teams:
+
+```bash
+curl -sS \
+  -X POST http://127.0.0.1:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "global-routes-readonly",
+    "description": "Read-only access to all routes for monitoring",
+    "scopes": ["routes:read", "clusters:read"],
+    "expiresAt": null
+  }'
+```
+
+#### Team-Scoped Token
+
+Create a token restricted to a specific team:
+
+```bash
+curl -sS \
+  -X POST http://127.0.0.1:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "platform-team-token",
+    "description": "Platform team CI/CD pipeline",
+    "scopes": [
+      "team:platform:routes:read",
+      "team:platform:routes:write",
+      "team:platform:clusters:read",
+      "team:platform:clusters:write",
+      "team:platform:api-definitions:read",
+      "team:platform:api-definitions:write"
+    ],
+    "expiresAt": null
+  }'
+```
+
+#### Multi-Team Token
+
+Create a token with access to multiple teams:
+
+```bash
+curl -sS \
+  -X POST http://127.0.0.1:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "multi-team-token",
+    "description": "Access to platform and engineering teams",
+    "scopes": [
+      "team:platform:routes:read",
+      "team:platform:routes:write",
+      "team:engineering:routes:read",
+      "team:engineering:clusters:read"
+    ],
+    "expiresAt": null
+  }'
+```
+
+### RBAC Best Practices
+
+1. **Principle of Least Privilege**: Grant only the minimum scopes required for the task
+   - Use team-scoped permissions instead of resource-level when possible
+   - Use `:read` scopes for monitoring and reporting tools
+   - Reserve `admin:all` for operational emergencies only
+
+2. **Team Isolation**: Organize resources by team to enforce separation of concerns
+   - All resources (clusters, routes, listeners, API definitions) support team tagging
+   - Team-scoped tokens automatically filter resources at the database level
+   - Use the `team` query parameter when creating resources via OpenAPI import
+
+3. **Token Rotation**: Regularly rotate token secrets, especially for CI/CD pipelines
+   ```bash
+   curl -X POST http://127.0.0.1:8080/api/v1/tokens/{id}/rotate \
+     -H "Authorization: Bearer $ADMIN_TOKEN"
+   ```
+
+4. **Audit Logging**: Review authentication events regularly
+   - All token operations are logged to the `audit_log` table
+   - Events include `auth.token.created`, `auth.token.authenticated`, `auth.token.revoked`
+   - Monitor for unexpected `auth.token.authenticated` events on admin tokens
+
+5. **Expiration Policies**: Set appropriate expiration times based on token usage
+   - Short-lived tokens (24-48 hours) for interactive debugging
+   - Long-lived tokens (30-90 days) for CI/CD pipelines with rotation
+   - No expiration for admin tokens in secure vaults only
 
 ## Observability
 
