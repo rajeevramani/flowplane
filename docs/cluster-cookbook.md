@@ -7,6 +7,7 @@ The simplest cluster definition points Envoy at one or more HTTP endpoints.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "catalog-cluster",
@@ -25,6 +26,7 @@ Enable TLS to reach HTTPS services and optionally set SNI.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "payments-cluster",
@@ -43,6 +45,7 @@ Add active health checks so Envoy only routes to healthy endpoints.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "inventory-cluster",
@@ -70,6 +73,7 @@ Protect upstreams from overload and automatically eject unhealthy hosts.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "orders-cluster",
@@ -98,6 +102,7 @@ Switch to least-request or consistent hashing depending on the workload.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "profile-cluster",
@@ -116,6 +121,7 @@ Let Envoy resolve endpoints dynamically via DNS.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "search-cluster",

@@ -7,6 +7,7 @@ The control plane appends the router filter automatically if you leave it out, b
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "edge-listener",
@@ -153,6 +154,7 @@ Expose raw TCP services (databases, custom protocols) through Envoy.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "redis-listener",

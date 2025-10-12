@@ -9,6 +9,7 @@ The simplest route matches a URL prefix and forwards traffic to a single cluster
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "basic-routes",
@@ -48,6 +49,7 @@ Distribute traffic across multiple clusters with weights, and optionally overrid
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "weighted-routes",
@@ -102,6 +104,7 @@ Envoy can return redirects without touching your upstreams.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "redirect-routes",
