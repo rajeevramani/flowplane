@@ -286,7 +286,7 @@ New migration: `20251010000001_add_team_columns_for_rbac.sql`
 
 ### New Documentation
 
-- **Database Evaluation**: [docs/database-evaluation.md](docs/database-evaluation.md)
+- **Database Evaluation**: [.local/docs/database-evaluation.md](.local/docs/database-evaluation.md)
   - Comprehensive SQLite vs PostgreSQL analysis
   - Performance characteristics and scalability recommendations
   - Migration roadmap for PostgreSQL support in v0.1.0

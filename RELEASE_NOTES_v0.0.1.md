@@ -185,7 +185,7 @@ cargo run --bin flowplane
 
 1. **E2E Tests**: Some E2E tests marked as `|| true` due to Envoy installation variability in CI
 2. **PostgreSQL**: While supported, primary testing uses SQLite
-3. **Filter Coverage**: Not all Envoy filters are implemented yet (see [FILTER_COVERAGE_AUDIT.md](docs/FILTER_COVERAGE_AUDIT.md))
+3. **Filter Coverage**: Not all Envoy filters are implemented yet (see [FILTER_COVERAGE_AUDIT.md](.local/docs/FILTER_COVERAGE_AUDIT.md))
 
 ## 🔜 Roadmap
 
