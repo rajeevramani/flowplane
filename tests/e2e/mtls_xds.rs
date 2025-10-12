@@ -111,7 +111,7 @@ async fn mtls_xds_matrix() {
         let route_path = namer.path("echo");
 
         let token =
-            create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
+            create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
                 .await
                 .expect("pat");
         let endpoint = format!("127.0.0.1:{}", echo_addr.port());

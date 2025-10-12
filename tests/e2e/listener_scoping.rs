@@ -61,7 +61,7 @@ async fn listener_scoping_team_and_allowlist() {
     wait_http_ready(api_addr).await;
 
     // Create PAT
-    let token = create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
+    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
         .await
         .expect("pat");
 

@@ -55,7 +55,7 @@ async fn filters_cors_and_jwt_overrides() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
-    let token = create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
+    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
         .await
         .expect("pat");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());

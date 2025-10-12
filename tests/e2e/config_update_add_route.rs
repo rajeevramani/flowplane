@@ -64,7 +64,7 @@ async fn config_update_add_route() {
     envoy.wait_admin_ready().await;
 
     // Create token and initial API with route1
-    let token = create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
+    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
         .await
         .expect("pat");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());

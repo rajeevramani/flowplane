@@ -70,8 +70,8 @@ async fn smoke_boot_and_route() {
         None
     };
 
-    // Create a PAT with routes:write scope
-    let token = create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
+    // Create a PAT with api-definitions:write scope (required in v0.0.2+)
+    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
         .await
         .expect("pat");
 
