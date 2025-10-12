@@ -107,6 +107,35 @@ async fn create_token_returns_secret_and_persists() {
 }
 
 #[tokio::test]
+async fn create_token_without_expiry_defaults_to_30_days() {
+    let (service, repo, _, _) = setup_service().await;
+    let request = CreateTokenRequest {
+        name: "no-expiry-test".into(),
+        description: Some("Test default expiry".into()),
+        expires_at: None, // Explicitly no expiry provided
+        scopes: vec!["clusters:read".into()],
+        created_by: Some("unit".into()),
+    };
+
+    let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();
+    let stored = repo.get_token(&id).await.unwrap();
+
+    // Verify that expires_at was set to ~30 days from now
+    assert!(stored.expires_at.is_some(), "Expected expires_at to be set with default value");
+    let expires_at = stored.expires_at.unwrap();
+    let now = Utc::now();
+    let expected_expiry = now + chrono::Duration::days(30);
+
+    // Allow 5 second tolerance for test execution time
+    let diff = (expires_at - expected_expiry).num_seconds().abs();
+    assert!(
+        diff < 5,
+        "Expected expiry to be ~30 days from now, but difference was {} seconds",
+        diff
+    );
+}
+
+#[tokio::test]
 async fn update_and_revoke_token() {
     let (service, repo, _, _) = setup_service().await;
     let secret = service.create_token(sample_create_request()).await.unwrap();
@@ -152,11 +181,16 @@ async fn rotate_generates_new_secret() {
 #[tokio::test]
 async fn ensure_bootstrap_token_creates_when_empty() {
     let (service, _, _, pool) = setup_service().await;
-    let maybe_token = service.ensure_bootstrap_token().await.unwrap();
+    let bootstrap_secret = "test-bootstrap-token-min-32-characters-long";
+    let maybe_token = service.ensure_bootstrap_token(bootstrap_secret).await.unwrap();
     assert!(maybe_token.is_some());
 
+    let token = maybe_token.unwrap();
+    assert!(token.starts_with("fp_pat_"));
+    assert!(token.contains(bootstrap_secret));
+
     // Subsequent call is a no-op.
-    assert!(service.ensure_bootstrap_token().await.unwrap().is_none());
+    assert!(service.ensure_bootstrap_token(bootstrap_secret).await.unwrap().is_none());
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
         .fetch_one(&pool)
@@ -164,10 +198,11 @@ async fn ensure_bootstrap_token_creates_when_empty() {
         .unwrap();
     assert_eq!(count, 1);
 
-    let seeded_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.seeded'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let seeded_events: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.bootstrap_seeded'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(seeded_events, 1);
 }

@@ -42,6 +42,7 @@ jobs:
         run: cargo test --all-features
         env:
           DATABASE_URL: sqlite:///tmp/flowplane_test.sqlite
+          BOOTSTRAP_TOKEN: test-bootstrap-token-min-32-chars-long-secure
 
   fmt:
     name: Rustfmt
@@ -97,10 +98,12 @@ jobs:
         run: RUN_E2E=1 RUST_LOG=info cargo test --test smoke_boot_and_route -- --ignored --nocapture
         env:
           DATABASE_URL: sqlite:///tmp/flowplane_e2e_smoke.sqlite
+          BOOTSTRAP_TOKEN: test-bootstrap-token-min-32-chars-long-secure
       - name: Run e2e smoke_no_nacks
         run: RUN_E2E=1 RUST_LOG=info cargo test --test smoke_no_nacks -- --ignored --nocapture || true
         env:
           DATABASE_URL: sqlite:///tmp/flowplane_e2e_smoke.sqlite
+          BOOTSTRAP_TOKEN: test-bootstrap-token-min-32-chars-long-secure
       - name: Collect test artifacts
         if: ${{ always() }}
         run: |
@@ -145,6 +148,7 @@ jobs:
           export RUN_E2E=1
           export RUST_LOG=info
           export DATABASE_URL=sqlite:///tmp/flowplane_e2e_full.sqlite
+          export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
           cargo test --test smoke_boot_and_route -- --ignored --nocapture
           cargo test --test smoke_no_nacks -- --ignored --nocapture || true
           cargo test --test config_update_add_route -- --ignored --nocapture || true

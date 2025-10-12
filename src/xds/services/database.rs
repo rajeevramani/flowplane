@@ -146,7 +146,7 @@ impl DatabaseAggregatedDiscoveryService {
             use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
             use prost::Message;
 
-            let definitions = api_repo.list_definitions().await?;
+            let definitions = api_repo.list_definitions(None, None, None).await?;
             let platform_routes = api_repo.list_all_routes().await?;
 
             if !definitions.is_empty() && !platform_routes.is_empty() {

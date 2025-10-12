@@ -1,0 +1,75 @@
+### REFERENCE FILE - Variable Definitions
+#
+# This file documents all variables used across test files.
+# NOTE: VSCode REST Client does NOT support importing variables from other files.
+# Each .http file contains its own copy of the variables it needs.
+#
+# To update variables:
+# 1. Update values in this reference file
+# 2. Copy the updated variables to each .http file that uses them
+#
+# Alternatively, you can define these in VSCode settings.json:
+# "rest-client.environmentVariables": { ... }
+
+@base_url = http://localhost:8080
+
+# API Token - reads from .env file (API_TOKEN variable)
+# See README.md for setup instructions
+@token = {{$processEnv API_TOKEN}}
+
+# =============================================================================
+# Port Allocations (Envoy Listeners)
+# =============================================================================
+
+# Clusters tests (10001-10005)
+@envoy_port_cluster_test_1 = 10001
+@envoy_port_cluster_test_2 = 10002
+
+# Routes tests (10006-10010)
+@envoy_port_route_test_1 = 10006
+@envoy_port_route_test_2 = 10007
+
+# Listeners tests (10011-10015)
+@envoy_port_listener_test_1 = 10011
+@envoy_port_listener_test_2 = 10012
+@envoy_port_listener_test_3 = 10013
+
+# API Definitions tests (10016-10030)
+# Note: Test 2 and Test 4 use the default-gateway-listener on port 10000
+@envoy_port_api_def_test_1 = 10016
+@envoy_port_api_def_test_2 = 10000
+@envoy_port_api_def_test_3 = 10018
+@envoy_port_api_def_patch = 10019
+
+# =============================================================================
+# Resource Names (unique per test)
+# =============================================================================
+
+# Cluster test resources
+@cluster_name_1 = httpbin-cluster-1
+@cluster_name_2 = httpbin-cluster-2
+
+# Route test resources
+@route_name_1 = httpbin-routes-1
+@route_name_2 = httpbin-routes-2
+
+# Listener test resources
+@listener_name_1 = httpbin-listener-1
+@listener_name_2 = httpbin-listener-2
+@listener_name_3 = httpbin-listener-3
+
+# API Definition test resources
+@api_team_1 = team-test-1
+@api_team_2 = team-test-2
+@api_team_3 = team-test-3
+@api_domain_1 = api-test-1.httpbin.org
+@api_domain_2 = api-test-2.httpbin.org
+@api_domain_3 = api-test-3.httpbin.org
+
+# =============================================================================
+# Upstream Configuration
+# =============================================================================
+
+# HTTPBin upstream (uses TLS)
+@httpbin_host = httpbin.org
+@httpbin_port = 443

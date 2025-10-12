@@ -70,7 +70,7 @@ async fn test_openapi_creates_separate_routes_per_http_method() {
 
     let openapi: openapiv3::OpenAPI = serde_json::from_value(openapi_json).expect("parse openapi");
 
-    let spec = openapi_to_api_definition_spec(openapi, "test-team".to_string(), false)
+    let spec = openapi_to_api_definition_spec(openapi, "test-team".to_string(), false, None)
         .expect("convert openapi to spec");
 
     // Should create 5 routes total: GET /users, POST /users, GET /users/{id}, PUT /users/{id}, DELETE /users/{id}

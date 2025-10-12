@@ -177,6 +177,14 @@ pub struct UpdateBootstrapMetadataRequest {
     pub bootstrap_revision: i64,
 }
 
+/// Request for updating an API definition
+#[derive(Debug, Clone)]
+pub struct UpdateApiDefinitionRequest {
+    pub domain: Option<String>,
+    pub tls_config: Option<serde_json::Value>,
+    pub target_listeners: Option<Vec<String>>,
+}
+
 /// Repository encapsulating persistence for API definitions and routes
 #[derive(Debug, Clone)]
 pub struct ApiDefinitionRepository {
@@ -521,15 +529,95 @@ impl ApiDefinitionRepository {
         Ok(())
     }
 
-    pub async fn list_definitions(&self) -> Result<Vec<ApiDefinitionData>> {
-        let rows = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
-            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
-             FROM api_definitions",
+    /// Update an API definition's mutable fields
+    pub async fn update_definition(
+        &self,
+        definition_id: &str,
+        request: UpdateApiDefinitionRequest,
+    ) -> Result<ApiDefinitionData> {
+        // Get current definition to merge with updates
+        let current = self.get_definition(definition_id).await?;
+
+        let now = chrono::Utc::now();
+
+        // Use current values if not provided in request
+        let domain = request.domain.as_ref().unwrap_or(&current.domain);
+
+        let tls_json = if let Some(tls) = &request.tls_config {
+            Some(serde_json::to_string(tls).map_err(|e| {
+                FlowplaneError::validation(format!("Invalid TLS configuration JSON: {}", e))
+            })?)
+        } else {
+            current.tls_config.as_ref().map(|v| serde_json::to_string(v).unwrap())
+        };
+
+        let target_listeners_json = if let Some(listeners) = &request.target_listeners {
+            Some(serde_json::to_string(listeners).map_err(|e| {
+                FlowplaneError::validation(format!("Invalid target_listeners JSON: {}", e))
+            })?)
+        } else {
+            current.target_listeners.as_ref().map(|v| serde_json::to_string(v).unwrap())
+        };
+
+        sqlx::query(
+            "UPDATE api_definitions
+             SET domain = $2,
+                 tls_config = $3,
+                 target_listeners = $4,
+                 version = version + 1,
+                 updated_at = $5
+             WHERE id = $1",
         )
-        .fetch_all(&self.pool)
+        .bind(definition_id)
+        .bind(domain)
+        .bind(tls_json.as_deref())
+        .bind(target_listeners_json.as_deref())
+        .bind(now)
+        .execute(&self.pool)
         .await
         .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to update API definition '{}'", definition_id),
+        })?;
+
+        self.get_definition(definition_id).await
+    }
+
+    pub async fn list_definitions(
+        &self,
+        team: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<ApiDefinitionData>> {
+        let base_query =
+            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
+             FROM api_definitions";
+
+        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(base_query);
+
+        if let Some(ref t) = team {
+            query_builder.push(" WHERE team = ");
+            query_builder.push_bind(t);
+        }
+
+        query_builder.push(" ORDER BY created_at DESC");
+
+        if let Some(lim) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(lim);
+        }
+
+        if let Some(off) = offset {
+            query_builder.push(" OFFSET ");
+            query_builder.push_bind(off);
+        }
+
+        let rows = query_builder
+            .build_query_as::<ApiDefinitionRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowplaneError::Database {
             source: e,
             context: "Failed to list API definitions".to_string(),
         })?;

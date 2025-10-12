@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::{header, Request, StatusCode},
-    Json,
+    Extension, Json,
 };
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -11,6 +11,9 @@ use serde::Serialize;
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::auth::authorization::require_resource_access;
+use crate::auth::models::AuthContext;
+use crate::storage::repositories::api_definition::UpdateApiDefinitionRequest;
 use crate::storage::repository::ApiDefinitionData;
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -18,7 +21,9 @@ use crate::{
         materializer::{AppendRouteOutcome, CreateDefinitionOutcome, PlatformApiMaterializer},
         openapi_adapter,
     },
-    validation::requests::api_definition::{AppendRouteBody, CreateApiDefinitionBody},
+    validation::requests::api_definition::{
+        AppendRouteBody, CreateApiDefinitionBody, UpdateApiDefinitionBody,
+    },
 };
 use axum::response::Response;
 
@@ -134,13 +139,17 @@ pub struct ListDefinitionsQuery {
 )]
 pub async fn list_api_definitions_handler(
     State(state): State<ApiState>,
-    Query(_q): Query<ListDefinitionsQuery>,
+    Extension(context): Extension<AuthContext>,
+    Query(q): Query<ListDefinitionsQuery>,
 ) -> Result<Json<Vec<ApiDefinitionSummary>>, ApiError> {
+    // Authorization: require api-definitions:read scope
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
 
-    let items = repo.list_definitions().await.map_err(ApiError::from)?;
+    let items = repo.list_definitions(q.team, q.limit, q.offset).await.map_err(ApiError::from)?;
     Ok(Json(items.into_iter().map(ApiDefinitionSummary::from).collect()))
 }
 
@@ -158,8 +167,13 @@ pub async fn list_api_definitions_handler(
 )]
 pub async fn get_api_definition_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiDefinitionSummary>, ApiError> {
+    // Authorization: require api-definitions:read scope
+    // Team-scoped validation will be added in subtask 24.4 (database-level filtering)
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
@@ -193,18 +207,22 @@ pub struct BootstrapQuery {
         BootstrapQuery
     ),
     responses(
-        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format", content_type = "application/yaml"),
+        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format with listener information. The response includes a 'listeners' array containing listener details (name, address, port, protocol) for the API definition. For isolated listeners, this will be the generated dedicated listener. For shared listeners, this will include all target listeners.", content_type = "application/yaml"),
         (status = 404, description = "API definition not found with the specified ID"),
         (status = 500, description = "Internal server error during bootstrap generation"),
-        (status = 503, description = "API definition repository not configured")
+        (status = 503, description = "API definition repository or listener repository not configured")
     ),
     tag = "platform-api"
 )]
 pub async fn get_bootstrap_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
     Query(q): Query<BootstrapQuery>,
 ) -> Result<Response, ApiError> {
+    // Authorization: require api-definitions:read scope for bootstrap access
+    require_resource_access(&context, "api-definitions", "read", None)?;
+
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
@@ -222,6 +240,45 @@ pub async fn get_bootstrap_handler(
     let node_id = format!("team={}/dp-{}", def.team, uuid::Uuid::new_v4());
     let node_cluster = format!("{}-cluster", def.team);
 
+    // Gather listener information
+    let listener_repo =
+        state.xds_state.listener_repository.as_ref().cloned().ok_or_else(|| {
+            ApiError::service_unavailable("Listener repository is not configured")
+        })?;
+
+    let mut listeners_info = Vec::new();
+
+    // If isolated listener mode, get the generated listener
+    if def.listener_isolation {
+        if let Some(listener_id) = &def.generated_listener_id {
+            if let Ok(listener) = listener_repo.get_by_id(listener_id).await {
+                listeners_info.push(serde_json::json!({
+                    "name": listener.name,
+                    "address": listener.address,
+                    "port": listener.port,
+                    "protocol": listener.protocol,
+                }));
+            }
+        }
+    } else {
+        // If shared listener mode, get all target listeners (or default)
+        let target_listeners = def
+            .target_listeners
+            .clone()
+            .unwrap_or_else(|| vec!["default-gateway-listener".to_string()]);
+
+        for listener_name in target_listeners {
+            if let Ok(listener) = listener_repo.get_by_name(&listener_name).await {
+                listeners_info.push(serde_json::json!({
+                    "name": listener.name,
+                    "address": listener.address,
+                    "port": listener.port,
+                    "protocol": listener.protocol,
+                }));
+            }
+        }
+    }
+
     let metadata = match scope.as_str() {
         "team" => serde_json::json!({
             "team": def.team,
@@ -235,6 +292,7 @@ pub async fn get_bootstrap_handler(
     };
 
     let bootstrap = serde_json::json!({
+        "listeners": listeners_info,
         "admin": {
             "access_log_path": "/tmp/envoy_admin.log",
             "address": { "socket_address": { "address": "127.0.0.1", "port_value": 9901 } }
@@ -301,8 +359,12 @@ pub async fn get_bootstrap_handler(
 )]
 pub async fn create_api_definition_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<CreateApiDefinitionBody>,
 ) -> Result<(StatusCode, Json<CreateApiDefinitionResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let spec = payload.into_spec().map_err(ApiError::from)?;
 
     let materializer =
@@ -324,6 +386,123 @@ pub async fn create_api_definition_handler(
 }
 
 #[utoipa::path(
+    patch,
+    path = "/api/v1/api-definitions/{id}",
+    params(("id" = String, Path, description = "API definition ID to update", example = "api-def-abc123")),
+    request_body = UpdateApiDefinitionBody,
+    responses(
+        (status = 200, description = "API definition successfully updated. The version number is incremented and xDS cache is refreshed. When routes are provided, existing routes are deleted and replaced atomically (cascade update), triggering cleanup of orphaned native resources and xDS refresh.", body = ApiDefinitionSummary),
+        (status = 400, description = "Invalid request: validation error (e.g., invalid domain format, empty routes array, invalid listener names)"),
+        (status = 404, description = "API definition not found with the specified ID"),
+        (status = 409, description = "Conflict: updated domain already registered for another API definition"),
+        (status = 500, description = "Internal server error during update or xDS cache refresh"),
+        (status = 503, description = "API definition repository not configured")
+    ),
+    tag = "platform-api"
+)]
+pub async fn update_api_definition_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(api_definition_id): Path<String>,
+    Json(payload): Json<UpdateApiDefinitionBody>,
+) -> Result<(StatusCode, Json<ApiDefinitionSummary>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
+    // Validate request payload
+    payload.validate_payload().map_err(ApiError::from)?;
+
+    // Get repository
+    let repo = state
+        .xds_state
+        .api_definition_repository
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::service_unavailable("API definition repository is not configured")
+        })?
+        .clone();
+
+    // Convert to repository request
+    let update_request = UpdateApiDefinitionRequest {
+        domain: payload.domain,
+        tls_config: payload.tls,
+        target_listeners: payload.target_listeners,
+    };
+
+    // Update the definition
+    let updated =
+        repo.update_definition(&api_definition_id, update_request).await.map_err(ApiError::from)?;
+
+    // Handle route cascade updates if routes are provided
+    if let Some(routes_payload) = payload.routes {
+        tracing::info!(
+            api_definition_id = %api_definition_id,
+            route_count = routes_payload.len(),
+            "Processing route cascade updates in PATCH endpoint"
+        );
+
+        // Convert RouteBody payloads to RouteSpec format
+        let mut route_specs = Vec::with_capacity(routes_payload.len());
+        for (idx, route_body) in routes_payload.into_iter().enumerate() {
+            let route_spec =
+                route_body.into_route_spec(Some(idx as i64), None).map_err(ApiError::from)?;
+            route_specs.push(route_spec);
+        }
+
+        // Use the materializer to handle route cascade updates
+        // This will delete existing routes, create new ones, and handle native resource cleanup
+        let materializer =
+            PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
+
+        let _outcome = materializer
+            .update_definition(&api_definition_id, route_specs)
+            .await
+            .map_err(ApiError::from)?;
+
+        // Return updated definition from the outcome (includes incremented version)
+        return Ok((StatusCode::OK, Json(ApiDefinitionSummary::from(_outcome.definition))));
+    }
+
+    // Trigger xDS snapshot updates to propagate changes to Envoy
+    // Order matters: clusters -> routes -> platform API -> listeners
+    tracing::info!(
+        api_definition_id = %api_definition_id,
+        "Triggering xDS updates after API definition update"
+    );
+
+    state.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (clusters)");
+        ApiError::from(err)
+    })?;
+
+    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (routes)");
+        ApiError::from(err)
+    })?;
+
+    state.xds_state.refresh_platform_api_resources().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (platform API)");
+        ApiError::from(err)
+    })?;
+
+    // Refresh listeners if using listener isolation mode
+    if updated.listener_isolation {
+        state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+            tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
+            ApiError::from(err)
+        })?;
+    }
+
+    tracing::info!(
+        api_definition_id = %api_definition_id,
+        "xDS updates completed successfully"
+    );
+
+    // Return updated definition summary
+    Ok((StatusCode::OK, Json(ApiDefinitionSummary::from(updated))))
+}
+
+#[utoipa::path(
     post,
     path = "/api/v1/api-definitions/{id}/routes",
     params(("id" = String, Path, description = "API definition ID", example = "api-def-abc123")),
@@ -340,9 +519,13 @@ pub async fn create_api_definition_handler(
 )]
 pub async fn append_route_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Path(api_definition_id): Path<String>,
     Json(payload): Json<AppendRouteBody>,
 ) -> Result<(StatusCode, Json<AppendRouteResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let materializer =
         PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
 
@@ -371,6 +554,9 @@ pub struct ImportOpenApiQuery {
     /// Enable dedicated listener for this API (default: false, uses shared listener)
     #[serde(default)]
     pub listener_isolation: Option<bool>,
+    /// Port for the isolated listener (only used when listenerIsolation=true)
+    #[serde(default)]
+    pub port: Option<u32>,
 }
 
 /// Binary OpenAPI payload accepted by the import endpoint.
@@ -401,9 +587,13 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
 )]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> Result<(StatusCode, Json<CreateApiDefinitionResponse>), ApiError> {
+    // Authorization: require api-definitions:write scope for OpenAPI import
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
     let (parts, body) = request.into_parts();
     let collected = body
         .collect()
@@ -433,6 +623,7 @@ pub async fn import_openapi_handler(
         document,
         params.team.clone(),
         listener_isolation,
+        params.port,
     )
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 

@@ -232,7 +232,10 @@ impl XdsState {
         // Platform API routes are generated dynamically and not stored in the routes table
         // If we don't merge them, they will be removed from the cache
         if let Some(api_repo) = &self.api_definition_repository {
-            match (api_repo.list_definitions().await, api_repo.list_all_routes().await) {
+            match (
+                api_repo.list_definitions(None, None, None).await,
+                api_repo.list_all_routes().await,
+            ) {
                 (Ok(definitions), Ok(api_routes)) if !definitions.is_empty() => {
                     match resources_from_api_definitions(definitions, api_routes) {
                         Ok(platform_resources) => {
@@ -286,7 +289,7 @@ impl XdsState {
             None => return Ok(()),
         };
 
-        let definitions = repository.list_definitions().await?;
+        let definitions = repository.list_definitions(None, None, None).await?;
         let routes = repository.list_all_routes().await?;
 
         if definitions.is_empty() {

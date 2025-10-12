@@ -8,6 +8,7 @@
 pub mod cors;
 pub mod credential_injector;
 pub mod custom_response;
+pub mod ext_proc;
 pub mod header_mutation;
 pub mod health_check;
 pub mod jwt_auth;
@@ -20,6 +21,7 @@ use crate::xds::filters::http::cors::{
 };
 use crate::xds::filters::http::credential_injector::CredentialInjectorConfig;
 use crate::xds::filters::http::custom_response::{CustomResponseConfig, CustomResponsePerRouteConfig};
+use crate::xds::filters::http::ext_proc::ExtProcConfig;
 use crate::xds::filters::http::header_mutation::{HeaderMutationConfig, HeaderMutationPerRouteConfig};
 use crate::xds::filters::http::health_check::HealthCheckConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
@@ -96,6 +98,8 @@ pub enum HttpFilterKind {
     CredentialInjector(CredentialInjectorConfig),
     /// Envoy Custom Response filter
     CustomResponse(CustomResponseConfig),
+    /// Envoy External Processor filter
+    ExtProc(ExtProcConfig),
     /// Arbitrary filter expressed as a typed config payload
     Custom {
         #[serde(flatten)]
@@ -120,6 +124,7 @@ impl HttpFilterKind {
             Self::HealthCheck(_) => "envoy.filters.http.health_check",
             Self::CredentialInjector(_) => "envoy.filters.http.credential_injector",
             Self::CustomResponse(_) => "envoy.filters.http.custom_response",
+            Self::ExtProc(_) => "envoy.filters.http.ext_proc",
             Self::Custom { .. } => "custom.http.filter",
         }
     }
@@ -143,6 +148,7 @@ impl HttpFilterKind {
             Self::HealthCheck(cfg) => cfg.to_any().map(Some),
             Self::CredentialInjector(cfg) => cfg.to_any().map(Some),
             Self::CustomResponse(cfg) => cfg.to_any().map(Some),
+            Self::ExtProc(cfg) => cfg.to_any().map(Some),
             Self::Custom { config } => Ok(Some(config.to_any())),
         }
     }

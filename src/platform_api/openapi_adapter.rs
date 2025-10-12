@@ -18,6 +18,7 @@ pub fn openapi_to_api_definition_spec(
     openapi: OpenAPI,
     team: String,
     listener_isolation: bool,
+    port: Option<u32>,
 ) -> Result<ApiDefinitionSpec, GatewayError> {
     // Extract domain from first server URL
     let servers = if openapi.servers.is_empty() {
@@ -41,7 +42,7 @@ pub fn openapi_to_api_definition_spec(
         })?
         .to_string();
 
-    let port = url.port_or_known_default().ok_or_else(|| {
+    let url_port = url.port_or_known_default().ok_or_else(|| {
         GatewayError::UnsupportedServer(format!(
             "Server URL '{}' does not include a usable port",
             primary_server.url
@@ -74,7 +75,7 @@ pub fn openapi_to_api_definition_spec(
         let upstream_targets = json!({
             "targets": [{
                 "name": format!("{}-upstream", domain),
-                "endpoint": format!("{}:{}", domain, port),
+                "endpoint": format!("{}:{}", domain, url_port),
             }]
         });
 
@@ -143,18 +144,23 @@ pub fn openapi_to_api_definition_spec(
 
     // Configure listener isolation if requested
     let isolation_listener = if listener_isolation {
-        // Use a deterministic port based on the domain to avoid conflicts
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        domain.hash(&mut hasher);
-        // Port range 20000-29999 for isolated listeners
-        let port = 20000 + (hasher.finish() % 10000) as u32;
+        // Use provided port if available, otherwise generate deterministic port
+        let listener_port = if let Some(p) = port {
+            p
+        } else {
+            // Use a deterministic port based on the domain to avoid conflicts
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            domain.hash(&mut hasher);
+            // Port range 20000-29999 for isolated listeners
+            20000 + (hasher.finish() % 10000) as u32
+        };
 
         Some(ListenerInput {
             name: None,
             bind_address: "0.0.0.0".to_string(),
-            port,
+            port: listener_port,
             protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
             tls_config: tls_config.clone(),
             http_filters: if global_filters.is_empty() {
@@ -279,7 +285,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), false)
+        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), false, None)
             .expect("convert spec");
 
         assert_eq!(spec.team, "platform-team");
@@ -315,7 +321,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "isolated-team".to_string(), true)
+        let spec = openapi_to_api_definition_spec(doc, "isolated-team".to_string(), true, None)
             .expect("convert spec");
 
         assert!(spec.listener_isolation);
@@ -352,7 +358,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), false);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), GatewayError::MissingServers));
     }
@@ -380,7 +386,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -425,7 +431,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
             .expect("convert spec");
 
         assert!(spec.listener_isolation);
@@ -458,7 +464,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
             .expect("convert spec");
 
         assert!(spec.listener_isolation);
@@ -486,7 +492,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -515,7 +521,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, GatewayError::InvalidFilters(_)));
@@ -544,7 +550,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -586,7 +592,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
             .expect("convert spec");
 
         // Verify global filters

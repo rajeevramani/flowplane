@@ -52,7 +52,9 @@ use crate::xds::{
         crate::api::handlers::api_definitions::append_route_handler,
         crate::api::handlers::api_definitions::list_api_definitions_handler,
         crate::api::handlers::api_definitions::get_api_definition_handler,
-        crate::api::handlers::api_definitions::get_bootstrap_handler
+        crate::api::handlers::api_definitions::update_api_definition_handler,
+        crate::api::handlers::api_definitions::get_bootstrap_handler,
+        crate::api::handlers::reporting::list_route_flows_handler
     ),
     components(
         schemas(
@@ -104,14 +106,20 @@ use crate::xds::{
             HeaderMutationConfig,
             HealthCheckConfig,
             LocalRateLimitConfig,
-            RateLimitConfig
+            RateLimitConfig,
+            // Reporting schemas
+            crate::api::handlers::reporting::ListRouteFlowsResponse,
+            crate::api::handlers::reporting::RouteFlowEntry,
+            crate::api::handlers::reporting::RouteFlowListener,
+            crate::api::handlers::reporting::ListRouteFlowsQuery
         )
     ),
     tags(
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
-        (name = "platform-api", description = "Platform API Abstraction endpoints")
+        (name = "platform-api", description = "Platform API Abstraction endpoints"),
+        (name = "reports", description = "Platform visibility and reporting endpoints")
     ),
     security(
         ("bearerAuth" = [])

@@ -13,7 +13,7 @@ use super::support::{run_cli_command, TempTokenFile, TestServer};
 #[tokio::test]
 async fn test_auth_with_token_flag() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-token-flag", &["routes:read"]).await;
+    let token_response = server.issue_token("test-token-flag", &["api-definitions:read"]).await;
 
     let result = run_cli_command(&[
         "api",
@@ -33,7 +33,7 @@ async fn test_auth_with_token_flag() {
 #[tokio::test]
 async fn test_auth_with_token_file() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-token-file", &["routes:read"]).await;
+    let token_response = server.issue_token("test-token-file", &["api-definitions:read"]).await;
     let token_file = TempTokenFile::new(&token_response.token);
 
     let result = run_cli_command(&[
@@ -55,7 +55,7 @@ async fn test_auth_with_token_file() {
 #[ignore = "Passes in full test suite but fails when run individually - env var isolation issue"]
 async fn test_auth_with_env_var() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-env-var", &["routes:read"]).await;
+    let token_response = server.issue_token("test-env-var", &["api-definitions:read"]).await;
 
     // Set environment variable
     std::env::set_var("FLOWPLANE_TOKEN", &token_response.token);
@@ -77,7 +77,7 @@ async fn test_auth_with_env_var() {
 #[tokio::test]
 async fn test_auth_precedence_token_flag_over_file() {
     let server = TestServer::start().await;
-    let valid_token = server.issue_token("valid-token", &["routes:read"]).await;
+    let valid_token = server.issue_token("valid-token", &["api-definitions:read"]).await;
     let invalid_token_file = TempTokenFile::new("invalid-token");
 
     // --token should take precedence over --token-file
@@ -101,7 +101,7 @@ async fn test_auth_precedence_token_flag_over_file() {
 #[tokio::test]
 async fn test_auth_precedence_token_file_over_env() {
     let server = TestServer::start().await;
-    let valid_token = server.issue_token("valid-file-token", &["routes:read"]).await;
+    let valid_token = server.issue_token("valid-file-token", &["api-definitions:read"]).await;
     let token_file = TempTokenFile::new(&valid_token.token);
 
     // Set invalid env var
@@ -175,15 +175,34 @@ async fn test_auth_failure_with_no_token() {
 
 #[tokio::test]
 async fn test_auth_with_insufficient_scopes() {
+    use super::support::TempOpenApiFile;
+
     let server = TestServer::start().await;
-    // Create token with only clusters:read scope, not routes:write
+    // Create token with only clusters:read scope, not api-definitions:write
     let token_response = server.issue_token("limited-scope-token", &["clusters:read"]).await;
+
+    let simple_openapi = r#"
+openapi: 3.0.0
+info:
+  title: Test API
+  version: 1.0.0
+servers:
+  - url: https://httpbin.org
+paths:
+  /get:
+    get:
+      summary: Get endpoint
+      responses:
+        '200':
+          description: Success
+"#;
+    let openapi_file = TempOpenApiFile::new(simple_openapi);
 
     let result = run_cli_command(&[
         "api",
         "import-openapi",
         "--file",
-        "examples/httpbin-simple.yaml",
+        &openapi_file.path_str(),
         "--team",
         "test-team",
         "--token",

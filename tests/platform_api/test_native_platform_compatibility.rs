@@ -22,6 +22,12 @@ struct TestContext {
 }
 
 async fn create_test_context() -> TestContext {
+    // Set BOOTSTRAP_TOKEN for tests that need default gateway resources
+    std::env::set_var(
+        "BOOTSTRAP_TOKEN",
+        "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=",
+    );
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect("sqlite::memory:")
@@ -78,6 +84,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
             name: "native-test-cluster".to_string(),
             service_name: "native-backend".to_string(),
             configuration: serde_json::to_value(&native_cluster_spec).unwrap(),
+            team: Some("test".into()),
         })
         .await
         .unwrap();
@@ -116,6 +123,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
                 path_prefix: None,
                 cluster_name: None,
                 configuration: Some(serde_json::to_value(&native_route_config).unwrap()),
+                team: None,
             },
         )
         .await
@@ -268,6 +276,7 @@ async fn test_native_api_update_preserves_platform_api_routes() {
                 path_prefix: None,
                 cluster_name: None,
                 configuration: Some(serde_json::to_value(&route_config).unwrap()),
+                team: None,
             },
         )
         .await

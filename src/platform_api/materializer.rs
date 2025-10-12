@@ -387,13 +387,39 @@ impl PlatformApiMaterializer {
             })
             .await?;
 
-        // Trigger xDS snapshot updates for updated native resources
+        // Update listener virtual host configurations with new domain/routes
+        // This is critical - without this, domain changes won't propagate to Envoy!
         if definition.listener_isolation {
-            self.state.refresh_listeners_from_repository().await?;
+            // For isolated listeners, update the listener's route config
+            // Note: In isolated mode, the listener itself doesn't change, but we need to ensure
+            // the route config referenced by the listener gets updated via xDS refresh
+            tracing::info!("Isolated listener mode: route config will be updated via xDS refresh");
+        } else {
+            // For shared listeners, merge the updated routes (with new domain) into listener route configs
+            self.materialize_shared_listener_routes(
+                &definition,
+                &created_routes,
+                &definition.target_listeners,
+            )
+            .await?;
         }
+
+        // Trigger xDS snapshot updates for updated native resources
+        // Order matters: clusters -> routes -> listeners (to avoid NACK errors)
         self.state.refresh_clusters_from_repository().await?;
         self.state.refresh_routes_from_repository().await?;
-        self.state.refresh_platform_api_resources().await?;
+
+        // For isolated listeners: refresh platform API resources and listeners
+        // For shared listeners: refresh listeners to trigger RDS update
+        if definition.listener_isolation {
+            self.state.refresh_platform_api_resources().await?;
+            self.state.refresh_listeners_from_repository().await?;
+        } else {
+            // For shared listeners, refresh_routes_from_repository() already picked up
+            // the updated route config from materialize_shared_listener_routes()
+            // We need to refresh listeners to trigger RDS update in Envoy
+            self.state.refresh_listeners_from_repository().await?;
+        }
 
         Ok(CreateDefinitionOutcome {
             definition,
@@ -625,6 +651,7 @@ impl PlatformApiMaterializer {
                     port: Some(params.port as i64),
                     protocol: Some(params.protocol.clone()),
                     configuration: listener_value,
+                    team: None, // Platform API listeners inherit team from API definition
                 })
                 .await?;
 
@@ -801,6 +828,7 @@ impl PlatformApiMaterializer {
                         path_prefix: None,
                         cluster_name: None,
                         configuration: Some(updated_config),
+                        team: None, // Don't modify team on route config update
                     },
                 )
                 .await?;
@@ -891,6 +919,7 @@ impl PlatformApiMaterializer {
                     name: cluster_name.clone(),
                     service_name: cluster_name.clone(),
                     configuration: cluster_config,
+                    team: None, // Platform API clusters inherit team from API definition
                 })
                 .await?;
 
@@ -940,6 +969,7 @@ impl PlatformApiMaterializer {
                     path_prefix: api_route.match_value.clone(),
                     cluster_name,
                     configuration: route_config,
+                    team: None, // Platform API routes inherit team from API definition
                 })
                 .await?;
 
@@ -1090,6 +1120,7 @@ impl PlatformApiMaterializer {
                             path_prefix: None,
                             cluster_name: None,
                             configuration: Some(updated_config),
+                            team: None, // Don't modify team on route config update
                         },
                     )
                     .await?;

@@ -68,8 +68,8 @@ impl TokenService {
         Ok(self.argon2.verify_password(candidate.as_bytes(), &parsed).is_ok())
     }
 
-    #[instrument(skip(self), fields(correlation_id = field::Empty))]
-    pub async fn ensure_bootstrap_token(&self) -> Result<Option<TokenSecretResponse>> {
+    #[instrument(skip(self, bootstrap_secret), fields(correlation_id = field::Empty))]
+    pub async fn ensure_bootstrap_token(&self, bootstrap_secret: &str) -> Result<Option<String>> {
         tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
 
         if self.repository.count_tokens().await? > 0 {
@@ -78,34 +78,41 @@ impl TokenService {
             return Ok(None);
         }
 
-        let request = CreateTokenRequest {
+        // Hash the provided bootstrap token
+        let hashed_secret = self.hash_secret(bootstrap_secret)?;
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let new_token = NewPersonalAccessToken {
+            id: id.clone(),
             name: "bootstrap-admin".into(),
-            description: Some("Initial bootstrap token".into()),
+            description: Some("Bootstrap admin token from environment".into()),
+            hashed_secret,
+            status: TokenStatus::Active,
             expires_at: None,
-            scopes: vec![
-                "tokens:read".into(),
-                "tokens:write".into(),
-                "clusters:read".into(),
-                "clusters:write".into(),
-                "routes:read".into(),
-                "routes:write".into(),
-                "listeners:read".into(),
-                "listeners:write".into(),
-                "gateways:import".into(),
-            ],
             created_by: Some("system".into()),
+            scopes: vec![
+                "admin:all".into(), // Grant full admin access
+            ],
         };
 
-        let response = self.create_token(request).await?;
+        self.repository.create_token(new_token).await?;
+
+        let token_value = format!("fp_pat_{}.{}", id, bootstrap_secret);
+
         self.record_event(
-            "auth.token.seeded",
-            Some(response.id.as_str()),
+            "auth.token.bootstrap_seeded",
+            Some(&id),
             Some("bootstrap-admin"),
-            json!({ "name": "bootstrap-admin" }),
+            json!({ "name": "bootstrap-admin", "source": "environment" }),
         )
         .await?;
-        info!(token_id = %response.id, "bootstrap personal access token seeded");
-        Ok(Some(response))
+
+        metrics::record_token_created(1).await;
+        let active_count = self.repository.count_active_tokens().await?;
+        metrics::set_active_tokens(active_count as usize).await;
+
+        info!(token_id = %id, "bootstrap personal access token seeded from environment");
+        Ok(Some(token_value))
     }
 
     #[instrument(
@@ -124,13 +131,17 @@ impl TokenService {
         let token_value = format!("fp_pat_{}.{}", id, secret);
         let hashed_secret = self.hash_secret(&secret)?;
 
+        // Apply default 30-day expiry if not specified
+        let expires_at =
+            payload.expires_at.or_else(|| Some(Utc::now() + chrono::Duration::days(30)));
+
         let new_token = NewPersonalAccessToken {
             id: id.clone(),
             name: payload.name.clone(),
             description: payload.description.clone(),
             hashed_secret,
             status: TokenStatus::Active,
-            expires_at: payload.expires_at,
+            expires_at,
             created_by: payload.created_by.clone(),
             scopes: payload.scopes.clone(),
         };

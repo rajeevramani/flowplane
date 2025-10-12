@@ -4,6 +4,7 @@
 //! plus the personal access token services, middleware, and validation layers.
 
 pub mod auth_service;
+pub mod authorization;
 pub mod cleanup_service;
 mod hashing;
 pub mod jwt;
