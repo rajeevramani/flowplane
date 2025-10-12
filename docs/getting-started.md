@@ -7,8 +7,12 @@ This walkthrough takes you from an empty database to a working Envoy listener th
 All API endpoints require bearer authentication. On first startup, Flowplane displays a bootstrap admin token in a **prominent banner**:
 
 ```bash
+# Generate a secure bootstrap token first
+export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
+
 # Start the control plane and capture the token
 DATABASE_URL=sqlite://./data/flowplane.db \
+BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
 cargo run --bin flowplane
 
