@@ -9,21 +9,27 @@ The Aim of the CP is initially to provide a resultful interface for Envoy. We wi
 Flowplane is an Envoy control plane that keeps listener, route, and cluster configuration in structured Rust/JSON models. Each payload is validated and then translated into Envoy protobufs through `envoy-types`, so you can assemble advanced filter chains—JWT auth, rate limiting, TLS, tracing—without hand-crafting `Any` blobs.
 
 ### Before You Start
-- Rust toolchain (1.89+ required)
+- Rust toolchain (1.75+ required)
 - SQLite (for the default embedded database)
 - Envoy proxy (when you are ready to point a data-plane instance at the control plane)
+- **Bootstrap Token**: Generate a secure token for initial admin access (see Authentication section below)
 
 **Quick Start with Docker:** For the fastest way to get started, see [README-DOCKER.md](README-DOCKER.md) for Docker Compose instructions.
 
 ### Launch the Control Plane
 ```bash
+# Generate a secure bootstrap token first
+export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
+
 # Minimal production start
 DATABASE_URL=sqlite://./data/flowplane.db \
+BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
 cargo run --bin flowplane
 
 # With custom ports (optional)
 DATABASE_URL=sqlite://./data/flowplane.db \
+BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
 FLOWPLANE_API_PORT=8080 \
 FLOWPLANE_XDS_PORT=50051 \
@@ -44,6 +50,7 @@ Example launch with mutual TLS:
 
 ```bash
 DATABASE_URL=sqlite://./data/flowplane.db \
+BOOTSTRAP_TOKEN="$(openssl rand -base64 32)" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
 FLOWPLANE_XDS_PORT=50051 \
 FLOWPLANE_XDS_TLS_CERT_PATH=certs/xds-server.pem \
@@ -141,6 +148,7 @@ See [docs/filters.md](docs/filters.md#local-rate-limit) for detailed examples of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | *required* | SQLite or PostgreSQL connection string (e.g., `sqlite://./data/flowplane.db`) |
+| `BOOTSTRAP_TOKEN` | *required* | Secure token (min 32 chars) for creating initial admin PAT. Generate with `openssl rand -base64 32` |
 | `FLOWPLANE_API_BIND_ADDRESS` | `127.0.0.1` | API server bind address (use `0.0.0.0` for Docker/remote access) |
 | `FLOWPLANE_API_PORT` | `8080` | HTTP API server port |
 | `FLOWPLANE_XDS_BIND_ADDRESS` | `0.0.0.0` | xDS gRPC server bind address |
@@ -243,12 +251,21 @@ Flowplane exposes a comprehensive REST API for managing all control plane resour
 
 | Method | Endpoint | Description | Required Scope |
 |--------|----------|-------------|----------------|
-| POST | `/api/v1/api-definitions` | Create BFF API definition | `routes:write` |
-| GET | `/api/v1/api-definitions` | List API definitions | `routes:read` |
-| GET | `/api/v1/api-definitions/{id}` | Get API definition | `routes:read` |
-| POST | `/api/v1/api-definitions/from-openapi` | Import OpenAPI spec | `routes:write` |
-| POST | `/api/v1/api-definitions/{id}/routes` | Append route to API | `routes:write` |
-| GET | `/api/v1/api-definitions/{id}/bootstrap` | Get Envoy bootstrap config | `routes:read` |
+| POST | `/api/v1/api-definitions` | Create BFF API definition | `api-definitions:write` |
+| GET | `/api/v1/api-definitions` | List API definitions | `api-definitions:read` |
+| GET | `/api/v1/api-definitions/{id}` | Get API definition | `api-definitions:read` |
+| PATCH | `/api/v1/api-definitions/{id}` | Update API definition | `api-definitions:write` |
+| POST | `/api/v1/api-definitions/from-openapi` | Import OpenAPI spec | `api-definitions:write` |
+| POST | `/api/v1/api-definitions/{id}/routes` | Append route to API | `api-definitions:write` |
+| GET | `/api/v1/api-definitions/{id}/bootstrap` | Get Envoy bootstrap config | `api-definitions:read` |
+
+#### Reports & Analytics
+
+| Method | Endpoint | Description | Required Scope |
+|--------|----------|-------------|----------------|
+| GET | `/api/v1/reports/route-flows` | Get route flow analysis (listener → route → cluster → endpoints) | `reports:read` |
+
+Supports pagination via `limit` and `offset` query parameters. Team-scoped tokens see only their team's routes.
 
 #### Token Scopes
 
@@ -256,8 +273,12 @@ Scopes control access to API groups:
 
 - `tokens:read`, `tokens:write` - Token management
 - `clusters:read`, `clusters:write` - Cluster resources
-- `routes:read`, `routes:write` - Route and API definition resources
+- `routes:read`, `routes:write` - Route configuration resources
 - `listeners:read`, `listeners:write` - Listener resources
+- `api-definitions:read`, `api-definitions:write` - API definition (Platform API) resources
+- `reports:read` - Access to reporting and analytics endpoints
+- `admin:all` - Super admin scope granting full access across all resources and teams
+- `team:<team-name>:<resource>:<action>` - Team-scoped access pattern (e.g., `team:platform:routes:read`)
 
 ### Documentation Map
 - [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
