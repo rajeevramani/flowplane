@@ -65,9 +65,15 @@ async fn smoke_no_nacks() {
     envoy.wait_admin_ready().await;
 
     // Create a PAT with routes:write scope and create API to force LDS/RDS/CDS updates
-    let token = create_pat(vec!["routes:write", "routes:read", "listeners:read", "clusters:read"])
-        .await
-        .expect("pat");
+    let token = create_pat(vec![
+        "api-definitions:write",
+        "api-definitions:read",
+        "routes:read",
+        "listeners:read",
+        "clusters:read",
+    ])
+    .await
+    .expect("pat");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());
     let _resp =
         post_create_api(api_addr, &token, "e2e", &domain, &base_path, &namer.test_id(), &endpoint)

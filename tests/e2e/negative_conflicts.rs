@@ -37,7 +37,8 @@ async fn negative_conflicts_duplicate_domain() {
     let domain = namer.domain();
     let route_path = namer.path("echo");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());
-    let token = create_pat(vec!["routes:write", "routes:read"]).await.expect("pat");
+    let token =
+        create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
 
     // First create should succeed
     let _ =

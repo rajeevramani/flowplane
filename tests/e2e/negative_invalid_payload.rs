@@ -27,7 +27,8 @@ async fn negative_invalid_payload_rejected() {
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
 
-    let token = create_pat(vec!["routes:write"]).await.expect("pat");
+    let token =
+        create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
 
     // Invalid: missing routes
     let body = serde_json::json!({
