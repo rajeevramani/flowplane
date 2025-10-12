@@ -61,9 +61,15 @@ async fn listener_scoping_team_and_allowlist() {
     wait_http_ready(api_addr).await;
 
     // Create PAT
-    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
-        .await
-        .expect("pat");
+    let token = create_pat(vec![
+        "api-definitions:write",
+        "api-definitions:read",
+        "routes:read",
+        "listeners:read",
+        "clusters:read",
+    ])
+    .await
+    .expect("pat");
 
     // Create isolated API definition with a named listener for this team
     let connector = hyper_util::client::legacy::connect::HttpConnector::new();

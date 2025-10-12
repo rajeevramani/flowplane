@@ -54,9 +54,15 @@ async fn filters_local_rate_limit_override_present() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
-    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
-        .await
-        .expect("pat");
+    let token = create_pat(vec![
+        "api-definitions:write",
+        "api-definitions:read",
+        "routes:read",
+        "listeners:read",
+        "clusters:read",
+    ])
+    .await
+    .expect("pat");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());
 
     // Create API with two routes: one inherits global RL, another disables RL via per-route override

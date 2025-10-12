@@ -71,9 +71,15 @@ async fn smoke_boot_and_route() {
     };
 
     // Create a PAT with api-definitions:write scope (required in v0.0.2+)
-    let token = create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
-        .await
-        .expect("pat");
+    let token = create_pat(vec![
+        "api-definitions:write",
+        "api-definitions:read",
+        "routes:read",
+        "listeners:read",
+        "clusters:read",
+    ])
+    .await
+    .expect("pat");
 
     // Create API via Platform API using unique domain/path
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());

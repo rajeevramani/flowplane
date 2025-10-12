@@ -110,10 +110,15 @@ async fn mtls_xds_matrix() {
         let base_path = namer.base_path();
         let route_path = namer.path("echo");
 
-        let token =
-            create_pat(vec!["api-definitions:write", "api-definitions:read", "routes:read", "listeners:read", "clusters:read"])
-                .await
-                .expect("pat");
+        let token = create_pat(vec![
+            "api-definitions:write",
+            "api-definitions:read",
+            "routes:read",
+            "listeners:read",
+            "clusters:read",
+        ])
+        .await
+        .expect("pat");
         let endpoint = format!("127.0.0.1:{}", echo_addr.port());
         let _resp = post_create_api(
             api_addr,
