@@ -16,25 +16,182 @@ Flowplane is an Envoy control plane that keeps listener, route, and cluster conf
 
 **Quick Start with Docker:** For the fastest way to get started, see [README-DOCKER.md](README-DOCKER.md) for Docker Compose instructions.
 
-### Launch the Control Plane
+### Quick Start
+
+This 5-minute guide walks you through launching Flowplane, importing an API, and proxying traffic through Envoy.
+
+#### 1. Launch the Control Plane
+
 ```bash
-# Generate a secure bootstrap token first
+# Generate a secure bootstrap token
 export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
 
-# Minimal production start
+# Start Flowplane (creates database automatically)
 DATABASE_URL=sqlite://./data/flowplane.db \
 BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-cargo run --bin flowplane
-
-# With custom ports (optional)
-DATABASE_URL=sqlite://./data/flowplane.db \
-BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
-FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-FLOWPLANE_API_PORT=8080 \
-FLOWPLANE_XDS_PORT=50051 \
 cargo run --bin flowplane
 ```
+
+#### 2. Get Your Admin Token
+
+When Flowplane starts, it displays a bootstrap admin token in a prominent banner. **Copy this token** - you'll need it for API calls:
+
+```bash
+================================================================================
+🎉 Bootstrap Admin Token Created
+================================================================================
+
+  Token: fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=
+
+⚠️  IMPORTANT: Save this token securely!
+================================================================================
+```
+
+Extract it from logs if needed:
+
+```bash
+# From running process
+cargo run --bin flowplane 2>&1 | grep "Token: fp_pat_"
+
+# Or from Docker logs
+docker logs flowplane 2>&1 | grep "Token: fp_pat_"
+```
+
+Export it for use in subsequent commands:
+
+```bash
+export ADMIN_TOKEN="fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m="
+```
+
+#### 3. Import an API from OpenAPI Spec
+
+Import the included HTTPBin example to create a complete gateway (cluster, routes, and listener):
+
+```bash
+# Import httpbin-basic.yaml (uses shared default gateway listener)
+curl -sS \
+  -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @examples/httpbin-basic.yaml
+
+# Response includes the API definition ID:
+# {
+#   "id": "api_def_abc123",
+#   "team": "demo",
+#   "domain": "httpbin-org",
+#   "bootstrapUri": "/api/v1/api-definitions/api_def_abc123/bootstrap?scope=all",
+#   "routes": ["httpbin-org-get", "httpbin-org-headers", ...],
+#   "listeners": ["default-gateway-listener"]
+# }
+```
+
+**Note**: `listenerIsolation=false` means this API uses the shared `default-gateway-listener` on port 10000, allowing multiple APIs to coexist.
+
+Save the API ID from the response:
+
+```bash
+export API_ID="api_def_abc123"  # Replace with actual ID from response
+```
+
+#### 4. Get Envoy Bootstrap Configuration
+
+Generate and save the Envoy bootstrap configuration:
+
+```bash
+# Get bootstrap config and save to file
+curl -sS \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/api-definitions/$API_ID/bootstrap?scope=all" \
+  | jq '.' > envoy-bootstrap.yaml
+
+# Verify the configuration was saved
+cat envoy-bootstrap.yaml | jq '.static_resources.listeners[].name'
+```
+
+The bootstrap config includes:
+- Listener configuration (address, port, filters)
+- Cluster definitions (upstream endpoints)
+- Route configurations (path matching rules)
+- xDS configuration for dynamic updates
+
+#### 5. Start Envoy
+
+Launch Envoy with the generated bootstrap configuration:
+
+```bash
+# Using envoy binary
+envoy -c envoy-bootstrap.yaml
+
+# Using Docker
+docker run -d \
+  --name envoy-gateway \
+  --network host \
+  -v $(pwd)/envoy-bootstrap.yaml:/etc/envoy/envoy.yaml \
+  envoyproxy/envoy:v1.31-latest \
+  -c /etc/envoy/envoy.yaml
+```
+
+Envoy will:
+1. Load the bootstrap configuration
+2. Connect to Flowplane's xDS server (port 50051)
+3. Start listening on port 10000 (default gateway listener)
+
+#### 6. Make API Calls Through Envoy
+
+Test the gateway with various endpoints from the HTTPBin API:
+
+```bash
+# Simple GET request (includes gateway headers)
+curl http://localhost:10000/get -H "Host: httpbin.org"
+
+# View request headers (see x-gateway and x-served-by added by Flowplane)
+curl http://localhost:10000/headers -H "Host: httpbin.org"
+
+# POST request (stricter rate limit: 20/min)
+curl -X POST http://localhost:10000/post \
+  -H "Host: httpbin.org" \
+  -H "Content-Type: application/json" \
+  -d '{"test": "data"}'
+
+# PUT request (very strict rate limit: 10/min)
+curl -X PUT http://localhost:10000/put \
+  -H "Host: httpbin.org" \
+  -H "Content-Type: application/json" \
+  -d '{"update": "data"}'
+
+# JSON response
+curl http://localhost:10000/json -H "Host: httpbin.org"
+
+# UUID generator
+curl http://localhost:10000/uuid -H "Host: httpbin.org"
+
+# Status code endpoint
+curl http://localhost:10000/status/200 -H "Host: httpbin.org"
+```
+
+**Important**: The `Host: httpbin.org` header is required because Envoy uses it for upstream routing.
+
+**Rate Limiting in Action:**
+- Global rate limit: 100 requests/minute (all endpoints)
+- POST endpoint: 20 requests/minute
+- PUT endpoint: 10 requests/minute
+- Status endpoint: 500 requests/minute
+
+Make repeated requests to see rate limiting:
+
+```bash
+# Trigger rate limit on POST (make 25 requests quickly)
+for i in {1..25}; do
+  curl -X POST http://localhost:10000/post -H "Host: httpbin.org" -H "Content-Type: application/json" -d '{}'
+  echo ""
+done
+
+# You'll see 429 (Too Many Requests) after hitting the limit
+```
+
+
 
 The REST API is available on `http://127.0.0.1:8080`. Open the interactive API reference at **`http://127.0.0.1:8080/swagger-ui`** (OpenAPI JSON is served at `/api-docs/openapi.json`).
 
