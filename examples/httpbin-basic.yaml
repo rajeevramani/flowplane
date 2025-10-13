@@ -77,8 +77,8 @@ paths:
         rate_limit:
           stat_prefix: httpbin_post_rl
           token_bucket:
-            max_tokens: 20
-            tokens_per_fill: 20
+            max_tokens: 5
+            tokens_per_fill: 5
             fill_interval_ms: 60000
       responses:
         '200':
@@ -92,8 +92,8 @@ paths:
         rate_limit:
           stat_prefix: httpbin_put_rl
           token_bucket:
-            max_tokens: 10
-            tokens_per_fill: 10
+            max_tokens: 3
+            tokens_per_fill: 3
             fill_interval_ms: 60000
       responses:
         '200':
@@ -113,8 +113,8 @@ paths:
         rate_limit:
           stat_prefix: httpbin_status_rl
           token_bucket:
-            max_tokens: 500
-            tokens_per_fill: 500
+            max_tokens: 3
+            tokens_per_fill: 3
             fill_interval_ms: 60000
       responses:
         '200':

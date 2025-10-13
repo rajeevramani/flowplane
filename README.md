@@ -30,7 +30,7 @@ export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
 DATABASE_URL=sqlite://./data/flowplane.db \
 BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-cargo run --bin flowplane
+cargo run --bin flowplane 2>&1 | grep "Token: fp_pat_"
 ```
 
 #### 2. Get Your Admin Token
@@ -61,7 +61,7 @@ docker logs flowplane 2>&1 | grep "Token: fp_pat_"
 Export it for use in subsequent commands:
 
 ```bash
-export ADMIN_TOKEN="fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m="
+export ADMIN_TOKEN="fp_pat_23ced1d1-3942-41de-9a1e-c0e399831b6e.9SxiaU3W5x9kYSfD8LWhU/TB3PmXiGyVp4nl2Q1K1z0="
 ```
 
 #### 3. Import an API from OpenAPI Spec
@@ -104,10 +104,10 @@ Generate and save the Envoy bootstrap configuration:
 curl -sS \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   "http://localhost:8080/api/v1/api-definitions/$API_ID/bootstrap?scope=all" \
-  | jq '.' > envoy-bootstrap.yaml
+  | yq '.' > envoy-bootstrap.yaml
 
 # Verify the configuration was saved
-cat envoy-bootstrap.yaml | jq '.static_resources.listeners[].name'
+cat envoy-bootstrap.yaml | yq '.listeners[].name'
 ```
 
 The bootstrap config includes:
