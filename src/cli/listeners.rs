@@ -14,7 +14,7 @@ pub enum ListenerCommands {
     /// Create a new Envoy listener configuration
     #[command(
         long_about = "Create a new listener by providing a JSON file with the listener specification.\n\nListeners define how Envoy accepts incoming connections, including address, port, protocol, and filter chains.",
-        after_help = "EXAMPLES:\n    # Create a listener from a JSON file\n    flowplane listener create --file listener-spec.json\n\n    # Create and output as YAML\n    flowplane listener create --file listener-spec.json --output yaml\n\n    # With authentication\n    flowplane listener create --file listener-spec.json --token your-token"
+        after_help = "EXAMPLES:\n    # Create a listener from a JSON file\n    flowplane-cli listener create --file listener-spec.json\n\n    # Create and output as YAML\n    flowplane-cli listener create --file listener-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli listener create --file listener-spec.json --token your-token"
     )]
     Create {
         /// Path to JSON file with listener spec
@@ -29,7 +29,7 @@ pub enum ListenerCommands {
     /// List all listener configurations
     #[command(
         long_about = "List all listener configurations in the system with optional filtering and pagination.\n\nListeners define network listeners that accept incoming connections.",
-        after_help = "EXAMPLES:\n    # List all listeners\n    flowplane listener list\n\n    # List with table output\n    flowplane listener list --output table\n\n    # Filter by protocol\n    flowplane listener list --protocol http\n\n    # Paginate results\n    flowplane listener list --limit 10 --offset 20"
+        after_help = "EXAMPLES:\n    # List all listeners\n    flowplane-cli listener list\n\n    # List with table output\n    flowplane-cli listener list --output table\n\n    # Filter by protocol\n    flowplane-cli listener list --protocol http\n\n    # Paginate results\n    flowplane-cli listener list --limit 10 --offset 20"
     )]
     List {
         /// Filter by protocol
@@ -52,7 +52,7 @@ pub enum ListenerCommands {
     /// Get details of a specific listener by name
     #[command(
         long_about = "Retrieve detailed information about a specific listener configuration by its name.\n\nShows address, port, protocol, filter chains, and metadata.",
-        after_help = "EXAMPLES:\n    # Get listener details in JSON format\n    flowplane listener get http-listener\n\n    # Get listener in YAML format\n    flowplane listener get http-listener --output yaml\n\n    # With authentication\n    flowplane listener get http-listener --token your-token --base-url https://api.example.com"
+        after_help = "EXAMPLES:\n    # Get listener details in JSON format\n    flowplane-cli listener get http-listener\n\n    # Get listener in YAML format\n    flowplane-cli listener get http-listener --output yaml\n\n    # With authentication\n    flowplane-cli listener get http-listener --token your-token --base-url https://api.example.com"
     )]
     Get {
         /// Listener name
@@ -67,7 +67,7 @@ pub enum ListenerCommands {
     /// Update an existing listener configuration
     #[command(
         long_about = "Update an existing listener configuration by providing a JSON file with the updated specification.\n\nYou can modify address, port, protocol, filter chains, and other listener properties.",
-        after_help = "EXAMPLES:\n    # Update a listener from JSON file\n    flowplane listener update http-listener --file updated-listener.json\n\n    # Update and output as YAML\n    flowplane listener update http-listener --file updated-listener.json --output yaml\n\n    # With authentication\n    flowplane listener update http-listener --file updated-listener.json --token your-token"
+        after_help = "EXAMPLES:\n    # Update a listener from JSON file\n    flowplane-cli listener update http-listener --file updated-listener.json\n\n    # Update and output as YAML\n    flowplane-cli listener update http-listener --file updated-listener.json --output yaml\n\n    # With authentication\n    flowplane-cli listener update http-listener --file updated-listener.json --token your-token"
     )]
     Update {
         /// Listener name
@@ -86,7 +86,7 @@ pub enum ListenerCommands {
     /// Delete a listener configuration
     #[command(
         long_about = "Delete a listener configuration by name.\n\nThis removes the listener and stops Envoy from accepting connections on the associated address and port.",
-        after_help = "EXAMPLES:\n    # Delete a listener (with confirmation)\n    flowplane listener delete http-listener\n\n    # Delete without confirmation prompt\n    flowplane listener delete http-listener --yes\n\n    # With authentication\n    flowplane listener delete http-listener --token your-token"
+        after_help = "EXAMPLES:\n    # Delete a listener (with confirmation)\n    flowplane-cli listener delete http-listener\n\n    # Delete without confirmation prompt\n    flowplane-cli listener delete http-listener --yes\n\n    # With authentication\n    flowplane-cli listener delete http-listener --token your-token"
     )]
     Delete {
         /// Listener name

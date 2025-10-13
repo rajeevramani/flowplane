@@ -1,6 +1,6 @@
 # CLI Usage Guide
 
-Flowplane provides a comprehensive command-line interface (`flowplane`) for managing Envoy control plane resources, authentication tokens, and API definitions. This guide covers installation, configuration, and practical usage.
+Flowplane provides a comprehensive command-line interface (`flowplane-cli`) for managing Envoy control plane resources, authentication tokens, and API definitions. This guide covers installation, configuration, and practical usage.
 
 ## Installation
 
@@ -15,15 +15,15 @@ cd flowplane
 cargo build --release --bin flowplane-cli
 
 # Install to system path (optional)
-# Note: Binary file is named flowplane-cli, but the command you use is 'flowplane'
+# The binary file is named flowplane-cli and that's what you type
 cargo install --path . --bin flowplane-cli
 ```
 
 ### Verify Installation
 
 ```bash
-flowplane --version
-flowplane --help
+flowplane-cli --version
+flowplane-cli --help
 ```
 
 ## Configuration
@@ -41,36 +41,36 @@ The CLI requires authentication to interact with the Flowplane API. You can prov
 Initialize the configuration file:
 
 ```bash
-flowplane config init
+flowplane-cli config init
 ```
 
 This creates `~/.flowplane/config.toml`. Set your credentials:
 
 ```bash
 # Set authentication token
-flowplane config set token fp_pat_your_token_here
+flowplane-cli config set token fp_pat_your_token_here
 
 # Set API base URL (default: http://127.0.0.1:8080)
-flowplane config set base_url https://api.flowplane.io
+flowplane-cli config set base_url https://api.flowplane.io
 
 # Set request timeout in seconds (default: 30)
-flowplane config set timeout 60
+flowplane-cli config set timeout 60
 ```
 
 View current configuration:
 
 ```bash
 # Show as YAML (default)
-flowplane config show
+flowplane-cli config show
 
 # Show as JSON
-flowplane config show --output json
+flowplane-cli config show --output json
 
 # Show as table
-flowplane config show --output table
+flowplane-cli config show --output table
 
 # Show config file location
-flowplane config path
+flowplane-cli config path
 ```
 
 ### Environment Variables
@@ -86,7 +86,7 @@ export FLOWPLANE_TIMEOUT="30"
 Override configuration for specific commands:
 
 ```bash
-flowplane cluster list \
+flowplane-cli cluster list \
   --token fp_pat_your_token_here \
   --base-url https://api.example.com \
   --timeout 60
@@ -100,7 +100,7 @@ Store token in a file for enhanced security:
 echo "fp_pat_your_token_here" > ~/.flowplane/token
 chmod 600 ~/.flowplane/token
 
-flowplane cluster list --token-file ~/.flowplane/token
+flowplane-cli cluster list --token-file ~/.flowplane/token
 ```
 
 ## Core Commands
@@ -125,26 +125,26 @@ Manage database schema migrations and validation.
 
 ```bash
 # Apply pending migrations
-flowplane database migrate
+flowplane-cli database migrate
 
 # Dry run to preview migrations
-flowplane database migrate --dry-run
+flowplane-cli database migrate --dry-run
 
-# Override database URL
-flowplane database migrate --database-url sqlite://./flowplane.db
+# Override database URL (--database-url is a global flag, comes before subcommand)
+flowplane-cli --database-url sqlite://./flowplane.db database migrate
 ```
 
 ### Check Migration Status
 
 ```bash
 # Verify schema is up to date
-flowplane database status
+flowplane-cli database status
 
 # List all applied migrations
-flowplane database list
+flowplane-cli database list
 
 # Validate database schema integrity
-flowplane database validate
+flowplane-cli database validate
 ```
 
 ## Authentication Token Management
@@ -155,7 +155,7 @@ Manage personal access tokens (PATs) for API authentication.
 
 ```bash
 # Create token with specific scopes
-flowplane auth create-token \
+flowplane-cli auth create-token \
   --name "prod-deployment" \
   --scope "clusters:*" \
   --scope "routes:*" \
@@ -163,14 +163,14 @@ flowplane auth create-token \
   --expires-in 90d
 
 # Create token with absolute expiration
-flowplane auth create-token \
+flowplane-cli auth create-token \
   --name "temporary-access" \
   --scope "clusters:read" \
   --expires-at "2025-12-31T23:59:59Z" \
   --description "Read-only access for auditing"
 
 # Create token with creator metadata
-flowplane auth create-token \
+flowplane-cli auth create-token \
   --name "ci-pipeline" \
   --scope "api-definitions:*" \
   --created-by "platform-team"
@@ -187,27 +187,27 @@ flowplane auth create-token \
 
 ```bash
 # List all tokens (default: table format)
-flowplane auth list-tokens
+flowplane-cli auth list-tokens
 
 # Limit results
-flowplane auth list-tokens --limit 10 --offset 20
+flowplane-cli auth list-tokens --limit 10 --offset 20
 
 # List with JSON output
-flowplane auth list-tokens --output json
+flowplane-cli auth list-tokens --output json
 ```
 
 ### Revoke Tokens
 
 ```bash
 # Revoke a token by ID
-flowplane auth revoke-token pat_abc123xyz
+flowplane-cli auth revoke-token pat_abc123xyz
 ```
 
 ### Rotate Tokens
 
 ```bash
 # Generate new secret for existing token
-flowplane auth rotate-token pat_abc123xyz
+flowplane-cli auth rotate-token pat_abc123xyz
 ```
 
 ## Cluster Management
@@ -245,39 +245,39 @@ cat > backend-cluster.json <<EOF
 }
 EOF
 
-flowplane cluster create --file backend-cluster.json
+flowplane-cli cluster create --file backend-cluster.json
 
 # Create with YAML output
-flowplane cluster create --file backend-cluster.json --output yaml
+flowplane-cli cluster create --file backend-cluster.json --output yaml
 ```
 
 ### List Clusters
 
 ```bash
 # List all clusters (table format)
-flowplane cluster list
+flowplane-cli cluster list
 
 # Filter by service name
-flowplane cluster list --service backend
+flowplane-cli cluster list --service backend
 
 # Paginate results
-flowplane cluster list --limit 10 --offset 20
+flowplane-cli cluster list --limit 10 --offset 20
 
 # JSON output
-flowplane cluster list --output json
+flowplane-cli cluster list --output json
 ```
 
 ### Get Cluster Details
 
 ```bash
 # Get cluster by name
-flowplane cluster get backend-api
+flowplane-cli cluster get backend-api
 
 # Get with YAML output
-flowplane cluster get backend-api --output yaml
+flowplane-cli cluster get backend-api --output yaml
 
 # Get with table output
-flowplane cluster get backend-api --output table
+flowplane-cli cluster get backend-api --output table
 ```
 
 ### Update Clusters
@@ -294,17 +294,17 @@ cat > updated-cluster.json <<EOF
 }
 EOF
 
-flowplane cluster update backend-api --file updated-cluster.json
+flowplane-cli cluster update backend-api --file updated-cluster.json
 ```
 
 ### Delete Clusters
 
 ```bash
 # Delete with confirmation prompt
-flowplane cluster delete backend-api
+flowplane-cli cluster delete backend-api
 
 # Delete without confirmation
-flowplane cluster delete backend-api --yes
+flowplane-cli cluster delete backend-api --yes
 ```
 
 ## Route Management
@@ -349,40 +349,40 @@ cat > api-routes.json <<EOF
 }
 EOF
 
-flowplane route create --file api-routes.json
+flowplane-cli route create --file api-routes.json
 ```
 
 ### List Routes
 
 ```bash
 # List all routes
-flowplane route list
+flowplane-cli route list
 
 # Filter by cluster
-flowplane route list --cluster backend-api
+flowplane-cli route list --cluster backend-api
 
 # JSON output
-flowplane route list --output json
+flowplane-cli route list --output json
 ```
 
 ### Get Route Details
 
 ```bash
-flowplane route get api-routes
-flowplane route get api-routes --output yaml
+flowplane-cli route get api-routes
+flowplane-cli route get api-routes --output yaml
 ```
 
 ### Update Routes
 
 ```bash
-flowplane route update api-routes --file updated-routes.json
+flowplane-cli route update api-routes --file updated-routes.json
 ```
 
 ### Delete Routes
 
 ```bash
-flowplane route delete api-routes
-flowplane route delete api-routes --yes
+flowplane-cli route delete api-routes
+flowplane-cli route delete api-routes --yes
 ```
 
 ## Listener Management
@@ -419,40 +419,40 @@ cat > http-listener.json <<EOF
 }
 EOF
 
-flowplane listener create --file http-listener.json
+flowplane-cli listener create --file http-listener.json
 ```
 
 ### List Listeners
 
 ```bash
 # List all listeners
-flowplane listener list
+flowplane-cli listener list
 
 # Filter by protocol
-flowplane listener list --protocol HTTP
+flowplane-cli listener list --protocol HTTP
 
 # JSON output
-flowplane listener list --output json
+flowplane-cli listener list --output json
 ```
 
 ### Get Listener Details
 
 ```bash
-flowplane listener get http-listener
-flowplane listener get http-listener --output yaml
+flowplane-cli listener get http-listener
+flowplane-cli listener get http-listener --output yaml
 ```
 
 ### Update Listeners
 
 ```bash
-flowplane listener update http-listener --file updated-listener.json
+flowplane-cli listener update http-listener --file updated-listener.json
 ```
 
 ### Delete Listeners
 
 ```bash
-flowplane listener delete http-listener
-flowplane listener delete http-listener --yes
+flowplane-cli listener delete http-listener
+flowplane-cli listener delete http-listener --yes
 ```
 
 ## API Definition Management
@@ -473,19 +473,19 @@ cat > api-definition.json <<EOF
 }
 EOF
 
-flowplane api create --file api-definition.json
+flowplane-cli api create --file api-definition.json
 ```
 
 ### Import from OpenAPI
 
 ```bash
 # Import OpenAPI YAML specification
-flowplane api import-openapi \
+flowplane-cli api import-openapi \
   --file openapi.yaml \
   --team platform
 
 # Import OpenAPI JSON specification
-flowplane api import-openapi \
+flowplane-cli api import-openapi \
   --file openapi.json \
   --team platform \
   --output json
@@ -503,33 +503,33 @@ Validate filter syntax before importing:
 
 ```bash
 # Validate filters in OpenAPI spec
-flowplane api validate-filters --file openapi-with-filters.yaml
+flowplane-cli api validate-filters --file openapi-with-filters.yaml
 
 # JSON output
-flowplane api validate-filters --file openapi.yaml --output json
+flowplane-cli api validate-filters --file openapi.yaml --output json
 ```
 
 ### List API Definitions
 
 ```bash
 # List all API definitions
-flowplane api list
+flowplane-cli api list
 
 # Filter by team
-flowplane api list --team platform
+flowplane-cli api list --team platform
 
 # Filter by team and domain
-flowplane api list --team platform --domain users
+flowplane-cli api list --team platform --domain users
 
 # Paginate results
-flowplane api list --limit 10 --offset 20
+flowplane-cli api list --limit 10 --offset 20
 ```
 
 ### Get API Definition
 
 ```bash
-flowplane api get api_def_abc123xyz
-flowplane api get api_def_abc123xyz --output yaml
+flowplane-cli api get api_def_abc123xyz
+flowplane-cli api get api_def_abc123xyz --output yaml
 ```
 
 ### Get Bootstrap Configuration
@@ -538,21 +538,21 @@ Generate Envoy bootstrap configuration for an API definition:
 
 ```bash
 # Get bootstrap config in YAML (default)
-flowplane api bootstrap api_def_abc123xyz
+flowplane-cli api bootstrap api_def_abc123xyz
 
 # Get in JSON format
-flowplane api bootstrap api_def_abc123xyz --format json
+flowplane-cli api bootstrap api_def_abc123xyz --format json
 
 # Scope to team listeners only
-flowplane api bootstrap api_def_abc123xyz --scope team
+flowplane-cli api bootstrap api_def_abc123xyz --scope team
 
 # Use allowlist scope with specific listeners
-flowplane api bootstrap api_def_abc123xyz \
+flowplane-cli api bootstrap api_def_abc123xyz \
   --scope allowlist \
   --allowlist http-listener,https-listener
 
 # Include default listeners in team scope
-flowplane api bootstrap api_def_abc123xyz \
+flowplane-cli api bootstrap api_def_abc123xyz \
   --scope team \
   --include-default
 ```
@@ -563,13 +563,13 @@ View HTTP filter configurations for an API definition:
 
 ```bash
 # Show filters as YAML (default)
-flowplane api show-filters api_def_abc123xyz
+flowplane-cli api show-filters api_def_abc123xyz
 
 # Show as JSON
-flowplane api show-filters api_def_abc123xyz --output json
+flowplane-cli api show-filters api_def_abc123xyz --output json
 
 # Show as table
-flowplane api show-filters api_def_abc123xyz --output table
+flowplane-cli api show-filters api_def_abc123xyz --output table
 ```
 
 ## Output Formats
@@ -585,9 +585,9 @@ All CLI commands support multiple output formats:
 Specify format with `--output` or `-o`:
 
 ```bash
-flowplane cluster list --output json
-flowplane route get my-route --output yaml
-flowplane listener list --output table
+flowplane-cli cluster list --output json
+flowplane-cli route get my-route --output yaml
+flowplane-cli listener list --output table
 ```
 
 ## Common Workflows
@@ -596,13 +596,13 @@ flowplane listener list --output table
 
 ```bash
 # 1. Initialize database
-flowplane database migrate
+flowplane-cli database migrate
 
 # 2. Initialize CLI configuration
-flowplane config init
+flowplane-cli config init
 
 # 3. Create bootstrap admin token using database
-flowplane auth create-token \
+flowplane-cli auth create-token \
   --name "admin-bootstrap" \
   --scope "tokens:*" \
   --scope "clusters:*" \
@@ -611,17 +611,17 @@ flowplane auth create-token \
   --scope "api-definitions:*"
 
 # 4. Store token in config
-flowplane config set token fp_pat_generated_token_here
+flowplane-cli config set token fp_pat_generated_token_here
 ```
 
 ### OpenAPI Import Workflow
 
 ```bash
 # 1. Validate filters syntax first
-flowplane api validate-filters --file openapi.yaml
+flowplane-cli api validate-filters --file openapi.yaml
 
 # 2. Import OpenAPI specification
-flowplane api import-openapi \
+flowplane-cli api import-openapi \
   --file openapi.yaml \
   --team my-team
 
@@ -633,29 +633,29 @@ flowplane api import-openapi \
 # }
 
 # 3. Get bootstrap configuration for Envoy
-flowplane api bootstrap api_def_abc123 > envoy-bootstrap.yaml
+flowplane-cli api bootstrap api_def_abc123 > envoy-bootstrap.yaml
 
 # 4. Verify generated filters
-flowplane api show-filters api_def_abc123
+flowplane-cli api show-filters api_def_abc123
 ```
 
 ### Multi-Environment Deployment
 
 ```bash
 # Development environment
-flowplane cluster create \
+flowplane-cli cluster create \
   --file cluster-dev.json \
   --base-url http://dev.flowplane.internal \
   --token $DEV_TOKEN
 
 # Staging environment
-flowplane cluster create \
+flowplane-cli cluster create \
   --file cluster-staging.json \
   --base-url http://staging.flowplane.internal \
   --token $STAGING_TOKEN
 
 # Production environment
-flowplane cluster create \
+flowplane-cli cluster create \
   --file cluster-prod.json \
   --base-url https://api.flowplane.io \
   --token $PROD_TOKEN
@@ -670,19 +670,19 @@ set -e
 # Create multiple clusters
 for cluster_file in clusters/*.json; do
   echo "Creating cluster from $cluster_file"
-  flowplane cluster create --file "$cluster_file"
+  flowplane-cli cluster create --file "$cluster_file"
 done
 
 # Create routes
 for route_file in routes/*.json; do
   echo "Creating route from $route_file"
-  flowplane route create --file "$route_file"
+  flowplane-cli route create --file "$route_file"
 done
 
 # Create listeners
 for listener_file in listeners/*.json; do
   echo "Creating listener from $listener_file"
-  flowplane listener create --file "$listener_file"
+  flowplane-cli listener create --file "$listener_file"
 done
 ```
 
@@ -708,7 +708,7 @@ wait_for_cluster() {
   echo "Waiting for cluster '$cluster_name' to be healthy..."
 
   while [ $attempt -lt $max_attempts ]; do
-    if flowplane cluster get "$cluster_name" --output json >/dev/null 2>&1; then
+    if flowplane-cli cluster get "$cluster_name" --output json >/dev/null 2>&1; then
       echo "✅ Cluster '$cluster_name' is ready"
       return 0
     fi
@@ -722,7 +722,7 @@ wait_for_cluster() {
 
 # Deploy backend service
 echo "Creating backend cluster..."
-flowplane cluster create \
+flowplane-cli cluster create \
   --file backend-cluster.json \
   --output json | jq -r '.name'
 
@@ -730,7 +730,7 @@ wait_for_cluster "backend-api"
 
 # Import OpenAPI specification
 echo "Importing OpenAPI specification..."
-API_DEF_ID=$(flowplane api import-openapi \
+API_DEF_ID=$(flowplane-cli api import-openapi \
   --file openapi.yaml \
   --team "$TEAM" \
   --output json | jq -r '.id')
@@ -739,7 +739,7 @@ echo "✅ API definition created: $API_DEF_ID"
 
 # Generate bootstrap configuration
 echo "Generating Envoy bootstrap configuration..."
-flowplane api bootstrap "$API_DEF_ID" \
+flowplane-cli api bootstrap "$API_DEF_ID" \
   --scope team \
   --format yaml > envoy-bootstrap.yaml
 
@@ -768,7 +768,7 @@ class FlowplaneCLI:
 
     def _run_command(self, args: List[str]) -> Dict:
         """Execute CLI command and return JSON output"""
-        cmd = ['flowplane'] + args + [
+        cmd = ['flowplane-cli'] + args + [
             '--base-url', self.base_url,
             '--token', self.token,
             '--output', 'json'
@@ -799,7 +799,7 @@ class FlowplaneCLI:
     def get_bootstrap(self, api_def_id: str, scope: str = 'all') -> str:
         """Get bootstrap configuration as YAML"""
         cmd = [
-            'flowplane', 'api', 'bootstrap', api_def_id,
+            'flowplane-cli', 'api', 'bootstrap', api_def_id,
             '--base-url', self.base_url,
             '--token', self.token,
             '--scope', scope,
@@ -869,10 +869,10 @@ jobs:
           FLOWPLANE_BASE_URL: https://api.flowplane.io
         run: |
           # Validate OpenAPI spec
-          flowplane api validate-filters --file openapi.yaml
+          flowplane-cli api validate-filters --file openapi.yaml
 
           # Import specification
-          API_DEF_ID=$(flowplane api import-openapi \
+          API_DEF_ID=$(flowplane-cli api import-openapi \
             --file openapi.yaml \
             --team production \
             --output json | jq -r '.id')
@@ -880,7 +880,7 @@ jobs:
           echo "Deployed API definition: $API_DEF_ID"
 
           # Generate bootstrap config
-          flowplane api bootstrap "$API_DEF_ID" \
+          flowplane-cli api bootstrap "$API_DEF_ID" \
             --scope team \
             --format yaml > envoy-bootstrap.yaml
 
@@ -900,7 +900,7 @@ variables:
 validate_openapi:
   stage: validate
   script:
-    - flowplane api validate-filters --file openapi.yaml
+    - flowplane-cli api validate-filters --file openapi.yaml
 
 deploy_production:
   stage: deploy
@@ -908,12 +908,12 @@ deploy_production:
     - main
   script:
     - |
-      API_DEF_ID=$(flowplane api import-openapi \
+      API_DEF_ID=$(flowplane-cli api import-openapi \
         --file openapi.yaml \
         --team production \
         --output json | jq -r '.id')
 
-      flowplane api bootstrap "$API_DEF_ID" \
+      flowplane-cli api bootstrap "$API_DEF_ID" \
         --scope team \
         --format yaml > envoy-bootstrap.yaml
 
@@ -934,16 +934,16 @@ deploy_production:
 **Solutions**:
 ```bash
 # 1. Verify token is set
-flowplane config show
+flowplane-cli config show
 
 # 2. Test token with simple command
-flowplane cluster list
+flowplane-cli cluster list
 
 # 3. Check token expiration
-flowplane auth list-tokens | grep your-token-name
+flowplane-cli auth list-tokens | grep your-token-name
 
 # 4. Rotate expired token
-flowplane auth rotate-token pat_abc123xyz
+flowplane-cli auth rotate-token pat_abc123xyz
 ```
 
 ### Connection Errors
@@ -953,7 +953,7 @@ flowplane auth rotate-token pat_abc123xyz
 **Solutions**:
 ```bash
 # 1. Verify base URL is correct
-flowplane config show | grep base_url
+flowplane-cli config show | grep base_url
 
 # 2. Test API server is running
 curl http://127.0.0.1:8080/health
@@ -962,7 +962,7 @@ curl http://127.0.0.1:8080/health
 ping api.flowplane.io
 
 # 4. Increase timeout for slow connections
-flowplane config set timeout 120
+flowplane-cli config set timeout 120
 ```
 
 ### Invalid JSON Errors
@@ -977,8 +977,8 @@ cat cluster.json | jq .
 # 2. Check file encoding (must be UTF-8)
 file cluster.json
 
-# 3. Use verbose mode for detailed errors
-flowplane cluster create --file cluster.json --verbose
+# 3. Use verbose mode for detailed errors (--verbose is a global flag)
+flowplane-cli --verbose cluster create --file cluster.json
 
 # 4. Validate against schema
 # (Check examples/ directory for valid schemas)
@@ -991,17 +991,17 @@ flowplane cluster create --file cluster.json --verbose
 **Solutions**:
 ```bash
 # 1. Check current migration status
-flowplane database status
+flowplane-cli database status
 
 # 2. List applied migrations
-flowplane database list
+flowplane-cli database list
 
 # 3. Validate database integrity
-flowplane database validate
+flowplane-cli database validate
 
-# 4. Override database URL if needed
-flowplane database migrate \
-  --database-url postgresql://user:pass@localhost/flowplane
+# 4. Override database URL if needed (--database-url is a global flag)
+flowplane-cli --database-url postgresql://user:pass@localhost/flowplane \
+  database migrate
 ```
 
 ### Permission Errors
@@ -1011,10 +1011,10 @@ flowplane database migrate \
 **Solutions**:
 ```bash
 # 1. Check token scopes
-flowplane auth list-tokens --output json | jq '.[] | {name, scopes}'
+flowplane-cli auth list-tokens --output json | jq '.[] | {name, scopes}'
 
 # 2. Create token with required scopes
-flowplane auth create-token \
+flowplane-cli auth create-token \
   --name "full-access" \
   --scope "clusters:*" \
   --scope "routes:*" \
@@ -1022,7 +1022,7 @@ flowplane auth create-token \
   --scope "api-definitions:*"
 
 # 3. Use token with appropriate permissions
-flowplane cluster list --token fp_pat_your_admin_token
+flowplane-cli cluster list --token fp_pat_your_admin_token
 ```
 
 ## Debug Information
@@ -1030,14 +1030,14 @@ flowplane cluster list --token fp_pat_your_admin_token
 ### Enable Verbose Logging
 
 ```bash
-# CLI verbose mode
-flowplane cluster list --verbose
+# CLI verbose mode (--verbose is a global flag)
+flowplane-cli --verbose cluster list
 
 # Rust debug logging
-RUST_LOG=debug flowplane cluster list
+RUST_LOG=debug flowplane-cli cluster list
 
 # Trace-level logging
-RUST_LOG=trace flowplane cluster create --file cluster.json
+RUST_LOG=trace flowplane-cli cluster create --file cluster.json
 ```
 
 ### Collect Debug Information
@@ -1047,22 +1047,22 @@ RUST_LOG=trace flowplane cluster create --file cluster.json
 # Collect diagnostic information for support
 
 echo "=== Flowplane CLI Version ==="
-flowplane --version
+flowplane-cli --version
 
 echo -e "\n=== Configuration ==="
-flowplane config show --output json
+flowplane-cli config show --output json
 
 echo -e "\n=== Database Status ==="
-flowplane database status
+flowplane-cli database status
 
 echo -e "\n=== Cluster List ==="
-flowplane cluster list --output json
+flowplane-cli cluster list --output json
 
 echo -e "\n=== Route List ==="
-flowplane route list --output json
+flowplane-cli route list --output json
 
 echo -e "\n=== Listener List ==="
-flowplane listener list --output json
+flowplane-cli listener list --output json
 
 echo -e "\n=== Environment ==="
 env | grep FLOWPLANE
