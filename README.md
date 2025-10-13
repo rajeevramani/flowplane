@@ -149,13 +149,13 @@ curl http://localhost:10000/get -H "Host: httpbin.org"
 # View request headers (see x-gateway and x-served-by added by Flowplane)
 curl http://localhost:10000/headers -H "Host: httpbin.org"
 
-# POST request (stricter rate limit: 20/min)
+# POST request (stricter rate limit: 5/min)
 curl -X POST http://localhost:10000/post \
   -H "Host: httpbin.org" \
   -H "Content-Type: application/json" \
   -d '{"test": "data"}'
 
-# PUT request (very strict rate limit: 10/min)
+# PUT request (very strict rate limit: 3/min)
 curl -X PUT http://localhost:10000/put \
   -H "Host: httpbin.org" \
   -H "Content-Type: application/json" \
@@ -175,20 +175,20 @@ curl http://localhost:10000/status/200 -H "Host: httpbin.org"
 
 **Rate Limiting in Action:**
 - Global rate limit: 100 requests/minute (all endpoints)
-- POST endpoint: 20 requests/minute
-- PUT endpoint: 10 requests/minute
-- Status endpoint: 500 requests/minute
+- POST endpoint: 5 requests/minute
+- PUT endpoint: 3 requests/minute
+- Status endpoint: 3 requests/minute
 
 Make repeated requests to see rate limiting:
 
 ```bash
-# Trigger rate limit on POST (make 25 requests quickly)
-for i in {1..25}; do
+# Trigger rate limit on POST (make 10 requests quickly)
+for i in {1..10}; do
   curl -X POST http://localhost:10000/post -H "Host: httpbin.org" -H "Content-Type: application/json" -d '{}'
   echo ""
 done
 
-# You'll see 429 (Too Many Requests) after hitting the limit
+# You'll see 429 (Too Many Requests) after the 5th request
 ```
 
 
