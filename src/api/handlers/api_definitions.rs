@@ -207,7 +207,7 @@ pub struct BootstrapQuery {
         BootstrapQuery
     ),
     responses(
-        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format with listener information. The response includes a 'listeners' array containing listener details (name, address, port, protocol) for the API definition. For isolated listeners, this will be the generated dedicated listener. For shared listeners, this will include all target listeners.", content_type = "application/yaml"),
+        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format. The configuration includes admin interface, node metadata, dynamic resource discovery (ADS) configuration, and xDS cluster definition. Listeners are loaded dynamically via LDS from the control plane.", content_type = "application/yaml"),
         (status = 404, description = "API definition not found with the specified ID"),
         (status = 500, description = "Internal server error during bootstrap generation"),
         (status = 503, description = "API definition repository or listener repository not configured")
@@ -292,7 +292,6 @@ pub async fn get_bootstrap_handler(
     };
 
     let bootstrap = serde_json::json!({
-        "listeners": listeners_info,
         "admin": {
             "access_log_path": "/tmp/envoy_admin.log",
             "address": { "socket_address": { "address": "127.0.0.1", "port_value": 9901 } }
