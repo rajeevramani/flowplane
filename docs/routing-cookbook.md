@@ -201,9 +201,193 @@ Any route, virtual host, or weighted cluster can attach additional HTTP filter c
 }
 ```
 
+### Per-Route Rate Limit (Enterprise)
+Override the domain for specific routes when using distributed rate limiting:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.ratelimit": {
+    "domain": "premium-tier",
+    "include_vh_rate_limits": false
+  }
+}
+```
+
+Use this to apply different rate limit policies per tenant or subscription tier while sharing the same rate limit service.
+
+### Per-Route Rate Limit Quota
+Override the quota domain for specific routes:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.rate_limit_quota": {
+    "domain": "high-priority-quota"
+  }
+}
+```
+
+Useful for implementing tiered quota systems (free vs. premium) or per-customer quota allocations.
+
+### Per-Route External Processor
+Disable external processing for specific routes (e.g., health checks):
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.ext_proc": {
+    "disabled": true
+  }
+}
+```
+
+Or apply custom processing modes per route:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.ext_proc": {
+    "processing_mode": {
+      "request_header_mode": "SEND",
+      "request_body_mode": "BUFFERED",
+      "response_header_mode": "SKIP",
+      "response_body_mode": "NONE"
+    }
+  }
+}
+```
+
+### Per-Route Credential Injection
+Inject different credentials for specific routes (e.g., different service accounts per backend):
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.credential_injector": {
+    "overwrite": true,
+    "credential": {
+      "name": "analytics_service_token",
+      "config": {
+        "type_url": "type.googleapis.com/envoy.extensions.http.injected_credentials.oauth2.v3.OAuth2",
+        "value": "CgwxMjcuMC4wLjE6ODAQoI4G"
+      }
+    }
+  }
+}
+```
+
 Combine overrides to tailor auth or throttling policies per endpoint while keeping defaults at the listener level.
 
-## 6. Updating and Inspecting Routes
+## 6. Per-Route Filter Composition Example
+
+Here's a complete example showing multiple per-route filter overrides:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+  -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "tiered-api-routes",
+    "virtualHosts": [
+      {
+        "name": "api-host",
+        "domains": ["api.example.com"],
+        "routes": [
+          {
+            "name": "public-endpoint",
+            "match": { "path": { "type": "prefix", "value": "/public" } },
+            "action": {
+              "type": "forward",
+              "cluster": "public-backend"
+            },
+            "typedPerFilterConfig": {
+              "envoy.filters.http.local_ratelimit": {
+                "stat_prefix": "public_api",
+                "token_bucket": {
+                  "max_tokens": 100,
+                  "tokens_per_fill": 100,
+                  "fill_interval_ms": 1000
+                }
+              },
+              "envoy.filters.http.jwt_authn": {
+                "requirement_name": "allow_missing"
+              }
+            }
+          },
+          {
+            "name": "premium-endpoint",
+            "match": { "path": { "type": "prefix", "value": "/premium" } },
+            "action": {
+              "type": "forward",
+              "cluster": "premium-backend"
+            },
+            "typedPerFilterConfig": {
+              "envoy.filters.http.local_ratelimit": {
+                "stat_prefix": "premium_api",
+                "token_bucket": {
+                  "max_tokens": 10000,
+                  "tokens_per_fill": 10000,
+                  "fill_interval_ms": 1000
+                }
+              },
+              "envoy.filters.http.ratelimit": {
+                "domain": "premium-tier",
+                "include_vh_rate_limits": false
+              },
+              "envoy.filters.http.credential_injector": {
+                "overwrite": false,
+                "credential": {
+                  "name": "premium_service_token",
+                  "config": {
+                    "type_url": "type.googleapis.com/envoy.extensions.http.injected_credentials.oauth2.v3.OAuth2",
+                    "value": "CgwxMjcuMC4wLjE6ODAQoI4G"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "analytics-endpoint",
+            "match": { "path": { "type": "prefix", "value": "/analytics" } },
+            "action": {
+              "type": "forward",
+              "cluster": "analytics-backend"
+            },
+            "typedPerFilterConfig": {
+              "envoy.filters.http.ext_proc": {
+                "processing_mode": {
+                  "request_header_mode": "SEND",
+                  "request_body_mode": "BUFFERED",
+                  "response_header_mode": "SKIP",
+                  "response_body_mode": "NONE"
+                }
+              },
+              "envoy.filters.http.rate_limit_quota": {
+                "domain": "analytics-quota"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Route-Specific Behaviors:**
+
+1. **`/public` Endpoint:**
+   - Relaxed rate limit (100 req/s)
+   - JWT optional (anonymous access allowed)
+   - No credential injection
+
+2. **`/premium` Endpoint:**
+   - High rate limit (10,000 req/s)
+   - Distributed rate limit with premium tier domain
+   - Automatic service token injection
+   - JWT required (inherited from listener)
+
+3. **`/analytics` Endpoint:**
+   - External processor with buffered request body
+   - Custom quota domain for analytics workloads
+   - Standard rate limits (inherited from listener)
+
+## 7. Updating and Inspecting Routes
 - List routes: `GET /api/v1/routes`
 - Fetch a specific route: `GET /api/v1/routes/{name}`
 - Update: `PUT /api/v1/routes/{name}` with the same payload shape
@@ -211,7 +395,7 @@ Combine overrides to tailor auth or throttling policies per endpoint while keepi
 
 All operations are documented in the Swagger UI. Payloads are validated before persistence; errors return HTTP 400 with descriptive messages.
 
-## 7. Putting It Together
+## 8. Putting It Together
 A common workflow:
 
 1. Create a base route definition with forward actions.

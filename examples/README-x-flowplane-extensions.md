@@ -9,6 +9,68 @@ Flowplane supports two types of filter configuration through OpenAPI extensions:
 1. **Global Filters** (`x-flowplane-filters`) - Applied to ALL routes on the API's listener
 2. **Route-Level Overrides** (`x-flowplane-route-overrides`) - Override or customize filters for specific routes
 
+## Filter Alias Reference
+
+This table shows how OpenAPI filter aliases map to Envoy filter names and where they can be used.
+
+**Key Concept:** Filter **type names** (used in global filters) are different from filter **aliases** (used in route overrides). The aliases are intentionally shorter for cleaner route configuration.
+
+| Filter | Envoy Filter Name | Global Filter Type (`x-flowplane-filters`) | Route Override Alias (`x-flowplane-route-overrides`) |
+|--------|-------------------|-------------------------------------------|-----------------------------------------------------|
+| **CORS** | `envoy.filters.http.cors` | ✅ `type: cors` | ✅ `cors:` |
+| **JWT Authentication** | `envoy.filters.http.jwt_authn` | ✅ `type: jwt_authn` | ✅ `authn:` or `jwt_authn:` |
+| **Header Mutation** | `envoy.filters.http.header_mutation` | ✅ `type: header_mutation` | ✅ `header_mutation:` |
+| **Custom Response** | `envoy.filters.http.custom_response` | ✅ `type: custom_response` | ✅ `custom_response:` |
+| **Local Rate Limit** | `envoy.filters.http.local_ratelimit` | ✅ `type: local_rate_limit` | ✅ `rate_limit:` (NOT `local_rate_limit`) |
+| **Distributed Rate Limit** | `envoy.filters.http.ratelimit` | ❌ No | ✅ `ratelimit:` |
+| **Rate Limit Quota** | `envoy.filters.http.rate_limit_quota` | ❌ No | ✅ `rate_limit_quota:` |
+| **Credential Injector** | `envoy.filters.http.credential_injector` | ❌ No | ❌ No (Native API only) |
+| **External Processor** | `envoy.filters.http.ext_proc` | ❌ No | ❌ No (Native API only) |
+
+### Important Naming Distinctions
+
+The **Local Rate Limit** filter has different names in different contexts:
+
+| Context | Use This Name | Why |
+|---------|---------------|-----|
+| **Filter Name** | `local_rate_limit` | The actual Envoy filter is called "local_ratelimit" (with underscore) |
+| **Global Filter Type** | `type: local_rate_limit` | Matches the filter name for consistency |
+| **Route Override Alias** | `rate_limit:` | Shortened alias for cleaner route configuration |
+
+**Common Mistake:**
+```yaml
+# ❌ WRONG - using filter type name as route override
+x-flowplane-route-overrides:
+  local_rate_limit:  # This will fail!
+    stat_prefix: my_rl
+
+# ✅ CORRECT - using the route override alias
+x-flowplane-route-overrides:
+  rate_limit:  # Shortened alias
+    stat_prefix: my_rl
+```
+
+### Alias Usage Examples
+
+**Global Filter (x-flowplane-filters):**
+```yaml
+x-flowplane-filters:
+  - filter:
+      type: local_rate_limit  # Use 'type' field with filter type name
+      stat_prefix: global_rl
+      token_bucket:
+        max_tokens: 100
+```
+
+**Route Override (x-flowplane-route-overrides):**
+```yaml
+x-flowplane-route-overrides:
+  rate_limit:  # Use alias name (NOT 'local_rate_limit')
+    stat_prefix: route_rl
+    token_bucket:
+      max_tokens: 10
+```
+
 ## Importing OpenAPI with Filters
 
 To import an OpenAPI spec with x-flowplane extensions, use the Platform API endpoint with listener isolation:
@@ -178,7 +240,7 @@ This provides a complete inline configuration that overrides the global filter.
 
 ```yaml
 x-flowplane-route-overrides:
-  local_rate_limit:
+  rate_limit:  # Use 'rate_limit' alias (NOT 'local_rate_limit')
     stat_prefix: endpoint_specific_rl
     token_bucket:
       max_tokens: 100
@@ -207,7 +269,7 @@ paths:
     get:
       x-flowplane-route-overrides:
         authn: disabled  # No auth required
-        local_rate_limit:  # More permissive rate limit
+        rate_limit:  # More permissive rate limit (use 'rate_limit' alias)
           stat_prefix: health_rl
           token_bucket:
             max_tokens: 10000
@@ -269,7 +331,7 @@ paths:
     post:
       # Write operations: much stricter
       x-flowplane-route-overrides:
-        local_rate_limit:
+        rate_limit:  # Use 'rate_limit' alias for route overrides
           stat_prefix: users_create_rl
           token_bucket:
             max_tokens: 10
@@ -348,8 +410,39 @@ After importing your OpenAPI spec with filters, you can verify the configuration
 - Check that `allow_origin` is an array of objects with `type` and `value`
 - Verify origin exactly matches (including protocol and port)
 
+### Error: "Unsupported filter override 'local_rate_limit'"
+
+This error occurs when you use the **filter type name** instead of the **route override alias** for local rate limiting.
+
+**Problem:**
+```yaml
+# ❌ WRONG - 'local_rate_limit' is the filter type name, not the route override alias
+x-flowplane-route-overrides:
+  local_rate_limit:
+    stat_prefix: my_rl
+    token_bucket:
+      max_tokens: 100
+```
+
+**Solution:**
+```yaml
+# ✅ CORRECT - use the 'rate_limit' alias for route overrides
+x-flowplane-route-overrides:
+  rate_limit:  # Shortened alias
+    stat_prefix: my_rl
+    token_bucket:
+      max_tokens: 100
+```
+
+**Why this happens:**
+- The actual Envoy filter is named `local_rate_limit` (with "local_")
+- For **global filters**, you use `type: local_rate_limit` (matches the filter name)
+- For **route overrides**, you use the alias `rate_limit` (shortened for cleaner syntax)
+
+See the [Filter Alias Reference](#filter-alias-reference) section for the complete mapping.
+
 ## References
 
 - [Platform API Documentation](../docs/platform-api.md)
-- [HTTP Filter Types](../docs/filters/http-filters.md)
+- [HTTP Filter Reference](../docs/filters.md)
 - [OpenAPI 3.0 Specification](https://swagger.io/specification/)

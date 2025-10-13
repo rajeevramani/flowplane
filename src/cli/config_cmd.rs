@@ -13,7 +13,7 @@ pub enum ConfigCommands {
     /// Initialize configuration file with default values
     #[command(
         long_about = "Initialize a new configuration file at ~/.flowplane/config.toml with default settings.\n\nCreates the necessary directory structure and an empty configuration file that you can populate with your credentials and preferences.",
-        after_help = "EXAMPLES:\n    # Initialize configuration file\n    flowplane-cli config init\n\n    # Force overwrite existing configuration\n    flowplane-cli config init --force\n\n    # After initialization, set your token\n    flowplane-cli config set token your-api-token"
+        after_help = "EXAMPLES:\n    # Initialize configuration file\n    flowplane config init\n\n    # Force overwrite existing configuration\n    flowplane config init --force\n\n    # After initialization, set your token\n    flowplane config set token your-api-token"
     )]
     Init {
         /// Overwrite existing configuration file
@@ -24,7 +24,7 @@ pub enum ConfigCommands {
     /// Show current configuration
     #[command(
         long_about = "Display the current configuration from ~/.flowplane/config.toml.\n\nShows all configured values including token (redacted), base URL, and timeout settings.",
-        after_help = "EXAMPLES:\n    # Show configuration as YAML (default)\n    flowplane-cli config show\n\n    # Show configuration as JSON\n    flowplane-cli config show --output json\n\n    # Show configuration as table\n    flowplane-cli config show --output table"
+        after_help = "EXAMPLES:\n    # Show configuration as YAML (default)\n    flowplane config show\n\n    # Show configuration as JSON\n    flowplane config show --output json\n\n    # Show configuration as table\n    flowplane config show --output table"
     )]
     Show {
         /// Output format (json, yaml, or table)
@@ -35,7 +35,7 @@ pub enum ConfigCommands {
     /// Set a configuration value
     #[command(
         long_about = "Set a configuration value in ~/.flowplane/config.toml.\n\nSupported keys:\n  - token: Your Flowplane API authentication token\n  - base_url: The base URL for the Flowplane API (e.g., https://api.flowplane.io)\n  - timeout: Request timeout in seconds (default: 30)",
-        after_help = "EXAMPLES:\n    # Set authentication token\n    flowplane-cli config set token fp_your_token_here\n\n    # Set API base URL\n    flowplane-cli config set base_url https://api.example.com\n\n    # Set request timeout\n    flowplane-cli config set timeout 60"
+        after_help = "EXAMPLES:\n    # Set authentication token\n    flowplane config set token fp_your_token_here\n\n    # Set API base URL\n    flowplane config set base_url https://api.example.com\n\n    # Set request timeout\n    flowplane config set timeout 60"
     )]
     Set {
         /// Configuration key (token, base_url, or timeout)
@@ -50,7 +50,7 @@ pub enum ConfigCommands {
     /// Get configuration file path
     #[command(
         long_about = "Display the path to the configuration file.\n\nShows the location where Flowplane CLI stores its configuration (typically ~/.flowplane/config.toml).",
-        after_help = "EXAMPLES:\n    # Show configuration file path\n    flowplane-cli config path\n\n    # Use in scripts to locate config\n    cat $(flowplane-cli config path)"
+        after_help = "EXAMPLES:\n    # Show configuration file path\n    flowplane config path\n\n    # Use in scripts to locate config\n    cat $(flowplane config path)"
     )]
     Path,
 }

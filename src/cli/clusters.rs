@@ -14,7 +14,7 @@ pub enum ClusterCommands {
     /// Create a new Envoy cluster configuration
     #[command(
         long_about = "Create a new cluster configuration that defines upstream service endpoints.\n\nClusters specify how to connect to backend services, including endpoints, load balancing, and health checking.",
-        after_help = "EXAMPLES:\n    # Create a cluster from JSON file\n    flowplane-cli cluster create --file cluster-spec.json\n\n    # Create with YAML output\n    flowplane-cli cluster create --file cluster.json --output yaml\n\n    # With authentication\n    flowplane-cli cluster create --file cluster.json --token your-token"
+        after_help = "EXAMPLES:\n    # Create a cluster from JSON file\n    flowplane cluster create --file cluster-spec.json\n\n    # Create with YAML output\n    flowplane cluster create --file cluster.json --output yaml\n\n    # With authentication\n    flowplane cluster create --file cluster.json --token your-token"
     )]
     Create {
         /// Path to JSON file with cluster spec
@@ -29,7 +29,7 @@ pub enum ClusterCommands {
     /// List all cluster configurations
     #[command(
         long_about = "List all cluster configurations in the system with optional filtering and pagination.",
-        after_help = "EXAMPLES:\n    # List all clusters\n    flowplane-cli cluster list\n\n    # List with table output\n    flowplane-cli cluster list --output table\n\n    # Filter by service name\n    flowplane-cli cluster list --service backend-api\n\n    # Paginate results\n    flowplane-cli cluster list --limit 10 --offset 20"
+        after_help = "EXAMPLES:\n    # List all clusters\n    flowplane cluster list\n\n    # List with table output\n    flowplane cluster list --output table\n\n    # Filter by service name\n    flowplane cluster list --service backend-api\n\n    # Paginate results\n    flowplane cluster list --limit 10 --offset 20"
     )]
     List {
         /// Filter by service name
@@ -52,7 +52,7 @@ pub enum ClusterCommands {
     /// Get details of a specific cluster by name
     #[command(
         long_about = "Retrieve detailed information about a specific cluster configuration.",
-        after_help = "EXAMPLES:\n    # Get cluster details\n    flowplane-cli cluster get my-backend-cluster\n\n    # Get with YAML output\n    flowplane-cli cluster get my-cluster --output yaml\n\n    # Get with table output\n    flowplane-cli cluster get my-cluster --output table"
+        after_help = "EXAMPLES:\n    # Get cluster details\n    flowplane cluster get my-backend-cluster\n\n    # Get with YAML output\n    flowplane cluster get my-cluster --output yaml\n\n    # Get with table output\n    flowplane cluster get my-cluster --output table"
     )]
     Get {
         /// Cluster name
@@ -67,7 +67,7 @@ pub enum ClusterCommands {
     /// Update an existing cluster configuration
     #[command(
         long_about = "Update an existing cluster configuration with new settings.\n\nProvide a JSON file with the updated configuration fields.",
-        after_help = "EXAMPLES:\n    # Update a cluster\n    flowplane-cli cluster update my-cluster --file updated-cluster.json\n\n    # Update with YAML output\n    flowplane-cli cluster update my-cluster --file update.json --output yaml"
+        after_help = "EXAMPLES:\n    # Update a cluster\n    flowplane cluster update my-cluster --file updated-cluster.json\n\n    # Update with YAML output\n    flowplane cluster update my-cluster --file update.json --output yaml"
     )]
     Update {
         /// Cluster name
@@ -86,7 +86,7 @@ pub enum ClusterCommands {
     /// Delete a cluster configuration
     #[command(
         long_about = "Delete a specific cluster configuration from the system.\n\nWARNING: This will remove the cluster and may affect routing if it's in use.",
-        after_help = "EXAMPLES:\n    # Delete a cluster (with confirmation prompt)\n    flowplane-cli cluster delete my-cluster\n\n    # Delete without confirmation\n    flowplane-cli cluster delete my-cluster --yes"
+        after_help = "EXAMPLES:\n    # Delete a cluster (with confirmation prompt)\n    flowplane cluster delete my-cluster\n\n    # Delete without confirmation\n    flowplane cluster delete my-cluster --yes"
     )]
     Delete {
         /// Cluster name

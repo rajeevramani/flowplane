@@ -2,13 +2,17 @@
 
 Flowplane exposes Envoy HTTP filters through structured JSON models, providing user-friendly configuration without requiring protobuf knowledge. The registry keeps filters ordered, ensures the router filter is appended last, and translates configs into correct Envoy protobuf type URLs.
 
-**Available Filters (v0.0.1):**
+**Available Filters (v0.0.2):**
 - **local_rate_limit** - Token bucket rate limiting (global and per-route)
 - **cors** - Cross-Origin Resource Sharing policies
 - **jwt_authn** - JWT authentication with JWKS providers
 - **custom_response** - User-friendly custom error responses
 - **header_mutation** - Request/response header manipulation
 - **health_check** - Health check endpoint responses
+- **credential_injector** - OAuth2 and workload credential injection
+- **rate_limit** - Distributed rate limiting with external gRPC service
+- **rate_limit_quota** - Advanced quota management with RLQS
+- **ext_proc** - External processor for custom request/response processing
 - **router** - Terminal filter for request routing (auto-appended)
 
 All filters support both global (listener-level) and per-route configuration via `typedPerFilterConfig`.
@@ -404,6 +408,284 @@ Structured JWT auth lives in `JwtAuthenticationConfig` and `JwtProviderConfig`, 
 
 ### Example
 See the [README quick start](../README.md#example-configuration) for listener + route JSON demonstrating JWT auth plus Local Rate Limit.
+
+## Credential Injector
+
+The Credential Injector filter injects credentials into outgoing HTTP requests for workload authentication. Mapped to `envoy.extensions.filters.http.credential_injector.v3.CredentialInjector`.
+
+**Use Cases:**
+- OAuth2 token injection for service-to-service authentication
+- API key injection for upstream services
+- Workload identity credential management
+- Zero-trust security architectures
+
+### Key Fields
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `overwrite` | Whether to overwrite existing authorization headers | `false` |
+| `allow_request_without_credential` | Allow requests without credentials (returns 401 if false) | `false` |
+| `credential` | Credential configuration (name and typed config) | `null` |
+
+### Example Filter Entry
+
+```json
+{
+  "name": "envoy.filters.http.credential_injector",
+  "filter": {
+    "type": "credential_injector",
+    "overwrite": true,
+    "allow_request_without_credential": false,
+    "credential": {
+      "name": "oauth2_credential",
+      "config": {
+        "type_url": "type.googleapis.com/envoy.extensions.http.injected_credentials.oauth2.v3.OAuth2",
+        "value": "<base64-encoded-oauth2-config>"
+      }
+    }
+  }
+}
+```
+
+### Credential Types
+
+The credential injector supports various credential extension types through the `TypedConfig` field:
+
+- **OAuth2**: `envoy.extensions.http.injected_credentials.oauth2.v3.OAuth2`
+- **Generic**: `envoy.extensions.http.injected_credentials.generic.v3.Generic`
+
+See [Envoy credential injector documentation](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/credential_injector_filter) for complete credential configuration details.
+
+### Security Notes
+
+- Credentials should be fetched from secure storage (e.g., secrets management systems)
+- Use `overwrite: false` to preserve existing authorization headers when appropriate
+- Set `allow_request_without_credential: false` to enforce credential presence for sensitive routes
+
+## Rate Limit (Enterprise)
+
+The Rate Limit filter provides distributed rate limiting through integration with an external gRPC rate limit service (e.g., Lyft's ratelimit service or Envoy Rate Limit Service). Mapped to `envoy.extensions.filters.http.ratelimit.v3.RateLimit`.
+
+**Use Cases:**
+- Global rate limiting across multiple Envoy instances
+- Advanced rate limiting with custom descriptors
+- Multi-tenant rate limiting with per-tenant limits
+- API quota management
+
+### Key Fields
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `domain` | Domain name to use when calling rate limit service | Required |
+| `rate_limit_service` | gRPC service configuration | Required |
+| `timeout_ms` | Timeout for rate limit service calls (milliseconds) | `20` |
+| `failure_mode_deny` | Whether to deny traffic when service is unavailable | `false` |
+| `enable_x_ratelimit_headers` | Send X-RateLimit headers (RFC version) | `null` |
+| `disable_x_envoy_ratelimited_header` | Disable X-Envoy-RateLimited header | `false` |
+| `rate_limited_status` | Custom status code for rate limited responses | `429` |
+
+### Example Filter Entry
+
+```json
+{
+  "name": "envoy.filters.http.ratelimit",
+  "filter": {
+    "type": "rate_limit",
+    "domain": "production-api",
+    "rate_limit_service": {
+      "cluster_name": "rate_limit_cluster",
+      "authority": "ratelimit.svc.cluster.local"
+    },
+    "timeout_ms": 100,
+    "failure_mode_deny": false,
+    "enable_x_ratelimit_headers": "draft_version_03",
+    "rate_limited_status": 429,
+    "stat_prefix": "http_rate_limit"
+  }
+}
+```
+
+### Per-Route Override
+
+Attach rate limit overrides at route level via `typedPerFilterConfig`:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.ratelimit": {
+    "domain": "premium-tier",
+    "include_vh_rate_limits": false
+  }
+}
+```
+
+### X-RateLimit Header Modes
+
+| Mode | Description |
+|------|-------------|
+| `off` | Do not send X-RateLimit headers |
+| `draft_version_03` | Send draft RFC Version 03 headers |
+
+### Comparison with Local Rate Limit
+
+| Feature | Local Rate Limit | Rate Limit (Enterprise) |
+|---------|------------------|-------------------------|
+| **Deployment** | In-process token bucket | External gRPC service |
+| **Scope** | Per Envoy instance | Global across all instances |
+| **Latency** | Sub-millisecond | Network round-trip (~1-10ms) |
+| **Use Case** | Simple throttling, DoS protection | Complex quotas, multi-tenant limits |
+| **Complexity** | Low | Medium-High (requires external service) |
+
+## Rate Limit Quota
+
+The Rate Limit Quota filter integrates with a gRPC-based Rate Limit Quota Service (RLQS) for advanced quota management. Mapped to `envoy.extensions.filters.http.rate_limit_quota.v3.RateLimitQuotaFilterConfig`.
+
+**Use Cases:**
+- Dynamic quota allocation based on service load
+- Pay-per-use API billing integration
+- Hierarchical quota management (organization → team → user)
+- Quota borrowing and sharing across services
+
+### Key Fields
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `domain` | Application domain for quota service | Required |
+| `rlqs_server` | gRPC service configuration for RLQS | Required |
+
+### Example Filter Entry
+
+```json
+{
+  "name": "envoy.filters.http.rate_limit_quota",
+  "filter": {
+    "type": "rate_limit_quota",
+    "domain": "api-quota-domain",
+    "rlqs_server": {
+      "cluster_name": "rlqs_cluster",
+      "authority": "rlqs.svc.cluster.local"
+    }
+  }
+}
+```
+
+### Per-Route Override
+
+Override the quota domain for specific routes:
+
+```json
+"typedPerFilterConfig": {
+  "envoy.filters.http.rate_limit_quota": {
+    "domain": "premium-api-quota"
+  }
+}
+```
+
+### RLQS Server Configuration
+
+| Field | Description |
+|-------|-------------|
+| `cluster_name` | Name of the Envoy cluster for the RLQS service |
+| `authority` | Authority header to send with gRPC requests (optional) |
+
+### Quota Service Requirements
+
+The RLQS server must implement the [Rate Limit Quota Service protocol](https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/rate_limit_quota/v3/rlqs.proto). Key capabilities:
+
+- Quota assignment and updates
+- Usage reporting from Envoy
+- Dynamic quota adjustment based on load
+- Quota expiration and renewal
+
+## External Processor (ext_proc)
+
+The External Processor filter enables real-time request/response processing through external gRPC services. Mapped to `envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor`.
+
+**Use Cases:**
+- Custom authentication/authorization logic
+- Request/response transformation
+- Dynamic header manipulation
+- Content inspection and filtering
+- Integration with legacy authorization systems
+
+### Key Fields
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `grpc_service` | gRPC service configuration for external processor | Required |
+| `failure_mode_allow` | Allow requests to continue on processor failure | `false` |
+| `processing_mode` | Processing mode configuration | `null` |
+| `message_timeout_ms` | Timeout for each individual message (milliseconds) | `null` |
+| `request_attributes` | Request attributes to send to processor | `[]` |
+| `response_attributes` | Response attributes to send to processor | `[]` |
+
+### Example Filter Entry
+
+```json
+{
+  "name": "envoy.filters.http.ext_proc",
+  "filter": {
+    "type": "ext_proc",
+    "grpc_service": {
+      "target_uri": "ext-proc-service:9000",
+      "timeout_seconds": 10
+    },
+    "failure_mode_allow": true,
+    "processing_mode": {
+      "request_header_mode": "SEND",
+      "response_header_mode": "SEND",
+      "request_body_mode": "BUFFERED",
+      "response_body_mode": "NONE"
+    },
+    "message_timeout_ms": 5000,
+    "request_attributes": ["request.time"],
+    "response_attributes": ["response.code"]
+  }
+}
+```
+
+### Processing Mode Options
+
+#### Header Modes
+- `DEFAULT`: Use default behavior
+- `SEND`: Send headers to processor
+- `SKIP`: Skip header processing
+
+#### Body Modes
+- `NONE`: Do not send body to processor
+- `STREAMED`: Stream body chunks as they arrive
+- `BUFFERED`: Buffer entire body before sending
+- `BUFFERED_PARTIAL`: Buffer up to a size limit
+- `FULL_DUPLEX_STREAMED`: Full-duplex streaming
+
+### gRPC Service Configuration
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `target_uri` | Target URI for the gRPC service (e.g., "ext-proc:9000") | Required |
+| `timeout_seconds` | Timeout in seconds for the gRPC connection | `20` |
+
+### External Processor Protocol
+
+The external processor must implement the [External Processor protocol](https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/ext_proc/v3/external_processor.proto). The processor receives:
+
+- Request headers
+- Request body (based on mode)
+- Response headers
+- Response body (based on mode)
+
+And can return:
+
+- Modified headers
+- Modified body
+- Immediate response (short-circuit)
+- Clear route cache
+
+### Performance Considerations
+
+- **Latency**: Each processor call adds network round-trip latency
+- **Buffering**: `BUFFERED` modes consume memory for entire request/response bodies
+- **Failure Modes**: Set `failure_mode_allow: true` for non-critical processing
+- **Timeouts**: Configure appropriate `message_timeout_ms` to prevent slow processors from blocking traffic
 
 ## Adding a New Filter
 1. Create a module in `src/xds/filters/http/` with serializable structs and `to_any()/from_proto` helpers.

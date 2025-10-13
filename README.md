@@ -129,9 +129,11 @@ curl -sS \
   --data-binary @openapi.json
 ```
 
-The endpoint accepts either JSON or YAML documents. Flowplane derives upstream clusters from the spec’s `servers` section, builds route matches from `paths`, and publishes a listener on the port you choose (override with `address` / `port` query parameters).
+The endpoint accepts either JSON or YAML documents. Flowplane derives upstream clusters from the spec's `servers` section, builds route matches from `paths`, and publishes a listener on the port you choose (override with `address` / `port` query parameters).
 
 By default the generated routes join the shared gateway listener `default-gateway-listener` on port `10000`, so multiple specs can coexist without wrestling over listener names or ports. To provision a dedicated listener instead, supply query parameters such as `listener=<custom-name>` (optionally `port`, `bind_address`, and `protocol`) and Flowplane will create separate route and listener resources for that gateway.
+
+**OpenAPI Filter Extensions:** You can add HTTP filters (CORS, rate limiting, JWT auth) directly in your OpenAPI spec using `x-flowplane-filters` and `x-flowplane-route-overrides`. See [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) for the complete filter alias reference and usage guide.
 
 ### Rate Limiting at a Glance
 Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
@@ -281,7 +283,11 @@ Scopes control access to API groups:
 - `team:<team-name>:<resource>:<action>` - Team-scoped access pattern (e.g., `team:platform:routes:read`)
 
 ### Documentation Map
+
+#### Core Documentation
 - [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
+- [`docs/platform-api.md`](docs/platform-api.md) – **Platform API Reference** – Higher-level API for team-based multi-tenancy and OpenAPI-driven gateway creation. Complete endpoint documentation with request/response schemas, listener isolation modes, and workflow examples.
+- [`docs/cli-usage.md`](docs/cli-usage.md) – **CLI Usage Guide** – Comprehensive command-line interface documentation covering installation, configuration, and all commands (database, auth, config, api, cluster, listener, route) with practical examples and workflows.
 - [`docs/cluster-cookbook.md`](docs/cluster-cookbook.md) – Common cluster patterns (TLS, health checks, circuit breakers, DNS).
 - [`docs/routing-cookbook.md`](docs/routing-cookbook.md) – Route action recipes (forward, weighted, redirects), matcher combinations, and scoped filters.
 - [`docs/listener-cookbook.md`](docs/listener-cookbook.md) – Listener setups covering global filters, JWT auth, TLS termination, and TCP proxying.
@@ -292,10 +298,28 @@ Scopes control access to API groups:
 - [`docs/architecture.md`](docs/architecture.md) – Module layout and design principles.
 - [`docs/contributing.md`](docs/contributing.md) – Coding standards and PR expectations.
 
+#### OpenAPI & Examples
+- [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) – **Complete filter alias reference** showing how `x-flowplane-filters` and `x-flowplane-route-overrides` map to Envoy filters, with usage examples.
+- [`examples/SUPPORTED-OVERRIDES.md`](examples/SUPPORTED-OVERRIDES.md) – Detailed documentation for each supported route-level filter override.
+- [`examples/QUICK-REFERENCE.md`](examples/QUICK-REFERENCE.md) – Quick reference card for common x-flowplane patterns and troubleshooting.
+
 ### Staying Productive
-- `GET /api/v1/clusters`, `GET /api/v1/routes`, `GET /api/v1/listeners` show what is currently stored.
-- `scripts/smoke-listener.sh` provisions a demo stack against `httpbin.org`; use it as a reference or a sanity check after changes.
-- Bruno workspace under `bruno/` bundles HTTP requests (create cluster/route/listener, add rate limits, enable JWT) for quick testing. Import the folder directly into the Bruno app.
+
+#### Interactive API Testing
+The **`.http-examples/`** directory contains ready-to-use HTTP test files for the VSCode REST Client extension:
+
+- **Quick setup**: Install the REST Client extension, set `API_TOKEN` in `.env`, and click "Send Request" in any `.http` file
+- **Complete coverage**: Authentication, clusters, routes, listeners, API definitions, and reporting endpoints
+- **Workflow examples**: From token creation to full gateway deployment
+- **See [.http-examples/README.md](.http-examples/README.md) for detailed setup and usage**
+
+Alternative tools:
+- **Bruno workspace** (`bruno/`) - GUI-based HTTP client with git-friendly collections for cluster/route/listener management
+- **Swagger UI** (`http://127.0.0.1:8080/swagger-ui`) - Interactive API documentation with in-browser testing
+
+#### Other Productivity Tools
+- `GET /api/v1/clusters`, `GET /api/v1/routes`, `GET /api/v1/listeners` show what is currently stored
+- `scripts/smoke-listener.sh` provisions a demo stack against `httpbin.org`; use it as a reference or a sanity check after changes
 
 ### Contributing & Roadmap
 We welcome issues and pull requests. Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before submitting changes. See [`docs/contributing.md`](docs/contributing.md) for more details.

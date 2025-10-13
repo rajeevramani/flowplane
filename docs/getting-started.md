@@ -212,11 +212,18 @@ curl -i http://127.0.0.1:10000/status/200
 Repeated requests will eventually trigger either the listener-wide or per-route rate limit and return `429 Too Many Requests` with headers indicating the rate limit action.
 
 ## Next Steps
+
+### Interactive Testing
+- **Try the .http-examples**: Visit [../.http-examples/README.md](../.http-examples/README.md) for VSCode REST Client integration. Click "Send Request" on pre-configured examples for clusters, routes, listeners, and API definitions—no manual curl copying needed.
+
+### Explore Advanced Features
 - Explore cluster variations (TLS, health checks, circuit breakers) in the [cluster cookbook](cluster-cookbook.md).
 - Try advanced routing patterns (weighted splits, redirects, scoped filters) in the [routing cookbook](routing-cookbook.md).
 - Configure listener features (JWT auth, global rate limits, TLS termination) in the [listener cookbook](listener-cookbook.md).
 - Assemble end-to-end gateway scenarios with the [API gateway recipes](gateway-recipes.md).
 - Dive into filter details in [filters.md](filters.md) and explore scoped overrides.
+
+### Operational Tools
 - Use `GET /api/v1/*` endpoints to inspect stored resources, and `DELETE` to remove them.
 - Run `scripts/smoke-listener.sh` for an automated sanity check.
 
