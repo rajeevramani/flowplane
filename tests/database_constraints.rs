@@ -166,7 +166,7 @@ async fn test_api_definition_listener_fk_on_delete_set_null() {
 
     // Verify the FK is set
     let updated_def = api_repo.get_definition(&api_def.id).await.unwrap();
-    assert_eq!(updated_def.generated_listener_id, Some(listener.id.clone()));
+    assert_eq!(updated_def.generated_listener_id, Some(listener.id.to_string()));
 
     // Delete the listener - should set generated_listener_id to NULL
     listener_repo.delete(&listener.id).await.unwrap();
@@ -222,7 +222,7 @@ async fn test_api_route_fk_on_delete_set_null() {
     // Create an API route
     let api_route = api_repo
         .create_route(CreateApiRouteRequest {
-            api_definition_id: api_def.id.clone(),
+            api_definition_id: api_def.id.to_string(),
             match_type: "prefix".to_string(),
             match_value: "/api".to_string(),
             case_sensitive: true,
@@ -252,8 +252,8 @@ async fn test_api_route_fk_on_delete_set_null() {
 
     // Verify the FKs are set
     let updated_route = api_repo.get_route(&api_route.id).await.unwrap();
-    assert_eq!(updated_route.generated_route_id, Some(route.id.clone()));
-    assert_eq!(updated_route.generated_cluster_id, Some(cluster.id.clone()));
+    assert_eq!(updated_route.generated_route_id, Some(route.id.to_string()));
+    assert_eq!(updated_route.generated_cluster_id, Some(cluster.id.to_string()));
 
     // Delete the route - should set generated_route_id to NULL
     route_repo.delete(&route.id).await.unwrap();
@@ -261,7 +261,7 @@ async fn test_api_route_fk_on_delete_set_null() {
     // Verify generated_route_id is now NULL
     let after_route_delete = api_repo.get_route(&api_route.id).await.unwrap();
     assert_eq!(after_route_delete.generated_route_id, None);
-    assert_eq!(after_route_delete.generated_cluster_id, Some(cluster.id.clone()));
+    assert_eq!(after_route_delete.generated_cluster_id, Some(cluster.id.to_string()));
 
     // Delete the cluster - should set generated_cluster_id to NULL
     cluster_repo.delete(&cluster.id).await.unwrap();
@@ -294,7 +294,7 @@ async fn test_api_definition_cascading_delete_to_routes() {
     for i in 0..3 {
         api_repo
             .create_route(CreateApiRouteRequest {
-                api_definition_id: api_def.id.clone(),
+                api_definition_id: api_def.id.to_string(),
                 match_type: "prefix".to_string(),
                 match_value: format!("/api{}", i),
                 case_sensitive: true,

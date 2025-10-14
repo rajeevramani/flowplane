@@ -73,7 +73,7 @@ async fn test_create_definition_generates_native_resources() {
     let outcome = materializer.create_definition(spec).await.unwrap();
 
     // Verify API definition was created
-    assert!(!outcome.definition.id.is_empty());
+    assert!(!outcome.definition.id.as_str().is_empty());
     assert_eq!(outcome.definition.team, "test-team");
     assert_eq!(outcome.definition.domain, "test.example.com");
 

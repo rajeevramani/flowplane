@@ -1,5 +1,6 @@
 use chrono::Utc;
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus, UpdatePersonalAccessToken};
+use flowplane::domain::TokenId;
 use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -52,7 +53,7 @@ async fn setup_pool() -> DbPool {
 
 fn sample_token(id: &str) -> NewPersonalAccessToken {
     NewPersonalAccessToken {
-        id: id.to_string(),
+        id: TokenId::from_str_unchecked(id),
         name: "sample".into(),
         description: Some("demo token".into()),
         hashed_secret: "hashed".into(),
@@ -85,8 +86,8 @@ async fn create_and_get_token_round_trip() {
 async fn update_metadata_replaces_scopes() {
     let pool = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
-    let token_id = Uuid::new_v4().to_string();
-    repo.create_token(sample_token(&token_id)).await.unwrap();
+    let token_id = TokenId::from_string(Uuid::new_v4().to_string());
+    repo.create_token(sample_token(token_id.as_str())).await.unwrap();
 
     let update = UpdatePersonalAccessToken {
         name: Some("updated".into()),
@@ -110,8 +111,8 @@ async fn update_metadata_replaces_scopes() {
 async fn rotate_and_auth_lookup() {
     let pool = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
-    let token_id = Uuid::new_v4().to_string();
-    repo.create_token(sample_token(&token_id)).await.unwrap();
+    let token_id = TokenId::from_string(Uuid::new_v4().to_string());
+    repo.create_token(sample_token(token_id.as_str())).await.unwrap();
 
     repo.rotate_secret(&token_id, "new-hash".into()).await.unwrap();
     repo.update_last_used(&token_id, Utc::now()).await.unwrap();

@@ -36,7 +36,7 @@ async fn detecting_domain_collision_for_different_team() {
 
     // route collision detection setup
     repo.create_route(CreateApiRouteRequest {
-        api_definition_id: created.id.clone(),
+        api_definition_id: created.id.to_string(),
         match_type: "prefix".into(),
         match_value: "/v1/".into(),
         case_sensitive: true,
