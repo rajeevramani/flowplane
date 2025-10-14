@@ -301,8 +301,9 @@ impl ApiDefinitionRepository {
             context: format!("Failed to load API definition '{}'", id),
         })?;
 
-        row.map(ApiDefinitionData::from)
-            .ok_or_else(|| FlowplaneError::not_found(format!("API definition '{}' not found", id)))
+        row.map(ApiDefinitionData::from).ok_or_else(|| {
+            FlowplaneError::not_found_msg(format!("API definition '{}' not found", id))
+        })
     }
 
     /// Fetch an API definition by team/domain (if present)
@@ -421,7 +422,7 @@ impl ApiDefinitionRepository {
         })?;
 
         row.map(ApiRouteData::from)
-            .ok_or_else(|| FlowplaneError::not_found(format!("API route '{}' not found", id)))
+            .ok_or_else(|| FlowplaneError::not_found_msg(format!("API route '{}' not found", id)))
     }
 
     /// List routes for a given definition ordered by insertion order

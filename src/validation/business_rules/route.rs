@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use crate::validation::{validate_path_with_match_type, PathMatchType};
 
 use super::helpers::is_valid_domain_format;

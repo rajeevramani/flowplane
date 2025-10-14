@@ -147,7 +147,9 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id))),
+            None => {
+                Err(FlowplaneError::not_found_msg(format!("Listener with ID '{}' not found", id)))
+            }
         }
     }
 
@@ -168,9 +170,10 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => {
-                Err(FlowplaneError::not_found(format!("Listener with name '{}' not found", name)))
-            }
+            None => Err(FlowplaneError::not_found_msg(format!(
+                "Listener with name '{}' not found",
+                name
+            ))),
         }
     }
 
@@ -300,7 +303,10 @@ impl ListenerRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
         }
 
         tracing::info!(listener_id = %id, listener_name = %current_name, new_version = new_version, "Updated listener");
@@ -324,7 +330,10 @@ impl ListenerRepository {
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
         }
 
         tracing::info!(listener_id = %id, listener_name = %listener.name, "Deleted listener");

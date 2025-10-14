@@ -93,10 +93,10 @@ impl PaginationParams {
     /// Validate pagination parameters
     pub fn validate(&self) -> crate::Result<()> {
         if self.page == 0 {
-            return Err(crate::Error::Validation("Page must be >= 1".to_string()));
+            return Err(crate::Error::validation("Page must be >= 1"));
         }
         if self.limit == 0 || self.limit > 1000 {
-            return Err(crate::Error::Validation("Limit must be 1-1000".to_string()));
+            return Err(crate::Error::validation("Limit must be 1-1000"));
         }
         Ok(())
     }

@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use prost::Message;
 use validator::ValidationError;
 

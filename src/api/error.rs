@@ -2,7 +2,7 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
 use crate::auth::models::AuthError;
-use crate::errors::Error;
+use crate::errors::FlowplaneError;
 
 #[derive(Debug)]
 pub enum ApiError {
@@ -62,12 +62,16 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<Error> for ApiError {
-    fn from(err: Error) -> Self {
+impl From<FlowplaneError> for ApiError {
+    fn from(err: FlowplaneError) -> Self {
         match err {
-            Error::Validation(msg) => ApiError::BadRequest(msg),
-            Error::NotFound(msg) => ApiError::NotFound(msg),
-            Error::Database { source, context } => {
+            FlowplaneError::Validation { message, .. } => ApiError::BadRequest(message),
+            FlowplaneError::NotFound { resource_type, id } => {
+                ApiError::NotFound(format!("{} with ID '{}' not found", resource_type, id))
+            }
+            FlowplaneError::Conflict { message, .. } => ApiError::Conflict(message),
+            FlowplaneError::Auth { message, .. } => ApiError::Unauthorized(message),
+            FlowplaneError::Database { source, context } => {
                 if let Some(db_err) = source.as_database_error() {
                     if let Some(code) = db_err.code() {
                         if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT")
@@ -78,10 +82,18 @@ impl From<Error> for ApiError {
                 }
                 ApiError::Internal(context)
             }
-            Error::Config(msg) | Error::Transport(msg) | Error::Internal(msg) => {
-                ApiError::Internal(msg)
-            }
-            Error::Io(err) => ApiError::Internal(err.to_string()),
+            FlowplaneError::Config { message, .. }
+            | FlowplaneError::Transport(message)
+            | FlowplaneError::Internal { message, .. } => ApiError::Internal(message),
+            FlowplaneError::Io { context, .. } => ApiError::Internal(context),
+            FlowplaneError::Serialization { context, .. } => ApiError::BadRequest(context),
+            FlowplaneError::Xds { message, .. } => ApiError::Internal(message),
+            FlowplaneError::Http { message, .. } => ApiError::Internal(message),
+            FlowplaneError::RateLimit { message, .. } => ApiError::ServiceUnavailable(message),
+            FlowplaneError::Timeout { operation, duration_ms } => ApiError::Internal(format!(
+                "Operation '{}' timed out after {}ms",
+                operation, duration_ms
+            )),
         }
     }
 }

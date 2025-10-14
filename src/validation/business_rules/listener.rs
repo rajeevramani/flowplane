@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 
 use super::helpers::is_valid_address_format;
 

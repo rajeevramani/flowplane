@@ -168,7 +168,7 @@ impl FilterConfig {
                 } else if let Some(inline_config) = inline_route_config {
                     RouteSpecifier::RouteConfig(inline_config.to_envoy_route_configuration()?)
                 } else {
-                    return Err(crate::Error::Config("HttpConnectionManager requires either route_config_name or inline_route_config".to_string()));
+                    return Err(crate::Error::config("HttpConnectionManager requires either route_config_name or inline_route_config"));
                 };
 
                 let http_filters = build_http_filters(http_filters.as_slice())?;

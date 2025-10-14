@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::{
     cluster::v3::{cluster::LbPolicy, Cluster},
     core::v3::{address::Address as AddressType, Address, SocketAddress},

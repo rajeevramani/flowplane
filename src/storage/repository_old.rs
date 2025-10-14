@@ -118,7 +118,7 @@ impl ClusterRepository {
                 created_at: row.created_at,
                 updated_at: row.updated_at,
             }),
-            None => Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id))),
+            None => Err(FlowplaneError::not_found_msg(format!("Cluster with ID '{}' not found", id))),
         }
     }
 
@@ -148,7 +148,7 @@ impl ClusterRepository {
                 created_at: row.created_at,
                 updated_at: row.updated_at,
             }),
-            None => Err(FlowplaneError::not_found(format!("Cluster with name '{}' not found", name))),
+            None => Err(FlowplaneError::not_found_msg(format!("Cluster with name '{}' not found", name))),
         }
     }
 
@@ -230,7 +230,7 @@ impl ClusterRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Cluster with ID '{}' not found", id)));
         }
 
         tracing::info!(
@@ -264,7 +264,7 @@ impl ClusterRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Cluster with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Cluster with ID '{}' not found", id)));
         }
 
         tracing::info!(

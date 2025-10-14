@@ -96,7 +96,7 @@ impl ClusterConfig {
     /// Validate the cluster configuration
     pub fn validate_config(&self) -> Result<(), crate::Error> {
         self.validate()
-            .map_err(|e| crate::Error::Validation(format!("Cluster validation failed: {}", e)))?;
+            .map_err(|e| crate::Error::validation(format!("Cluster validation failed: {}", e)))?;
         Ok(())
     }
 

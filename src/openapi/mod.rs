@@ -377,7 +377,7 @@ fn sanitize_name(raw: &str) -> String {
 
 impl From<GatewayError> for Error {
     fn from(value: GatewayError) -> Self {
-        Error::Validation(value.to_string())
+        Error::validation(value.to_string())
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 
 /// Circuit breaker configuration validation
 pub fn validate_circuit_breaker_config(

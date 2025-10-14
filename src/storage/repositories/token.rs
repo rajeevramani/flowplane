@@ -181,7 +181,7 @@ impl TokenRepository for SqlxTokenRepository {
             source: err,
             context: "Failed to fetch personal access token".to_string(),
         })?
-        .ok_or_else(|| FlowplaneError::not_found(format!("Token '{}' not found", id)))?;
+        .ok_or_else(|| FlowplaneError::not_found_msg(format!("Token '{}' not found", id)))?;
 
         let scopes = self.scopes_for_token(id).await?;
         self.to_model(row, scopes)
@@ -207,7 +207,7 @@ impl TokenRepository for SqlxTokenRepository {
             source: err,
             context: "Failed to fetch personal access token".to_string(),
         })?
-        .ok_or_else(|| FlowplaneError::not_found(format!("Token '{}' not found", id)))?;
+        .ok_or_else(|| FlowplaneError::not_found_msg(format!("Token '{}' not found", id)))?;
 
         let base_status = TokenStatus::from_str(&existing.status).map_err(|_| {
             FlowplaneError::validation(format!(

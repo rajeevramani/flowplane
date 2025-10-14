@@ -140,7 +140,7 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id))),
+            None => Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id))),
         }
     }
 
@@ -161,7 +161,9 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Route with name '{}' not found", name))),
+            None => {
+                Err(FlowplaneError::not_found_msg(format!("Route with name '{}' not found", name)))
+            }
         }
     }
 
@@ -299,7 +301,7 @@ impl RouteRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
         }
 
         tracing::info!(route_id = %id, route_name = %current.name, new_version = new_version, "Updated route");
@@ -323,7 +325,7 @@ impl RouteRepository {
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
         }
 
         tracing::info!(route_id = %id, route_name = %route.name, "Deleted route");

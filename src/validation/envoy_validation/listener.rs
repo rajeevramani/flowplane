@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::listener::v3::{
     filter::ConfigType, Filter, FilterChain, Listener,
 };
