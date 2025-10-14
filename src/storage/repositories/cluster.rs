@@ -257,7 +257,11 @@ impl ClusterRepository {
     }
 
     /// Update cluster
-    pub async fn update(&self, id: &ClusterId, request: UpdateClusterRequest) -> Result<ClusterData> {
+    pub async fn update(
+        &self,
+        id: &ClusterId,
+        request: UpdateClusterRequest,
+    ) -> Result<ClusterData> {
         // Get current cluster to check if it exists and get current values
         let current = self.get_by_id(id).await?;
 

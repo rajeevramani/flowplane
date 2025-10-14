@@ -255,7 +255,11 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
-    pub async fn update(&self, id: &ListenerId, request: UpdateListenerRequest) -> Result<ListenerData> {
+    pub async fn update(
+        &self,
+        id: &ListenerId,
+        request: UpdateListenerRequest,
+    ) -> Result<ListenerData> {
         let current = self.get_by_id(id).await?;
 
         let current_address = current.address.clone();

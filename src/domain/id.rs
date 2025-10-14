@@ -271,7 +271,8 @@ mod tests {
 
         // From plain string
         let json_string = format!("\"{}\"", uuid_str);
-        let id1: ClusterId = serde_json::from_str(&json_string).expect("Failed to deserialize from string");
+        let id1: ClusterId =
+            serde_json::from_str(&json_string).expect("Failed to deserialize from string");
         assert_eq!(id1.as_str(), uuid_str);
     }
 

@@ -429,7 +429,10 @@ impl ApiDefinitionRepository {
     }
 
     /// List routes for a given definition ordered by insertion order
-    pub async fn list_routes(&self, api_definition_id: &ApiDefinitionId) -> Result<Vec<ApiRouteData>> {
+    pub async fn list_routes(
+        &self,
+        api_definition_id: &ApiDefinitionId,
+    ) -> Result<Vec<ApiRouteData>> {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,

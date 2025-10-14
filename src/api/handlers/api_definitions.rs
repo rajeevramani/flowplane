@@ -96,7 +96,7 @@ pub struct ApiDefinitionSummary {
 impl From<ApiDefinitionData> for ApiDefinitionSummary {
     fn from(row: ApiDefinitionData) -> Self {
         Self {
-            id: row.id,
+            id: row.id.to_string(),
             team: row.team,
             domain: row.domain,
             listener_isolation: row.listener_isolation,
@@ -177,7 +177,10 @@ pub async fn get_api_definition_handler(
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
-    let row = repo.get_definition(&id).await.map_err(ApiError::from)?;
+    let row = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&id))
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiDefinitionSummary::from(row)))
 }
 
@@ -227,7 +230,10 @@ pub async fn get_bootstrap_handler(
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
 
-    let def = repo.get_definition(&id).await.map_err(ApiError::from)?;
+    let def = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&id))
+        .await
+        .map_err(ApiError::from)?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
     let scope = q.scope.as_deref().unwrap_or("all").to_lowercase();
@@ -373,12 +379,12 @@ pub async fn create_api_definition_handler(
     let outcome: CreateDefinitionOutcome =
         materializer.create_definition(spec).await.map_err(ApiError::from)?;
 
-    let created_route_ids = outcome.routes.iter().map(|route| route.id.clone()).collect();
+    let created_route_ids = outcome.routes.iter().map(|route| route.id.to_string()).collect();
 
     Ok((
         StatusCode::CREATED,
         Json(CreateApiDefinitionResponse {
-            id: outcome.definition.id,
+            id: outcome.definition.id.to_string(),
             bootstrap_uri: outcome.bootstrap_uri,
             routes: created_route_ids,
         }),
@@ -430,8 +436,13 @@ pub async fn update_api_definition_handler(
     };
 
     // Update the definition
-    let updated =
-        repo.update_definition(&api_definition_id, update_request).await.map_err(ApiError::from)?;
+    let updated = repo
+        .update_definition(
+            &crate::domain::ApiDefinitionId::from_str_unchecked(&api_definition_id),
+            update_request,
+        )
+        .await
+        .map_err(ApiError::from)?;
 
     // Handle route cascade updates if routes are provided
     if let Some(routes_payload) = payload.routes {
@@ -537,8 +548,8 @@ pub async fn append_route_handler(
     Ok((
         StatusCode::ACCEPTED,
         Json(AppendRouteResponse {
-            api_id: definition.id,
-            route_id: route.id,
+            api_id: definition.id.to_string(),
+            route_id: route.id.to_string(),
             revision: definition.version,
             bootstrap_uri,
         }),
@@ -634,12 +645,12 @@ pub async fn import_openapi_handler(
     let outcome: CreateDefinitionOutcome =
         materializer.create_definition(spec).await.map_err(ApiError::from)?;
 
-    let created_route_ids = outcome.routes.iter().map(|route| route.id.clone()).collect();
+    let created_route_ids = outcome.routes.iter().map(|route| route.id.to_string()).collect();
 
     Ok((
         StatusCode::CREATED,
         Json(CreateApiDefinitionResponse {
-            id: outcome.definition.id,
+            id: outcome.definition.id.to_string(),
             bootstrap_uri: outcome.bootstrap_uri,
             routes: created_route_ids,
         }),

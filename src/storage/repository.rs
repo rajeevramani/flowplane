@@ -186,7 +186,8 @@ mod tests {
         let pool = create_test_pool().await;
         let repo = ClusterRepository::new(pool);
 
-        let result = repo.get_by_id("nonexistent-id").await;
+        let result =
+            repo.get_by_id(&crate::domain::ClusterId::from_str_unchecked("nonexistent-id")).await;
         assert!(result.is_err());
 
         let result = repo.get_by_name("nonexistent-name").await;

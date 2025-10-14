@@ -349,12 +349,16 @@ mod tests {
     use super::*;
 
     fn admin_context() -> AuthContext {
-        AuthContext::new("admin-token".into(), "admin".into(), vec!["admin:all".into()])
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("admin-token"),
+            "admin".into(),
+            vec!["admin:all".into()],
+        )
     }
 
     fn platform_team_context() -> AuthContext {
         AuthContext::new(
-            "platform-token".into(),
+            crate::domain::TokenId::from_str_unchecked("platform-token"),
             "platform".into(),
             vec![
                 "team:platform:routes:read".into(),
@@ -366,7 +370,7 @@ mod tests {
 
     fn global_read_context() -> AuthContext {
         AuthContext::new(
-            "read-token".into(),
+            crate::domain::TokenId::from_str_unchecked("read-token"),
             "readonly".into(),
             vec!["routes:read".into(), "clusters:read".into()],
         )
@@ -412,7 +416,7 @@ mod tests {
     #[test]
     fn extract_team_scopes_returns_unique_teams() {
         let ctx = AuthContext::new(
-            "multi-team".into(),
+            crate::domain::TokenId::from_str_unchecked("multi-team"),
             "demo".into(),
             vec![
                 "team:platform:routes:read".into(),

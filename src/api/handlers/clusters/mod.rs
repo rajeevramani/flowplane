@@ -217,7 +217,7 @@ mod tests {
     /// Create an admin AuthContext for testing with full permissions
     fn admin_context() -> AuthContext {
         AuthContext::new(
-            "test-token".to_string(),
+            crate::domain::TokenId::from_str_unchecked("test-token"),
             "test-admin".to_string(),
             vec!["admin:all".to_string()],
         )

@@ -44,9 +44,15 @@ pub trait TokenRepository: Send + Sync {
         update: UpdatePersonalAccessToken,
     ) -> Result<PersonalAccessToken>;
     async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()>;
-    async fn update_last_used(&self, id: &TokenId, when: chrono::DateTime<chrono::Utc>) -> Result<()>;
-    async fn find_active_for_auth(&self, id: &TokenId)
-        -> Result<Option<(PersonalAccessToken, String)>>;
+    async fn update_last_used(
+        &self,
+        id: &TokenId,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
+    async fn find_active_for_auth(
+        &self,
+        id: &TokenId,
+    ) -> Result<Option<(PersonalAccessToken, String)>>;
     async fn count_tokens(&self) -> Result<i64>;
     async fn count_active_tokens(&self) -> Result<i64>;
 }
@@ -287,7 +293,11 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
-    async fn update_last_used(&self, id: &TokenId, when: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    async fn update_last_used(
+        &self,
+        id: &TokenId,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET last_used_at = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )

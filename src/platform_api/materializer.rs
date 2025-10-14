@@ -161,7 +161,7 @@ impl PlatformApiMaterializer {
                 route_spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
             ensure_route_available(
                 &self.repository,
-                &definition.id,
+                definition.id.as_str(),
                 &route_spec.match_type,
                 &route_spec.match_value,
                 headers_json.as_ref(),
@@ -232,10 +232,9 @@ impl PlatformApiMaterializer {
                     .cloned()
                     .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
 
-                let listener_name = listener_input
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("platform-{}-listener", short_id(&definition.id)));
+                let listener_name = listener_input.name.clone().unwrap_or_else(|| {
+                    format!("platform-{}-listener", short_id(definition.id.as_str()))
+                });
 
                 let listener = listener_repo.get_by_name(&listener_name).await?;
                 generated_listener_id = Some(listener.id.to_string());
@@ -305,8 +304,14 @@ impl PlatformApiMaterializer {
         definition_id: &str,
         updated_routes: Vec<RouteSpec>,
     ) -> Result<CreateDefinitionOutcome> {
-        let definition = self.repository.get_definition(definition_id).await?;
-        let existing_routes = self.repository.list_routes(definition_id).await?;
+        let definition = self
+            .repository
+            .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
+        let existing_routes = self
+            .repository
+            .list_routes(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
 
         // Get existing native resource IDs to clean up orphaned ones
         let existing_route_ids: Vec<String> =
@@ -379,7 +384,7 @@ impl PlatformApiMaterializer {
         }
 
         // Compute bootstrap URI without writing files
-        let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.id);
+        let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
         let definition = self
             .repository
             .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
@@ -438,8 +443,14 @@ impl PlatformApiMaterializer {
         definition_id: &str,
         spec: RouteSpec,
     ) -> Result<AppendRouteOutcome> {
-        let definition = self.repository.get_definition(definition_id).await?;
-        let existing_routes = self.repository.list_routes(definition_id).await?;
+        let definition = self
+            .repository
+            .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
+        let existing_routes = self
+            .repository
+            .list_routes(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
 
         let headers_json = spec.headers.as_ref().and_then(|h| serde_json::to_value(h).ok());
         ensure_route_available(
@@ -459,7 +470,7 @@ impl PlatformApiMaterializer {
         all_routes.push(route.clone());
 
         // Compute bootstrap URI without writing files
-        let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.id);
+        let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
         let definition = self
             .repository
             .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
@@ -471,8 +482,8 @@ impl PlatformApiMaterializer {
 
         audit::record_route_appended_event(
             &self.audit_repo,
-            &definition.id,
-            &route.id,
+            definition.id.as_str(),
+            route.id.as_str(),
             &route.match_type,
             &route.match_value,
         )
@@ -560,21 +571,21 @@ impl PlatformApiMaterializer {
         })?;
 
         // Build a dedicated route configuration
-        let route_config_name = format!("platform-api-{}", short_id(&definition.id));
+        let route_config_name = format!("platform-api-{}", short_id(definition.id.as_str()));
         tracing::info!(
             route_config_name = %route_config_name,
             definition_id = %definition.id,
             "materialize_isolated_listener: Generated route config name for isolated listener RDS reference"
         );
         let mut vhost = VirtualHostConfig {
-            name: format!("{}-vhost", short_id(&definition.id)),
+            name: format!("{}-vhost", short_id(definition.id.as_str())),
             domains: vec![definition.domain.clone()],
             routes: Vec::with_capacity(routes.len()),
             typed_per_filter_config: Default::default(),
         };
 
         for route in routes {
-            let cluster_name = build_cluster_name(&definition.id, &route.id);
+            let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
             let action = RouteActionConfig::Cluster {
                 name: cluster_name,
                 timeout: route.timeout_seconds.map(|v| v as u64),
@@ -599,7 +610,7 @@ impl PlatformApiMaterializer {
                 route.headers.as_ref().and_then(|h| serde_json::from_value(h.clone()).ok());
 
             vhost.routes.push(RouteRule {
-                name: Some(format!("platform-api-{}", short_id(&route.id))),
+                name: Some(format!("platform-api-{}", short_id(route.id.as_str()))),
                 r#match: RouteMatchConfig { path, headers, query_parameters: None },
                 action,
                 typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
@@ -611,7 +622,7 @@ impl PlatformApiMaterializer {
         let listener_name = params
             .name
             .clone()
-            .unwrap_or_else(|| format!("platform-{}-listener", short_id(&definition.id)));
+            .unwrap_or_else(|| format!("platform-{}-listener", short_id(definition.id.as_str())));
 
         let listener_config = XListenerConfig {
             name: listener_name.clone(),
@@ -768,14 +779,14 @@ impl PlatformApiMaterializer {
 
             // Build a new virtual host for this Platform API definition
             let mut vhost = VirtualHostConfig {
-                name: format!("platform-api-{}-vhost", short_id(&definition.id)),
+                name: format!("platform-api-{}-vhost", short_id(definition.id.as_str())),
                 domains: vec![definition.domain.clone()],
                 routes: Vec::with_capacity(routes.len()),
                 typed_per_filter_config: Default::default(),
             };
 
             for route in routes {
-                let cluster_name = build_cluster_name(&definition.id, &route.id);
+                let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
                 let action = RouteActionConfig::Cluster {
                     name: cluster_name,
                     timeout: route.timeout_seconds.map(|v| v as u64),
@@ -800,7 +811,7 @@ impl PlatformApiMaterializer {
                     route.headers.as_ref().and_then(|h| serde_json::from_value(h.clone()).ok());
 
                 vhost.routes.push(RouteRule {
-                    name: Some(format!("platform-api-{}", short_id(&route.id))),
+                    name: Some(format!("platform-api-{}", short_id(route.id.as_str()))),
                     r#match: RouteMatchConfig { path, headers, query_parameters: None },
                     action,
                     typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
@@ -809,7 +820,8 @@ impl PlatformApiMaterializer {
 
             // Remove any existing virtual host for this Platform API definition
             // (This handles the case where append_route is called on an existing definition)
-            let vhost_name_pattern = format!("platform-api-{}-vhost", short_id(&definition.id));
+            let vhost_name_pattern =
+                format!("platform-api-{}-vhost", short_id(definition.id.as_str()));
             route_config.virtual_hosts.retain(|vh| vh.name != vhost_name_pattern);
 
             // Add the new virtual host to the route configuration
@@ -883,7 +895,7 @@ impl PlatformApiMaterializer {
 
         // Create clusters for each API route's upstream targets
         for api_route in api_routes {
-            let cluster_name = build_cluster_name(&definition.id, &api_route.id);
+            let cluster_name = build_cluster_name(definition.id.as_str(), api_route.id.as_str());
 
             // Convert upstream_targets to endpoints format for ClusterSpec compatibility
             let endpoints = if let Some(targets) =
@@ -937,7 +949,7 @@ impl PlatformApiMaterializer {
             generated_cluster_ids.push(cluster.id.to_string());
 
             // Create native route that references the cluster
-            let route_name = format!("platform-api-{}", short_id(&api_route.id));
+            let route_name = format!("platform-api-{}", short_id(api_route.id.as_str()));
 
             // Build virtual host configuration
             let path_match = if api_route.match_type == "exact" {
@@ -1011,8 +1023,14 @@ impl PlatformApiMaterializer {
         use crate::storage::repository::UpdateRouteRequest;
 
         // Get the definition to determine its configuration
-        let definition = self.repository.get_definition(definition_id).await?;
-        let routes = self.repository.list_routes(definition_id).await?;
+        let definition = self
+            .repository
+            .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
+        let routes = self
+            .repository
+            .list_routes(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
 
         // Get repository references
         let cluster_repo = self
@@ -1097,7 +1115,7 @@ impl PlatformApiMaterializer {
 
                 // Remove the Platform API virtual host for this definition
                 let vhost_name_to_remove =
-                    format!("platform-api-{}-vhost", short_id(&definition.id));
+                    format!("platform-api-{}-vhost", short_id(definition.id.as_str()));
                 route_config.virtual_hosts.retain(|vh| vh.name != vhost_name_to_remove);
 
                 tracing::info!(
@@ -1178,7 +1196,9 @@ impl PlatformApiMaterializer {
         }
 
         // Delete the API definition from database
-        self.repository.delete_definition(definition_id).await?;
+        self.repository
+            .delete_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(definition_id))
+            .await?;
 
         // Trigger xDS updates
         tracing::info!("Triggering xDS updates after Platform API deletion");
