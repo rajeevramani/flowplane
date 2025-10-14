@@ -10,13 +10,14 @@ use sqlx::error::BoxDynError;
 use sqlx::{Decode, Encode, Sqlite, Type};
 use std::fmt;
 use std::str::FromStr;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Macro to generate NewType ID wrappers with all required traits
 macro_rules! domain_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
         #[serde(transparent)]
         pub struct $name(String);
 

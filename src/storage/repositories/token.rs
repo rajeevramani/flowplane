@@ -6,6 +6,7 @@
 use crate::auth::models::{
     NewPersonalAccessToken, PersonalAccessToken, TokenStatus, UpdatePersonalAccessToken,
 };
+use crate::domain::TokenId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -36,15 +37,15 @@ struct TokenScopeRow {
 pub trait TokenRepository: Send + Sync {
     async fn create_token(&self, token: NewPersonalAccessToken) -> Result<PersonalAccessToken>;
     async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>>;
-    async fn get_token(&self, id: &str) -> Result<PersonalAccessToken>;
+    async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken>;
     async fn update_metadata(
         &self,
-        id: &str,
+        id: &TokenId,
         update: UpdatePersonalAccessToken,
     ) -> Result<PersonalAccessToken>;
-    async fn rotate_secret(&self, id: &str, hashed_secret: String) -> Result<()>;
-    async fn update_last_used(&self, id: &str, when: chrono::DateTime<chrono::Utc>) -> Result<()>;
-    async fn find_active_for_auth(&self, id: &str)
+    async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()>;
+    async fn update_last_used(&self, id: &TokenId, when: chrono::DateTime<chrono::Utc>) -> Result<()>;
+    async fn find_active_for_auth(&self, id: &TokenId)
         -> Result<Option<(PersonalAccessToken, String)>>;
     async fn count_tokens(&self) -> Result<i64>;
     async fn count_active_tokens(&self) -> Result<i64>;
@@ -73,7 +74,7 @@ impl SqlxTokenRepository {
         })?;
 
         Ok(PersonalAccessToken {
-            id: row.id,
+            id: TokenId::from_string(row.id),
             name: row.name,
             description: row.description,
             status,
@@ -86,7 +87,7 @@ impl SqlxTokenRepository {
         })
     }
 
-    async fn scopes_for_token(&self, id: &str) -> Result<Vec<String>> {
+    async fn scopes_for_token(&self, id: &TokenId) -> Result<Vec<String>> {
         let rows: Vec<TokenScopeRow> =
             sqlx::query_as("SELECT scope FROM token_scopes WHERE token_id = $1 ORDER BY scope")
                 .bind(id)
@@ -165,12 +166,13 @@ impl TokenRepository for SqlxTokenRepository {
 
         let mut tokens = Vec::with_capacity(ids.len());
         for id in ids {
-            tokens.push(self.get_token(&id).await?);
+            let token_id = TokenId::from_string(id);
+            tokens.push(self.get_token(&token_id).await?);
         }
         Ok(tokens)
     }
 
-    async fn get_token(&self, id: &str) -> Result<PersonalAccessToken> {
+    async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken> {
         let row: PersonalAccessTokenRow = sqlx::query_as(
             "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
         )
@@ -189,7 +191,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn update_metadata(
         &self,
-        id: &str,
+        id: &TokenId,
         update: UpdatePersonalAccessToken,
     ) -> Result<PersonalAccessToken> {
         let mut tx = self.pool.begin().await.map_err(|err| FlowplaneError::Database {
@@ -270,7 +272,7 @@ impl TokenRepository for SqlxTokenRepository {
         self.get_token(id).await
     }
 
-    async fn rotate_secret(&self, id: &str, hashed_secret: String) -> Result<()> {
+    async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET token_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )
@@ -285,7 +287,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
-    async fn update_last_used(&self, id: &str, when: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    async fn update_last_used(&self, id: &TokenId, when: chrono::DateTime<chrono::Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET last_used_at = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )
@@ -302,7 +304,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn find_active_for_auth(
         &self,
-        id: &str,
+        id: &TokenId,
     ) -> Result<Option<(PersonalAccessToken, String)>> {
         let row: Option<PersonalAccessTokenRow> = sqlx::query_as(
             "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
@@ -320,7 +322,8 @@ impl TokenRepository for SqlxTokenRepository {
         };
 
         let hashed = row.token_hash.clone();
-        let scopes = self.scopes_for_token(&row.id).await?;
+        let token_id = TokenId::from_string(row.id.clone());
+        let scopes = self.scopes_for_token(&token_id).await?;
         let model = self.to_model(row, scopes)?;
         Ok(Some((model, hashed)))
     }

@@ -18,6 +18,7 @@ use crate::auth::models::{
     UpdatePersonalAccessToken,
 };
 use crate::auth::validation::{CreateTokenRequest, UpdateTokenRequest};
+use crate::domain::TokenId;
 use crate::errors::{Error, Result};
 use crate::observability::metrics;
 use crate::storage::repository::{
@@ -80,7 +81,8 @@ impl TokenService {
 
         // Hash the provided bootstrap token
         let hashed_secret = self.hash_secret(bootstrap_secret)?;
-        let id = uuid::Uuid::new_v4().to_string();
+        let id_str = uuid::Uuid::new_v4().to_string();
+        let id = TokenId::from_string(id_str.clone());
 
         let new_token = NewPersonalAccessToken {
             id: id.clone(),
@@ -97,11 +99,11 @@ impl TokenService {
 
         self.repository.create_token(new_token).await?;
 
-        let token_value = format!("fp_pat_{}.{}", id, bootstrap_secret);
+        let token_value = format!("fp_pat_{}.{}", id_str, bootstrap_secret);
 
         self.record_event(
             "auth.token.bootstrap_seeded",
-            Some(&id),
+            Some(&id_str),
             Some("bootstrap-admin"),
             json!({ "name": "bootstrap-admin", "source": "environment" }),
         )
@@ -111,7 +113,7 @@ impl TokenService {
         let active_count = self.repository.count_active_tokens().await?;
         metrics::set_active_tokens(active_count as usize).await;
 
-        info!(token_id = %id, "bootstrap personal access token seeded from environment");
+        info!(token_id = %id_str, "bootstrap personal access token seeded from environment");
         Ok(Some(token_value))
     }
 
@@ -126,9 +128,10 @@ impl TokenService {
         let correlation_id = uuid::Uuid::new_v4();
         tracing::Span::current().record("correlation_id", field::display(&correlation_id));
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let id_str = uuid::Uuid::new_v4().to_string();
+        let id = TokenId::from_string(id_str.clone());
         let secret = Self::generate_secret();
-        let token_value = format!("fp_pat_{}.{}", id, secret);
+        let token_value = format!("fp_pat_{}.{}", id_str, secret);
         let hashed_secret = self.hash_secret(&secret)?;
 
         // Apply default 30-day expiry if not specified
@@ -149,7 +152,7 @@ impl TokenService {
         self.repository.create_token(new_token).await?;
         self.record_event(
             "auth.token.created",
-            Some(&id),
+            Some(&id_str),
             Some(&payload.name),
             json!({ "scopes": payload.scopes, "created_by": payload.created_by }),
         )
@@ -157,9 +160,9 @@ impl TokenService {
         metrics::record_token_created(payload.scopes.len()).await;
         let active_count = self.repository.count_active_tokens().await?;
         metrics::set_active_tokens(active_count as usize).await;
-        info!(%correlation_id, token_id = %id, "personal access token created");
+        info!(%correlation_id, token_id = %id_str, "personal access token created");
 
-        Ok(TokenSecretResponse { id, token: token_value })
+        Ok(TokenSecretResponse { id: id_str, token: token_value })
     }
 
     #[instrument(
@@ -177,7 +180,8 @@ impl TokenService {
     pub async fn get_token(&self, id: &str) -> Result<PersonalAccessToken> {
         tracing::Span::current().record("token_id", field::display(id));
         tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
-        self.repository.get_token(id).await
+        let token_id = TokenId::from_str_unchecked(id);
+        self.repository.get_token(&token_id).await
     }
 
     #[instrument(
@@ -209,7 +213,8 @@ impl TokenService {
             scopes: payload.scopes.clone(),
         };
 
-        let token = self.repository.update_metadata(id, update).await?;
+        let token_id = TokenId::from_str_unchecked(id);
+        let token = self.repository.update_metadata(&token_id, update).await?;
         self.record_event(
             "auth.token.updated",
             Some(id),
@@ -240,7 +245,8 @@ impl TokenService {
             expires_at: None,
             scopes: Some(Vec::new()),
         };
-        let token = self.repository.update_metadata(id, update).await?;
+        let token_id = TokenId::from_str_unchecked(id);
+        let token = self.repository.update_metadata(&token_id, update).await?;
         self.record_event(
             "auth.token.revoked",
             Some(id),
@@ -265,7 +271,8 @@ impl TokenService {
         let token_value = format!("fp_pat_{}.{}", id, secret);
         let hashed_secret = self.hash_secret(&secret)?;
 
-        self.repository.rotate_secret(id, hashed_secret).await?;
+        let token_id = TokenId::from_str_unchecked(id);
+        self.repository.rotate_secret(&token_id, hashed_secret).await?;
         self.record_event(
             "auth.token.rotated",
             Some(id),

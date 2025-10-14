@@ -8,6 +8,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
 
+use crate::domain::TokenId;
 use crate::errors::Error;
 
 /// Lifecycle status for a personal access token.
@@ -57,7 +58,7 @@ pub struct TokenStatusParseError(pub String);
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalAccessToken {
-    pub id: String,
+    pub id: TokenId,
     pub name: String,
     pub description: Option<String>,
     pub status: TokenStatus,
@@ -78,7 +79,7 @@ impl PersonalAccessToken {
 /// New token database payload.
 #[derive(Debug, Clone)]
 pub struct NewPersonalAccessToken {
-    pub id: String,
+    pub id: TokenId,
     pub name: String,
     pub description: Option<String>,
     pub hashed_secret: String,
@@ -111,13 +112,13 @@ impl Display for TokenScope {
 /// Request-scoped authentication context derived from a valid token.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
-    pub token_id: String,
+    pub token_id: TokenId,
     pub token_name: String,
     scopes: HashSet<String>,
 }
 
 impl AuthContext {
-    pub fn new(token_id: String, token_name: String, scopes: Vec<String>) -> Self {
+    pub fn new(token_id: TokenId, token_name: String, scopes: Vec<String>) -> Self {
         Self { token_id, token_name, scopes: scopes.into_iter().collect() }
     }
 
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn auth_context_scope_checks() {
         let ctx = AuthContext::new(
-            "token-1".into(),
+            TokenId::from_string("token-1".to_string()),
             "demo".into(),
             vec!["clusters:read".into(), "clusters:write".into()],
         );
@@ -185,7 +186,7 @@ mod tests {
     #[test]
     fn personal_access_token_has_scope() {
         let token = PersonalAccessToken {
-            id: "t1".into(),
+            id: TokenId::from_string("t1".to_string()),
             name: "demo".into(),
             description: None,
             status: TokenStatus::Active,

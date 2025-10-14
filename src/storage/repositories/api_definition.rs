@@ -3,6 +3,7 @@
 //! This module handles persistence for API definitions and their associated routes,
 //! supporting both Platform API and Native API resource creation.
 
+use crate::domain::{ApiDefinitionId, ApiRouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ struct ApiDefinitionRow {
 /// Persisted API definition record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDefinitionData {
-    pub id: String,
+    pub id: ApiDefinitionId,
     pub team: String,
     pub domain: String,
     pub listener_isolation: bool,
@@ -47,7 +48,7 @@ pub struct ApiDefinitionData {
 impl From<ApiDefinitionRow> for ApiDefinitionData {
     fn from(row: ApiDefinitionRow) -> Self {
         Self {
-            id: row.id,
+            id: ApiDefinitionId::from_string(row.id),
             team: row.team,
             domain: row.domain,
             listener_isolation: row.listener_isolation != 0,
@@ -92,8 +93,8 @@ struct ApiRouteRow {
 /// Persisted API route record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiRouteData {
-    pub id: String,
-    pub api_definition_id: String,
+    pub id: ApiRouteId,
+    pub api_definition_id: ApiDefinitionId,
     pub match_type: String,
     pub match_value: String,
     pub case_sensitive: bool,
@@ -116,8 +117,8 @@ pub struct ApiRouteData {
 impl From<ApiRouteRow> for ApiRouteData {
     fn from(row: ApiRouteRow) -> Self {
         Self {
-            id: row.id,
-            api_definition_id: row.api_definition_id,
+            id: ApiRouteId::from_string(row.id),
+            api_definition_id: ApiDefinitionId::from_string(row.api_definition_id),
             match_type: row.match_type,
             match_value: row.match_value,
             case_sensitive: row.case_sensitive != 0,
@@ -172,7 +173,7 @@ pub struct CreateApiRouteRequest {
 /// Parameters for updating bootstrap metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateBootstrapMetadataRequest {
-    pub definition_id: String,
+    pub definition_id: ApiDefinitionId,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
 }
@@ -257,11 +258,12 @@ impl ApiDefinitionRepository {
             context: "Failed to insert API definition".to_string(),
         })?;
 
-        self.get_definition(&id).await
+        let id_typed = ApiDefinitionId::from_string(id);
+        self.get_definition(&id_typed).await
     }
 
     /// Delete an API definition by ID (cascades to routes)
-    pub async fn delete_definition(&self, id: &str) -> Result<()> {
+    pub async fn delete_definition(&self, id: &ApiDefinitionId) -> Result<()> {
         sqlx::query("DELETE FROM api_definitions WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -274,7 +276,7 @@ impl ApiDefinitionRepository {
     }
 
     /// Delete an API route by ID
-    pub async fn delete_route(&self, id: &str) -> Result<()> {
+    pub async fn delete_route(&self, id: &ApiRouteId) -> Result<()> {
         sqlx::query("DELETE FROM api_routes WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -287,7 +289,7 @@ impl ApiDefinitionRepository {
     }
 
     /// Fetch an API definition by identifier
-    pub async fn get_definition(&self, id: &str) -> Result<ApiDefinitionData> {
+    pub async fn get_definition(&self, id: &ApiDefinitionId) -> Result<ApiDefinitionData> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
                     bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
@@ -402,11 +404,12 @@ impl ApiDefinitionRepository {
             context: "Failed to insert API route".to_string(),
         })?;
 
-        self.get_route(&id).await
+        let id_typed = ApiRouteId::from_string(id);
+        self.get_route(&id_typed).await
     }
 
     /// Retrieve a route by identifier
-    pub async fn get_route(&self, id: &str) -> Result<ApiRouteData> {
+    pub async fn get_route(&self, id: &ApiRouteId) -> Result<ApiRouteData> {
         let row = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
@@ -426,7 +429,7 @@ impl ApiDefinitionRepository {
     }
 
     /// List routes for a given definition ordered by insertion order
-    pub async fn list_routes(&self, api_definition_id: &str) -> Result<Vec<ApiRouteData>> {
+    pub async fn list_routes(&self, api_definition_id: &ApiDefinitionId) -> Result<Vec<ApiRouteData>> {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
@@ -477,7 +480,7 @@ impl ApiDefinitionRepository {
     /// Update generated listener ID for an API definition
     pub async fn update_generated_listener_id(
         &self,
-        definition_id: &str,
+        definition_id: &ApiDefinitionId,
         listener_id: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
@@ -505,7 +508,7 @@ impl ApiDefinitionRepository {
     /// Update generated route and cluster IDs for an API route
     pub async fn update_generated_resource_ids(
         &self,
-        route_id: &str,
+        route_id: &ApiRouteId,
         generated_route_id: Option<&str>,
         generated_cluster_id: Option<&str>,
     ) -> Result<()> {
@@ -533,7 +536,7 @@ impl ApiDefinitionRepository {
     /// Update an API definition's mutable fields
     pub async fn update_definition(
         &self,
-        definition_id: &str,
+        definition_id: &ApiDefinitionId,
         request: UpdateApiDefinitionRequest,
     ) -> Result<ApiDefinitionData> {
         // Get current definition to merge with updates
