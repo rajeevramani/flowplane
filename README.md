@@ -1,14 +1,55 @@
+<!--toc:start-->
+- [Flowplane Envoy Control Plane](#flowplane-envoy-control-plane)
+  - [The name](#the-name)
+  - [Overview](#overview)
+  - [Before You Start](#before-you-start)
+  - [Quick Start](#quick-start)
+    - [1. Launch the Control Plane](#1-launch-the-control-plane)
+    - [2. Get Your Admin Token](#2-get-your-admin-token)
+    - [3. Import an API from OpenAPI Spec](#3-import-an-api-from-openapi-spec)
+    - [4. Get Envoy Bootstrap Configuration](#4-get-envoy-bootstrap-configuration)
+    - [5. Start Envoy](#5-start-envoy)
+    - [6. Make API Calls Through Envoy](#6-make-api-calls-through-envoy)
+  - [Secure the xDS Channel](#secure-the-xds-channel)
+  - [Enable HTTPS for the Admin API](#enable-https-for-the-admin-api)
+  - [Authenticate API Calls](#authenticate-api-calls)
+  - [Build Your First Gateway](#build-your-first-gateway)
+  - [Bootstrap From OpenAPI](#bootstrap-from-openapi)
+  - [Rate Limiting at a Glance](#rate-limiting-at-a-glance)
+  - [Environment Variables Reference](#environment-variables-reference)
+    - [Core Configuration](#core-configuration)
+    - [TLS Configuration](#tls-configuration)
+    - [Observability](#observability)
+    - [CLI Configuration](#cli-configuration)
+    - [Legacy Development Variables](#legacy-development-variables)
+  - [API Endpoints](#api-endpoints)
+    - [Interactive Documentation](#interactive-documentation)
+    - [Authentication & Tokens](#authentication-tokens)
+    - [Clusters](#clusters)
+    - [Routes](#routes)
+    - [Listeners](#listeners)
+    - [API Definitions (BFF/Platform API)](#api-definitions-bffplatform-api)
+    - [Reports & Analytics](#reports-analytics)
+    - [Token Scopes](#token-scopes)
+  - [Documentation Map](#documentation-map)
+    - [Core Documentation](#core-documentation)
+    - [OpenAPI & Examples](#openapi-examples)
+  - [Staying Productive](#staying-productive)
+    - [Interactive API Testing](#interactive-api-testing)
+    - [Other Productivity Tools](#other-productivity-tools)
+  - [Contributing & Roadmap](#contributing-roadmap)
+<!--toc:end-->
+
 ## Flowplane Envoy Control Plane
 
-### The name
-Flowplane takes its cue from the Sanskrit word *Pravāha* (प्रवाह), meaning “stream” or “steady flow.” We use the term with respect, as a way to evoke the idea of guiding traffic smoothly through the control plane while honoring its linguistic roots.
-
-The Aim of the CP is initially to provide a resultful interface for Envoy. We will then try to extend this capability to support A2A and MCP protocols
-
 ### Overview
+
 Flowplane is an Envoy control plane that keeps listener, route, and cluster configuration in structured Rust/JSON models. Each payload is validated and then translated into Envoy protobufs through `envoy-types`, so you can assemble advanced filter chains—JWT auth, rate limiting, TLS, tracing—without hand-crafting `Any` blobs.
 
+The goal of this project is make it simple to interact with Envoy in non kubernetes environments.
+
 ### Before You Start
+
 - Rust toolchain (1.75+ required)
 - SQLite (for the default embedded database)
 - Envoy proxy (when you are ready to point a data-plane instance at the control plane)
@@ -111,6 +152,7 @@ cat envoy-bootstrap.yaml | yq '.listeners[].name'
 ```
 
 The bootstrap config includes:
+
 - Listener configuration (address, port, filters)
 - Cluster definitions (upstream endpoints)
 - Route configurations (path matching rules)
@@ -134,6 +176,7 @@ docker run -d \
 ```
 
 Envoy will:
+
 1. Load the bootstrap configuration
 2. Connect to Flowplane's xDS server (port 50051)
 3. Start listening on port 10000 (default gateway listener)
@@ -174,6 +217,7 @@ curl http://localhost:10000/status/200 -H "Host: httpbin.org"
 **Important**: The `Host: httpbin.org` header is required because Envoy uses it for upstream routing.
 
 **Rate Limiting in Action:**
+
 - Global rate limit: 100 requests/minute (all endpoints)
 - POST endpoint: 5 requests/minute
 - PUT endpoint: 3 requests/minute
@@ -191,11 +235,10 @@ done
 # You'll see 429 (Too Many Requests) after the 5th request
 ```
 
-
-
 The REST API is available on `http://127.0.0.1:8080`. Open the interactive API reference at **`http://127.0.0.1:8080/swagger-ui`** (OpenAPI JSON is served at `/api-docs/openapi.json`).
 
 ### Secure the xDS Channel
+
 Protect Envoy → control plane traffic with TLS or mutual TLS by exporting the following environment variables before starting Flowplane:
 
 - `FLOWPLANE_XDS_TLS_CERT_PATH` – PEM-encoded server certificate chain returned to Envoy.
@@ -221,6 +264,7 @@ Point Envoy at the xDS server using a TLS-enabled cluster and reference the same
 - Flowplane seeds a shared gateway trio (`default-gateway-cluster`, `default-gateway-routes`, `default-gateway-listener`) during startup. They fuel the default OpenAPI import path and are protected from deletion so the shared listener keeps working for every team.
 
 ### Enable HTTPS for the Admin API
+
 Enable TLS termination on the admin API by supplying certificate paths at startup:
 
 - `FLOWPLANE_API_TLS_ENABLED` – set to `true`, `1`, `yes`, or `on` to enable HTTPS (defaults to HTTP when unset).
@@ -231,6 +275,7 @@ Enable TLS termination on the admin API by supplying certificate paths at startu
 When these variables are present the server binds HTTPS, logs the certificate subject and expiry, and rejects startup if the files are missing, unreadable, expired, or mismatched. See [`docs/tls.md`](docs/tls.md) for workflows covering ACME automation, corporate PKI, and local development certificates.
 
 ### Authenticate API Calls
+
 Flowplane now protects every REST endpoint with bearer authentication:
 
 1. Start the control plane. On first launch, a bootstrap admin token is **displayed in a prominent banner**
@@ -243,6 +288,7 @@ Flowplane now protects every REST endpoint with bearer authentication:
    # Or from local logs
    cargo run --bin flowplane 2>&1 | grep "Token:"
    ```
+
 2. Store the value securely (e.g., in a secrets manager) and use it to create scoped tokens via the
    API or CLI:
 
@@ -266,6 +312,7 @@ Scopes map one-to-one with API groups (`clusters:*`, `routes:*`, `listeners:*`, 
 [`docs/token-management.md`](docs/token-management.md) for CLI recipes.
 
 ### Build Your First Gateway
+
 Follow the [step-by-step guide](docs/getting-started.md) to:
 
 1. Register a cluster with upstream endpoints
@@ -276,6 +323,7 @@ Follow the [step-by-step guide](docs/getting-started.md) to:
 Each step includes `curl` examples and the JSON payloads the API expects.
 
 ### Bootstrap From OpenAPI
+
 If you already have an OpenAPI 3.0 spec, Flowplane can generate clusters, routes, and a listener in one call:
 
 ```bash
@@ -293,6 +341,7 @@ By default the generated routes join the shared gateway listener `default-gatewa
 **OpenAPI Filter Extensions:** You can add HTTP filters (CORS, rate limiting, JWT auth) directly in your OpenAPI spec using `x-flowplane-filters` and `x-flowplane-route-overrides`. See [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) for the complete filter alias reference and usage guide.
 
 ### Rate Limiting at a Glance
+
 Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
 
 - **Listener-wide** limits: add a `local_rate_limit` entry to the HTTP filter chain when you create/update a listener. All requests passing through that connection manager share the token bucket.
@@ -362,6 +411,7 @@ These variables are for simple development mode only (not needed for production)
 Flowplane exposes a comprehensive REST API for managing all control plane resources. All endpoints require bearer authentication except for Swagger UI.
 
 #### Interactive Documentation
+
 - **Swagger UI:** `http://127.0.0.1:8080/swagger-ui/`
 - **OpenAPI JSON:** `http://127.0.0.1:8080/api-docs/openapi.json`
 
@@ -442,6 +492,7 @@ Scopes control access to API groups:
 ### Documentation Map
 
 #### Core Documentation
+
 - [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
 - [`docs/platform-api.md`](docs/platform-api.md) – **Platform API Reference** – Higher-level API for team-based multi-tenancy and OpenAPI-driven gateway creation. Complete endpoint documentation with request/response schemas, listener isolation modes, and workflow examples.
 - [`docs/cli-usage.md`](docs/cli-usage.md) – **CLI Usage Guide** – Comprehensive command-line interface documentation covering installation, configuration, and all commands (database, auth, config, api, cluster, listener, route) with practical examples and workflows.
@@ -456,6 +507,7 @@ Scopes control access to API groups:
 - [`docs/contributing.md`](docs/contributing.md) – Coding standards and PR expectations.
 
 #### OpenAPI & Examples
+
 - [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) – **Complete filter alias reference** showing how `x-flowplane-filters` and `x-flowplane-route-overrides` map to Envoy filters, with usage examples.
 - [`examples/SUPPORTED-OVERRIDES.md`](examples/SUPPORTED-OVERRIDES.md) – Detailed documentation for each supported route-level filter override.
 - [`examples/QUICK-REFERENCE.md`](examples/QUICK-REFERENCE.md) – Quick reference card for common x-flowplane patterns and troubleshooting.
@@ -463,6 +515,7 @@ Scopes control access to API groups:
 ### Staying Productive
 
 #### Interactive API Testing
+
 The **`.http-examples/`** directory contains ready-to-use HTTP test files for the VSCode REST Client extension:
 
 - **Quick setup**: Install the REST Client extension, set `API_TOKEN` in `.env`, and click "Send Request" in any `.http` file
@@ -471,14 +524,17 @@ The **`.http-examples/`** directory contains ready-to-use HTTP test files for th
 - **See [.http-examples/README.md](.http-examples/README.md) for detailed setup and usage**
 
 Alternative tools:
+
 - **Bruno workspace** (`bruno/`) - GUI-based HTTP client with git-friendly collections for cluster/route/listener management
 - **Swagger UI** (`http://127.0.0.1:8080/swagger-ui`) - Interactive API documentation with in-browser testing
 
 #### Other Productivity Tools
+
 - `GET /api/v1/clusters`, `GET /api/v1/routes`, `GET /api/v1/listeners` show what is currently stored
 - `scripts/smoke-listener.sh` provisions a demo stack against `httpbin.org`; use it as a reference or a sanity check after changes
 
 ### Contributing & Roadmap
+
 We welcome issues and pull requests. Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before submitting changes. See [`docs/contributing.md`](docs/contributing.md) for more details.
 
 Upcoming areas of exploration include extending the HTTP filter catalog, MCP protocol support, and richer observability hooks. Contributions that keep the configuration surface consistent and testable are especially appreciated.
