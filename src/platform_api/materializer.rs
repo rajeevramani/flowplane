@@ -170,13 +170,13 @@ impl PlatformApiMaterializer {
             let order = route_spec.route_order.unwrap_or(idx as i64);
             let created_route = self
                 .repository
-                .create_route(route_spec.into_request(&definition.id, order))
+                .create_route(route_spec.into_request(definition.id.as_str(), order))
                 .await?;
             created_routes.push(created_route);
         }
 
         // Compute bootstrap URI without writing files
-        let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.id);
+        let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
         let definition = self
             .repository
             .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
@@ -188,7 +188,7 @@ impl PlatformApiMaterializer {
 
         audit::record_create_event(
             &self.audit_repo,
-            &definition.id,
+            definition.id.as_str(),
             &definition.team,
             &definition.domain,
         )
