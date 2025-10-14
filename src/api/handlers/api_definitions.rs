@@ -251,7 +251,8 @@ pub async fn get_bootstrap_handler(
     // If isolated listener mode, get the generated listener
     if def.listener_isolation {
         if let Some(listener_id) = &def.generated_listener_id {
-            if let Ok(listener) = listener_repo.get_by_id(listener_id).await {
+            let listener_id_typed = crate::domain::ListenerId::from_string(listener_id.clone());
+            if let Ok(listener) = listener_repo.get_by_id(&listener_id_typed).await {
                 listeners_info.push(serde_json::json!({
                     "name": listener.name,
                     "address": listener.address,

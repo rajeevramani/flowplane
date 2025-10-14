@@ -238,7 +238,7 @@ impl PlatformApiMaterializer {
                     .unwrap_or_else(|| format!("platform-{}-listener", short_id(&definition.id)));
 
                 let listener = listener_repo.get_by_name(&listener_name).await?;
-                generated_listener_id = Some(listener.id);
+                generated_listener_id = Some(listener.id.to_string());
             }
         } else {
             // listenerIsolation=false: merge routes into existing listeners
@@ -353,10 +353,12 @@ impl PlatformApiMaterializer {
             .ok_or_else(|| Error::internal("Route repository not configured"))?;
 
         for cluster_id in &existing_cluster_ids {
-            let _ = cluster_repo.delete(cluster_id).await; // Ignore errors if already deleted
+            let cluster_id_typed = crate::domain::ClusterId::from_string(cluster_id.clone());
+            let _ = cluster_repo.delete(&cluster_id_typed).await; // Ignore errors if already deleted
         }
         for route_id in &existing_route_ids {
-            let _ = route_repo.delete(route_id).await; // Ignore errors if already deleted
+            let route_id_typed = crate::domain::RouteId::from_string(route_id.clone());
+            let _ = route_repo.delete(&route_id_typed).await; // Ignore errors if already deleted
         }
 
         // Materialize new native resources
@@ -932,7 +934,7 @@ impl PlatformApiMaterializer {
                     Error::internal(format!("Failed to tag cluster with source: {}", e))
                 })?;
 
-            generated_cluster_ids.push(cluster.id.clone());
+            generated_cluster_ids.push(cluster.id.to_string());
 
             // Create native route that references the cluster
             let route_name = format!("platform-api-{}", short_id(&api_route.id));
@@ -980,7 +982,7 @@ impl PlatformApiMaterializer {
                 .await
                 .map_err(|e| Error::internal(format!("Failed to tag route with source: {}", e)))?;
 
-            generated_route_ids.push(route.id.clone());
+            generated_route_ids.push(route.id.to_string());
 
             info!(
                 api_route_id = %api_route.id,
@@ -1130,7 +1132,8 @@ impl PlatformApiMaterializer {
         // Delete generated native resources (clusters and routes)
         for route in &routes {
             if let Some(cluster_id) = &route.generated_cluster_id {
-                if let Err(e) = cluster_repo.delete(cluster_id).await {
+                let cluster_id_typed = crate::domain::ClusterId::from_string(cluster_id.clone());
+                if let Err(e) = cluster_repo.delete(&cluster_id_typed).await {
                     tracing::warn!(
                         cluster_id = %cluster_id,
                         error = %e,
@@ -1139,7 +1142,8 @@ impl PlatformApiMaterializer {
                 }
             }
             if let Some(route_id) = &route.generated_route_id {
-                if let Err(e) = route_repo.delete(route_id).await {
+                let route_id_typed = crate::domain::RouteId::from_string(route_id.clone());
+                if let Err(e) = route_repo.delete(&route_id_typed).await {
                     tracing::warn!(
                         route_id = %route_id,
                         error = %e,
@@ -1158,7 +1162,8 @@ impl PlatformApiMaterializer {
                 .cloned()
                 .ok_or_else(|| Error::internal("Listener repository not configured"))?;
 
-            if let Err(e) = listener_repo.delete(listener_id).await {
+            let listener_id_typed = crate::domain::ListenerId::from_string(listener_id.clone());
+            if let Err(e) = listener_repo.delete(&listener_id_typed).await {
                 tracing::warn!(
                     listener_id = %listener_id,
                     error = %e,

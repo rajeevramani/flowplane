@@ -5,6 +5,9 @@
 //! Debug, Serialize, and Deserialize for full compatibility with existing code.
 
 use serde::{Deserialize, Serialize};
+use sqlx::encode::IsNull;
+use sqlx::error::BoxDynError;
+use sqlx::{Decode, Encode, Sqlite, Type};
 use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -85,6 +88,29 @@ macro_rules! domain_id {
         impl From<$name> for String {
             fn from(id: $name) -> Self {
                 id.0
+            }
+        }
+
+        // SQLx trait implementations for database compatibility
+        impl Type<Sqlite> for $name {
+            fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+                <String as Type<Sqlite>>::type_info()
+            }
+        }
+
+        impl<'q> Encode<'q, Sqlite> for $name {
+            fn encode_by_ref(
+                &self,
+                buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+            ) -> Result<IsNull, BoxDynError> {
+                <String as Encode<'q, Sqlite>>::encode_by_ref(&self.0, buf)
+            }
+        }
+
+        impl<'r> Decode<'r, Sqlite> for $name {
+            fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
+                let s = <String as Decode<'r, Sqlite>>::decode(value)?;
+                Ok(Self(s))
             }
         }
     };
