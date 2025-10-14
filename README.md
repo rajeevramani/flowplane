@@ -128,7 +128,9 @@ curl -sS \
 # }
 ```
 
-**Note**: `listenerIsolation=false` means this API uses the shared `default-gateway-listener` on port 10000, allowing multiple APIs to coexist.
+**Note**: 
+
+> `listenerIsolation=false` means this API uses the shared `default-gateway-listener` on port 10000, allowing multiple APIs to coexist.
 
 Save the API ID from the response:
 
