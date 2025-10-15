@@ -2,6 +2,7 @@ pub mod test_auth_service;
 pub mod test_cleanup_service;
 pub mod test_middleware;
 pub mod test_models;
+pub mod test_performance;
 pub mod test_repository;
 pub mod test_security;
 pub mod test_token_properties;

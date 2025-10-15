@@ -94,3 +94,8 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"]
 tempfile = "3.14"
 which = "6.0"
 rustls-pemfile = "2.1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "token_repository"
+harness = false
