@@ -9,7 +9,10 @@ use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
 
-/// Database row structure for routes
+/// Internal database row structure for routes.
+///
+/// Maps directly to the database schema. Separate from [`RouteData`]
+/// to handle type conversions.
 #[derive(Debug, Clone, FromRow)]
 struct RouteRow {
     pub id: String,
@@ -24,7 +27,21 @@ struct RouteRow {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Route configuration data
+/// Route configuration data returned from the repository.
+///
+/// Represents a route that matches incoming requests to backend clusters.
+/// Routes define path-based matching and cluster selection for request forwarding.
+///
+/// # Fields
+///
+/// - `id`: Unique identifier
+/// - `name`: Human-readable name
+/// - `path_prefix`: Path prefix for request matching (e.g., "/api/v1")
+/// - `cluster_name`: Target cluster to forward matched requests
+/// - `configuration`: JSON-encoded route configuration (filters, retry policy, etc.)
+/// - `version`: Version number for optimistic locking
+/// - `source`: API source ("native", "gateway", "platform")
+/// - `team`: Optional team identifier
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteData {
     pub id: RouteId,
@@ -75,17 +92,53 @@ pub struct UpdateRouteRequest {
     pub team: Option<Option<String>>,
 }
 
-/// Repository for route configuration persistence
+/// Repository for route configuration persistence.
+///
+/// Provides CRUD operations for route resources with team-based access control.
+/// Routes define how incoming requests are matched and forwarded to backend clusters.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use flowplane::storage::repositories::{RouteRepository, CreateRouteRequest};
+/// use serde_json::json;
+///
+/// let repo = RouteRepository::new(pool);
+///
+/// // Create a route
+/// let route = repo.create(CreateRouteRequest {
+///     name: "api-route".to_string(),
+///     path_prefix: "/api/v1".to_string(),
+///     cluster_name: "backend-cluster".to_string(),
+///     configuration: json!({"retry_policy": {"num_retries": 3}}),
+///     team: Some("team-alpha".to_string()),
+/// }).await?;
+/// ```
 #[derive(Debug, Clone)]
 pub struct RouteRepository {
     pool: DbPool,
 }
 
 impl RouteRepository {
+    /// Creates a new route repository with the given database pool.
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
+    /// Creates a new route in the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - Route creation parameters
+    ///
+    /// # Returns
+    ///
+    /// The created [`RouteData`] with generated ID and timestamps.
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
+    /// - [`FlowplaneError::Database`] if insertion fails
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
         let id = RouteId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
@@ -207,8 +260,20 @@ impl RouteRepository {
         Ok(rows.into_iter().map(RouteData::from).collect())
     }
 
-    /// List routes filtered by team names (for team-scoped tokens)
-    /// If teams list is empty, returns all routes (for admin:all or resource-level scopes)
+    /// Lists routes filtered by team names for multi-tenancy support.
+    ///
+    /// Critical for team-based access control. Returns routes for specified
+    /// teams plus any team-agnostic routes.
+    ///
+    /// # Arguments
+    ///
+    /// * `teams` - Team identifiers to filter by. Empty list returns all routes.
+    /// * `limit` - Maximum results (default: 100, max: 1000)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Database`] if query execution fails
     pub async fn list_by_teams(
         &self,
         teams: &[String],
