@@ -31,8 +31,8 @@ pub async fn authenticate(
         return Ok(next.run(request).await);
     }
 
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
+    let method = request.method();
+    let path = request.uri().path();
     let correlation_id = uuid::Uuid::new_v4();
     let span = info_span!(
         "auth_middleware.authenticate",
@@ -71,8 +71,8 @@ pub async fn ensure_scopes(
     let granted_summary =
         context.scopes().map(|scope| scope.as_str()).collect::<Vec<_>>().join(" ");
     let correlation_id = uuid::Uuid::new_v4();
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
+    let method = request.method();
+    let path = request.uri().path();
     let span = info_span!(
         "auth_middleware.ensure_scopes",
         http.method = %method,
@@ -117,12 +117,12 @@ pub async fn ensure_dynamic_scopes(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
+    let method = request.method();
+    let path = request.uri().path();
     let correlation_id = uuid::Uuid::new_v4();
 
     // Extract resource from path
-    let resource = match resource_from_path(&path) {
+    let resource = match resource_from_path(path) {
         Some(r) => r,
         None => {
             // Path doesn't match expected pattern, allow request to continue

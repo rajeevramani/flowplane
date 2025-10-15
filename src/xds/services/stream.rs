@@ -67,8 +67,8 @@ use uuid::Uuid;
 /// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
 struct LastDiscoverySnapshot {
-    version: String,
-    nonce: String,
+    version: Arc<str>,
+    nonce: Arc<str>,
 }
 
 /// Run the shared SOTW (State of the World) ADS stream loop.
@@ -112,7 +112,7 @@ where
     let (tx, rx) = mpsc::channel(100);
     let state_clone = state.clone();
     let responder = Arc::new(responder);
-    let label = label.to_string();
+    let label: Arc<str> = Arc::from(label);
     let last_sent = Arc::new(Mutex::new(HashMap::<String, LastDiscoverySnapshot>::new()));
     let mut update_rx = state.subscribe_updates();
     let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
@@ -134,7 +134,7 @@ where
                             let state = state_clone.clone();
                             let responder = responder.clone();
                             let tx = tx.clone();
-                            let label_clone = label.clone();
+                            let label_for_task = label.clone();
                             let tracker = last_sent.clone();
                             let subscribed_for_task = subscribed_types.clone();
 
@@ -155,10 +155,10 @@ where
                                     .as_ref()
                                     .map(|snapshot| {
                                         !discovery_request.response_nonce.is_empty()
-                                            && discovery_request.response_nonce == snapshot.nonce
-                                            && discovery_request.version_info == snapshot.version
+                                            && discovery_request.response_nonce.as_str() == snapshot.nonce.as_ref()
+                                            && discovery_request.version_info.as_str() == snapshot.version.as_ref()
                                             && discovery_request.error_detail.is_none()
-                                            && snapshot.version == current_version
+                                            && snapshot.version.as_ref() == current_version
                                     })
                                     .unwrap_or(false);
 
@@ -168,7 +168,7 @@ where
                                         version = %discovery_request.version_info,
                                         nonce = %discovery_request.response_nonce,
                                         node_id = ?node_id,
-                                        stream = %label_clone,
+                                        stream = %label_for_task,
                                         "[ACK] Skipping duplicate discovery request"
                                     );
                                     return;
@@ -181,7 +181,7 @@ where
                                         error_code = error_detail.code,
                                         error_message = %error_detail.message,
                                         node_id = ?node_id,
-                                        stream = %label_clone,
+                                        stream = %label_for_task,
                                         "[NACK] Envoy rejected previous response"
                                     );
                                 }
@@ -201,12 +201,12 @@ where
                                             version = %response.version_info,
                                             nonce = %response.nonce,
                                             resource_count = response.resources.len(),
-                                            stream = %label_clone,
+                                            stream = %label_for_task,
                                             "Sending discovery response"
                                         );
 
-                                        let version = response.version_info.clone();
-                                        let nonce = response.nonce.clone();
+                                        let version: Arc<str> = Arc::from(response.version_info.clone());
+                                        let nonce: Arc<str> = Arc::from(response.nonce.clone());
                                         let type_url = response.type_url.clone();
 
                                         {
@@ -218,11 +218,11 @@ where
                                         }
 
                                         if tx.send(Ok(response)).await.is_err() {
-                                            error!(stream = %label_clone, "Discovery response receiver dropped");
+                                            error!(stream = %label_for_task, "Discovery response receiver dropped");
                                         }
                                     }
                                     Err(e) => {
-                                        error!(stream = %label_clone, error = %e, "Failed to create resource response");
+                                        error!(stream = %label_for_task, error = %e, "Failed to create resource response");
                                     }
                                 }
                             });
@@ -272,8 +272,8 @@ where
                                                 "Pushing SOTW update response"
                                             );
 
-                                            let version = response.version_info.clone();
-                                            let nonce = response.nonce.clone();
+                                            let version: Arc<str> = Arc::from(response.version_info.clone());
+                                            let nonce: Arc<str> = Arc::from(response.nonce.clone());
                                             let type_url = response.type_url.clone();
                                             {
                                                 let mut guard = tracker_for_task.lock().await;
@@ -360,7 +360,7 @@ where
     let (tx, rx) = mpsc::channel(100);
     let state_clone = state.clone();
     let responder = Arc::new(responder);
-    let label = label.to_string();
+    let label: Arc<str> = Arc::from(label);
     let mut update_rx = state.subscribe_updates();
 
     tokio::spawn(async move {
