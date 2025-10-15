@@ -95,7 +95,13 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
     let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
     let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
 
-    if let Some(token_value) = token_service.ensure_bootstrap_token(&bootstrap_token).await? {
+    // Note: We pass None for secrets_client here since default gateway setup
+    // is for development/quickstart. Production deployments should configure
+    // Vault separately if rotation is needed.
+    if let Some(token_value) = token_service
+        .ensure_bootstrap_token(&bootstrap_token, None::<&crate::secrets::EnvVarSecretsClient>)
+        .await?
+    {
         // Print prominent banner to ensure token is visible
         eprintln!("\n{}", "=".repeat(80));
         eprintln!("🔐 BOOTSTRAP ADMIN TOKEN CREATED");

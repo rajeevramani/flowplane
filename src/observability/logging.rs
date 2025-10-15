@@ -54,7 +54,9 @@ fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Res
                 .with(otel_layer)
                 .with(json_layer)
                 .try_init()
-                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+                .map_err(|e| {
+                    FlowplaneError::config(format!("Failed to initialize logging: {}", e))
+                })?;
         } else {
             let pretty_layer = fmt::layer()
                 .pretty()
@@ -67,7 +69,9 @@ fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Res
                 .with(otel_layer)
                 .with(pretty_layer)
                 .try_init()
-                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+                .map_err(|e| {
+                    FlowplaneError::config(format!("Failed to initialize logging: {}", e))
+                })?;
         }
     } else {
         // Without OpenTelemetry layer
@@ -79,11 +83,9 @@ fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Res
                 .with_span_list(false)
                 .fmt_fields(JsonFields::new());
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(json_layer)
-                .try_init()
-                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+            tracing_subscriber::registry().with(env_filter).with(json_layer).try_init().map_err(
+                |e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)),
+            )?;
         } else {
             let pretty_layer = fmt::layer()
                 .pretty()
@@ -91,11 +93,9 @@ fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Res
                 .with_thread_ids(true)
                 .with_thread_names(true);
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(pretty_layer)
-                .try_init()
-                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+            tracing_subscriber::registry().with(env_filter).with(pretty_layer).try_init().map_err(
+                |e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)),
+            )?;
         }
     }
 

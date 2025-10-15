@@ -21,6 +21,7 @@ use crate::auth::validation::{CreateTokenRequest, UpdateTokenRequest};
 use crate::domain::TokenId;
 use crate::errors::{Error, Result};
 use crate::observability::metrics;
+use crate::secrets::SecretsClient;
 use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
 };
@@ -69,14 +70,41 @@ impl TokenService {
         Ok(self.argon2.verify_password(candidate.as_bytes(), &parsed).is_ok())
     }
 
-    #[instrument(skip(self, bootstrap_secret), fields(correlation_id = field::Empty))]
-    pub async fn ensure_bootstrap_token(&self, bootstrap_secret: &str) -> Result<Option<String>> {
+    #[instrument(skip(self, bootstrap_secret, secrets_client), fields(correlation_id = field::Empty))]
+    pub async fn ensure_bootstrap_token<T: SecretsClient>(
+        &self,
+        bootstrap_secret: &str,
+        secrets_client: Option<&T>,
+    ) -> Result<Option<String>> {
         tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
 
         if self.repository.count_tokens().await? > 0 {
             let active_count = self.repository.count_active_tokens().await?;
             metrics::set_active_tokens(active_count as usize).await;
             return Ok(None);
+        }
+
+        // OPTIONAL: Store in secrets backend if provided
+        if let Some(client) = secrets_client {
+            match client.set_secret("bootstrap_token", bootstrap_secret).await {
+                Ok(_) => {
+                    info!("Stored bootstrap token in secrets backend for future rotation support");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to store bootstrap token in secrets backend. \
+                         Bootstrap token rotation will not be available. \
+                         This is expected in development without Vault."
+                    );
+                    // Continue execution - don't fail the bootstrap process
+                }
+            }
+        } else {
+            info!(
+                "No secrets backend configured. Bootstrap token created from environment variable. \
+                 Rotation via API will not be available without Vault."
+            );
         }
 
         // Hash the provided bootstrap token
@@ -304,5 +332,79 @@ impl TokenService {
 
     pub fn to_auth_context(&self, token: &PersonalAccessToken) -> AuthContext {
         AuthContext::new(token.id.clone(), token.name.clone(), token.scopes.clone())
+    }
+
+    /// Rotate the bootstrap token using a secrets backend.
+    ///
+    /// This method rotates the bootstrap token by:
+    /// 1. Generating a new cryptographically secure secret using the secrets client
+    /// 2. Updating the bootstrap token in the database with the new hashed secret
+    /// 3. Recording the rotation in the audit log
+    ///
+    /// # Arguments
+    ///
+    /// * `secrets_client` - The secrets client to use for generating the new secret
+    ///
+    /// # Returns
+    ///
+    /// The new bootstrap token value in the format `fp_pat_{id}.{secret}`
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if no bootstrap token exists
+    /// - Returns an error if the secrets client fails
+    /// - Returns an error if the database update fails
+    ///
+    /// # Security
+    ///
+    /// The new secret is:
+    /// - Generated using a cryptographically secure random number generator
+    /// - Stored in the secrets backend for rotation tracking
+    /// - Hashed using Argon2 before storage in the database
+    /// - Audited with full rotation metadata
+    #[instrument(skip(self, secrets_client), fields(correlation_id = field::Empty))]
+    pub async fn rotate_bootstrap_token<T: SecretsClient>(
+        &self,
+        secrets_client: &T,
+    ) -> Result<String> {
+        let correlation_id = uuid::Uuid::new_v4();
+        tracing::Span::current().record("correlation_id", field::display(&correlation_id));
+
+        // Find the bootstrap token
+        let tokens = self.repository.list_tokens(1000, 0).await?;
+        let bootstrap_token = tokens
+            .iter()
+            .find(|t| t.name == "bootstrap-admin")
+            .ok_or_else(|| Error::not_found("token", "bootstrap-admin"))?;
+
+        // Rotate the secret in the secrets backend
+        let new_secret = secrets_client
+            .rotate_secret("bootstrap_token")
+            .await
+            .map_err(|e| Error::internal(format!("Failed to rotate bootstrap secret: {}", e)))?;
+
+        // Hash the new secret
+        let hashed_secret = self.hash_secret(&new_secret)?;
+
+        // Update the token in the database
+        self.repository.rotate_secret(&bootstrap_token.id, hashed_secret).await?;
+
+        // Record the rotation event
+        self.record_event(
+            "auth.token.bootstrap_rotated",
+            Some(bootstrap_token.id.as_ref()),
+            Some("bootstrap-admin"),
+            json!({
+                "rotated_at": Utc::now(),
+                "correlation_id": correlation_id.to_string()
+            }),
+        )
+        .await?;
+
+        metrics::record_token_rotated().await;
+        info!(%correlation_id, token_id = %bootstrap_token.id, "bootstrap token rotated via secrets backend");
+
+        // Return the new token value
+        Ok(format!("fp_pat_{}.{}", bootstrap_token.id, new_secret))
     }
 }

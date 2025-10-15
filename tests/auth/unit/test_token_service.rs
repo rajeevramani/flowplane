@@ -189,7 +189,11 @@ async fn rotate_generates_new_secret() {
 async fn ensure_bootstrap_token_creates_when_empty() {
     let (service, _, _, pool) = setup_service().await;
     let bootstrap_secret = "test-bootstrap-token-min-32-characters-long";
-    let maybe_token = service.ensure_bootstrap_token(bootstrap_secret).await.unwrap();
+    // Pass None for secrets client - dev mode without Vault
+    let maybe_token = service
+        .ensure_bootstrap_token(bootstrap_secret, None::<&flowplane::secrets::EnvVarSecretsClient>)
+        .await
+        .unwrap();
     assert!(maybe_token.is_some());
 
     let token = maybe_token.unwrap();
@@ -197,7 +201,11 @@ async fn ensure_bootstrap_token_creates_when_empty() {
     assert!(token.contains(bootstrap_secret));
 
     // Subsequent call is a no-op.
-    assert!(service.ensure_bootstrap_token(bootstrap_secret).await.unwrap().is_none());
+    assert!(service
+        .ensure_bootstrap_token(bootstrap_secret, None::<&flowplane::secrets::EnvVarSecretsClient>)
+        .await
+        .unwrap()
+        .is_none());
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
         .fetch_one(&pool)
