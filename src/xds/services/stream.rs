@@ -36,8 +36,8 @@
 //! # Concurrency
 //!
 //! - Each incoming request spawns a tokio task for parallel processing
-//! - Version tracking uses Arc<Mutex<HashMap>> for thread-safe updates
-//! - Subscription state uses Arc<Mutex<HashSet>> for concurrent access
+//! - Version tracking uses `Arc<Mutex<HashMap>>` for thread-safe updates
+//! - Subscription state uses `Arc<Mutex<HashSet>>` for concurrent access
 //! - Resource updates broadcast via tokio::sync::broadcast channel
 //!
 //! # Error Handling
