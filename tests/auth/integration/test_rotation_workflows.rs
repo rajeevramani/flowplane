@@ -153,7 +153,7 @@ impl SecretsClient for MockSecretsClient {
 // Test 1: Bootstrap token creation without Vault
 #[tokio::test]
 async fn test_bootstrap_token_creation_without_vault() {
-    let (service, repo, _audit, pool) = setup_service().await;
+    let (service, _repo, _audit, pool) = setup_service().await;
     let bootstrap_secret = "test-bootstrap-secret-min-32-chars";
 
     // Create bootstrap token without secrets client (None)
@@ -339,12 +339,11 @@ async fn test_audit_logging_completeness() {
     #[derive(sqlx::FromRow)]
     struct AuditEntry {
         resource_id: Option<String>,
-        resource_name: Option<String>,
         new_configuration: Option<String>,
     }
 
     let entry: AuditEntry = sqlx::query_as(
-        "SELECT resource_id, resource_name, new_configuration FROM audit_log WHERE action = 'auth.token.rotated'",
+        "SELECT resource_id, new_configuration FROM audit_log WHERE action = 'auth.token.rotated'",
     )
     .fetch_one(&pool)
     .await

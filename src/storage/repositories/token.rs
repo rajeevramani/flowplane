@@ -177,19 +177,22 @@ impl TokenRepository for SqlxTokenRepository {
     async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>> {
         let limit = limit.clamp(1, 1000);
 
-        // Optimized query using LEFT JOIN to fetch tokens and scopes in a single query
+        // Optimized query using subquery + LEFT JOIN to fetch tokens and scopes in a single query
+        // The subquery ensures we LIMIT distinct tokens first, then join with scopes
         // This eliminates the N+1 pattern where we previously made 1 + 2N queries
-        // (1 to get IDs, then 2 per token for token data + scopes)
         let rows: Vec<TokenWithScopeRow> = sqlx::query_as(
             r#"
             SELECT
                 t.id, t.name, t.description, t.token_hash, t.status,
                 t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
                 s.scope
-            FROM personal_access_tokens t
+            FROM (
+                SELECT * FROM personal_access_tokens
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+            ) t
             LEFT JOIN token_scopes s ON t.id = s.token_id
             ORDER BY t.created_at DESC, s.scope ASC
-            LIMIT $1 OFFSET $2
             "#,
         )
         .bind(limit)
