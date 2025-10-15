@@ -36,7 +36,7 @@ async fn detecting_domain_collision_for_different_team() {
 
     // route collision detection setup
     repo.create_route(CreateApiRouteRequest {
-        api_definition_id: created.id.clone(),
+        api_definition_id: created.id.to_string(),
         match_type: "prefix".into(),
         match_value: "/v1/".into(),
         case_sensitive: true,
@@ -57,10 +57,11 @@ async fn detecting_domain_collision_for_different_team() {
     .await
     .expect("seed route");
 
-    let route_conflict = ensure_route_available(&repo, &created.id, "prefix", "/v1/", None).await;
+    let route_conflict =
+        ensure_route_available(&repo, created.id.as_str(), "prefix", "/v1/", None).await;
     assert!(route_conflict.is_err(), "matching prefix should be rejected");
 
-    ensure_route_available(&repo, &created.id, "prefix", "/v2/", None)
+    ensure_route_available(&repo, created.id.as_str(), "prefix", "/v2/", None)
         .await
         .expect("distinct prefix should be accepted");
 }

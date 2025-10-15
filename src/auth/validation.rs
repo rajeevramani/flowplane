@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError, ValidationErrors};
 
 lazy_static! {
-    static ref NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]{3,64}$").unwrap();
+    static ref NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]{3,64}$")
+        .expect("NAME_REGEX should be a valid regex pattern");
     // Scope patterns:
     // - admin:all (global admin)
     // - {resource}:{action} (e.g., routes:read, api-definitions:write)
     // - team:{team}:{resource}:{action} (e.g., team:platform:routes:read)
-    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$").unwrap();
+    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$")
+        .expect("SCOPE_REGEX should be a valid regex pattern");
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

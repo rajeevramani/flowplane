@@ -3,11 +3,11 @@
 //! This module provides CRUD operations for route resources, handling storage,
 //! retrieval, and lifecycle management of route configuration data.
 
+use crate::domain::RouteId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
-use uuid::Uuid;
 
 /// Database row structure for routes
 #[derive(Debug, Clone, FromRow)]
@@ -27,7 +27,7 @@ struct RouteRow {
 /// Route configuration data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteData {
-    pub id: String,
+    pub id: RouteId,
     pub name: String,
     pub path_prefix: String,
     pub cluster_name: String,
@@ -42,7 +42,7 @@ pub struct RouteData {
 impl From<RouteRow> for RouteData {
     fn from(row: RouteRow) -> Self {
         Self {
-            id: row.id,
+            id: RouteId::from_string(row.id),
             name: row.name,
             path_prefix: row.path_prefix,
             cluster_name: row.cluster_name,
@@ -87,7 +87,7 @@ impl RouteRepository {
     }
 
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
-        let id = Uuid::new_v4().to_string();
+        let id = RouteId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
         })?;
@@ -123,7 +123,7 @@ impl RouteRepository {
         self.get_by_id(&id).await
     }
 
-    pub async fn get_by_id(&self, id: &str) -> Result<RouteData> {
+    pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
             "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE id = $1"
         )
@@ -263,7 +263,7 @@ impl RouteRepository {
         Ok(rows.into_iter().map(RouteData::from).collect())
     }
 
-    pub async fn update(&self, id: &str, request: UpdateRouteRequest) -> Result<RouteData> {
+    pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {
         let current = self.get_by_id(id).await?;
 
         let new_path_prefix = request.path_prefix.unwrap_or(current.path_prefix);
@@ -309,7 +309,7 @@ impl RouteRepository {
         self.get_by_id(id).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: &RouteId) -> Result<()> {
         let route = self.get_by_id(id).await?;
 
         let result = sqlx::query("DELETE FROM routes WHERE id = $1")

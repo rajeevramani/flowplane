@@ -101,7 +101,11 @@ async fn token_verification_timing_within_bounds() {
     let id = parts[0].trim_start_matches("fp_pat_");
     let secret = parts[1];
 
-    let (_token, hashed) = repo.find_active_for_auth(id).await.unwrap().unwrap();
+    let (_token, hashed) = repo
+        .find_active_for_auth(&flowplane::domain::TokenId::from_str_unchecked(id))
+        .await
+        .unwrap()
+        .unwrap();
 
     let correct_duration = measure_verify(&service, &hashed, secret, 5);
     let incorrect_secret = random_secret();

@@ -10,6 +10,7 @@ use crate::auth::{
     hashing,
     models::{AuthContext, AuthError, TokenStatus},
 };
+use crate::domain::TokenId;
 use crate::observability::metrics;
 use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
@@ -66,7 +67,8 @@ impl AuthService {
             return Err(AuthError::MalformedBearer);
         };
 
-        let record = match self.repository.find_active_for_auth(id).await {
+        let token_id = TokenId::from_str_unchecked(id);
+        let record = match self.repository.find_active_for_auth(&token_id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
                 metrics::record_authentication("not_found").await;

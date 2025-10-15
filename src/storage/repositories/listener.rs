@@ -3,11 +3,11 @@
 //! This module provides CRUD operations for listener resources, handling storage,
 //! retrieval, and lifecycle management of listener configuration data.
 
+use crate::domain::ListenerId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
-use uuid::Uuid;
 
 /// Database row structure for listeners
 #[derive(Debug, Clone, FromRow)]
@@ -28,7 +28,7 @@ struct ListenerRow {
 /// Listener configuration data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListenerData {
-    pub id: String,
+    pub id: ListenerId,
     pub name: String,
     pub address: String,
     pub port: Option<i64>,
@@ -44,7 +44,7 @@ pub struct ListenerData {
 impl From<ListenerRow> for ListenerData {
     fn from(row: ListenerRow) -> Self {
         Self {
-            id: row.id,
+            id: ListenerId::from_string(row.id),
             name: row.name,
             address: row.address,
             port: row.port,
@@ -92,7 +92,7 @@ impl ListenerRepository {
     }
 
     pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
-        let id = Uuid::new_v4().to_string();
+        let id = ListenerId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid listener configuration JSON: {}", e))
         })?;
@@ -130,7 +130,7 @@ impl ListenerRepository {
         self.get_by_id(&id).await
     }
 
-    pub async fn get_by_id(&self, id: &str) -> Result<ListenerData> {
+    pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at FROM listeners WHERE id = $1"
         )
@@ -255,7 +255,11 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
-    pub async fn update(&self, id: &str, request: UpdateListenerRequest) -> Result<ListenerData> {
+    pub async fn update(
+        &self,
+        id: &ListenerId,
+        request: UpdateListenerRequest,
+    ) -> Result<ListenerData> {
         let current = self.get_by_id(id).await?;
 
         let current_address = current.address.clone();
@@ -314,7 +318,7 @@ impl ListenerRepository {
         self.get_by_id(id).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: &ListenerId) -> Result<()> {
         let listener = self.get_by_id(id).await?;
 
         let result = sqlx::query("DELETE FROM listeners WHERE id = $1")

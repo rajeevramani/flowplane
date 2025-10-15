@@ -17,6 +17,7 @@
 //!
 //! ## Module Organization
 //!
+//! - `id`: Type-safe domain identifiers with NewType pattern
 //! - `api_definition`: API definition specification and configuration
 //! - `route`: Route configuration and matching logic
 //! - `listener`: Listener configuration and network bindings
@@ -24,6 +25,7 @@
 
 pub mod api_definition;
 pub mod cluster;
+pub mod id;
 pub mod listener;
 pub mod route;
 
@@ -35,6 +37,7 @@ pub use cluster::{
     CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
     HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
 };
+pub use id::{ApiDefinitionId, ApiRouteId, ClusterId, ListenerId, RouteId, TokenId};
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
     TlsConfig as ListenerTlsConfig, TlsVersion as ListenerTlsVersion,

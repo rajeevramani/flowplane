@@ -73,7 +73,7 @@ async fn test_create_definition_generates_native_resources() {
     let outcome = materializer.create_definition(spec).await.unwrap();
 
     // Verify API definition was created
-    assert!(!outcome.definition.id.is_empty());
+    assert!(!outcome.definition.id.as_str().is_empty());
     assert_eq!(outcome.definition.team, "test-team");
     assert_eq!(outcome.definition.domain, "test.example.com");
 
@@ -85,10 +85,18 @@ async fn test_create_definition_generates_native_resources() {
     let cluster_repo = ClusterRepository::new(ctx.pool.clone());
     let route_repo = RouteRepository::new(ctx.pool.clone());
 
-    let cluster = cluster_repo.get_by_id(&outcome.generated_cluster_ids[0]).await.unwrap();
+    let cluster = cluster_repo
+        .get_by_id(&flowplane::domain::ClusterId::from_str_unchecked(
+            &outcome.generated_cluster_ids[0],
+        ))
+        .await
+        .unwrap();
     assert_eq!(cluster.source, "platform_api", "Cluster should be tagged with platform_api");
 
-    let route = route_repo.get_by_id(&outcome.generated_route_ids[0]).await.unwrap();
+    let route = route_repo
+        .get_by_id(&flowplane::domain::RouteId::from_str_unchecked(&outcome.generated_route_ids[0]))
+        .await
+        .unwrap();
     assert_eq!(route.source, "platform_api", "Route should be tagged with platform_api");
 }
 
@@ -198,8 +206,12 @@ async fn test_listener_isolation_creates_listener() {
     assert!(outcome.generated_listener_id.is_some(), "Should generate listener in isolation mode");
 
     let listener_repo = ListenerRepository::new(ctx.pool.clone());
-    let listener =
-        listener_repo.get_by_id(outcome.generated_listener_id.as_ref().unwrap()).await.unwrap();
+    let listener = listener_repo
+        .get_by_id(&flowplane::domain::ListenerId::from_str_unchecked(
+            outcome.generated_listener_id.as_ref().unwrap(),
+        ))
+        .await
+        .unwrap();
 
     assert_eq!(listener.source, "platform_api", "Listener should be tagged with platform_api");
     assert!(
@@ -294,7 +306,7 @@ async fn test_shared_listener_mode_merges_routes() {
     assert_eq!(outcome.generated_cluster_ids.len(), 1, "Should create cluster");
 
     // Test deletion: verify virtual host is removed from shared route config
-    materializer.delete_definition(&outcome.definition.id).await.unwrap();
+    materializer.delete_definition(outcome.definition.id.as_str()).await.unwrap();
 
     // Verify the default gateway route config was updated (virtual host removed)
     let after_delete_route = route_repo.get_by_name("default-gateway-routes").await.unwrap();
@@ -377,17 +389,53 @@ async fn test_isolated_listener_deletion() {
     let route_ids = outcome.generated_route_ids.clone();
 
     // Verify resources were created
-    assert!(listener_repo.get_by_id(&listener_id).await.is_ok(), "Listener should exist");
-    assert!(cluster_repo.get_by_id(&cluster_ids[0]).await.is_ok(), "Cluster should exist");
-    assert!(route_repo.get_by_id(&route_ids[0]).await.is_ok(), "Route should exist");
+    assert!(
+        listener_repo
+            .get_by_id(&flowplane::domain::ListenerId::from_str_unchecked(&listener_id))
+            .await
+            .is_ok(),
+        "Listener should exist"
+    );
+    assert!(
+        cluster_repo
+            .get_by_id(&flowplane::domain::ClusterId::from_str_unchecked(&cluster_ids[0]))
+            .await
+            .is_ok(),
+        "Cluster should exist"
+    );
+    assert!(
+        route_repo
+            .get_by_id(&flowplane::domain::RouteId::from_str_unchecked(&route_ids[0]))
+            .await
+            .is_ok(),
+        "Route should exist"
+    );
 
     // Delete the definition
-    materializer.delete_definition(&definition_id).await.unwrap();
+    materializer.delete_definition(definition_id.as_str()).await.unwrap();
 
     // Verify all resources were deleted
-    assert!(listener_repo.get_by_id(&listener_id).await.is_err(), "Listener should be deleted");
-    assert!(cluster_repo.get_by_id(&cluster_ids[0]).await.is_err(), "Cluster should be deleted");
-    assert!(route_repo.get_by_id(&route_ids[0]).await.is_err(), "Route should be deleted");
+    assert!(
+        listener_repo
+            .get_by_id(&flowplane::domain::ListenerId::from_str_unchecked(&listener_id))
+            .await
+            .is_err(),
+        "Listener should be deleted"
+    );
+    assert!(
+        cluster_repo
+            .get_by_id(&flowplane::domain::ClusterId::from_str_unchecked(&cluster_ids[0]))
+            .await
+            .is_err(),
+        "Cluster should be deleted"
+    );
+    assert!(
+        route_repo
+            .get_by_id(&flowplane::domain::RouteId::from_str_unchecked(&route_ids[0]))
+            .await
+            .is_err(),
+        "Route should be deleted"
+    );
 
     // Verify the definition was deleted from the database
     let api_repo = ApiDefinitionRepository::new(ctx.pool.clone());
@@ -479,7 +527,7 @@ async fn test_update_definition_cleans_up_orphaned_resources() {
     }];
 
     let updated_outcome = materializer
-        .update_definition(&initial_outcome.definition.id, updated_routes)
+        .update_definition(initial_outcome.definition.id.as_str(), updated_routes)
         .await
         .unwrap();
 
@@ -492,12 +540,21 @@ async fn test_update_definition_cleans_up_orphaned_resources() {
     let route_repo = RouteRepository::new(ctx.pool.clone());
 
     for old_route_id in &old_route_ids {
-        assert!(route_repo.get_by_id(old_route_id).await.is_err(), "Old route should be deleted");
+        assert!(
+            route_repo
+                .get_by_id(&flowplane::domain::RouteId::from_str_unchecked(old_route_id))
+                .await
+                .is_err(),
+            "Old route should be deleted"
+        );
     }
 
     for old_cluster_id in &old_cluster_ids {
         assert!(
-            cluster_repo.get_by_id(old_cluster_id).await.is_err(),
+            cluster_repo
+                .get_by_id(&flowplane::domain::ClusterId::from_str_unchecked(old_cluster_id))
+                .await
+                .is_err(),
             "Old cluster should be deleted"
         );
     }
@@ -551,8 +608,14 @@ async fn test_cascading_delete_removes_native_resources() {
     let route_repo = RouteRepository::new(ctx.pool.clone());
 
     // The native resources should still exist (FK is SET NULL, not CASCADE)
-    let cluster = cluster_repo.get_by_id(&cluster_id).await.unwrap();
-    let route = route_repo.get_by_id(&route_id).await.unwrap();
+    let cluster = cluster_repo
+        .get_by_id(&flowplane::domain::ClusterId::from_str_unchecked(&cluster_id))
+        .await
+        .unwrap();
+    let route = route_repo
+        .get_by_id(&flowplane::domain::RouteId::from_str_unchecked(&route_id))
+        .await
+        .unwrap();
 
     assert_eq!(cluster.source, "platform_api");
     assert_eq!(route.source, "platform_api");

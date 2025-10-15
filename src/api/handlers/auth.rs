@@ -52,7 +52,7 @@ impl CreateTokenBody {
             description: self.description,
             expires_at: self.expires_at,
             scopes: self.scopes,
-            created_by: Some(created_by.token_id.clone()),
+            created_by: Some(created_by.token_id.to_string()),
         }
     }
 }

@@ -20,7 +20,9 @@ pub async fn ensure_route_available(
     match_value: &str,
     headers: Option<&serde_json::Value>,
 ) -> Result<()> {
-    let existing_routes = repo.list_routes(api_definition_id).await?;
+    let existing_routes = repo
+        .list_routes(&crate::domain::ApiDefinitionId::from_str_unchecked(api_definition_id))
+        .await?;
     validate_route_uniqueness(&existing_routes, match_type, match_value, headers)
 }
 

@@ -3,11 +3,11 @@
 //! This module provides CRUD operations for cluster resources, handling storage,
 //! retrieval, and lifecycle management of cluster configuration data.
 
+use crate::domain::ClusterId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
-use uuid::Uuid;
 
 /// Database row structure for clusters
 #[derive(Debug, Clone, FromRow)]
@@ -26,7 +26,7 @@ struct ClusterRow {
 /// Cluster configuration data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterData {
-    pub id: String,
+    pub id: ClusterId,
     pub name: String,
     pub service_name: String,
     pub configuration: String, // JSON serialized
@@ -40,7 +40,7 @@ pub struct ClusterData {
 impl From<ClusterRow> for ClusterData {
     fn from(row: ClusterRow) -> Self {
         Self {
-            id: row.id,
+            id: ClusterId::from_string(row.id),
             name: row.name,
             service_name: row.service_name,
             configuration: row.configuration,
@@ -84,7 +84,7 @@ impl ClusterRepository {
 
     /// Create a new cluster
     pub async fn create(&self, request: CreateClusterRequest) -> Result<ClusterData> {
-        let id = Uuid::new_v4().to_string();
+        let id = ClusterId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid configuration JSON: {}", e))
         })?;
@@ -127,7 +127,7 @@ impl ClusterRepository {
     }
 
     /// Get cluster by ID
-    pub async fn get_by_id(&self, id: &str) -> Result<ClusterData> {
+    pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE id = $1"
         )
@@ -257,7 +257,11 @@ impl ClusterRepository {
     }
 
     /// Update cluster
-    pub async fn update(&self, id: &str, request: UpdateClusterRequest) -> Result<ClusterData> {
+    pub async fn update(
+        &self,
+        id: &ClusterId,
+        request: UpdateClusterRequest,
+    ) -> Result<ClusterData> {
         // Get current cluster to check if it exists and get current values
         let current = self.get_by_id(id).await?;
 
@@ -312,7 +316,7 @@ impl ClusterRepository {
     }
 
     /// Delete cluster
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: &ClusterId) -> Result<()> {
         // Check if cluster exists first
         let cluster = self.get_by_id(id).await?;
 
