@@ -1,28 +1,74 @@
 //! # Distributed Tracing
 //!
-//! Provides distributed tracing setup using OpenTelemetry and Jaeger.
+//! Provides distributed tracing setup using OpenTelemetry and OTLP exporter.
 
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
+use opentelemetry::{global, KeyValue};
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{
+    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    Resource,
+};
+use std::time::Duration;
 
-/// Initialize distributed tracing with OpenTelemetry and Jaeger
+/// Initialize distributed tracing with OpenTelemetry and OTLP exporter
 pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
     if !config.enable_tracing {
+        tracing::info!("Distributed tracing is disabled");
         return Ok(());
     }
 
-    // For now, we'll implement a basic setup without external dependencies
-    // In a production environment, you would set up OpenTelemetry with Jaeger
+    // Determine the OTLP endpoint to use
+    let otlp_endpoint = match &config.otlp_endpoint {
+        Some(endpoint) => endpoint.clone(),
+        None => {
+            tracing::warn!(
+                "No OTLP endpoint configured. Tracing enabled but exporter not initialized. \
+                 Set FLOWPLANE_OTLP_ENDPOINT to enable trace export."
+            );
+            return Ok(());
+        }
+    };
 
     tracing::info!(
         service_name = %config.service_name,
-        jaeger_endpoint = ?config.jaeger_endpoint,
-        "Distributed tracing configuration loaded (implementation pending)"
+        otlp_endpoint = %otlp_endpoint,
+        "Initializing OpenTelemetry trace exporter"
     );
 
-    // TODO: Implement actual OpenTelemetry/Jaeger integration
-    // This would involve setting up the OpenTelemetry tracer with Jaeger exporter
-    // For now, we're just using the built-in tracing subscriber setup in logging.rs
+    // Create resource with service information
+    let resource = Resource::new(vec![
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            config.service_name.clone(),
+        ),
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+            env!("CARGO_PKG_VERSION"),
+        ),
+    ]);
+
+    // Configure OTLP exporter with timeout
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(&otlp_endpoint)
+        .with_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| FlowplaneError::internal(format!("Failed to create OTLP exporter: {}", e)))?;
+
+    // Create tracer provider with batch processor
+    let tracer_provider = TracerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_resource(resource)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(1.0))))
+        .build();
+
+    // Set global tracer provider
+    global::set_tracer_provider(tracer_provider);
+
+    tracing::info!("OpenTelemetry trace exporter initialized successfully");
 
     Ok(())
 }
