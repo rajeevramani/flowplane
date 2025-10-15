@@ -85,9 +85,8 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
 
     // Create tracer provider with batch processor and configurable sampling
     // Use ParentBased sampling to respect upstream sampling decisions
-    let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-        config.trace_sampling_ratio,
-    )));
+    let sampler =
+        Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(config.trace_sampling_ratio)));
 
     let tracer_provider = TracerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)

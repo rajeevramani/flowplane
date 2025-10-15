@@ -347,9 +347,8 @@ impl ObservabilityConfig {
         }
 
         let enable_tracing = parse_bool("FLOWPLANE_ENABLE_TRACING", true);
-        let otlp_endpoint = std::env::var("FLOWPLANE_OTLP_ENDPOINT")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
+        let otlp_endpoint =
+            std::env::var("FLOWPLANE_OTLP_ENDPOINT").ok().filter(|value| !value.trim().is_empty());
         let trace_sampling_ratio = parse_f64("FLOWPLANE_TRACE_SAMPLING_RATIO", 1.0).clamp(0.0, 1.0);
         let jaeger_endpoint = std::env::var("FLOWPLANE_JAEGER_ENDPOINT")
             .ok()
