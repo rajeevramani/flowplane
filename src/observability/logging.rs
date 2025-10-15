@@ -22,30 +22,68 @@ pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
 }
 
 fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Result<()> {
-    let registry = tracing_subscriber::registry().with(env_filter);
+    // Build subscriber layers based on configuration
+    if config.enable_tracing && config.otlp_endpoint.is_some() {
+        // With OpenTelemetry layer for trace export
+        // The layer will use the global tracer provider set by init_tracing()
+        let otel_layer = tracing_opentelemetry::layer();
 
-    if config.json_logging {
-        // JSON structured logging for production
-        let json_layer = fmt::layer()
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .fmt_fields(JsonFields::new());
+        if config.json_logging {
+            let json_layer = fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(false)
+                .fmt_fields(JsonFields::new());
 
-        registry
-            .with(json_layer)
-            .try_init()
-            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(otel_layer)
+                .with(json_layer)
+                .try_init()
+                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+        } else {
+            let pretty_layer = fmt::layer()
+                .pretty()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true);
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(otel_layer)
+                .with(pretty_layer)
+                .try_init()
+                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+        }
     } else {
-        // Human-readable logging for development
-        let pretty_layer =
-            fmt::layer().pretty().with_target(true).with_thread_ids(true).with_thread_names(true);
+        // Without OpenTelemetry layer
+        if config.json_logging {
+            let json_layer = fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(false)
+                .fmt_fields(JsonFields::new());
 
-        registry
-            .with(pretty_layer)
-            .try_init()
-            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(json_layer)
+                .try_init()
+                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+        } else {
+            let pretty_layer = fmt::layer()
+                .pretty()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true);
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(pretty_layer)
+                .try_init()
+                .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
+        }
     }
 
     Ok(())

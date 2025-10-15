@@ -20,13 +20,14 @@ use ::tracing::info;
 
 /// Initialize all observability components
 pub async fn init_observability(config: &ObservabilityConfig) -> Result<HealthChecker> {
-    // Initialize logging first
-    init_logging(config)?;
-
-    // Initialize tracing if enabled
+    // Initialize tracing first (if enabled) to set up global tracer provider
+    // This MUST come before init_logging() so the OpenTelemetry layer can use it
     if config.enable_tracing {
         init_tracing(config).await?;
     }
+
+    // Initialize logging after tracing so the OpenTelemetry layer is available
+    init_logging(config)?;
 
     // Initialize metrics if enabled
     if config.enable_metrics {
