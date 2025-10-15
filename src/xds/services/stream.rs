@@ -1,3 +1,52 @@
+//! xDS Streaming Protocol Implementation
+//!
+//! This module provides the core streaming protocol implementation for Envoy's
+//! xDS (eXtended Discovery Service) APIs, supporting both State of the World (SOTW)
+//! and Delta protocols for CDS, RDS, LDS, and EDS resource types.
+//!
+//! # Architecture
+//!
+//! The implementation uses a shared stream loop pattern that handles:
+//! - **ACK/NACK Processing**: Detects and handles Envoy acknowledgments and rejections
+//! - **Version Tracking**: Tracks sent versions and nonces per resource type
+//! - **Subscription Management**: Maintains per-client subscription state
+//! - **Push Updates**: Proactively sends updates when resources change
+//! - **Error Recovery**: Handles stream errors, timeouts, and lagged notifications
+//! - **Concurrent Safety**: Uses Arc/Mutex for thread-safe state management
+//!
+//! # Protocol Flow
+//!
+//! ## SOTW (State of the World) Protocol
+//!
+//! 1. **Initial Request**: Envoy sends DiscoveryRequest with empty version
+//! 2. **Response**: Server sends all resources with version and nonce
+//! 3. **ACK/NACK**: Envoy sends request with version and nonce
+//!    - ACK: Same version/nonce, no error_detail (we skip duplicate)
+//!    - NACK: Same nonce, but error_detail present (we log and resend)
+//! 4. **Push Updates**: When resources change, server pushes new snapshot
+//! 5. **Subscription**: Client subscriptions tracked per type_url
+//!
+//! ## Delta Protocol
+//!
+//! 1. **Initial Request**: Envoy sends DeltaDiscoveryRequest with subscribed resources
+//! 2. **Response**: Server sends only changed resources (added/updated/removed)
+//! 3. **ACK/NACK**: Envoy sends request with response_nonce
+//! 4. **Push Updates**: Server pushes only deltas when resources change
+//!
+//! # Concurrency
+//!
+//! - Each incoming request spawns a tokio task for parallel processing
+//! - Version tracking uses Arc<Mutex<HashMap>> for thread-safe updates
+//! - Subscription state uses Arc<Mutex<HashSet>> for concurrent access
+//! - Resource updates broadcast via tokio::sync::broadcast channel
+//!
+//! # Error Handling
+//!
+//! - **Stream Errors**: Logged and stream terminated gracefully
+//! - **Lagged Notifications**: Warns when broadcast channel falls behind
+//! - **Response Failures**: Logged with context, stream continues
+//! - **Channel Closed**: Detects disconnection and exits cleanly
+
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -15,15 +64,36 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 };
 use uuid::Uuid;
 
+/// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
 struct LastDiscoverySnapshot {
     version: String,
     nonce: String,
 }
 
-// Removed complex delta state tracking - using PoC-style approach instead
-
-/// Run the shared ADS stream loop for both minimal and database-backed services.
+/// Run the shared SOTW (State of the World) ADS stream loop.
+///
+/// This function implements the core xDS streaming protocol for CDS, RDS, LDS, and EDS.
+/// It handles both client-initiated requests and server-initiated push updates.
+///
+/// # Protocol Behavior
+///
+/// - **ACK Detection**: Skips duplicate requests when client ACKs with matching version/nonce
+/// - **NACK Handling**: Logs errors when client rejects configuration but continues operation
+/// - **Subscription Tracking**: Remembers which resource types each client has requested
+/// - **Push Updates**: Proactively sends updates when XdsState broadcasts changes
+/// - **Concurrent Processing**: Spawns tasks for each request to maximize throughput
+///
+/// # Arguments
+///
+/// * `state` - Shared xDS state containing resource cache and repositories
+/// * `in_stream` - Incoming stream of DiscoveryRequest messages from Envoy
+/// * `responder` - Async function that builds DiscoveryResponse for a given request
+/// * `label` - Human-readable label for logging (e.g., "ADS", "CDS")
+///
+/// # Returns
+///
+/// A `ReceiverStream` that produces DiscoveryResponse messages to send to Envoy
 pub fn run_stream_loop<F>(
     state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DiscoveryRequest>,
@@ -241,7 +311,37 @@ where
     ReceiverStream::new(rx)
 }
 
-/// Run the delta ADS stream loop using PoC-style approach with database persistence
+/// Run the shared Delta xDS ADS stream loop.
+///
+/// This function implements the Delta variant of the xDS protocol, which sends only
+/// incremental changes instead of full snapshots. This is more efficient for large
+/// resource sets where only a few items change at a time.
+///
+/// # Protocol Behavior
+///
+/// - **Initial Request**: Client sends empty nonce, server responds with all resources
+/// - **ACK Detection**: Non-empty nonce with no error_detail indicates acknowledgment
+/// - **NACK Handling**: Non-empty nonce with error_detail indicates rejection
+/// - **Incremental Updates**: Only changed/added/removed resources are sent
+/// - **Subscription Tracking**: Tracks subscribed resource types per client
+/// - **Push Updates**: Sends only deltas when XdsState broadcasts changes
+///
+/// # Delta Protocol Advantages
+///
+/// - **Bandwidth Efficiency**: Only sends changed resources, not full snapshots
+/// - **Reduced Envoy Processing**: Envoy only processes changed configs
+/// - **Better for Large Deployments**: Scales better with many routes/clusters
+///
+/// # Arguments
+///
+/// * `state` - Shared xDS state containing resource cache and repositories
+/// * `in_stream` - Incoming stream of DeltaDiscoveryRequest messages from Envoy
+/// * `responder` - Async function that builds DeltaDiscoveryResponse for a given request
+/// * `label` - Human-readable label for logging (e.g., "Delta-ADS")
+///
+/// # Returns
+///
+/// A `ReceiverStream` that produces DeltaDiscoveryResponse messages to send to Envoy
 pub fn run_delta_loop<F>(
     state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
@@ -410,8 +510,19 @@ where
     ReceiverStream::new(rx)
 }
 
-// Removed complex process_delta_request function - using PoC-style direct response pattern
-
+/// Build a DeltaDiscoveryResponse from a ResourceDelta.
+///
+/// Converts internal ResourceDelta representation into the Envoy protobuf format
+/// with added/updated resources and removed resource names.
+///
+/// # Arguments
+///
+/// * `update_version` - Global version number for this update
+/// * `delta` - Resource changes (added, updated, removed)
+///
+/// # Returns
+///
+/// A `DeltaDiscoveryResponse` ready to send to Envoy
 fn build_delta_response(update_version: u64, delta: &ResourceDelta) -> DeltaDiscoveryResponse {
     let resources: Vec<Resource> = delta
         .added_or_updated
