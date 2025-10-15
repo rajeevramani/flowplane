@@ -33,6 +33,24 @@ struct TokenScopeRow {
     pub scope: String,
 }
 
+/// Combined row for batch fetching tokens with scopes via LEFT JOIN
+#[derive(Debug, Clone, FromRow)]
+struct TokenWithScopeRow {
+    // Token fields
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub token_hash: String,
+    pub status: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    // Scope field (nullable because of LEFT JOIN)
+    pub scope: Option<String>,
+}
+
 #[async_trait]
 pub trait TokenRepository: Send + Sync {
     async fn create_token(&self, token: NewPersonalAccessToken) -> Result<PersonalAccessToken>;
@@ -158,8 +176,21 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>> {
         let limit = limit.clamp(1, 1000);
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM personal_access_tokens ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+
+        // Optimized query using LEFT JOIN to fetch tokens and scopes in a single query
+        // This eliminates the N+1 pattern where we previously made 1 + 2N queries
+        // (1 to get IDs, then 2 per token for token data + scopes)
+        let rows: Vec<TokenWithScopeRow> = sqlx::query_as(
+            r#"
+            SELECT
+                t.id, t.name, t.description, t.token_hash, t.status,
+                t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                s.scope
+            FROM personal_access_tokens t
+            LEFT JOIN token_scopes s ON t.id = s.token_id
+            ORDER BY t.created_at DESC, s.scope ASC
+            LIMIT $1 OFFSET $2
+            "#,
         )
         .bind(limit)
         .bind(offset)
@@ -167,14 +198,42 @@ impl TokenRepository for SqlxTokenRepository {
         .await
         .map_err(|err| FlowplaneError::Database {
             source: err,
-            context: "Failed to list personal access tokens".to_string(),
+            context: "Failed to list personal access tokens with scopes".to_string(),
         })?;
 
-        let mut tokens = Vec::with_capacity(ids.len());
-        for id in ids {
-            let token_id = TokenId::from_string(id);
-            tokens.push(self.get_token(&token_id).await?);
+        // Group rows by token ID and aggregate scopes in memory
+        use std::collections::HashMap;
+        let mut token_map: HashMap<String, (PersonalAccessTokenRow, Vec<String>)> = HashMap::new();
+
+        for row in rows {
+            let token_row = PersonalAccessTokenRow {
+                id: row.id.clone(),
+                name: row.name,
+                description: row.description,
+                token_hash: row.token_hash,
+                status: row.status,
+                expires_at: row.expires_at,
+                last_used_at: row.last_used_at,
+                created_by: row.created_by,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            };
+
+            let entry = token_map.entry(row.id).or_insert((token_row, Vec::new()));
+            if let Some(scope) = row.scope {
+                entry.1.push(scope);
+            }
         }
+
+        // Convert aggregated data into PersonalAccessToken models
+        let mut tokens: Vec<PersonalAccessToken> = token_map
+            .into_values()
+            .map(|(token_row, scopes)| self.to_model(token_row, scopes))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Sort by created_at DESC to maintain original ordering
+        tokens.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
         Ok(tokens)
     }
 
