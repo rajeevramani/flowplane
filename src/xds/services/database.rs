@@ -45,6 +45,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create discovery response with database-backed resources
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
     async fn create_resource_response(
         &self,
         request: &DiscoveryRequest,
@@ -344,6 +345,7 @@ impl DatabaseAggregatedDiscoveryService {
         }
     }
 
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
     async fn create_delta_response(
         &self,
         request: &DeltaDiscoveryRequest,
@@ -520,6 +522,7 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     type DeltaAggregatedResourcesStream =
         Pin<Box<dyn Stream<Item = std::result::Result<DeltaDiscoveryResponse, Status>> + Send>>;
 
+    #[tracing::instrument(skip(self, request), fields(stream_type = "SOTW_ADS"))]
     async fn stream_aggregated_resources(
         &self,
         request: Request<tonic::Streaming<DiscoveryRequest>>,
@@ -543,6 +546,7 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    #[tracing::instrument(skip(self, request), fields(stream_type = "Delta_ADS"))]
     async fn delta_aggregated_resources(
         &self,
         request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
