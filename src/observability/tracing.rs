@@ -1,6 +1,31 @@
 //! # Distributed Tracing
 //!
 //! Provides distributed tracing setup using OpenTelemetry and OTLP exporter.
+//!
+//! # Configuration
+//!
+//! Distributed tracing is configured via environment variables:
+//!
+//! - `FLOWPLANE_ENABLE_TRACING`: Enable/disable tracing (default: true)
+//! - `FLOWPLANE_OTLP_ENDPOINT`: OTLP exporter endpoint (default: http://localhost:4317)
+//! - `FLOWPLANE_TRACE_SAMPLING_RATIO`: Sampling ratio 0.0-1.0 (default: 1.0 = 100%)
+//! - `FLOWPLANE_SERVICE_NAME`: Service name for traces (default: flowplane)
+//!
+//! # Context Propagation
+//!
+//! This implementation uses W3C TraceContext for distributed context propagation.
+//! Trace context is automatically propagated across service boundaries via
+//! `traceparent` and `tracestate` HTTP headers. This is handled transparently
+//! by the `tracing-opentelemetry` layer.
+//!
+//! # Sampling
+//!
+//! Uses ParentBased sampling strategy:
+//! - If trace is already sampled by upstream service, continue sampling
+//! - Otherwise, apply TraceIdRatioBased sampling with configured ratio
+//! - Ratio of 1.0 = sample all traces (recommended for development)
+//! - Ratio of 0.1 = sample 10% of traces (typical for production)
+//! - Ratio of 0.0 = sample no traces (disable trace export)
 
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
@@ -34,7 +59,8 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
     tracing::info!(
         service_name = %config.service_name,
         otlp_endpoint = %otlp_endpoint,
-        "Initializing OpenTelemetry trace exporter"
+        sampling_ratio = config.trace_sampling_ratio,
+        "Initializing OpenTelemetry trace exporter with W3C TraceContext propagation"
     );
 
     // Create resource with service information
@@ -57,18 +83,28 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
         .build()
         .map_err(|e| FlowplaneError::internal(format!("Failed to create OTLP exporter: {}", e)))?;
 
-    // Create tracer provider with batch processor
+    // Create tracer provider with batch processor and configurable sampling
+    // Use ParentBased sampling to respect upstream sampling decisions
+    let sampler = Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+        config.trace_sampling_ratio,
+    )));
+
     let tracer_provider = TracerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
         .with_resource(resource)
         .with_id_generator(RandomIdGenerator::default())
-        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(1.0))))
+        .with_sampler(sampler)
         .build();
 
     // Set global tracer provider
+    // Note: OpenTelemetry uses W3C TraceContext by default for distributed context propagation
+    // Context is automatically propagated via traceparent/tracestate headers
     global::set_tracer_provider(tracer_provider);
 
-    tracing::info!("OpenTelemetry trace exporter initialized successfully");
+    tracing::info!(
+        sampling_ratio = config.trace_sampling_ratio,
+        "OpenTelemetry trace exporter initialized successfully with ParentBased sampling"
+    );
 
     Ok(())
 }
