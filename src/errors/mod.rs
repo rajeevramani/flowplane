@@ -201,6 +201,11 @@ impl FlowplaneError {
         Self::Database { source, context }
     }
 
+    /// Create a serialization error with custom context
+    pub fn serialization<S: Into<String>>(source: serde_json::Error, context: S) -> Self {
+        Self::Serialization { source, context: context.into() }
+    }
+
     /// Add context to an error (used by ErrorContext trait)
     #[allow(dead_code)]
     pub(crate) fn add_context(&mut self, context: String) {

@@ -336,14 +336,18 @@ pub async fn get_bootstrap_handler(
         Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
-            .unwrap()
+            .map_err(|e| {
+                ApiError::service_unavailable(format!("Failed to build response: {}", e))
+            })?
     } else {
         let yaml = serde_yaml::to_string(&bootstrap)
             .map_err(|e| ApiError::service_unavailable(e.to_string()))?;
         Response::builder()
             .header(header::CONTENT_TYPE, "application/yaml")
             .body(axum::body::Body::from(yaml))
-            .unwrap()
+            .map_err(|e| {
+                ApiError::service_unavailable(format!("Failed to build response: {}", e))
+            })?
     };
 
     Ok(response)

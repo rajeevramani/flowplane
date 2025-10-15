@@ -19,16 +19,17 @@ pub const ADMIN_ALL_SCOPE: &str = "admin:all";
 /// ```rust
 /// use flowplane::auth::authorization::has_admin_bypass;
 /// use flowplane::auth::models::AuthContext;
+/// use flowplane::domain::TokenId;
 ///
 /// let admin_ctx = AuthContext::new(
-///     "token-1".into(),
+///     TokenId::from_str_unchecked("token-1"),
 ///     "admin-token".into(),
 ///     vec!["admin:all".into()]
 /// );
 /// assert!(has_admin_bypass(&admin_ctx));
 ///
 /// let normal_ctx = AuthContext::new(
-///     "token-2".into(),
+///     TokenId::from_str_unchecked("token-2"),
 ///     "normal-token".into(),
 ///     vec!["routes:read".into()]
 /// );
@@ -57,9 +58,10 @@ pub fn has_admin_bypass(context: &AuthContext) -> bool {
 /// ```rust
 /// use flowplane::auth::authorization::check_resource_access;
 /// use flowplane::auth::models::AuthContext;
+/// use flowplane::domain::TokenId;
 ///
 /// let ctx = AuthContext::new(
-///     "token-1".into(),
+///     TokenId::from_str_unchecked("token-1"),
 ///     "platform-token".into(),
 ///     vec!["team:platform:routes:read".into(), "team:platform:routes:write".into()]
 /// );
@@ -123,9 +125,10 @@ pub fn check_resource_access(
 /// ```rust
 /// use flowplane::auth::authorization::require_resource_access;
 /// use flowplane::auth::models::{AuthContext, AuthError};
+/// use flowplane::domain::TokenId;
 ///
 /// let ctx = AuthContext::new(
-///     "token-1".into(),
+///     TokenId::from_str_unchecked("token-1"),
 ///     "demo".into(),
 ///     vec!["routes:read".into()]
 /// );
@@ -168,9 +171,10 @@ pub fn require_resource_access(
 /// ```rust
 /// use flowplane::auth::authorization::extract_team_scopes;
 /// use flowplane::auth::models::AuthContext;
+/// use flowplane::domain::TokenId;
 ///
 /// let ctx = AuthContext::new(
-///     "token-1".into(),
+///     TokenId::from_str_unchecked("token-1"),
 ///     "multi-team".into(),
 ///     vec![
 ///         "team:platform:routes:read".into(),
@@ -252,16 +256,17 @@ pub fn parse_team_from_scope(scope: &str) -> Option<String> {
 /// ```rust
 /// use flowplane::auth::authorization::has_team_scopes;
 /// use flowplane::auth::models::AuthContext;
+/// use flowplane::domain::TokenId;
 ///
 /// let team_ctx = AuthContext::new(
-///     "token-1".into(),
+///     TokenId::from_str_unchecked("token-1"),
 ///     "team-token".into(),
 ///     vec!["team:platform:routes:read".into()]
 /// );
 /// assert!(has_team_scopes(&team_ctx));
 ///
 /// let global_ctx = AuthContext::new(
-///     "token-2".into(),
+///     TokenId::from_str_unchecked("token-2"),
 ///     "global-token".into(),
 ///     vec!["routes:read".into()]
 /// );
