@@ -117,49 +117,87 @@ impl ClusterService {
         service_name: String,
         config: ClusterSpec,
     ) -> Result<ClusterData, Error> {
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let configuration = config.to_value()?;
-        let update_request = UpdateClusterRequest {
-            service_name: Some(service_name),
-            configuration: Some(configuration),
-            team: None, // Don't modify team on update unless explicitly set
-        };
+        let mut span = create_operation_span("cluster_service.update_cluster", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("cluster.name", name.to_string()));
+        span.set_attribute(KeyValue::new("cluster.service_name", service_name.clone()));
 
-        let updated = repository.update(&existing.id, update_request).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            cluster_id = %updated.id,
-            cluster_name = %updated.name,
-            "Cluster updated"
-        );
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        self.refresh_xds().await?;
+            let configuration = config.to_value()?;
+            let update_request = UpdateClusterRequest {
+                service_name: Some(service_name),
+                configuration: Some(configuration),
+                team: None, // Don't modify team on update unless explicitly set
+            };
 
-        Ok(updated)
+            let mut db_span = create_operation_span("db.cluster.update", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "UPDATE"));
+            db_span.set_attribute(KeyValue::new("db.table", "clusters"));
+            let updated = repository.update(&existing.id, update_request).await?;
+            drop(db_span);
+
+            info!(
+                cluster_id = %updated.id,
+                cluster_name = %updated.name,
+                "Cluster updated"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("cluster.id", updated.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(updated)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Delete a cluster by name
     pub async fn delete_cluster(&self, name: &str) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
         if is_default_gateway_cluster(name) {
             return Err(Error::validation("The default gateway cluster cannot be deleted"));
         }
 
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        let mut span = create_operation_span("cluster_service.delete_cluster", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("cluster.name", name.to_string()));
 
-        repository.delete(&existing.id).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            cluster_id = %existing.id,
-            cluster_name = %existing.name,
-            "Cluster deleted"
-        );
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        self.refresh_xds().await?;
+            let mut db_span = create_operation_span("db.cluster.delete", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
+            db_span.set_attribute(KeyValue::new("db.table", "clusters"));
+            db_span.set_attribute(KeyValue::new("cluster.id", existing.id.to_string()));
+            repository.delete(&existing.id).await?;
+            drop(db_span);
 
-        Ok(())
+            info!(
+                cluster_id = %existing.id,
+                cluster_name = %existing.name,
+                "Cluster deleted"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("cluster.id", existing.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Parse cluster configuration from stored JSON

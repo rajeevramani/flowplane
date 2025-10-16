@@ -431,19 +431,32 @@ impl PlatformApiMaterializer {
 
         // Trigger xDS snapshot updates for updated native resources
         // Order matters: clusters -> routes -> listeners (to avoid NACK errors)
+        let xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
         self.state.refresh_clusters_from_repository().await?;
+        drop(xds_span);
+
+        let xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
         self.state.refresh_routes_from_repository().await?;
+        drop(xds_span);
 
         // For isolated listeners: refresh platform API resources and listeners
         // For shared listeners: refresh listeners to trigger RDS update
         if definition.listener_isolation {
+            let xds_span =
+                create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
             self.state.refresh_platform_api_resources().await?;
+            drop(xds_span);
+
+            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             self.state.refresh_listeners_from_repository().await?;
+            drop(xds_span);
         } else {
             // For shared listeners, refresh_routes_from_repository() already picked up
             // the updated route config from materialize_shared_listener_routes()
             // We need to refresh listeners to trigger RDS update in Envoy
+            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             self.state.refresh_listeners_from_repository().await?;
+            drop(xds_span);
         }
 
         Ok(CreateDefinitionOutcome {
@@ -532,16 +545,26 @@ impl PlatformApiMaterializer {
         }
 
         // Trigger xDS snapshot updates for newly created native resources
+        let xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
         self.state.refresh_clusters_from_repository().await?;
+        drop(xds_span);
+
+        let xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
         self.state.refresh_routes_from_repository().await?;
+        drop(xds_span);
 
         // For shared listener mode, refresh listeners to trigger RDS update in Envoy
         // Routes are only sent to Envoy when referenced by a listener
         if !definition.listener_isolation {
+            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             self.state.refresh_listeners_from_repository().await?;
+            drop(xds_span);
         }
 
+        let xds_span =
+            create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
         self.state.refresh_platform_api_resources().await?;
+        drop(xds_span);
 
         Ok(AppendRouteOutcome { definition, route, bootstrap_uri })
     }
@@ -1192,15 +1215,27 @@ impl PlatformApiMaterializer {
             .await?;
 
         // Trigger xDS updates
-        tracing::info!("Triggering xDS updates after Platform API deletion");
+        info!("Triggering xDS updates after Platform API deletion");
+        let xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
         self.state.refresh_clusters_from_repository().await?;
+        drop(xds_span);
+
+        let xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
         self.state.refresh_routes_from_repository().await?;
+        drop(xds_span);
+
+        let xds_span =
+            create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
         self.state.refresh_platform_api_resources().await?;
+        drop(xds_span);
+
         if definition.listener_isolation {
+            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             self.state.refresh_listeners_from_repository().await?;
+            drop(xds_span);
         }
 
-        tracing::info!(
+        info!(
             definition_id = %definition_id,
             "Platform API definition and all associated resources deleted successfully"
         );
