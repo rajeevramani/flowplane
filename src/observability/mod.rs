@@ -5,11 +5,13 @@
 //! health checking.
 
 pub mod health;
+pub mod http_tracing;
 pub mod logging;
 pub mod metrics;
 pub mod tracing;
 
 pub use health::HealthChecker;
+pub use http_tracing::trace_http_requests;
 pub use logging::init_logging;
 pub use metrics::{init_metrics, MetricsRecorder};
 pub use tracing::init_tracing;
@@ -25,17 +27,12 @@ use ::tracing::info;
 pub async fn init_observability(
     config: &ObservabilityConfig,
 ) -> Result<(HealthChecker, Option<opentelemetry_sdk::trace::SdkTracerProvider>)> {
-    // Initialize tracing first (if enabled) to set up global tracer provider
-    // This MUST come before init_logging() so the OpenTelemetry layer can use it
-    let tracer_and_provider = init_tracing(config).await?;
-    let tracing_initialized = tracer_and_provider.is_some();
+    // Initialize logging first (structured logging via tracing crate)
+    init_logging(config)?;
 
-    // Clone the provider to return it later
-    let provider = tracer_and_provider.as_ref().map(|(_, p)| p.clone());
-
-    // Initialize logging after tracing so the OpenTelemetry layer is available
-    // Pass the tracer to the logging layer for proper integration
-    init_logging(config, tracer_and_provider)?;
+    // Initialize tracing (OpenTelemetry distributed tracing)
+    let provider = init_tracing(config).await?;
+    let tracing_initialized = provider.is_some();
 
     // Log tracing status after logging is initialized
     if tracing_initialized && config.otlp_endpoint.is_some() {

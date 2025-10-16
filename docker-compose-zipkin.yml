@@ -69,8 +69,8 @@ services:
       # Authentication - auto-generate if not provided
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-flowplane-bootstrap-token-for-testing-min-32-chars}
 
-      # Logging
-      RUST_LOG: info,flowplane=debug
+      # Logging - enable debug for span visibility
+      RUST_LOG: debug,flowplane=debug
 
       # Observability - Tracing ENABLED, pointing to OpenTelemetry Collector
       FLOWPLANE_ENABLE_METRICS: "true"
