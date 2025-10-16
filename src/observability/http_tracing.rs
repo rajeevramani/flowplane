@@ -47,11 +47,7 @@ pub async fn trace_http_requests(request: Request, next: Next) -> Response {
 
     // Execute the request within the span's context so downstream operations are nested
     let cx = opentelemetry::Context::current().with_span(span);
-    let response = async move {
-        next.run(request).await
-    }
-    .with_context(cx.clone())
-    .await;
+    let response = async move { next.run(request).await }.with_context(cx.clone()).await;
 
     // Get the span back from context to update attributes
     let span = cx.span();

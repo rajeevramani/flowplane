@@ -9,11 +9,16 @@ use tracing::{error, info};
 
 use crate::{
     errors::Error,
+    observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_route,
     storage::{
         CreateRouteRepositoryRequest, RouteData, RouteRepository, UpdateRouteRepositoryRequest,
     },
     xds::{route::RouteConfig, XdsState},
+};
+use opentelemetry::{
+    trace::{Span, SpanKind},
+    KeyValue,
 };
 
 /// Service for managing route business logic
@@ -44,27 +49,47 @@ impl RouteService {
         cluster_summary: String,
         config: Value,
     ) -> Result<RouteData, Error> {
-        let repository = self.repository()?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let request = CreateRouteRepositoryRequest {
-            name: name.clone(),
-            path_prefix,
-            cluster_name: cluster_summary,
-            configuration: config,
-            team: None, // Native API routes don't have team assignment by default
-        };
+        let mut span = create_operation_span("route_service.create_route", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("route.name", name.clone()));
+        span.set_attribute(KeyValue::new("route.path_prefix", path_prefix.clone()));
+        span.set_attribute(KeyValue::new("route.cluster", cluster_summary.clone()));
 
-        let created = repository.create(request).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            route_id = %created.id,
-            route_name = %created.name,
-            "Route created"
-        );
+        async move {
+            let repository = self.repository()?;
 
-        self.refresh_xds().await?;
+            let request = CreateRouteRepositoryRequest {
+                name: name.clone(),
+                path_prefix,
+                cluster_name: cluster_summary,
+                configuration: config,
+                team: None, // Native API routes don't have team assignment by default
+            };
 
-        Ok(created)
+            let mut db_span = create_operation_span("db.route.insert", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+            db_span.set_attribute(KeyValue::new("db.table", "routes"));
+            let created = repository.create(request).await?;
+            drop(db_span);
+
+            info!(
+                route_id = %created.id,
+                route_name = %created.name,
+                "Route created"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("route.id", created.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(created)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// List all routes
@@ -91,49 +116,88 @@ impl RouteService {
         cluster_summary: String,
         config: Value,
     ) -> Result<RouteData, Error> {
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let update_request = UpdateRouteRepositoryRequest {
-            path_prefix: Some(path_prefix),
-            cluster_name: Some(cluster_summary),
-            configuration: Some(config),
-            team: None, // Don't modify team on update unless explicitly set
-        };
+        let mut span = create_operation_span("route_service.update_route", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("route.name", name.to_string()));
+        span.set_attribute(KeyValue::new("route.path_prefix", path_prefix.clone()));
+        span.set_attribute(KeyValue::new("route.cluster", cluster_summary.clone()));
 
-        let updated = repository.update(&existing.id, update_request).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            route_id = %updated.id,
-            route_name = %updated.name,
-            "Route updated"
-        );
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        self.refresh_xds().await?;
+            let update_request = UpdateRouteRepositoryRequest {
+                path_prefix: Some(path_prefix),
+                cluster_name: Some(cluster_summary),
+                configuration: Some(config),
+                team: None, // Don't modify team on update unless explicitly set
+            };
 
-        Ok(updated)
+            let mut db_span = create_operation_span("db.route.update", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "UPDATE"));
+            db_span.set_attribute(KeyValue::new("db.table", "routes"));
+            let updated = repository.update(&existing.id, update_request).await?;
+            drop(db_span);
+
+            info!(
+                route_id = %updated.id,
+                route_name = %updated.name,
+                "Route updated"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("route.id", updated.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(updated)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Delete a route by name
     pub async fn delete_route(&self, name: &str) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
         if is_default_gateway_route(name) {
             return Err(Error::validation("The default gateway route cannot be deleted"));
         }
 
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        let mut span = create_operation_span("route_service.delete_route", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("route.name", name.to_string()));
 
-        repository.delete(&existing.id).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            route_id = %existing.id,
-            route_name = %existing.name,
-            "Route deleted"
-        );
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        self.refresh_xds().await?;
+            let mut db_span = create_operation_span("db.route.delete", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
+            db_span.set_attribute(KeyValue::new("db.table", "routes"));
+            db_span.set_attribute(KeyValue::new("route.id", existing.id.to_string()));
+            repository.delete(&existing.id).await?;
+            drop(db_span);
 
-        Ok(())
+            info!(
+                route_id = %existing.id,
+                route_name = %existing.name,
+                "Route deleted"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("route.id", existing.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Parse route configuration from stored JSON
