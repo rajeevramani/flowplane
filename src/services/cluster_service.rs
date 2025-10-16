@@ -9,9 +9,14 @@ use tracing::{error, info};
 
 use crate::{
     errors::Error,
+    observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_cluster,
     storage::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest},
     xds::{ClusterSpec, XdsState},
+};
+use opentelemetry::{
+    trace::{Span, SpanKind},
+    KeyValue,
 };
 
 /// Service for managing cluster business logic
@@ -41,28 +46,52 @@ impl ClusterService {
         service_name: String,
         config: ClusterSpec,
     ) -> Result<ClusterData, Error> {
-        let repository = self.repository()?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let configuration: Value = config.to_value()?;
+        // Create span for the entire business logic operation
+        let mut span = create_operation_span("cluster_service.create_cluster", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("cluster.name", name.clone()));
+        span.set_attribute(KeyValue::new("cluster.service_name", service_name.clone()));
 
-        let request = CreateClusterRequest {
-            name: name.clone(),
-            service_name: service_name.clone(),
-            configuration,
-            team: None, // Native API clusters don't have team assignment by default
-        };
+        // Create context with this span as the active span
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        let created = repository.create(request).await?;
+        // Execute the rest within the span's context so child spans are properly nested
+        async move {
+            let repository = self.repository()?;
 
-        info!(
-            cluster_id = %created.id,
-            cluster_name = %created.name,
-            "Cluster created"
-        );
+            let configuration: Value = config.to_value()?;
 
-        self.refresh_xds().await?;
+            let request = CreateClusterRequest {
+                name: name.clone(),
+                service_name: service_name.clone(),
+                configuration,
+                team: None, // Native API clusters don't have team assignment by default
+            };
 
-        Ok(created)
+            // Create nested span for database operation
+            let mut db_span = create_operation_span("db.cluster.insert", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+            db_span.set_attribute(KeyValue::new("db.table", "clusters"));
+            let created = repository.create(request).await?;
+            drop(db_span); // End database span
+
+            info!(
+                cluster_id = %created.id,
+                cluster_name = %created.name,
+                "Cluster created"
+            );
+
+            // Create nested span for xDS refresh
+            let mut xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("cluster.id", created.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span); // End xDS span
+
+            Ok(created)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// List all clusters

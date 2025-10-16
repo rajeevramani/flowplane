@@ -19,6 +19,8 @@ use std::time::Instant;
 /// - Sets span status based on HTTP status code
 /// - Works with any OpenTelemetry backend (Zipkin, Jaeger, etc.)
 pub async fn trace_http_requests(request: Request, next: Next) -> Response {
+    use opentelemetry::trace::{FutureExt, TraceContextExt};
+
     let tracer = global::tracer("flowplane-http");
 
     // Extract request information
@@ -40,11 +42,19 @@ pub async fn trace_http_requests(request: Request, next: Next) -> Response {
     );
 
     // Set span attributes after creation
-    span.set_attribute(KeyValue::new("http.method", method));
-    span.set_attribute(KeyValue::new("http.route", uri));
+    span.set_attribute(KeyValue::new("http.method", method.clone()));
+    span.set_attribute(KeyValue::new("http.route", uri.clone()));
 
-    // Execute the request
-    let response = next.run(request).await;
+    // Execute the request within the span's context so downstream operations are nested
+    let cx = opentelemetry::Context::current().with_span(span);
+    let response = async move {
+        next.run(request).await
+    }
+    .with_context(cx.clone())
+    .await;
+
+    // Get the span back from context to update attributes
+    let span = cx.span();
 
     // Record response attributes
     let status_code = response.status().as_u16();
@@ -70,8 +80,8 @@ pub async fn trace_http_requests(request: Request, next: Next) -> Response {
         "OpenTelemetry span completed, dropping for export"
     );
 
-    // Span is exported when dropped
-    drop(span);
+    // Span is exported when dropped (via context drop)
+    drop(cx);
 
     response
 }
