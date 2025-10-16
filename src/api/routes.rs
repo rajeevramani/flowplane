@@ -5,6 +5,8 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Router,
 };
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::auth::{
     auth_service::AuthService,
@@ -50,6 +52,12 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
 
+    // Create OpenTelemetry-compatible HTTP tracing layer
+    // This creates spans for all HTTP requests with method, path, status, and latency
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
+
     let secured_api = Router::new()
         // Token management endpoints
         .route("/api/v1/tokens", get(list_tokens_handler))
@@ -87,6 +95,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         .with_state(api_state)
+        .layer(trace_layer) // Add HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
         .layer(auth_layer);
 

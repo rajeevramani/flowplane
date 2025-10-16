@@ -144,6 +144,15 @@ where
                                     .as_ref()
                                     .map(|n| n.id.clone());
 
+                                // Create a span for this discovery request processing
+                                let span = tracing::info_span!(
+                                    "xds_discovery_request",
+                                    type_url = %discovery_request.type_url,
+                                    node_id = ?node_id,
+                                    stream = %label_for_task
+                                );
+                                let _enter = span.enter();
+
                                 let tracker_guard = tracker.lock().await;
                                 let last_snapshot = tracker_guard
                                     .get(&discovery_request.type_url)
@@ -259,6 +268,14 @@ where
                                 let type_url_for_task = delta.type_url.clone();
 
                                 tokio::spawn(async move {
+                                    // Create a span for SOTW push updates
+                                    let span = tracing::info_span!(
+                                        "xds_sotw_push_update",
+                                        type_url = %type_url_for_task,
+                                        stream = %label_for_task
+                                    );
+                                    let _enter = span.enter();
+
                                     // Build a minimal request for this type
                                     let request = DiscoveryRequest { type_url: type_url_for_task.clone(), ..Default::default() };
                                     match responder_for_task(state_for_task, request).await {
@@ -418,6 +435,14 @@ where
                             let label_for_task = label.clone();
 
                             tokio::spawn(async move {
+                                // Create a span for delta discovery request processing
+                                let span = tracing::info_span!(
+                                    "xds_delta_discovery_request",
+                                    type_url = %delta_request.type_url,
+                                    stream = %label_for_task
+                                );
+                                let _enter = span.enter();
+
                                 match responder_for_task(state_for_task, delta_request.clone()).await {
                                     Ok(response) => {
                                         info!(
@@ -479,6 +504,14 @@ where
                                 );
 
                                 tokio::spawn(async move {
+                                    // Create a span for delta push updates
+                                    let span = tracing::info_span!(
+                                        "xds_delta_push_update",
+                                        type_url = %response.type_url,
+                                        stream = %label_for_task
+                                    );
+                                    let _enter = span.enter();
+
                                     if tx_for_task.send(Ok(response)).await.is_err() {
                                         error!(stream = %label_for_task, "Delta response receiver dropped");
                                     }

@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     }
 
     let observability_config = ObservabilityConfig::from_env();
-    let _health_checker = init_observability(&observability_config).await?;
+    let (_health_checker, tracer_provider) = init_observability(&observability_config).await?;
 
     info!(
         app_name = APP_NAME,
@@ -82,6 +82,17 @@ async fn main() -> Result<()> {
     if let Err(e) = try_join!(xds_task, api_task) {
         error!("Control plane services terminated with error: {}", e);
         std::process::exit(1);
+    }
+
+    // Shutdown OpenTelemetry tracer provider to flush any pending spans
+    // Must use spawn_blocking to avoid deadlock with tokio runtime
+    if let Some(provider) = tracer_provider {
+        info!("Flushing OpenTelemetry traces before shutdown");
+        if let Err(e) = tokio::task::spawn_blocking(move || provider.shutdown()).await {
+            error!("Error shutting down OpenTelemetry tracer provider: {}", e);
+        } else {
+            info!("OpenTelemetry tracer provider shutdown completed");
+        }
     }
 
     info!("Control plane shutdown completed");

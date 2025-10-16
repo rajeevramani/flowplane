@@ -29,19 +29,26 @@
 
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
     Resource,
 };
 use std::time::Duration;
 
 /// Initialize distributed tracing with OpenTelemetry and OTLP exporter
-pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
+///
+/// Returns a tuple of (tracer, provider):
+/// - tracer: Should be passed to tracing_opentelemetry::layer()
+/// - provider: Keep this reference to call shutdown() before application exit
+pub async fn init_tracing(
+    config: &ObservabilityConfig,
+) -> Result<Option<(opentelemetry_sdk::trace::Tracer, opentelemetry_sdk::trace::SdkTracerProvider)>>
+{
     if !config.enable_tracing {
         tracing::info!("Distributed tracing is disabled");
-        return Ok(());
+        return Ok(None);
     }
 
     // Determine the OTLP endpoint to use
@@ -52,7 +59,7 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
                 "No OTLP endpoint configured. Tracing enabled but exporter not initialized. \
                  Set FLOWPLANE_OTLP_ENDPOINT to enable trace export."
             );
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -63,17 +70,17 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
         "Initializing OpenTelemetry trace exporter with W3C TraceContext propagation"
     );
 
-    // Create resource with service information
-    let resource = Resource::new(vec![
-        KeyValue::new(
+    // Create resource with service information using builder pattern
+    let resource = Resource::builder_empty()
+        .with_attribute(KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAME,
             config.service_name.clone(),
-        ),
-        KeyValue::new(
+        ))
+        .with_attribute(KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
             env!("CARGO_PKG_VERSION"),
-        ),
-    ]);
+        ))
+        .build();
 
     // Configure OTLP exporter with timeout
     let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -88,12 +95,26 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
     let sampler =
         Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(config.trace_sampling_ratio)));
 
-    let tracer_provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    // TEMPORARY: Use simple exporter for debugging
+    // TODO: Switch back to batch_exporter once we verify export is working
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter) // Use simple exporter for immediate export (debugging)
         .with_resource(resource)
         .with_id_generator(RandomIdGenerator::default())
         .with_sampler(sampler)
         .build();
+
+    // CRITICAL: Get the tracer BEFORE setting the provider globally
+    // This is required for tracing-opentelemetry 0.27 compatibility
+    let tracer = tracer_provider.tracer(config.service_name.clone());
+
+    // Set the global text map propagator for W3C TraceContext
+    global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
+
+    // IMPORTANT: Clone the provider before setting it globally
+    // We need to keep a reference to call shutdown() before application exit
+    // This is required because global::shutdown_tracer_provider() doesn't exist in 0.31.0
+    let provider_clone = tracer_provider.clone();
 
     // Set global tracer provider
     // Note: OpenTelemetry uses W3C TraceContext by default for distributed context propagation
@@ -105,7 +126,7 @@ pub async fn init_tracing(config: &ObservabilityConfig) -> Result<()> {
         "OpenTelemetry trace exporter initialized successfully with ParentBased sampling"
     );
 
-    Ok(())
+    Ok(Some((tracer, provider_clone)))
 }
 
 /// Create a tracing context for cross-service requests

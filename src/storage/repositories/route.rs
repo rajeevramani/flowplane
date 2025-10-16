@@ -8,6 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Internal database row structure for routes.
 ///
@@ -139,6 +140,7 @@ impl RouteRepository {
     ///
     /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
     /// - [`FlowplaneError::Database`] if insertion fails
+    #[instrument(skip(self, request), fields(route_name = %request.name), name = "db_create_route")]
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
         let id = RouteId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
@@ -238,6 +240,7 @@ impl RouteRepository {
         Ok(count > 0)
     }
 
+    #[instrument(skip(self), name = "db_list_routes")]
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<RouteData>> {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);

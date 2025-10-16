@@ -19,15 +19,31 @@ use crate::errors::Result;
 use ::tracing::info;
 
 /// Initialize all observability components
-pub async fn init_observability(config: &ObservabilityConfig) -> Result<HealthChecker> {
+///
+/// Returns a tuple of (HealthChecker, Option<SdkTracerProvider>)
+/// The SdkTracerProvider must be kept to call shutdown() before application exit
+pub async fn init_observability(
+    config: &ObservabilityConfig,
+) -> Result<(HealthChecker, Option<opentelemetry_sdk::trace::SdkTracerProvider>)> {
     // Initialize tracing first (if enabled) to set up global tracer provider
     // This MUST come before init_logging() so the OpenTelemetry layer can use it
-    if config.enable_tracing {
-        init_tracing(config).await?;
-    }
+    let tracer_and_provider = init_tracing(config).await?;
+    let tracing_initialized = tracer_and_provider.is_some();
+
+    // Clone the provider to return it later
+    let provider = tracer_and_provider.as_ref().map(|(_, p)| p.clone());
 
     // Initialize logging after tracing so the OpenTelemetry layer is available
-    init_logging(config)?;
+    // Pass the tracer to the logging layer for proper integration
+    init_logging(config, tracer_and_provider)?;
+
+    // Log tracing status after logging is initialized
+    if tracing_initialized && config.otlp_endpoint.is_some() {
+        info!(
+            otlp_endpoint = config.otlp_endpoint.as_ref().unwrap(),
+            "OpenTelemetry tracing initialized with OTLP exporter"
+        );
+    }
 
     // Initialize metrics if enabled
     if config.enable_metrics {
@@ -45,7 +61,7 @@ pub async fn init_observability(config: &ObservabilityConfig) -> Result<HealthCh
         "Observability initialized successfully"
     );
 
-    Ok(health_checker)
+    Ok((health_checker, provider))
 }
 
 #[cfg(test)]
@@ -60,8 +76,9 @@ mod tests {
             ..Default::default()
         };
 
-        let health_checker = init_observability(&config).await.unwrap();
+        let (health_checker, provider) = init_observability(&config).await.unwrap();
         assert!(!health_checker.is_ready().await);
+        assert!(provider.is_none());
     }
 
     #[tokio::test]
@@ -74,7 +91,7 @@ mod tests {
             ..Default::default()
         };
 
-        let health_checker = init_observability(&config).await.unwrap();
+        let (health_checker, _provider) = init_observability(&config).await.unwrap();
         assert!(!health_checker.is_ready().await);
     }
 }

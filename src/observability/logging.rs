@@ -28,18 +28,34 @@ use tracing_subscriber::{
 static LOGGING_INITIALIZED: OnceCell<()> = OnceCell::new();
 
 /// Initialize structured logging based on configuration
-pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
+///
+/// Takes an optional tuple of (tracer, _provider). The provider is ignored here
+/// but kept in the signature for API consistency.
+pub fn init_logging(
+    config: &ObservabilityConfig,
+    tracer_and_provider: Option<(
+        opentelemetry_sdk::trace::Tracer,
+        opentelemetry_sdk::trace::SdkTracerProvider,
+    )>,
+) -> Result<()> {
+    let tracer = tracer_and_provider.map(|(t, _)| t);
     let env_filter = parse_env_filter(&config.log_level)?;
 
-    LOGGING_INITIALIZED.get_or_try_init(|| configure_logging(config, env_filter)).map(|_| ())
+    LOGGING_INITIALIZED
+        .get_or_try_init(|| configure_logging(config, env_filter, tracer))
+        .map(|_| ())
 }
 
-fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Result<()> {
+fn configure_logging(
+    config: &ObservabilityConfig,
+    env_filter: EnvFilter,
+    tracer: Option<opentelemetry_sdk::trace::Tracer>,
+) -> Result<()> {
     // Build subscriber layers based on configuration
-    if config.enable_tracing && config.otlp_endpoint.is_some() {
+    if let Some(tracer) = tracer {
         // With OpenTelemetry layer for trace export
-        // The layer will use the global tracer provider set by init_tracing()
-        let otel_layer = tracing_opentelemetry::layer();
+        // Use the tracer provided by init_tracing()
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
         if config.json_logging {
             let json_layer = fmt::layer()
@@ -210,7 +226,7 @@ mod tests {
         };
 
         // This should not panic
-        let result = init_logging(&config);
+        let result = init_logging(&config, None);
         assert!(result.is_ok() || result.is_err()); // tracing_subscriber might be already initialized
     }
 
@@ -223,7 +239,7 @@ mod tests {
         };
 
         // This should not panic
-        let result = init_logging(&config);
+        let result = init_logging(&config, None);
         assert!(result.is_ok() || result.is_err()); // tracing_subscriber might be already initialized
     }
 
@@ -232,7 +248,7 @@ mod tests {
         let config =
             ObservabilityConfig { log_level: "invalid_level".to_string(), ..Default::default() };
 
-        let result = init_logging(&config);
+        let result = init_logging(&config, None);
         assert!(result.is_err());
     }
 
@@ -277,10 +293,10 @@ mod tests {
         };
 
         // Initialize tracing first (sets up global tracer provider)
-        let _ = super::super::tracing::init_tracing(&config).await;
+        let tracer = super::super::tracing::init_tracing(&config).await.ok().flatten();
 
         // Initialize logging with OpenTelemetry layer
-        let _ = init_logging(&config);
+        let _ = init_logging(&config, tracer);
 
         // Create a span and log within it - in a real trace backend,
         // the log would include the trace ID and span ID
