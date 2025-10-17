@@ -81,9 +81,16 @@ pub async fn create_cluster_handler(
 
     let ClusterConfigParts { name, service_name, config } = cluster_parts_from_body(payload);
 
+    // Extract team from auth context
+    // - Team-scoped users create resources for their team
+    // - Admin/resource-level users create global resources (team = None)
+    let team = extract_team_scopes(&context).into_iter().next();
+
     let service = ClusterService::new(state.xds_state.clone());
-    let created =
-        service.create_cluster(name, service_name, config.clone()).await.map_err(ApiError::from)?;
+    let created = service
+        .create_cluster(name, service_name, config.clone(), team)
+        .await
+        .map_err(ApiError::from)?;
 
     Ok((
         StatusCode::CREATED,
@@ -761,6 +768,64 @@ mod tests {
             State(state.clone()),
             Extension(team_a_context),
             Path("team-a-cluster".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn team_scoped_user_creates_team_scoped_cluster() {
+        let state = setup_state().await;
+        let body = sample_request();
+
+        // Team-scoped user creates a cluster
+        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
+
+        // Verify the cluster was assigned to team-a
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
+        assert_eq!(stored.team, Some("team-a".to_string()));
+
+        // Verify that team-b user cannot access it
+        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Path(created.name.clone()),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_user_creates_global_cluster() {
+        let state = setup_state().await;
+        let body = sample_request();
+
+        // Admin creates a cluster
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
+                .await
+                .expect("create cluster");
+
+        // Verify the cluster is global (no team)
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
+        assert_eq!(stored.team, None);
+
+        // Verify that team users can access global clusters
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path(created.name.clone()),
         )
         .await;
         assert!(result.is_ok());
