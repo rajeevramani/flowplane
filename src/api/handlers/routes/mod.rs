@@ -22,17 +22,41 @@ use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
+    auth::authorization::{extract_team_scopes, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
-    storage::{CreateRouteRepositoryRequest, UpdateRouteRepositoryRequest},
+    storage::{CreateRouteRepositoryRequest, RouteData, UpdateRouteRepositoryRequest},
 };
 
 use validation::{
     require_route_repository, route_response_from_data, summarize_route, validate_route_config,
     validate_route_payload,
 };
+
+// === Helper Functions ===
+
+/// Verify that a route belongs to one of the user's teams or is global.
+/// Returns the route if authorized, otherwise returns NotFound error (to avoid leaking existence).
+fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result<RouteData, ApiError> {
+    // Admin:all or resource-level scopes (empty team_scopes) can access everything
+    if team_scopes.is_empty() {
+        return Ok(route);
+    }
+
+    // Check if route is global (team = NULL) or belongs to one of user's teams
+    match &route.team {
+        None => Ok(route), // Global route, accessible to all
+        Some(route_team) => {
+            if team_scopes.contains(route_team) {
+                Ok(route)
+            } else {
+                // Return 404 to avoid leaking existence of other teams' resources
+                Err(ApiError::NotFound(format!("Route with name '{}' not found", route.name)))
+            }
+        }
+    }
+}
 
 // === Handler Implementations ===
 
@@ -114,8 +138,14 @@ pub async fn list_routes_handler(
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
+    // Extract team scopes from auth context for filtering
+    let team_scopes = extract_team_scopes(&context);
+
     let repository = require_route_repository(&state)?;
-    let rows = repository.list(params.limit, params.offset).await.map_err(ApiError::from)?;
+    let rows = repository
+        .list_by_teams(&team_scopes, params.limit, params.offset)
+        .await
+        .map_err(ApiError::from)?;
 
     let mut routes = Vec::with_capacity(rows.len());
     for row in rows {
@@ -144,8 +174,15 @@ pub async fn get_route_handler(
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
+    // Extract team scopes for access verification
+    let team_scopes = extract_team_scopes(&context);
+
     let repository = require_route_repository(&state)?;
     let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
+
+    // Verify the route belongs to one of the user's teams or is global
+    let route = verify_route_access(route, &team_scopes)?;
+
     Ok(Json(route_response_from_data(route)?))
 }
 
@@ -180,8 +217,14 @@ pub async fn update_route_handler(
         )));
     }
 
+    // Extract team scopes and verify access before updating
+    let team_scopes = extract_team_scopes(&context);
+
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
+
+    // Verify the route belongs to one of the user's teams or is global
+    verify_route_access(existing.clone(), &team_scopes)?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
     let (path_prefix, cluster_summary) = summarize_route(&payload);
@@ -240,8 +283,14 @@ pub async fn delete_route_handler(
         ));
     }
 
+    // Extract team scopes and verify access before deleting
+    let team_scopes = extract_team_scopes(&context);
+
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
+
+    // Verify the route belongs to one of the user's teams or is global
+    verify_route_access(existing.clone(), &team_scopes)?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 

@@ -99,6 +99,17 @@ pub fn check_resource_access(
         if context.has_scope(&team_scope) {
             return true;
         }
+    } else {
+        // If no team specified, check if user has ANY team-scoped permission for this resource/action
+        // This allows team-scoped users to call handlers that will filter by their teams
+        for scope in context.scopes() {
+            if let Some(team_name) = parse_team_from_scope(scope) {
+                let expected_scope = format!("team:{}:{}:{}", team_name, resource, action);
+                if *scope == expected_scope {
+                    return true;
+                }
+            }
+        }
     }
 
     false

@@ -1,26 +1,18 @@
-# Envoy Bootstrap Configuration for Flowplane xDS
-#
-# This bootstrap configuration connects Envoy to the Flowplane control plane
-# via xDS (Envoy Discovery Service) for dynamic configuration.
-#
-# The control plane will provide:
-# - Listeners (LDS)
-# - Routes (RDS)
-# - Clusters (CDS)
-# - Endpoints (EDS)
+# Envoy Bootstrap Configuration for Platform Team
+# This config will connect to Flowplane xDS with team=platform metadata
 
 node:
   id: envoy-platform-node
   cluster: flowplane-platform-cluster
   metadata:
-    team: platform  # Platform team isolation metadata for RBAC
+    team: platform  # Platform team isolation metadata
     include_default: true  # Include default gateway resources
 
 admin:
   address:
     socket_address:
       address: 0.0.0.0
-      port_value: 9901
+      port_value: 9902  # Different admin port to avoid conflicts
 
 dynamic_resources:
   ads_config:
@@ -57,7 +49,6 @@ static_resources:
                     socket_address:
                       address: control-plane
                       port_value: 50051
-      # Health checking for xDS connection
       health_checks:
         - timeout: 1s
           interval: 5s

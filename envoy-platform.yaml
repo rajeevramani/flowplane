@@ -1,20 +1,9 @@
-# Envoy Bootstrap Configuration for Flowplane xDS
-#
-# This bootstrap configuration connects Envoy to the Flowplane control plane
-# via xDS (Envoy Discovery Service) for dynamic configuration.
-#
-# The control plane will provide:
-# - Listeners (LDS)
-# - Routes (RDS)
-# - Clusters (CDS)
-# - Endpoints (EDS)
-
 node:
   id: envoy-platform-node
-  cluster: flowplane-platform-cluster
+  cluster: platform-cluster  
   metadata:
-    team: platform  # Platform team isolation metadata for RBAC
-    include_default: true  # Include default gateway resources
+    team: platform
+    include_default: true
 
 admin:
   address:
@@ -29,18 +18,15 @@ dynamic_resources:
     grpc_services:
       - envoy_grpc:
           cluster_name: flowplane_xds
-
   cds_config:
     resource_api_version: V3
     ads: {}
-
   lds_config:
     resource_api_version: V3
     ads: {}
 
 static_resources:
   clusters:
-    # Connection to Flowplane xDS server
     - name: flowplane_xds
       type: STRICT_DNS
       typed_extension_protocol_options:
@@ -55,19 +41,5 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: control-plane
+                      address: flowplane-control-plane
                       port_value: 50051
-      # Health checking for xDS connection
-      health_checks:
-        - timeout: 1s
-          interval: 5s
-          unhealthy_threshold: 2
-          healthy_threshold: 1
-          grpc_health_check: {}
-
-layered_runtime:
-  layers:
-    - name: static_layer
-      static_layer:
-        overload:
-          global_downstream_max_connections: 50000
