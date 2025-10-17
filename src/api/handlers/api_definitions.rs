@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::auth::authorization::require_resource_access;
+use crate::auth::authorization::{extract_team_scopes, require_resource_access};
 use crate::auth::models::AuthContext;
 use crate::storage::repositories::api_definition::UpdateApiDefinitionRequest;
 use crate::storage::repository::ApiDefinitionData;
@@ -26,6 +26,30 @@ use crate::{
     },
 };
 use axum::response::Response;
+
+// === Helper Functions ===
+
+/// Verify that the user has access to the given API definition based on team scopes.
+/// Returns the API definition if access is allowed, otherwise returns 404 to avoid leaking existence.
+fn verify_api_definition_access(
+    definition: ApiDefinitionData,
+    team_scopes: &[String],
+) -> Result<ApiDefinitionData, ApiError> {
+    // Admin:all or resource-level scopes (empty team_scopes) can access everything
+    if team_scopes.is_empty() {
+        return Ok(definition);
+    }
+
+    // Check if definition belongs to one of user's teams
+    if team_scopes.contains(&definition.team) {
+        Ok(definition)
+    } else {
+        // Return 404 to avoid leaking existence of other teams' resources
+        Err(ApiError::NotFound(format!("API definition with ID '{}' not found", definition.id)))
+    }
+}
+
+// === Response DTOs ===
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -149,8 +173,44 @@ pub async fn list_api_definitions_handler(
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
 
-    let items = repo.list_definitions(q.team, q.limit, q.offset).await.map_err(ApiError::from)?;
-    Ok(Json(items.into_iter().map(ApiDefinitionSummary::from).collect()))
+    // Extract team scopes from auth context
+    let team_scopes = extract_team_scopes(&context);
+
+    // Determine which team to filter by:
+    // - Admin/resource-level users: use query param (if provided) or list all
+    // - Team-scoped users: only list their teams' definitions
+    let filter_team = if team_scopes.is_empty() {
+        // Admin or resource-level scope - honor query param
+        q.team
+    } else {
+        // Team-scoped user - only show their teams
+        // If query param provided, verify it's in their scopes
+        if let Some(requested_team) = q.team {
+            if !team_scopes.contains(&requested_team) {
+                // User requested a team they don't have access to - return empty list
+                return Ok(Json(vec![]));
+            }
+            Some(requested_team)
+        } else {
+            // No specific team requested - list all their teams
+            // Note: For now we'll filter client-side. Ideally we'd have list_by_teams() in repo
+            None
+        }
+    };
+
+    let items =
+        repo.list_definitions(filter_team, q.limit, q.offset).await.map_err(ApiError::from)?;
+
+    // Apply client-side team filtering for team-scoped users
+    let filtered_items = if team_scopes.is_empty() {
+        // Admin/resource-level - show all results
+        items
+    } else {
+        // Team-scoped - filter to only their teams
+        items.into_iter().filter(|def| team_scopes.contains(&def.team)).collect()
+    };
+
+    Ok(Json(filtered_items.into_iter().map(ApiDefinitionSummary::from).collect()))
 }
 
 #[utoipa::path(
@@ -171,17 +231,22 @@ pub async fn get_api_definition_handler(
     Path(id): Path<String>,
 ) -> Result<Json<ApiDefinitionSummary>, ApiError> {
     // Authorization: require api-definitions:read scope
-    // Team-scoped validation will be added in subtask 24.4 (database-level filtering)
     require_resource_access(&context, "api-definitions", "read", None)?;
 
     let repo = state.xds_state.api_definition_repository.as_ref().cloned().ok_or_else(|| {
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
-    let row = repo
+
+    let definition = repo
         .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&id))
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(ApiDefinitionSummary::from(row)))
+
+    // Verify team access
+    let team_scopes = extract_team_scopes(&context);
+    let verified_definition = verify_api_definition_access(definition, &team_scopes)?;
+
+    Ok(Json(ApiDefinitionSummary::from(verified_definition)))
 }
 
 #[derive(Debug, serde::Deserialize, IntoParams, ToSchema)]
@@ -230,10 +295,14 @@ pub async fn get_bootstrap_handler(
         ApiError::service_unavailable("API definition repository is not configured")
     })?;
 
-    let def = repo
+    let definition = repo
         .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&id))
         .await
         .map_err(ApiError::from)?;
+
+    // Verify team access
+    let team_scopes = extract_team_scopes(&context);
+    let def = verify_api_definition_access(definition, &team_scopes)?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
     let scope = q.scope.as_deref().unwrap_or("all").to_lowercase();
@@ -375,7 +444,33 @@ pub async fn create_api_definition_handler(
     // Authorization: require api-definitions:write scope
     require_resource_access(&context, "api-definitions", "write", None)?;
 
-    let spec = payload.into_spec().map_err(ApiError::from)?;
+    // Extract team from auth context
+    // - Team-scoped users: must create definitions for their team only
+    // - Admin/resource-level users: can use any team (from payload)
+    let team_scopes = extract_team_scopes(&context);
+    let team = if team_scopes.is_empty() {
+        // Admin or resource-level scope - use team from payload
+        payload.team.clone()
+    } else {
+        // Team-scoped user - must use their team (only one team scope supported)
+        let user_team = team_scopes.into_iter().next().ok_or_else(|| {
+            ApiError::Forbidden("Team-scoped users must have exactly one team scope".to_string())
+        })?;
+
+        // Verify payload team matches user's team (if provided)
+        if !payload.team.is_empty() && payload.team != user_team {
+            return Err(ApiError::Forbidden(format!(
+                "Team-scoped users can only create definitions for their own team '{}', not '{}'",
+                user_team, payload.team
+            )));
+        }
+
+        user_team
+    };
+
+    let mut spec = payload.into_spec().map_err(ApiError::from)?;
+    // Override team with the one extracted from auth context
+    spec.team = team;
 
     let materializer =
         PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
@@ -431,6 +526,15 @@ pub async fn update_api_definition_handler(
             ApiError::service_unavailable("API definition repository is not configured")
         })?
         .clone();
+
+    // Get existing definition and verify team access
+    let existing_definition = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&api_definition_id))
+        .await
+        .map_err(ApiError::from)?;
+
+    let team_scopes = extract_team_scopes(&context);
+    verify_api_definition_access(existing_definition, &team_scopes)?;
 
     // Convert to repository request
     let update_request = UpdateApiDefinitionRequest {
@@ -541,6 +645,24 @@ pub async fn append_route_handler(
     // Authorization: require api-definitions:write scope
     require_resource_access(&context, "api-definitions", "write", None)?;
 
+    // Verify team access to the API definition before appending route
+    let repo = state
+        .xds_state
+        .api_definition_repository
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::service_unavailable("API definition repository is not configured")
+        })?
+        .clone();
+
+    let existing_definition = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&api_definition_id))
+        .await
+        .map_err(ApiError::from)?;
+
+    let team_scopes = extract_team_scopes(&context);
+    verify_api_definition_access(existing_definition, &team_scopes)?;
+
     let materializer =
         PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
 
@@ -564,8 +686,9 @@ pub async fn append_route_handler(
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportOpenApiQuery {
-    /// Team name for the API definition
-    pub team: String,
+    /// Team name for the API definition (only used for admin/resource-level users, ignored for team-scoped users)
+    #[serde(default)]
+    pub team: Option<String>,
     /// Enable dedicated listener for this API (default: false, uses shared listener)
     #[serde(default)]
     pub listener_isolation: Option<bool>,
@@ -609,6 +732,20 @@ pub async fn import_openapi_handler(
     // Authorization: require api-definitions:write scope for OpenAPI import
     require_resource_access(&context, "api-definitions", "write", None)?;
 
+    // Extract team from auth context
+    // - Team-scoped users: must create definitions for their team only
+    // - Admin/resource-level users: can provide team in query param, or use domain as fallback
+    let team_scopes = extract_team_scopes(&context);
+    let extracted_team = if !team_scopes.is_empty() {
+        // Team-scoped user - use their team (ignore query param)
+        Some(team_scopes.into_iter().next().ok_or_else(|| {
+            ApiError::Forbidden("Team-scoped users must have exactly one team scope".to_string())
+        })?)
+    } else {
+        // Admin or resource-level scope - use team from query param (if provided)
+        params.team.clone()
+    };
+
     let (parts, body) = request.into_parts();
     let collected = body
         .collect()
@@ -634,9 +771,11 @@ pub async fn import_openapi_handler(
     let listener_isolation = params.listener_isolation.unwrap_or(false);
 
     // Convert OpenAPI to Platform API definition spec
+    // Use provided team or empty string (adapter will extract from domain as fallback)
+    let team_param = extracted_team.unwrap_or_default();
     let spec = openapi_adapter::openapi_to_api_definition_spec(
         document,
-        params.team.clone(),
+        team_param,
         listener_isolation,
         params.port,
     )
