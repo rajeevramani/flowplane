@@ -31,7 +31,7 @@ use axum::response::Response;
 
 /// Verify that the user has access to the given API definition based on team scopes.
 /// Returns the API definition if access is allowed, otherwise returns 404 to avoid leaking existence.
-fn verify_api_definition_access(
+async fn verify_api_definition_access(
     definition: ApiDefinitionData,
     team_scopes: &[String],
 ) -> Result<ApiDefinitionData, ApiError> {
@@ -44,6 +44,16 @@ fn verify_api_definition_access(
     if team_scopes.contains(&definition.team) {
         Ok(definition)
     } else {
+        // Record cross-team access attempt for security monitoring
+        if let Some(from_team) = team_scopes.first() {
+            crate::observability::metrics::record_cross_team_access_attempt(
+                from_team,
+                &definition.team,
+                "api-definitions",
+            )
+            .await;
+        }
+
         // Return 404 to avoid leaking existence of other teams' resources
         Err(ApiError::NotFound(format!("API definition with ID '{}' not found", definition.id)))
     }
@@ -244,7 +254,7 @@ pub async fn get_api_definition_handler(
 
     // Verify team access
     let team_scopes = extract_team_scopes(&context);
-    let verified_definition = verify_api_definition_access(definition, &team_scopes)?;
+    let verified_definition = verify_api_definition_access(definition, &team_scopes).await?;
 
     Ok(Json(ApiDefinitionSummary::from(verified_definition)))
 }
@@ -302,7 +312,7 @@ pub async fn get_bootstrap_handler(
 
     // Verify team access
     let team_scopes = extract_team_scopes(&context);
-    let def = verify_api_definition_access(definition, &team_scopes)?;
+    let def = verify_api_definition_access(definition, &team_scopes).await?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
     let scope = q.scope.as_deref().unwrap_or("all").to_lowercase();
@@ -534,7 +544,7 @@ pub async fn update_api_definition_handler(
         .map_err(ApiError::from)?;
 
     let team_scopes = extract_team_scopes(&context);
-    verify_api_definition_access(existing_definition, &team_scopes)?;
+    verify_api_definition_access(existing_definition, &team_scopes).await?;
 
     // Convert to repository request
     let update_request = UpdateApiDefinitionRequest {
@@ -661,7 +671,7 @@ pub async fn append_route_handler(
         .map_err(ApiError::from)?;
 
     let team_scopes = extract_team_scopes(&context);
-    verify_api_definition_access(existing_definition, &team_scopes)?;
+    verify_api_definition_access(existing_definition, &team_scopes).await?;
 
     let materializer =
         PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
