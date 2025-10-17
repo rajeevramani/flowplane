@@ -106,7 +106,9 @@ docker-compose -f docker-compose-zipkin.yml up
 - httpbin (for testing)
 
 **Features**:
-- Secrets management via Vault or environment variables
+- Secrets management with automatic environment-based selection:
+  - **Vault mode** (when `VAULT_ADDR` and `VAULT_TOKEN` are set): Bootstrap token stored in Vault, rotation API enabled
+  - **Development mode** (when Vault env vars not set): Bootstrap token from environment only, no rotation
 - OpenTelemetry tracing
 - Full observability stack
 - Production-like configuration
@@ -139,10 +141,26 @@ cp .env.example .env
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `BOOTSTRAP_TOKEN` | Admin authentication token | auto-generated | Yes (min 32 chars) |
+| `VAULT_ADDR` | Vault server address (enables Vault mode) | - | No |
+| `VAULT_TOKEN` | Vault authentication token | - | No |
 | `FLOWPLANE_ENABLE_TRACING` | Enable distributed tracing | `true` | No |
 | `FLOWPLANE_OTLP_ENDPOINT` | OTLP exporter endpoint | `http://zipkin:9411/api/v2/spans` | No |
 | `FLOWPLANE_TRACE_SAMPLING_RATIO` | Trace sampling ratio (0.0-1.0) | `1.0` | No |
 | `RUST_LOG` | Log level configuration | `info,flowplane=debug` | No |
+
+**Secrets Management Modes**:
+
+Flowplane automatically selects the secrets backend based on environment variables:
+
+- **Vault Mode** (Production): When both `VAULT_ADDR` and `VAULT_TOKEN` are set
+  - Bootstrap token stored in Vault at `secret/bootstrap_token`
+  - Bootstrap token rotation API enabled
+  - Provides audit trail and secret versioning
+
+- **Development Mode**: When `VAULT_ADDR` or `VAULT_TOKEN` are not set
+  - Bootstrap token read from `BOOTSTRAP_TOKEN` environment variable
+  - Token stored hashed in database only
+  - No rotation support
 
 See `.env.example` for complete list.
 
@@ -209,26 +227,68 @@ curl http://localhost:8000/get
 
 ### 3. Test Secrets Management
 
-1. **Start services with Vault**:
+#### Vault Mode (Production-like)
+
+1. **Start services with Vault enabled**:
+   ```bash
+   # Vault mode is enabled by default in docker-compose-secrets-tracing.yml
+   # VAULT_ADDR and VAULT_TOKEN are set in the environment
+   docker-compose -f docker-compose-secrets-tracing.yml up -d
+   ```
+
+2. **Verify bootstrap token was stored in Vault**:
+   ```bash
+   # Check Flowplane logs for Vault connection
+   docker-compose -f docker-compose-secrets-tracing.yml logs control-plane | grep -i "vault\|secrets backend"
+
+   # Expected output:
+   # ✓ Successfully connected to Vault, address: http://vault:8200
+   # ✓ Using Vault secrets backend for bootstrap token storage and rotation
+   # ✓ Stored bootstrap token in secrets backend for future rotation support
+   ```
+
+3. **Read the bootstrap token from Vault**:
+   ```bash
+   docker-compose -f docker-compose-secrets-tracing.yml exec -e VAULT_TOKEN=flowplane-dev-token vault \
+     vault kv get secret/bootstrap_token
+
+   # Output shows:
+   # Key      Value
+   # ---      -----
+   # value    <your-bootstrap-token-secret>
+   ```
+
+4. **Test token rotation** (requires Vault mode):
+   ```bash
+   # Rotate the bootstrap token via API
+   # This will generate a new secret in Vault and update the database
+   curl -X POST http://localhost:8080/api/v1/auth/tokens/bootstrap/rotate \
+     -H "Authorization: Bearer <your-current-bootstrap-token>"
+   ```
+
+#### Development Mode (No Vault)
+
+1. **Disable Vault by removing environment variables**:
+   ```bash
+   # Edit docker-compose-secrets-tracing.yml
+   # Comment out or remove these lines:
+   # VAULT_ADDR: http://vault:8200
+   # VAULT_TOKEN: flowplane-dev-token
+   ```
+
+2. **Restart services**:
    ```bash
    docker-compose -f docker-compose-secrets-tracing.yml up -d
    ```
 
-2. **Store a secret in Vault**:
+3. **Verify development mode**:
    ```bash
-   # Login to Vault
-   export VAULT_ADDR=http://localhost:8200
-   export VAULT_TOKEN=flowplane-dev-token
+   docker-compose -f docker-compose-secrets-tracing.yml logs control-plane | grep "secrets backend"
 
-   # Store secret
-   docker-compose -f docker-compose-secrets-tracing.yml exec vault \
-     vault kv put secret/flowplane/bootstrap_token value="my-secure-token-minimum-32-chars-long"
-   ```
-
-3. **Verify Flowplane can read secrets**:
-   ```bash
-   # Check Flowplane logs for secrets access
-   docker-compose -f docker-compose-secrets-tracing.yml logs control-plane | grep -i secret
+   # Expected output:
+   # ✓ No Vault configuration detected (VAULT_ADDR/VAULT_TOKEN not set)
+   # ✓ Using environment variable only mode for development
+   # ✓ Bootstrap token rotation will not be available
    ```
 
 ### 4. Test xDS Dynamic Configuration
