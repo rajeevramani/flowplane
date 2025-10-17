@@ -1,5 +1,7 @@
 #[path = "platform_api/support.rs"]
 mod support;
+#[path = "platform_api/test_api_definition_team_filtering.rs"]
+mod test_api_definition_team_filtering;
 #[path = "platform_api/test_append_route.rs"]
 mod test_append_route;
 #[path = "platform_api/test_bootstrap.rs"]

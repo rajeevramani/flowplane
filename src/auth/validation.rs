@@ -12,8 +12,9 @@ lazy_static! {
     // Scope patterns:
     // - admin:all (global admin)
     // - {resource}:{action} (e.g., routes:read, api-definitions:write)
-    // - team:{team}:{resource}:{action} (e.g., team:platform:routes:read)
-    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$")
+    // - team:{team}:{resource}:{action} (e.g., team:platform:routes:read, team:team-test-1:clusters:read)
+    // Team names can contain lowercase letters, digits, and hyphens
+    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z0-9-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$")
         .expect("SCOPE_REGEX should be a valid regex pattern");
 }
 
@@ -118,6 +119,11 @@ mod tests {
         // Team-scoped scopes
         assert!(validate_scope("team:platform:routes:read").is_ok());
         assert!(validate_scope("team:eng-team:api-definitions:write").is_ok());
+
+        // Team names with digits (bug fix)
+        assert!(validate_scope("team:team-test-1:clusters:read").is_ok());
+        assert!(validate_scope("team:payments-2024:routes:write").is_ok());
+        assert!(validate_scope("team:team123:api-definitions:read").is_ok());
 
         // Invalid patterns
         assert!(validate_scope("bad_scope").is_err()); // No colon

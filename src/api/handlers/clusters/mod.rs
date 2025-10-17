@@ -780,13 +780,10 @@ mod tests {
 
         // Team-scoped user creates a cluster
         let team_a_context = team_context("team-a", "clusters", &["write"]);
-        let (_status, Json(created)) = create_cluster_handler(
-            State(state.clone()),
-            Extension(team_a_context),
-            Json(body),
-        )
-        .await
-        .expect("create cluster");
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Extension(team_a_context), Json(body))
+                .await
+                .expect("create cluster");
 
         // Verify the cluster was assigned to team-a
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
