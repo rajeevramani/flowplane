@@ -38,6 +38,10 @@ Content-Type: application/json
   ]
 }
 
+### Steps 1.1.1: Verify Cluster Creation
+GET {{base_url}}/api/v1/clusters/{{cluster_name_1}}
+Authorization: Bearer {{token}}
+
 ### Step 1.2: Create Routes for Cluster 1 (/get endpoint)
 POST {{base_url}}/api/v1/routes
 Authorization: Bearer {{token}}

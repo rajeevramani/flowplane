@@ -100,9 +100,8 @@ services:
   envoy:
     image: envoyproxy/envoy:v1.31-latest
     container_name: flowplane-envoy
-    # Runs as envoy user (uid 101) by default for security
+    entrypoint: ["/usr/local/bin/envoy"]
     command:
-      - envoy
       - --config-path
       - /etc/envoy/envoy-bootstrap.yaml
       - --log-level
