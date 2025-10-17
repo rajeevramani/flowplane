@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "flowplane"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "argon2",
