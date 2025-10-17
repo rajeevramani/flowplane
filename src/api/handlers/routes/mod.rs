@@ -90,12 +90,17 @@ pub async fn create_route_handler(
         ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
 
+    // Extract team from auth context
+    // - Team-scoped users create resources for their team
+    // - Admin/resource-level users create global resources (team = None)
+    let team = extract_team_scopes(&context).into_iter().next();
+
     let request = CreateRouteRepositoryRequest {
         name: payload.name.clone(),
         path_prefix,
         cluster_name: cluster_summary,
         configuration,
-        team: None, // Native API routes don't have team assignment by default
+        team,
     };
 
     let created = route_repository.create(request).await.map_err(ApiError::from)?;

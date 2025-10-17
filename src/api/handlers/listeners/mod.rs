@@ -93,13 +93,18 @@ pub async fn create_listener_handler(
         )))
     })?;
 
+    // Extract team from auth context
+    // - Team-scoped users create resources for their team
+    // - Admin/resource-level users create global resources (team = None)
+    let team = extract_team_scopes(&context).into_iter().next();
+
     let request = CreateListenerRequest {
         name: payload.name.clone(),
         address: payload.address.clone(),
         port: Some(payload.port as i64),
         protocol: payload.protocol.clone(),
         configuration,
-        team: None, // Native API listeners don't have team assignment by default
+        team,
     };
 
     let created = repository.create(request).await.map_err(ApiError::from)?;

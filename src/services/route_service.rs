@@ -48,6 +48,7 @@ impl RouteService {
         path_prefix: String,
         cluster_summary: String,
         config: Value,
+        team: Option<String>,
     ) -> Result<RouteData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -66,7 +67,7 @@ impl RouteService {
                 path_prefix,
                 cluster_name: cluster_summary,
                 configuration: config,
-                team: None, // Native API routes don't have team assignment by default
+                team,
             };
 
             let mut db_span = create_operation_span("db.route.insert", SpanKind::Client);

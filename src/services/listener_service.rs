@@ -46,6 +46,7 @@ impl ListenerService {
         port: u16,
         protocol: String,
         config: ListenerConfig,
+        team: Option<String>,
     ) -> Result<ListenerData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -71,7 +72,7 @@ impl ListenerService {
                 port: Some(port as i64),
                 protocol: Some(protocol.clone()),
                 configuration,
-                team: None, // Native API listeners don't have team assignment by default
+                team,
             };
 
             let mut db_span = create_operation_span("db.listener.insert", SpanKind::Client);
