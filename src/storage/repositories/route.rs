@@ -3,13 +3,17 @@
 //! This module provides CRUD operations for route resources, handling storage,
 //! retrieval, and lifecycle management of route configuration data.
 
+use crate::domain::RouteId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
-use uuid::Uuid;
+use tracing::instrument;
 
-/// Database row structure for routes
+/// Internal database row structure for routes.
+///
+/// Maps directly to the database schema. Separate from [`RouteData`]
+/// to handle type conversions.
 #[derive(Debug, Clone, FromRow)]
 struct RouteRow {
     pub id: String,
@@ -24,10 +28,24 @@ struct RouteRow {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Route configuration data
+/// Route configuration data returned from the repository.
+///
+/// Represents a route that matches incoming requests to backend clusters.
+/// Routes define path-based matching and cluster selection for request forwarding.
+///
+/// # Fields
+///
+/// - `id`: Unique identifier
+/// - `name`: Human-readable name
+/// - `path_prefix`: Path prefix for request matching (e.g., "/api/v1")
+/// - `cluster_name`: Target cluster to forward matched requests
+/// - `configuration`: JSON-encoded route configuration (filters, retry policy, etc.)
+/// - `version`: Version number for optimistic locking
+/// - `source`: API source ("native", "gateway", "platform")
+/// - `team`: Optional team identifier
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteData {
-    pub id: String,
+    pub id: RouteId,
     pub name: String,
     pub path_prefix: String,
     pub cluster_name: String,
@@ -42,7 +60,7 @@ pub struct RouteData {
 impl From<RouteRow> for RouteData {
     fn from(row: RouteRow) -> Self {
         Self {
-            id: row.id,
+            id: RouteId::from_string(row.id),
             name: row.name,
             path_prefix: row.path_prefix,
             cluster_name: row.cluster_name,
@@ -75,19 +93,56 @@ pub struct UpdateRouteRequest {
     pub team: Option<Option<String>>,
 }
 
-/// Repository for route configuration persistence
+/// Repository for route configuration persistence.
+///
+/// Provides CRUD operations for route resources with team-based access control.
+/// Routes define how incoming requests are matched and forwarded to backend clusters.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use flowplane::storage::repositories::{RouteRepository, CreateRouteRequest};
+/// use serde_json::json;
+///
+/// let repo = RouteRepository::new(pool);
+///
+/// // Create a route
+/// let route = repo.create(CreateRouteRequest {
+///     name: "api-route".to_string(),
+///     path_prefix: "/api/v1".to_string(),
+///     cluster_name: "backend-cluster".to_string(),
+///     configuration: json!({"retry_policy": {"num_retries": 3}}),
+///     team: Some("team-alpha".to_string()),
+/// }).await?;
+/// ```
 #[derive(Debug, Clone)]
 pub struct RouteRepository {
     pool: DbPool,
 }
 
 impl RouteRepository {
+    /// Creates a new route repository with the given database pool.
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
+    /// Creates a new route in the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - Route creation parameters
+    ///
+    /// # Returns
+    ///
+    /// The created [`RouteData`] with generated ID and timestamps.
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
+    /// - [`FlowplaneError::Database`] if insertion fails
+    #[instrument(skip(self, request), fields(route_name = %request.name), name = "db_create_route")]
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
-        let id = Uuid::new_v4().to_string();
+        let id = RouteId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
         })?;
@@ -123,7 +178,7 @@ impl RouteRepository {
         self.get_by_id(&id).await
     }
 
-    pub async fn get_by_id(&self, id: &str) -> Result<RouteData> {
+    pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
             "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE id = $1"
         )
@@ -140,7 +195,7 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id))),
+            None => Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id))),
         }
     }
 
@@ -161,7 +216,9 @@ impl RouteRepository {
 
         match row {
             Some(row) => Ok(RouteData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Route with name '{}' not found", name))),
+            None => {
+                Err(FlowplaneError::not_found_msg(format!("Route with name '{}' not found", name)))
+            }
         }
     }
 
@@ -183,6 +240,7 @@ impl RouteRepository {
         Ok(count > 0)
     }
 
+    #[instrument(skip(self), name = "db_list_routes")]
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<RouteData>> {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
@@ -205,8 +263,20 @@ impl RouteRepository {
         Ok(rows.into_iter().map(RouteData::from).collect())
     }
 
-    /// List routes filtered by team names (for team-scoped tokens)
-    /// If teams list is empty, returns all routes (for admin:all or resource-level scopes)
+    /// Lists routes filtered by team names for multi-tenancy support.
+    ///
+    /// Critical for team-based access control. Returns routes for specified
+    /// teams plus any team-agnostic routes.
+    ///
+    /// # Arguments
+    ///
+    /// * `teams` - Team identifiers to filter by. Empty list returns all routes.
+    /// * `limit` - Maximum results (default: 100, max: 1000)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Database`] if query execution fails
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -261,7 +331,7 @@ impl RouteRepository {
         Ok(rows.into_iter().map(RouteData::from).collect())
     }
 
-    pub async fn update(&self, id: &str, request: UpdateRouteRequest) -> Result<RouteData> {
+    pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {
         let current = self.get_by_id(id).await?;
 
         let new_path_prefix = request.path_prefix.unwrap_or(current.path_prefix);
@@ -299,7 +369,7 @@ impl RouteRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
         }
 
         tracing::info!(route_id = %id, route_name = %current.name, new_version = new_version, "Updated route");
@@ -307,7 +377,7 @@ impl RouteRepository {
         self.get_by_id(id).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: &RouteId) -> Result<()> {
         let route = self.get_by_id(id).await?;
 
         let result = sqlx::query("DELETE FROM routes WHERE id = $1")
@@ -323,7 +393,7 @@ impl RouteRepository {
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Route with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
         }
 
         tracing::info!(route_id = %id, route_name = %route.name, "Deleted route");

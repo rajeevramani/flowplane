@@ -9,7 +9,7 @@ pub use cluster::validate_envoy_cluster;
 pub use listener::validate_envoy_listener;
 pub use route::validate_envoy_route_configuration;
 
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use prost::Message;
 
 /// Convenience function to validate any envoy-types `Message` via encoding.

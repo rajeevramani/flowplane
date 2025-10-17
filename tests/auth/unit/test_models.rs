@@ -1,5 +1,6 @@
 use chrono::Utc;
 use flowplane::auth::models::{AuthContext, PersonalAccessToken, TokenScope, TokenStatus};
+use flowplane::domain::TokenId;
 
 #[test]
 fn token_status_parse_and_display() {
@@ -11,7 +12,7 @@ fn token_status_parse_and_display() {
 #[test]
 fn auth_context_scope_lookup() {
     let ctx = AuthContext::new(
-        "abc123".to_string(),
+        TokenId::from_str_unchecked("abc123"),
         "demo".to_string(),
         vec!["clusters:read".to_string(), "routes:write".to_string()],
     );
@@ -24,7 +25,7 @@ fn auth_context_scope_lookup() {
 #[test]
 fn token_has_scope_helper() {
     let token = PersonalAccessToken {
-        id: "tok".into(),
+        id: TokenId::from_str_unchecked("tok"),
         name: "demo".into(),
         description: Some("test".into()),
         status: TokenStatus::Active,

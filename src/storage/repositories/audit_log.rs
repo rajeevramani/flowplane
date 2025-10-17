@@ -29,6 +29,26 @@ impl AuditEvent {
             metadata,
         }
     }
+
+    /// Create a secrets-related audit event.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` - The action performed (e.g., "secrets.get", "secrets.set", "secrets.rotate")
+    /// * `secret_key` - The key of the secret being accessed
+    /// * `metadata` - Additional metadata about the operation
+    ///
+    /// # Security
+    ///
+    /// NEVER include the actual secret value in the metadata. Only log the key and operation metadata.
+    pub fn secret(action: &str, secret_key: &str, metadata: serde_json::Value) -> Self {
+        Self {
+            action: action.to_string(),
+            resource_id: Some(secret_key.to_string()),
+            resource_name: Some(secret_key.to_string()),
+            metadata,
+        }
+    }
 }
 
 /// Repository for audit log interactions (scaffold for auth events).
@@ -77,5 +97,17 @@ impl AuditLogRepository {
     /// Record a Platform API lifecycle event.
     pub async fn record_platform_event(&self, event: AuditEvent) -> Result<()> {
         self.record_event("platform.api", event).await
+    }
+
+    /// Record a secrets management audit event.
+    ///
+    /// This method logs all secret access operations for security auditing.
+    /// Events are tamper-evident and include timestamps, operation type, and metadata.
+    ///
+    /// # Security
+    ///
+    /// Secret values are NEVER logged. Only secret keys and operation metadata are recorded.
+    pub async fn record_secrets_event(&self, event: AuditEvent) -> Result<()> {
+        self.record_event("secrets", event).await
     }
 }

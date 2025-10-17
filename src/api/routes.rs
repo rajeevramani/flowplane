@@ -10,6 +10,7 @@ use crate::auth::{
     auth_service::AuthService,
     middleware::{authenticate, ensure_dynamic_scopes},
 };
+use crate::observability::trace_http_requests;
 use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
@@ -50,6 +51,10 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
 
+    // Create OpenTelemetry HTTP tracing middleware
+    // This creates spans for all HTTP requests with method, path, status, and latency
+    let trace_layer = middleware::from_fn(trace_http_requests);
+
     let secured_api = Router::new()
         // Token management endpoints
         .route("/api/v1/tokens", get(list_tokens_handler))
@@ -87,6 +92,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         .with_state(api_state)
+        .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
         .layer(auth_layer);
 

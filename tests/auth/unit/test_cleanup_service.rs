@@ -1,6 +1,7 @@
 use chrono::{Duration, Utc};
 use flowplane::auth::cleanup_service::CleanupService;
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
+use flowplane::domain::TokenId;
 use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -79,7 +80,7 @@ async fn run_once_marks_expired_tokens() {
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let cleanup = CleanupService::new(repo.clone(), audit_repo.clone());
 
-    let token_id = uuid::Uuid::new_v4().to_string();
+    let token_id = TokenId::from_string(uuid::Uuid::new_v4().to_string());
     let token = NewPersonalAccessToken {
         id: token_id.clone(),
         name: "cleanup".into(),
@@ -100,7 +101,7 @@ async fn run_once_marks_expired_tokens() {
     let audit_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.expired' AND resource_id = $1",
     )
-    .bind(&token_id)
+    .bind(token_id.as_str())
     .fetch_one(&pool)
     .await
     .unwrap();

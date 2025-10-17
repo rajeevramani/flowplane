@@ -364,8 +364,14 @@ fn sanitize_name(raw: &str) -> String {
         name.push_str("resource");
     }
 
-    if !name.chars().next().unwrap().is_ascii_alphabetic() && !name.starts_with('_') {
-        name.insert(0, '_');
+    // Ensure first character is alphabetic or underscore
+    if let Some(first_char) = name.chars().next() {
+        if !first_char.is_ascii_alphabetic() && first_char != '_' {
+            name.insert(0, '_');
+        }
+    } else {
+        // Defensive: should not happen since we handle empty strings above
+        name.push_str("resource");
     }
 
     if name.len() > 48 {
@@ -377,7 +383,7 @@ fn sanitize_name(raw: &str) -> String {
 
 impl From<GatewayError> for Error {
     fn from(value: GatewayError) -> Self {
-        Error::Validation(value.to_string())
+        Error::validation(value.to_string())
     }
 }
 

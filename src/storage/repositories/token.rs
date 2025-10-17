@@ -6,6 +6,7 @@
 use crate::auth::models::{
     NewPersonalAccessToken, PersonalAccessToken, TokenStatus, UpdatePersonalAccessToken,
 };
+use crate::domain::TokenId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -32,20 +33,44 @@ struct TokenScopeRow {
     pub scope: String,
 }
 
+/// Combined row for batch fetching tokens with scopes via LEFT JOIN
+#[derive(Debug, Clone, FromRow)]
+struct TokenWithScopeRow {
+    // Token fields
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub token_hash: String,
+    pub status: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_by: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    // Scope field (nullable because of LEFT JOIN)
+    pub scope: Option<String>,
+}
+
 #[async_trait]
 pub trait TokenRepository: Send + Sync {
     async fn create_token(&self, token: NewPersonalAccessToken) -> Result<PersonalAccessToken>;
     async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>>;
-    async fn get_token(&self, id: &str) -> Result<PersonalAccessToken>;
+    async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken>;
     async fn update_metadata(
         &self,
-        id: &str,
+        id: &TokenId,
         update: UpdatePersonalAccessToken,
     ) -> Result<PersonalAccessToken>;
-    async fn rotate_secret(&self, id: &str, hashed_secret: String) -> Result<()>;
-    async fn update_last_used(&self, id: &str, when: chrono::DateTime<chrono::Utc>) -> Result<()>;
-    async fn find_active_for_auth(&self, id: &str)
-        -> Result<Option<(PersonalAccessToken, String)>>;
+    async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()>;
+    async fn update_last_used(
+        &self,
+        id: &TokenId,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
+    async fn find_active_for_auth(
+        &self,
+        id: &TokenId,
+    ) -> Result<Option<(PersonalAccessToken, String)>>;
     async fn count_tokens(&self) -> Result<i64>;
     async fn count_active_tokens(&self) -> Result<i64>;
 }
@@ -73,7 +98,7 @@ impl SqlxTokenRepository {
         })?;
 
         Ok(PersonalAccessToken {
-            id: row.id,
+            id: TokenId::from_string(row.id),
             name: row.name,
             description: row.description,
             status,
@@ -86,7 +111,7 @@ impl SqlxTokenRepository {
         })
     }
 
-    async fn scopes_for_token(&self, id: &str) -> Result<Vec<String>> {
+    async fn scopes_for_token(&self, id: &TokenId) -> Result<Vec<String>> {
         let rows: Vec<TokenScopeRow> =
             sqlx::query_as("SELECT scope FROM token_scopes WHERE token_id = $1 ORDER BY scope")
                 .bind(id)
@@ -151,8 +176,24 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>> {
         let limit = limit.clamp(1, 1000);
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM personal_access_tokens ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+
+        // Optimized query using subquery + LEFT JOIN to fetch tokens and scopes in a single query
+        // The subquery ensures we LIMIT distinct tokens first, then join with scopes
+        // This eliminates the N+1 pattern where we previously made 1 + 2N queries
+        let rows: Vec<TokenWithScopeRow> = sqlx::query_as(
+            r#"
+            SELECT
+                t.id, t.name, t.description, t.token_hash, t.status,
+                t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                s.scope
+            FROM (
+                SELECT * FROM personal_access_tokens
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+            ) t
+            LEFT JOIN token_scopes s ON t.id = s.token_id
+            ORDER BY t.created_at DESC, s.scope ASC
+            "#,
         )
         .bind(limit)
         .bind(offset)
@@ -160,17 +201,46 @@ impl TokenRepository for SqlxTokenRepository {
         .await
         .map_err(|err| FlowplaneError::Database {
             source: err,
-            context: "Failed to list personal access tokens".to_string(),
+            context: "Failed to list personal access tokens with scopes".to_string(),
         })?;
 
-        let mut tokens = Vec::with_capacity(ids.len());
-        for id in ids {
-            tokens.push(self.get_token(&id).await?);
+        // Group rows by token ID and aggregate scopes in memory
+        use std::collections::HashMap;
+        let mut token_map: HashMap<String, (PersonalAccessTokenRow, Vec<String>)> = HashMap::new();
+
+        for row in rows {
+            let token_row = PersonalAccessTokenRow {
+                id: row.id.clone(),
+                name: row.name,
+                description: row.description,
+                token_hash: row.token_hash,
+                status: row.status,
+                expires_at: row.expires_at,
+                last_used_at: row.last_used_at,
+                created_by: row.created_by,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            };
+
+            let entry = token_map.entry(row.id).or_insert((token_row, Vec::new()));
+            if let Some(scope) = row.scope {
+                entry.1.push(scope);
+            }
         }
+
+        // Convert aggregated data into PersonalAccessToken models
+        let mut tokens: Vec<PersonalAccessToken> = token_map
+            .into_values()
+            .map(|(token_row, scopes)| self.to_model(token_row, scopes))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Sort by created_at DESC to maintain original ordering
+        tokens.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
         Ok(tokens)
     }
 
-    async fn get_token(&self, id: &str) -> Result<PersonalAccessToken> {
+    async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken> {
         let row: PersonalAccessTokenRow = sqlx::query_as(
             "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
         )
@@ -181,7 +251,7 @@ impl TokenRepository for SqlxTokenRepository {
             source: err,
             context: "Failed to fetch personal access token".to_string(),
         })?
-        .ok_or_else(|| FlowplaneError::not_found(format!("Token '{}' not found", id)))?;
+        .ok_or_else(|| FlowplaneError::not_found_msg(format!("Token '{}' not found", id)))?;
 
         let scopes = self.scopes_for_token(id).await?;
         self.to_model(row, scopes)
@@ -189,7 +259,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn update_metadata(
         &self,
-        id: &str,
+        id: &TokenId,
         update: UpdatePersonalAccessToken,
     ) -> Result<PersonalAccessToken> {
         let mut tx = self.pool.begin().await.map_err(|err| FlowplaneError::Database {
@@ -207,7 +277,7 @@ impl TokenRepository for SqlxTokenRepository {
             source: err,
             context: "Failed to fetch personal access token".to_string(),
         })?
-        .ok_or_else(|| FlowplaneError::not_found(format!("Token '{}' not found", id)))?;
+        .ok_or_else(|| FlowplaneError::not_found_msg(format!("Token '{}' not found", id)))?;
 
         let base_status = TokenStatus::from_str(&existing.status).map_err(|_| {
             FlowplaneError::validation(format!(
@@ -270,7 +340,7 @@ impl TokenRepository for SqlxTokenRepository {
         self.get_token(id).await
     }
 
-    async fn rotate_secret(&self, id: &str, hashed_secret: String) -> Result<()> {
+    async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET token_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )
@@ -285,7 +355,11 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
-    async fn update_last_used(&self, id: &str, when: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    async fn update_last_used(
+        &self,
+        id: &TokenId,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET last_used_at = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )
@@ -302,7 +376,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn find_active_for_auth(
         &self,
-        id: &str,
+        id: &TokenId,
     ) -> Result<Option<(PersonalAccessToken, String)>> {
         let row: Option<PersonalAccessTokenRow> = sqlx::query_as(
             "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
@@ -320,7 +394,8 @@ impl TokenRepository for SqlxTokenRepository {
         };
 
         let hashed = row.token_hash.clone();
-        let scopes = self.scopes_for_token(&row.id).await?;
+        let token_id = TokenId::from_string(row.id.clone());
+        let scopes = self.scopes_for_token(&token_id).await?;
         let model = self.to_model(row, scopes)?;
         Ok(Some((model, hashed)))
     }

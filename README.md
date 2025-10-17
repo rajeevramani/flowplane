@@ -55,7 +55,11 @@ The goal of this project is make it simple to interact with Envoy in non kuberne
 - Envoy proxy (when you are ready to point a data-plane instance at the control plane)
 - **Bootstrap Token**: Generate a secure token for initial admin access (see Authentication section below)
 
-**Quick Start with Docker:** For the fastest way to get started, see [README-DOCKER.md](README-DOCKER.md) for Docker Compose instructions.
+**Quick Start with Docker:** For the fastest way to get started, see [DOCKER.md](DOCKER.md) for Docker Compose instructions with:
+- Basic control plane setup
+- Tracing with Zipkin integration
+- Secrets management with HashiCorp Vault
+- Complete test environment with Envoy and httpbin
 
 ### Quick Start
 

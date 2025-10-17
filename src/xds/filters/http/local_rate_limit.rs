@@ -322,7 +322,7 @@ mod tests {
         };
 
         let err = cfg.to_any().expect_err("missing bucket should fail");
-        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(matches!(err, crate::Error::Config { .. }));
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
         };
 
         let err = cfg.to_any().expect_err("zero interval should fail");
-        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(matches!(err, crate::Error::Config { .. }));
     }
 
     #[test]

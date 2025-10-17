@@ -95,7 +95,39 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
     let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
     let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
 
-    if let Some(token_value) = token_service.ensure_bootstrap_token(&bootstrap_token).await? {
+    // Environment-based secrets backend selection:
+    // - If VAULT_ADDR and VAULT_TOKEN are set → use Vault (production)
+    // - Otherwise → use environment variables only (development)
+    let vault_client =
+        if std::env::var("VAULT_ADDR").is_ok() && std::env::var("VAULT_TOKEN").is_ok() {
+            match crate::secrets::VaultSecretsClient::from_env().await {
+                Ok(client) => {
+                    info!("Using Vault secrets backend for bootstrap token storage and rotation");
+                    Some(client)
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Vault environment variables detected but failed to connect. \
+                         Falling back to environment variable only mode. \
+                         Bootstrap token rotation will not be available."
+                    );
+                    None
+                }
+            }
+        } else {
+            info!(
+                "No Vault configuration detected (VAULT_ADDR/VAULT_TOKEN not set). \
+             Using environment variable only mode for development. \
+             Bootstrap token rotation will not be available."
+            );
+            None
+        };
+
+    // Ensure bootstrap token exists (with optional Vault storage)
+    if let Some(token_value) =
+        token_service.ensure_bootstrap_token(&bootstrap_token, vault_client.as_ref()).await?
+    {
         // Print prominent banner to ensure token is visible
         eprintln!("\n{}", "=".repeat(80));
         eprintln!("🔐 BOOTSTRAP ADMIN TOKEN CREATED");

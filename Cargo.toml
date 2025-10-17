@@ -1,6 +1,6 @@
 [package]
 name = "flowplane"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 [dependencies]
@@ -52,10 +52,19 @@ simple_asn1 = "0.6"
 tokio-rustls = "0.26"
 hyper-util = { version = "0.1", features = ["server", "client", "http1", "http2"] }
 
+# Secrets management
+vaultrs = { version = "0.7", default-features = false, features = ["rustls"] }
+
 # Observability and monitoring - enhanced like PoC
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+# OpenTelemetry SDK for distributed tracing (direct integration, not via tracing-opentelemetry)
+opentelemetry = { version = "0.31.0", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.31.0", features = ["default", "grpc-tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.31.0"
+opentelemetry-stdout = { version = "0.31.0", features = ["trace"] }
 metrics = "0.23"
 metrics-exporter-prometheus = "0.15"
 once_cell = "1.19"
@@ -94,3 +103,8 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"]
 tempfile = "3.14"
 which = "6.0"
 rustls-pemfile = "2.1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "token_repository"
+harness = false

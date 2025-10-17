@@ -81,8 +81,8 @@ mod tests {
 
     fn sample_route(match_type: &str, match_value: &str) -> ApiRouteData {
         ApiRouteData {
-            id: "route".into(),
-            api_definition_id: "definition".into(),
+            id: crate::domain::ApiRouteId::from_str_unchecked("route"),
+            api_definition_id: crate::domain::ApiDefinitionId::from_str_unchecked("definition"),
             match_type: match_type.into(),
             match_value: match_value.into(),
             case_sensitive: true,
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn detects_domain_conflict_for_same_team() {
         let existing = ApiDefinitionData {
-            id: "def".into(),
+            id: crate::domain::ApiDefinitionId::from_str_unchecked("def"),
             team: "payments".into(),
             domain: "api.example.com".into(),
             listener_isolation: false,

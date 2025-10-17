@@ -138,14 +138,14 @@ pub fn resources_from_api_definitions(
 ) -> Result<Vec<BuiltResource>> {
     let mut routes_by_definition: HashMap<String, Vec<ApiRouteData>> = HashMap::new();
     for route in routes {
-        routes_by_definition.entry(route.api_definition_id.clone()).or_default().push(route);
+        routes_by_definition.entry(route.api_definition_id.to_string()).or_default().push(route);
     }
 
     let mut built_resources = Vec::new();
     let mut cluster_resources = Vec::new();
 
     for definition in definitions {
-        let definition_routes = match routes_by_definition.remove(&definition.id) {
+        let definition_routes = match routes_by_definition.remove(&definition.id.to_string()) {
             Some(mut list) => {
                 list.sort_by_key(|r| r.route_order);
                 list
@@ -166,7 +166,7 @@ pub fn resources_from_api_definitions(
                     continue;
                 }
 
-                let cluster_name = build_cluster_name(&definition.id, &route.id);
+                let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
                 let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
                 cluster_resources.push(cluster_resource);
             }
@@ -174,7 +174,7 @@ pub fn resources_from_api_definitions(
         }
 
         let mut virtual_host = crate::xds::route::VirtualHostConfig {
-            name: format!("{}-vhost", short_id(&definition.id)),
+            name: format!("{}-vhost", short_id(definition.id.as_str())),
             domains: vec![definition.domain.clone()],
             routes: Vec::with_capacity(definition_routes.len()),
             typed_per_filter_config: HashMap::new(),
@@ -186,7 +186,7 @@ pub fn resources_from_api_definitions(
                 continue;
             }
 
-            let cluster_name = build_cluster_name(&definition.id, &route.id);
+            let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
             let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
             cluster_resources.push(cluster_resource);
 
@@ -217,7 +217,7 @@ pub fn resources_from_api_definitions(
             }
 
             virtual_host.routes.push(crate::xds::route::RouteRule {
-                name: Some(format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(&route.id))),
+                name: Some(format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(route.id.as_str()))),
                 r#match: crate::xds::route::RouteMatchConfig {
                     path: path_match,
                     headers: None,
@@ -232,7 +232,8 @@ pub fn resources_from_api_definitions(
             continue;
         }
 
-        let route_config_name = format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(&definition.id));
+        let route_config_name =
+            format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(definition.id.as_str()));
         tracing::debug!(
             route_config_name = %route_config_name,
             definition_id = %definition.id,
@@ -1157,7 +1158,7 @@ mod tests {
     #[test]
     fn platform_api_route_generates_clusters_and_routes() {
         let definition = ApiDefinitionData {
-            id: "def-1234".into(),
+            id: crate::domain::ApiDefinitionId::from_str_unchecked("def-1234"),
             team: "payments".into(),
             domain: "payments.flowplane.dev".into(),
             listener_isolation: true,
@@ -1178,7 +1179,7 @@ mod tests {
         .expect("canonicalize");
 
         let route = ApiRouteData {
-            id: "route-1234".into(),
+            id: crate::domain::ApiRouteId::from_str_unchecked("route-1234"),
             api_definition_id: definition.id.clone(),
             match_type: "prefix".into(),
             match_value: "/api".into(),
@@ -1466,7 +1467,7 @@ mod tests {
         };
 
         let listener_data = ListenerData {
-            id: "listener-1".to_string(),
+            id: crate::domain::ListenerId::from_str_unchecked("listener-1"),
             name: listener_config.name.clone(),
             address: listener_config.address.clone(),
             port: Some(listener_config.port as i64),

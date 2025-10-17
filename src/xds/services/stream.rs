@@ -1,3 +1,52 @@
+//! xDS Streaming Protocol Implementation
+//!
+//! This module provides the core streaming protocol implementation for Envoy's
+//! xDS (eXtended Discovery Service) APIs, supporting both State of the World (SOTW)
+//! and Delta protocols for CDS, RDS, LDS, and EDS resource types.
+//!
+//! # Architecture
+//!
+//! The implementation uses a shared stream loop pattern that handles:
+//! - **ACK/NACK Processing**: Detects and handles Envoy acknowledgments and rejections
+//! - **Version Tracking**: Tracks sent versions and nonces per resource type
+//! - **Subscription Management**: Maintains per-client subscription state
+//! - **Push Updates**: Proactively sends updates when resources change
+//! - **Error Recovery**: Handles stream errors, timeouts, and lagged notifications
+//! - **Concurrent Safety**: Uses Arc/Mutex for thread-safe state management
+//!
+//! # Protocol Flow
+//!
+//! ## SOTW (State of the World) Protocol
+//!
+//! 1. **Initial Request**: Envoy sends DiscoveryRequest with empty version
+//! 2. **Response**: Server sends all resources with version and nonce
+//! 3. **ACK/NACK**: Envoy sends request with version and nonce
+//!    - ACK: Same version/nonce, no error_detail (we skip duplicate)
+//!    - NACK: Same nonce, but error_detail present (we log and resend)
+//! 4. **Push Updates**: When resources change, server pushes new snapshot
+//! 5. **Subscription**: Client subscriptions tracked per type_url
+//!
+//! ## Delta Protocol
+//!
+//! 1. **Initial Request**: Envoy sends DeltaDiscoveryRequest with subscribed resources
+//! 2. **Response**: Server sends only changed resources (added/updated/removed)
+//! 3. **ACK/NACK**: Envoy sends request with response_nonce
+//! 4. **Push Updates**: Server pushes only deltas when resources change
+//!
+//! # Concurrency
+//!
+//! - Each incoming request spawns a tokio task for parallel processing
+//! - Version tracking uses `Arc<Mutex<HashMap>>` for thread-safe updates
+//! - Subscription state uses `Arc<Mutex<HashSet>>` for concurrent access
+//! - Resource updates broadcast via tokio::sync::broadcast channel
+//!
+//! # Error Handling
+//!
+//! - **Stream Errors**: Logged and stream terminated gracefully
+//! - **Lagged Notifications**: Warns when broadcast channel falls behind
+//! - **Response Failures**: Logged with context, stream continues
+//! - **Channel Closed**: Detects disconnection and exits cleanly
+
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -15,15 +64,36 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 };
 use uuid::Uuid;
 
+/// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
 struct LastDiscoverySnapshot {
-    version: String,
-    nonce: String,
+    version: Arc<str>,
+    nonce: Arc<str>,
 }
 
-// Removed complex delta state tracking - using PoC-style approach instead
-
-/// Run the shared ADS stream loop for both minimal and database-backed services.
+/// Run the shared SOTW (State of the World) ADS stream loop.
+///
+/// This function implements the core xDS streaming protocol for CDS, RDS, LDS, and EDS.
+/// It handles both client-initiated requests and server-initiated push updates.
+///
+/// # Protocol Behavior
+///
+/// - **ACK Detection**: Skips duplicate requests when client ACKs with matching version/nonce
+/// - **NACK Handling**: Logs errors when client rejects configuration but continues operation
+/// - **Subscription Tracking**: Remembers which resource types each client has requested
+/// - **Push Updates**: Proactively sends updates when XdsState broadcasts changes
+/// - **Concurrent Processing**: Spawns tasks for each request to maximize throughput
+///
+/// # Arguments
+///
+/// * `state` - Shared xDS state containing resource cache and repositories
+/// * `in_stream` - Incoming stream of DiscoveryRequest messages from Envoy
+/// * `responder` - Async function that builds DiscoveryResponse for a given request
+/// * `label` - Human-readable label for logging (e.g., "ADS", "CDS")
+///
+/// # Returns
+///
+/// A `ReceiverStream` that produces DiscoveryResponse messages to send to Envoy
 pub fn run_stream_loop<F>(
     state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DiscoveryRequest>,
@@ -42,7 +112,7 @@ where
     let (tx, rx) = mpsc::channel(100);
     let state_clone = state.clone();
     let responder = Arc::new(responder);
-    let label = label.to_string();
+    let label: Arc<str> = Arc::from(label);
     let last_sent = Arc::new(Mutex::new(HashMap::<String, LastDiscoverySnapshot>::new()));
     let mut update_rx = state.subscribe_updates();
     let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
@@ -64,7 +134,7 @@ where
                             let state = state_clone.clone();
                             let responder = responder.clone();
                             let tx = tx.clone();
-                            let label_clone = label.clone();
+                            let label_for_task = label.clone();
                             let tracker = last_sent.clone();
                             let subscribed_for_task = subscribed_types.clone();
 
@@ -73,6 +143,15 @@ where
                                     .node
                                     .as_ref()
                                     .map(|n| n.id.clone());
+
+                                // Create a span for this discovery request processing
+                                let span = tracing::info_span!(
+                                    "xds_discovery_request",
+                                    type_url = %discovery_request.type_url,
+                                    node_id = ?node_id,
+                                    stream = %label_for_task
+                                );
+                                let _enter = span.enter();
 
                                 let tracker_guard = tracker.lock().await;
                                 let last_snapshot = tracker_guard
@@ -85,10 +164,10 @@ where
                                     .as_ref()
                                     .map(|snapshot| {
                                         !discovery_request.response_nonce.is_empty()
-                                            && discovery_request.response_nonce == snapshot.nonce
-                                            && discovery_request.version_info == snapshot.version
+                                            && discovery_request.response_nonce.as_str() == snapshot.nonce.as_ref()
+                                            && discovery_request.version_info.as_str() == snapshot.version.as_ref()
                                             && discovery_request.error_detail.is_none()
-                                            && snapshot.version == current_version
+                                            && snapshot.version.as_ref() == current_version
                                     })
                                     .unwrap_or(false);
 
@@ -98,7 +177,7 @@ where
                                         version = %discovery_request.version_info,
                                         nonce = %discovery_request.response_nonce,
                                         node_id = ?node_id,
-                                        stream = %label_clone,
+                                        stream = %label_for_task,
                                         "[ACK] Skipping duplicate discovery request"
                                     );
                                     return;
@@ -111,7 +190,7 @@ where
                                         error_code = error_detail.code,
                                         error_message = %error_detail.message,
                                         node_id = ?node_id,
-                                        stream = %label_clone,
+                                        stream = %label_for_task,
                                         "[NACK] Envoy rejected previous response"
                                     );
                                 }
@@ -131,12 +210,12 @@ where
                                             version = %response.version_info,
                                             nonce = %response.nonce,
                                             resource_count = response.resources.len(),
-                                            stream = %label_clone,
+                                            stream = %label_for_task,
                                             "Sending discovery response"
                                         );
 
-                                        let version = response.version_info.clone();
-                                        let nonce = response.nonce.clone();
+                                        let version: Arc<str> = Arc::from(response.version_info.clone());
+                                        let nonce: Arc<str> = Arc::from(response.nonce.clone());
                                         let type_url = response.type_url.clone();
 
                                         {
@@ -148,11 +227,11 @@ where
                                         }
 
                                         if tx.send(Ok(response)).await.is_err() {
-                                            error!(stream = %label_clone, "Discovery response receiver dropped");
+                                            error!(stream = %label_for_task, "Discovery response receiver dropped");
                                         }
                                     }
                                     Err(e) => {
-                                        error!(stream = %label_clone, error = %e, "Failed to create resource response");
+                                        error!(stream = %label_for_task, error = %e, "Failed to create resource response");
                                     }
                                 }
                             });
@@ -189,6 +268,14 @@ where
                                 let type_url_for_task = delta.type_url.clone();
 
                                 tokio::spawn(async move {
+                                    // Create a span for SOTW push updates
+                                    let span = tracing::info_span!(
+                                        "xds_sotw_push_update",
+                                        type_url = %type_url_for_task,
+                                        stream = %label_for_task
+                                    );
+                                    let _enter = span.enter();
+
                                     // Build a minimal request for this type
                                     let request = DiscoveryRequest { type_url: type_url_for_task.clone(), ..Default::default() };
                                     match responder_for_task(state_for_task, request).await {
@@ -202,8 +289,8 @@ where
                                                 "Pushing SOTW update response"
                                             );
 
-                                            let version = response.version_info.clone();
-                                            let nonce = response.nonce.clone();
+                                            let version: Arc<str> = Arc::from(response.version_info.clone());
+                                            let nonce: Arc<str> = Arc::from(response.nonce.clone());
                                             let type_url = response.type_url.clone();
                                             {
                                                 let mut guard = tracker_for_task.lock().await;
@@ -241,7 +328,37 @@ where
     ReceiverStream::new(rx)
 }
 
-/// Run the delta ADS stream loop using PoC-style approach with database persistence
+/// Run the shared Delta xDS ADS stream loop.
+///
+/// This function implements the Delta variant of the xDS protocol, which sends only
+/// incremental changes instead of full snapshots. This is more efficient for large
+/// resource sets where only a few items change at a time.
+///
+/// # Protocol Behavior
+///
+/// - **Initial Request**: Client sends empty nonce, server responds with all resources
+/// - **ACK Detection**: Non-empty nonce with no error_detail indicates acknowledgment
+/// - **NACK Handling**: Non-empty nonce with error_detail indicates rejection
+/// - **Incremental Updates**: Only changed/added/removed resources are sent
+/// - **Subscription Tracking**: Tracks subscribed resource types per client
+/// - **Push Updates**: Sends only deltas when XdsState broadcasts changes
+///
+/// # Delta Protocol Advantages
+///
+/// - **Bandwidth Efficiency**: Only sends changed resources, not full snapshots
+/// - **Reduced Envoy Processing**: Envoy only processes changed configs
+/// - **Better for Large Deployments**: Scales better with many routes/clusters
+///
+/// # Arguments
+///
+/// * `state` - Shared xDS state containing resource cache and repositories
+/// * `in_stream` - Incoming stream of DeltaDiscoveryRequest messages from Envoy
+/// * `responder` - Async function that builds DeltaDiscoveryResponse for a given request
+/// * `label` - Human-readable label for logging (e.g., "Delta-ADS")
+///
+/// # Returns
+///
+/// A `ReceiverStream` that produces DeltaDiscoveryResponse messages to send to Envoy
 pub fn run_delta_loop<F>(
     state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
@@ -260,7 +377,7 @@ where
     let (tx, rx) = mpsc::channel(100);
     let state_clone = state.clone();
     let responder = Arc::new(responder);
-    let label = label.to_string();
+    let label: Arc<str> = Arc::from(label);
     let mut update_rx = state.subscribe_updates();
 
     tokio::spawn(async move {
@@ -318,6 +435,14 @@ where
                             let label_for_task = label.clone();
 
                             tokio::spawn(async move {
+                                // Create a span for delta discovery request processing
+                                let span = tracing::info_span!(
+                                    "xds_delta_discovery_request",
+                                    type_url = %delta_request.type_url,
+                                    stream = %label_for_task
+                                );
+                                let _enter = span.enter();
+
                                 match responder_for_task(state_for_task, delta_request.clone()).await {
                                     Ok(response) => {
                                         info!(
@@ -379,6 +504,14 @@ where
                                 );
 
                                 tokio::spawn(async move {
+                                    // Create a span for delta push updates
+                                    let span = tracing::info_span!(
+                                        "xds_delta_push_update",
+                                        type_url = %response.type_url,
+                                        stream = %label_for_task
+                                    );
+                                    let _enter = span.enter();
+
                                     if tx_for_task.send(Ok(response)).await.is_err() {
                                         error!(stream = %label_for_task, "Delta response receiver dropped");
                                     }
@@ -410,8 +543,19 @@ where
     ReceiverStream::new(rx)
 }
 
-// Removed complex process_delta_request function - using PoC-style direct response pattern
-
+/// Build a DeltaDiscoveryResponse from a ResourceDelta.
+///
+/// Converts internal ResourceDelta representation into the Envoy protobuf format
+/// with added/updated resources and removed resource names.
+///
+/// # Arguments
+///
+/// * `update_version` - Global version number for this update
+/// * `delta` - Resource changes (added, updated, removed)
+///
+/// # Returns
+///
+/// A `DeltaDiscoveryResponse` ready to send to Envoy
 fn build_delta_response(update_version: u64, delta: &ResourceDelta) -> DeltaDiscoveryResponse {
     let resources: Vec<Resource> = delta
         .added_or_updated

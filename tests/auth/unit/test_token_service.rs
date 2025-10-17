@@ -101,7 +101,8 @@ async fn create_token_returns_secret_and_persists() {
     let TokenSecretResponse { id, token } = service.create_token(request.clone()).await.unwrap();
     assert!(token.starts_with("fp_pat_"));
 
-    let stored = repo.get_token(&id).await.unwrap();
+    let stored =
+        repo.get_token(&flowplane::domain::TokenId::from_str_unchecked(&id)).await.unwrap();
     assert_eq!(stored.name, request.name);
     assert!(stored.has_scope("clusters:read"));
 }
@@ -118,7 +119,8 @@ async fn create_token_without_expiry_defaults_to_30_days() {
     };
 
     let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();
-    let stored = repo.get_token(&id).await.unwrap();
+    let stored =
+        repo.get_token(&flowplane::domain::TokenId::from_str_unchecked(&id)).await.unwrap();
 
     // Verify that expires_at was set to ~30 days from now
     assert!(stored.expires_at.is_some(), "Expected expires_at to be set with default value");
@@ -157,7 +159,8 @@ async fn update_and_revoke_token() {
     assert_eq!(revoked.status, TokenStatus::Revoked);
     assert!(!revoked.has_scope("routes:read"));
 
-    let stored = repo.get_token(&secret.id).await.unwrap();
+    let stored =
+        repo.get_token(&flowplane::domain::TokenId::from_str_unchecked(&secret.id)).await.unwrap();
     assert_eq!(stored.status, TokenStatus::Revoked);
     assert!(stored.scopes.is_empty());
 }
@@ -174,7 +177,11 @@ async fn rotate_generates_new_secret() {
     assert_eq!(parts.len(), 2);
     let secret_part = parts[1];
 
-    let (_, hashed) = repo.find_active_for_auth(&created.id).await.unwrap().unwrap();
+    let (_, hashed) = repo
+        .find_active_for_auth(&flowplane::domain::TokenId::from_str_unchecked(&created.id))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(service.verify_secret(&hashed, secret_part).unwrap());
 }
 
@@ -182,7 +189,11 @@ async fn rotate_generates_new_secret() {
 async fn ensure_bootstrap_token_creates_when_empty() {
     let (service, _, _, pool) = setup_service().await;
     let bootstrap_secret = "test-bootstrap-token-min-32-characters-long";
-    let maybe_token = service.ensure_bootstrap_token(bootstrap_secret).await.unwrap();
+    // Pass None for secrets client - dev mode without Vault
+    let maybe_token = service
+        .ensure_bootstrap_token(bootstrap_secret, None::<&flowplane::secrets::EnvVarSecretsClient>)
+        .await
+        .unwrap();
     assert!(maybe_token.is_some());
 
     let token = maybe_token.unwrap();
@@ -190,7 +201,11 @@ async fn ensure_bootstrap_token_creates_when_empty() {
     assert!(token.contains(bootstrap_secret));
 
     // Subsequent call is a no-op.
-    assert!(service.ensure_bootstrap_token(bootstrap_secret).await.unwrap().is_none());
+    assert!(service
+        .ensure_bootstrap_token(bootstrap_secret, None::<&flowplane::secrets::EnvVarSecretsClient>)
+        .await
+        .unwrap()
+        .is_none());
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
         .fetch_one(&pool)

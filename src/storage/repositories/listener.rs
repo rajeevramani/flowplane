@@ -3,13 +3,16 @@
 //! This module provides CRUD operations for listener resources, handling storage,
 //! retrieval, and lifecycle management of listener configuration data.
 
+use crate::domain::ListenerId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
-use uuid::Uuid;
 
-/// Database row structure for listeners
+/// Internal database row structure for listeners.
+///
+/// Maps directly to the database schema. This is separate from [`ListenerData`]
+/// to handle type conversions (e.g., String to [`ListenerId`]).
 #[derive(Debug, Clone, FromRow)]
 struct ListenerRow {
     pub id: String,
@@ -25,10 +28,28 @@ struct ListenerRow {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Listener configuration data
+/// Listener configuration data returned from the repository.
+///
+/// Represents a listener with all its configuration including network address,
+/// protocol, and xDS-compatible configuration JSON. This is the domain model
+/// used throughout the application.
+///
+/// # Fields
+///
+/// - `id`: Unique identifier for the listener
+/// - `name`: Human-readable name
+/// - `address`: Network address (IP or hostname)
+/// - `port`: Optional port number
+/// - `protocol`: Protocol type (e.g., "HTTP", "HTTPS", "TCP")
+/// - `configuration`: JSON-encoded xDS configuration
+/// - `version`: Version number for optimistic locking
+/// - `source`: API source that created this resource ("native", "gateway", "platform")
+/// - `team`: Optional team identifier for multi-tenancy
+/// - `created_at`: Timestamp of creation
+/// - `updated_at`: Timestamp of last modification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListenerData {
-    pub id: String,
+    pub id: ListenerId,
     pub name: String,
     pub address: String,
     pub port: Option<i64>,
@@ -44,7 +65,7 @@ pub struct ListenerData {
 impl From<ListenerRow> for ListenerData {
     fn from(row: ListenerRow) -> Self {
         Self {
-            id: row.id,
+            id: ListenerId::from_string(row.id),
             name: row.name,
             address: row.address,
             port: row.port,
@@ -59,7 +80,23 @@ impl From<ListenerRow> for ListenerData {
     }
 }
 
-/// Create listener request
+/// Request to create a new listener.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use serde_json::json;
+/// use flowplane::storage::repositories::CreateListenerRequest;
+///
+/// let request = CreateListenerRequest {
+///     name: "api-listener".to_string(),
+///     address: "0.0.0.0".to_string(),
+///     port: Some(8080),
+///     protocol: Some("HTTP".to_string()),
+///     configuration: json!({"filters": []}),
+///     team: Some("team-alpha".to_string()),
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateListenerRequest {
     pub name: String,
@@ -70,7 +107,11 @@ pub struct CreateListenerRequest {
     pub team: Option<String>,
 }
 
-/// Update listener request
+/// Request to update an existing listener.
+///
+/// All fields are optional - only provided fields will be updated.
+/// Uses `Option<Option<T>>` for nullable fields to distinguish between
+/// "don't update" (None) and "set to null" (Some(None)).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateListenerRequest {
     pub address: Option<String>,
@@ -80,19 +121,69 @@ pub struct UpdateListenerRequest {
     pub team: Option<Option<String>>,
 }
 
-/// Repository for listener data access
+/// Repository for listener configuration persistence.
+///
+/// Provides CRUD operations for listener resources with team-based multi-tenancy support.
+/// All operations use optimistic locking via version numbers and include comprehensive
+/// error handling with contextual logging.
+///
+/// # Multi-Tenancy
+///
+/// Listeners support team-scoped access:
+/// - `list()`: Returns all listeners (use with care)
+/// - `list_by_teams()`: Returns listeners for specific teams or team-agnostic resources
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use flowplane::storage::repositories::{ListenerRepository, CreateListenerRequest};
+/// use serde_json::json;
+///
+/// let repo = ListenerRepository::new(pool);
+///
+/// // Create a listener
+/// let listener = repo.create(CreateListenerRequest {
+///     name: "api-gateway".to_string(),
+///     address: "0.0.0.0".to_string(),
+///     port: Some(8080),
+///     protocol: Some("HTTP".to_string()),
+///     configuration: json!({"filters": ["cors", "jwt"]}),
+///     team: Some("team-alpha".to_string()),
+/// }).await?;
+///
+/// // List team-scoped listeners
+/// let listeners = repo.list_by_teams(&["team-alpha".to_string()], None, None).await?;
+/// ```
 #[derive(Debug, Clone)]
 pub struct ListenerRepository {
     pool: DbPool,
 }
 
 impl ListenerRepository {
+    /// Creates a new listener repository with the given database pool.
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
+    /// Creates a new listener in the database.
+    ///
+    /// Generates a unique ID, initializes version to 1, and sets timestamps.
+    /// The configuration JSON is validated for serializability.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - Listener creation parameters
+    ///
+    /// # Returns
+    ///
+    /// The created [`ListenerData`] with generated ID and timestamps.
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
+    /// - [`FlowplaneError::Database`] if insertion fails (e.g., duplicate name)
     pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
-        let id = Uuid::new_v4().to_string();
+        let id = ListenerId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid listener configuration JSON: {}", e))
         })?;
@@ -130,7 +221,21 @@ impl ListenerRepository {
         self.get_by_id(&id).await
     }
 
-    pub async fn get_by_id(&self, id: &str) -> Result<ListenerData> {
+    /// Retrieves a listener by its unique ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The unique listener identifier
+    ///
+    /// # Returns
+    ///
+    /// The [`ListenerData`] if found.
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::NotFound`] if no listener exists with the given ID
+    /// - [`FlowplaneError::Database`] if query execution fails
+    pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at FROM listeners WHERE id = $1"
         )
@@ -147,7 +252,9 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id))),
+            None => {
+                Err(FlowplaneError::not_found_msg(format!("Listener with ID '{}' not found", id)))
+            }
         }
     }
 
@@ -168,9 +275,10 @@ impl ListenerRepository {
 
         match row {
             Some(row) => Ok(ListenerData::from(row)),
-            None => {
-                Err(FlowplaneError::not_found(format!("Listener with name '{}' not found", name)))
-            }
+            None => Err(FlowplaneError::not_found_msg(format!(
+                "Listener with name '{}' not found",
+                name
+            ))),
         }
     }
 
@@ -196,8 +304,39 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
-    /// List listeners filtered by team names (for team-scoped tokens)
-    /// If teams list is empty, returns all listeners (for admin:all or resource-level scopes)
+    /// Lists listeners filtered by team names for multi-tenancy support.
+    ///
+    /// This method is critical for enforcing team-based access control.
+    /// Returns listeners that belong to any of the specified teams, plus
+    /// any team-agnostic listeners (where team is NULL).
+    ///
+    /// # Arguments
+    ///
+    /// * `teams` - List of team identifiers to filter by. If empty, returns all listeners.
+    /// * `limit` - Maximum number of results (default: 100, max: 1000)
+    /// * `offset` - Number of results to skip for pagination
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ListenerData`] matching the team filter.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get listeners for specific teams
+    /// let listeners = repo.list_by_teams(
+    ///     &["team-alpha".to_string(), "team-beta".to_string()],
+    ///     Some(50),
+    ///     Some(0)
+    /// ).await?;
+    ///
+    /// // Get all listeners (admin access)
+    /// let all_listeners = repo.list_by_teams(&[], None, None).await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Database`] if query execution fails
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -252,7 +391,11 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
-    pub async fn update(&self, id: &str, request: UpdateListenerRequest) -> Result<ListenerData> {
+    pub async fn update(
+        &self,
+        id: &ListenerId,
+        request: UpdateListenerRequest,
+    ) -> Result<ListenerData> {
         let current = self.get_by_id(id).await?;
 
         let current_address = current.address.clone();
@@ -300,7 +443,10 @@ impl ListenerRepository {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
         }
 
         tracing::info!(listener_id = %id, listener_name = %current_name, new_version = new_version, "Updated listener");
@@ -308,7 +454,7 @@ impl ListenerRepository {
         self.get_by_id(id).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: &ListenerId) -> Result<()> {
         let listener = self.get_by_id(id).await?;
 
         let result = sqlx::query("DELETE FROM listeners WHERE id = $1")
@@ -324,7 +470,10 @@ impl ListenerRepository {
             })?;
 
         if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found(format!("Listener with ID '{}' not found", id)));
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
         }
 
         tracing::info!(listener_id = %id, listener_name = %listener.name, "Deleted listener");

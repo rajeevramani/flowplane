@@ -1,0 +1,138 @@
+# Docker Compose for Flowplane with Zipkin Tracing
+#
+# This configuration provides:
+# - Flowplane Control Plane with OpenTelemetry tracing enabled
+# - Zipkin server for trace visualization
+# - Envoy proxy configured via xDS
+# - httpbin for testing HTTP requests
+#
+# Usage:
+#   docker-compose -f docker-compose-zipkin.yml up
+#
+# Access:
+#   - Flowplane API: http://localhost:8080
+#   - Zipkin UI: http://localhost:9411
+#   - httpbin: http://localhost:8000
+#
+# Environment Variables:
+#   BOOTSTRAP_TOKEN: Auth token for Flowplane (min 32 chars, auto-generated if not set)
+
+services:
+  # OpenTelemetry Collector - receives OTLP and forwards to Zipkin
+  otel-collector:
+    image: otel/opentelemetry-collector:0.115.1
+    container_name: flowplane-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"  # OTLP gRPC receiver
+      - "4318:4318"  # OTLP HTTP receiver
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # Zipkin server for trace collection and visualization
+  zipkin:
+    image: openzipkin/zipkin:3.4
+    platform: linux/amd64
+    container_name: flowplane-zipkin
+    ports:
+      - "9411:9411"  # Zipkin UI and API
+    environment:
+      - JAVA_OPTS=-Xms256m -Xmx256m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9411/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - flowplane-network
+
+  # Flowplane Control Plane with tracing enabled
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowplane-control-plane
+    environment:
+      # Database configuration (SQLite)
+      DATABASE_URL: sqlite:///app/data/flowplane.db
+
+      # Server configuration
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 50051
+
+      # Authentication - auto-generate if not provided
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-flowplane-bootstrap-token-for-testing-min-32-chars}
+
+      # Logging - enable debug for span visibility
+      RUST_LOG: debug,flowplane=debug
+
+      # Observability - Tracing ENABLED, pointing to OpenTelemetry Collector
+      FLOWPLANE_ENABLE_METRICS: "true"
+      FLOWPLANE_ENABLE_TRACING: "true"
+      FLOWPLANE_OTLP_ENDPOINT: "http://otel-collector:4317"
+      FLOWPLANE_TRACE_SAMPLING_RATIO: "1.0"
+      FLOWPLANE_SERVICE_NAME: "flowplane-control-plane"
+    ports:
+      - "8080:8080"   # HTTP API
+      - "50051:50051" # xDS gRPC
+    depends_on:
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - flowplane_data:/app/data
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # Envoy proxy configured via Flowplane xDS
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: flowplane-envoy
+    # Runs as envoy user (uid 101) by default for security
+    command:
+      - envoy
+      - --config-path
+      - /etc/envoy/envoy-bootstrap.yaml
+      - --log-level
+      - info
+    ports:
+      - "10000:10000"  # Envoy listener (proxy to httpbin)
+      - "9901:9901"    # Envoy admin interface
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    volumes:
+      - ./envoy-bootstrap.yaml:/etc/envoy/envoy-bootstrap.yaml:ro
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # httpbin for HTTP testing
+  httpbin:
+    image: kennethreitz/httpbin:latest
+    container_name: flowplane-httpbin
+    ports:
+      - "8000:80"
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+networks:
+  flowplane-network:
+    driver: bridge
+
+volumes:
+  flowplane_data:
+    driver: local

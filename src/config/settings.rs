@@ -254,7 +254,18 @@ pub struct ObservabilityConfig {
     /// Enable distributed tracing
     pub enable_tracing: bool,
 
-    /// Jaeger collector endpoint
+    /// OTLP exporter endpoint (gRPC)
+    /// Example: http://localhost:4317
+    pub otlp_endpoint: Option<String>,
+
+    /// Trace sampling ratio (0.0 to 1.0)
+    /// 0.0 = sample nothing, 1.0 = sample everything
+    /// Default: 1.0 (100% sampling)
+    #[validate(range(min = 0.0, max = 1.0, message = "Sampling ratio must be between 0 and 1"))]
+    pub trace_sampling_ratio: f64,
+
+    /// Jaeger collector endpoint (deprecated - use otlp_endpoint instead)
+    /// Kept for backward compatibility
     pub jaeger_endpoint: Option<String>,
 
     /// Tracing service name
@@ -283,6 +294,8 @@ impl Default for ObservabilityConfig {
             enable_metrics: true,
             metrics_port: 9090,
             enable_tracing: true,
+            otlp_endpoint: Some("http://localhost:4317".to_string()),
+            trace_sampling_ratio: 1.0, // 100% sampling by default
             jaeger_endpoint: Some("http://localhost:14268/api/traces".to_string()),
             service_name: "flowplane".to_string(),
             log_level: "info".to_string(),
@@ -329,7 +342,14 @@ impl ObservabilityConfig {
         let enable_metrics = parse_bool("FLOWPLANE_ENABLE_METRICS", true);
         let metrics_port =
             if enable_metrics { parse_u16("FLOWPLANE_METRICS_PORT", 9090) } else { 0 };
+        fn parse_f64(key: &str, default: f64) -> f64 {
+            std::env::var(key).ok().and_then(|value| value.parse::<f64>().ok()).unwrap_or(default)
+        }
+
         let enable_tracing = parse_bool("FLOWPLANE_ENABLE_TRACING", true);
+        let otlp_endpoint =
+            std::env::var("FLOWPLANE_OTLP_ENDPOINT").ok().filter(|value| !value.trim().is_empty());
+        let trace_sampling_ratio = parse_f64("FLOWPLANE_TRACE_SAMPLING_RATIO", 1.0).clamp(0.0, 1.0);
         let jaeger_endpoint = std::env::var("FLOWPLANE_JAEGER_ENDPOINT")
             .ok()
             .filter(|value| !value.trim().is_empty());
@@ -343,6 +363,8 @@ impl ObservabilityConfig {
             enable_metrics,
             metrics_port,
             enable_tracing,
+            otlp_endpoint,
+            trace_sampling_ratio,
             jaeger_endpoint,
             service_name,
             log_level,

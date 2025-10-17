@@ -16,7 +16,7 @@ use crate::{
 };
 use envoy_types::pb::google::protobuf::Any;
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// Cached Envoy resource along with metadata required for delta semantics.
 #[derive(Clone, Debug)]
@@ -105,6 +105,7 @@ impl XdsState {
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
     /// Returns `Some(ResourceUpdate)` when a delta was published.
+    #[instrument(skip(self, built_resources), fields(type_url = %type_url, resource_count = built_resources.len()), name = "xds_apply_resources")]
     pub fn apply_built_resources(
         &self,
         type_url: &str,
@@ -172,6 +173,7 @@ impl XdsState {
     }
 
     /// Refresh the cluster cache from the backing repository (if available).
+    #[instrument(skip(self), name = "xds_refresh_clusters")]
     pub async fn refresh_clusters_from_repository(&self) -> Result<()> {
         let repository = match &self.cluster_repository {
             Some(repo) => repo.clone(),
@@ -214,6 +216,7 @@ impl XdsState {
     }
 
     /// Refresh the route cache from the backing repository (if available).
+    #[instrument(skip(self), name = "xds_refresh_routes")]
     pub async fn refresh_routes_from_repository(&self) -> Result<()> {
         let repository = match &self.route_repository {
             Some(repo) => repo.clone(),
@@ -283,6 +286,7 @@ impl XdsState {
         Ok(())
     }
 
+    #[instrument(skip(self), name = "xds_refresh_platform_api")]
     pub async fn refresh_platform_api_resources(&self) -> Result<()> {
         let repository = match &self.api_definition_repository {
             Some(repo) => repo.clone(),
@@ -343,6 +347,7 @@ impl XdsState {
     }
 
     /// Refresh the listener cache from the backing repository (if available).
+    #[instrument(skip(self), name = "xds_refresh_listeners")]
     pub async fn refresh_listeners_from_repository(&self) -> Result<()> {
         let repository = match &self.listener_repository {
             Some(repo) => repo.clone(),

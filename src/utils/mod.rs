@@ -14,8 +14,10 @@ use uuid::Uuid;
 
 /// Regex for validating Envoy resource names
 /// Names must start with a letter or underscore, followed by letters, numbers, underscores, or hyphens
-pub static VALID_NAME_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_-]*$").unwrap());
+pub static VALID_NAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+        .expect("VALID_NAME_REGEX should be a valid regex pattern")
+});
 
 /// Generate a new UUID v4 as a string
 pub fn generate_id() -> String {
@@ -93,10 +95,10 @@ impl PaginationParams {
     /// Validate pagination parameters
     pub fn validate(&self) -> crate::Result<()> {
         if self.page == 0 {
-            return Err(crate::Error::Validation("Page must be >= 1".to_string()));
+            return Err(crate::Error::validation("Page must be >= 1"));
         }
         if self.limit == 0 || self.limit > 1000 {
-            return Err(crate::Error::Validation("Limit must be 1-1000".to_string()));
+            return Err(crate::Error::validation("Limit must be 1-1000"));
         }
         Ok(())
     }

@@ -351,7 +351,7 @@ mod tests {
         ];
 
         let err = build_http_filters(&entries).expect_err("duplicate router should fail");
-        assert!(matches!(err, crate::Error::Config(_)));
+        assert!(matches!(err, crate::Error::Config { .. }));
     }
 
     #[test]

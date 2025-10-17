@@ -1,4 +1,4 @@
-use crate::errors::types::{FlowplaneError, Result};
+use crate::errors::{FlowplaneError, Result};
 use envoy_types::pb::envoy::config::route::v3::{
     route::Action as RouteActionEnum, route_match::PathSpecifier, Route, RouteAction, RouteConfiguration,
     RouteMatch, VirtualHost,

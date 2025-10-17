@@ -31,6 +31,7 @@ pub mod errors;
 pub mod observability;
 pub mod openapi;
 pub mod platform_api;
+pub mod secrets;
 pub mod services;
 pub mod storage;
 pub mod utils;

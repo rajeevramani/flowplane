@@ -372,7 +372,7 @@ async fn test_platform_api_delete_preserves_native_api_routes() {
     );
 
     // Delete the Platform API definition
-    materializer.delete_definition(&outcome.definition.id).await.unwrap();
+    materializer.delete_definition(outcome.definition.id.as_str()).await.unwrap();
 
     // Verify only Platform API routes were removed, Native API routes remain
     let after_delete = route_repo.get_by_name("default-gateway-routes").await.unwrap();

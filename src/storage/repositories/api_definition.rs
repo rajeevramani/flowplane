@@ -3,10 +3,12 @@
 //! This module handles persistence for API definitions and their associated routes,
 //! supporting both Platform API and Native API resource creation.
 
+use crate::domain::{ApiDefinitionId, ApiRouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
@@ -29,7 +31,7 @@ struct ApiDefinitionRow {
 /// Persisted API definition record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDefinitionData {
-    pub id: String,
+    pub id: ApiDefinitionId,
     pub team: String,
     pub domain: String,
     pub listener_isolation: bool,
@@ -46,19 +48,30 @@ pub struct ApiDefinitionData {
 
 impl From<ApiDefinitionRow> for ApiDefinitionData {
     fn from(row: ApiDefinitionRow) -> Self {
+        let context = format!("API definition '{}'", &row.id);
         Self {
-            id: row.id,
-            team: row.team,
+            id: ApiDefinitionId::from_string(row.id),
+            team: row.team.clone(),
             domain: row.domain,
             listener_isolation: row.listener_isolation != 0,
-            tls_config: row.tls_config.and_then(|json| serde_json::from_str(&json).ok()),
-            metadata: row.metadata.and_then(|json| serde_json::from_str(&json).ok()),
+            tls_config: ApiDefinitionRepository::deserialize_optional(
+                row.tls_config,
+                "tls_config",
+                &context,
+            ),
+            metadata: ApiDefinitionRepository::deserialize_optional(
+                row.metadata,
+                "metadata",
+                &context,
+            ),
             bootstrap_uri: row.bootstrap_uri,
             bootstrap_revision: row.bootstrap_revision,
             generated_listener_id: row.generated_listener_id,
-            target_listeners: row
-                .target_listeners
-                .and_then(|json| serde_json::from_str(&json).ok()),
+            target_listeners: ApiDefinitionRepository::deserialize_optional(
+                row.target_listeners,
+                "target_listeners",
+                &context,
+            ),
             version: row.version,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -92,8 +105,8 @@ struct ApiRouteRow {
 /// Persisted API route record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiRouteData {
-    pub id: String,
-    pub api_definition_id: String,
+    pub id: ApiRouteId,
+    pub api_definition_id: ApiDefinitionId,
     pub match_type: String,
     pub match_value: String,
     pub case_sensitive: bool,
@@ -115,25 +128,42 @@ pub struct ApiRouteData {
 
 impl From<ApiRouteRow> for ApiRouteData {
     fn from(row: ApiRouteRow) -> Self {
+        let context = format!("API route '{}'", &row.id);
         Self {
-            id: row.id,
-            api_definition_id: row.api_definition_id,
+            id: ApiRouteId::from_string(row.id),
+            api_definition_id: ApiDefinitionId::from_string(row.api_definition_id),
             match_type: row.match_type,
             match_value: row.match_value,
             case_sensitive: row.case_sensitive != 0,
-            headers: row.headers.and_then(|json| serde_json::from_str(&json).ok()),
+            headers: ApiDefinitionRepository::deserialize_optional(
+                row.headers,
+                "headers",
+                &context,
+            ),
             rewrite_prefix: row.rewrite_prefix,
             rewrite_regex: row.rewrite_regex,
             rewrite_substitution: row.rewrite_substitution,
-            upstream_targets: serde_json::from_str(&row.upstream_targets)
-                .unwrap_or(serde_json::Value::Null),
+            upstream_targets: ApiDefinitionRepository::deserialize_required(
+                &row.upstream_targets,
+                "upstream_targets",
+                &context,
+                serde_json::Value::Null,
+            ),
             timeout_seconds: row.timeout_seconds,
-            override_config: row.override_config.and_then(|json| serde_json::from_str(&json).ok()),
+            override_config: ApiDefinitionRepository::deserialize_optional(
+                row.override_config,
+                "override_config",
+                &context,
+            ),
             deployment_note: row.deployment_note,
             route_order: row.route_order,
             generated_route_id: row.generated_route_id,
             generated_cluster_id: row.generated_cluster_id,
-            filter_config: row.filter_config.and_then(|json| serde_json::from_str(&json).ok()),
+            filter_config: ApiDefinitionRepository::deserialize_optional(
+                row.filter_config,
+                "filter_config",
+                &context,
+            ),
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -172,7 +202,7 @@ pub struct CreateApiRouteRequest {
 /// Parameters for updating bootstrap metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateBootstrapMetadataRequest {
-    pub definition_id: String,
+    pub definition_id: ApiDefinitionId,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
 }
@@ -205,15 +235,50 @@ impl ApiDefinitionRepository {
             .as_ref()
             .map(|val| {
                 serde_json::to_string(val).map_err(|e| {
-                    FlowplaneError::validation(format!("Failed to serialize JSON payload: {}", e))
+                    FlowplaneError::serialization(e, "Failed to serialize JSON payload")
                 })
             })
             .transpose()
     }
 
     fn serialize_required(value: &serde_json::Value) -> Result<String> {
-        serde_json::to_string(value).map_err(|e| {
-            FlowplaneError::validation(format!("Failed to serialize JSON payload: {}", e))
+        serde_json::to_string(value)
+            .map_err(|e| FlowplaneError::serialization(e, "Failed to serialize JSON payload"))
+    }
+
+    /// Deserialize optional JSON string to typed value, logging warnings on errors
+    fn deserialize_optional<T>(json: Option<String>, field_name: &str, context: &str) -> Option<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        json.and_then(|s| {
+            serde_json::from_str::<T>(&s)
+                .map_err(|e| {
+                    warn!(
+                        field = field_name,
+                        context = context,
+                        error = %e,
+                        "Failed to deserialize JSON field from database, treating as None"
+                    );
+                    e
+                })
+                .ok()
+        })
+    }
+
+    /// Deserialize required JSON string to typed value, using fallback on error
+    fn deserialize_required<T>(json: &str, field_name: &str, context: &str, fallback: T) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_str::<T>(json).unwrap_or_else(|e| {
+            warn!(
+                field = field_name,
+                context = context,
+                error = %e,
+                "Failed to deserialize required JSON field from database, using fallback"
+            );
+            fallback
         })
     }
 
@@ -226,7 +291,15 @@ impl ApiDefinitionRepository {
         let tls_config = Self::serialize_optional(&request.tls_config)?;
         let metadata = Self::serialize_optional(&request.metadata)?;
         let target_listeners = Self::serialize_optional(
-            &request.target_listeners.as_ref().map(|v| serde_json::to_value(v).unwrap()),
+            &request
+                .target_listeners
+                .as_ref()
+                .map(|v| {
+                    serde_json::to_value(v).map_err(|e| {
+                        FlowplaneError::serialization(e, "Failed to serialize target_listeners")
+                    })
+                })
+                .transpose()?,
         )?;
         let listener_isolation: i64 = if request.listener_isolation { 1 } else { 0 };
 
@@ -257,11 +330,12 @@ impl ApiDefinitionRepository {
             context: "Failed to insert API definition".to_string(),
         })?;
 
-        self.get_definition(&id).await
+        let id_typed = ApiDefinitionId::from_string(id);
+        self.get_definition(&id_typed).await
     }
 
     /// Delete an API definition by ID (cascades to routes)
-    pub async fn delete_definition(&self, id: &str) -> Result<()> {
+    pub async fn delete_definition(&self, id: &ApiDefinitionId) -> Result<()> {
         sqlx::query("DELETE FROM api_definitions WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -274,7 +348,7 @@ impl ApiDefinitionRepository {
     }
 
     /// Delete an API route by ID
-    pub async fn delete_route(&self, id: &str) -> Result<()> {
+    pub async fn delete_route(&self, id: &ApiRouteId) -> Result<()> {
         sqlx::query("DELETE FROM api_routes WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -287,7 +361,7 @@ impl ApiDefinitionRepository {
     }
 
     /// Fetch an API definition by identifier
-    pub async fn get_definition(&self, id: &str) -> Result<ApiDefinitionData> {
+    pub async fn get_definition(&self, id: &ApiDefinitionId) -> Result<ApiDefinitionData> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
             "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
                     bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
@@ -301,8 +375,9 @@ impl ApiDefinitionRepository {
             context: format!("Failed to load API definition '{}'", id),
         })?;
 
-        row.map(ApiDefinitionData::from)
-            .ok_or_else(|| FlowplaneError::not_found(format!("API definition '{}' not found", id)))
+        row.map(ApiDefinitionData::from).ok_or_else(|| {
+            FlowplaneError::not_found_msg(format!("API definition '{}' not found", id))
+        })
     }
 
     /// Fetch an API definition by team/domain (if present)
@@ -401,11 +476,12 @@ impl ApiDefinitionRepository {
             context: "Failed to insert API route".to_string(),
         })?;
 
-        self.get_route(&id).await
+        let id_typed = ApiRouteId::from_string(id);
+        self.get_route(&id_typed).await
     }
 
     /// Retrieve a route by identifier
-    pub async fn get_route(&self, id: &str) -> Result<ApiRouteData> {
+    pub async fn get_route(&self, id: &ApiRouteId) -> Result<ApiRouteData> {
         let row = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
@@ -421,11 +497,14 @@ impl ApiDefinitionRepository {
         })?;
 
         row.map(ApiRouteData::from)
-            .ok_or_else(|| FlowplaneError::not_found(format!("API route '{}' not found", id)))
+            .ok_or_else(|| FlowplaneError::not_found_msg(format!("API route '{}' not found", id)))
     }
 
     /// List routes for a given definition ordered by insertion order
-    pub async fn list_routes(&self, api_definition_id: &str) -> Result<Vec<ApiRouteData>> {
+    pub async fn list_routes(
+        &self,
+        api_definition_id: &ApiDefinitionId,
+    ) -> Result<Vec<ApiRouteData>> {
         let rows = sqlx::query_as::<Sqlite, ApiRouteRow>(
             "SELECT id, api_definition_id, match_type, match_value, case_sensitive, headers, rewrite_prefix,
                     rewrite_regex, rewrite_substitution, upstream_targets, timeout_seconds,
@@ -476,7 +555,7 @@ impl ApiDefinitionRepository {
     /// Update generated listener ID for an API definition
     pub async fn update_generated_listener_id(
         &self,
-        definition_id: &str,
+        definition_id: &ApiDefinitionId,
         listener_id: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
@@ -504,7 +583,7 @@ impl ApiDefinitionRepository {
     /// Update generated route and cluster IDs for an API route
     pub async fn update_generated_resource_ids(
         &self,
-        route_id: &str,
+        route_id: &ApiRouteId,
         generated_route_id: Option<&str>,
         generated_cluster_id: Option<&str>,
     ) -> Result<()> {
@@ -532,7 +611,7 @@ impl ApiDefinitionRepository {
     /// Update an API definition's mutable fields
     pub async fn update_definition(
         &self,
-        definition_id: &str,
+        definition_id: &ApiDefinitionId,
         request: UpdateApiDefinitionRequest,
     ) -> Result<ApiDefinitionData> {
         // Get current definition to merge with updates
@@ -544,20 +623,42 @@ impl ApiDefinitionRepository {
         let domain = request.domain.as_ref().unwrap_or(&current.domain);
 
         let tls_json = if let Some(tls) = &request.tls_config {
-            Some(serde_json::to_string(tls).map_err(|e| {
-                FlowplaneError::validation(format!("Invalid TLS configuration JSON: {}", e))
-            })?)
+            Some(
+                serde_json::to_string(tls).map_err(|e| {
+                    FlowplaneError::serialization(e, "Invalid TLS configuration JSON")
+                })?,
+            )
         } else {
-            current.tls_config.as_ref().map(|v| serde_json::to_string(v).unwrap())
+            current
+                .tls_config
+                .as_ref()
+                .map(|v| {
+                    serde_json::to_string(v).map_err(|e| {
+                        FlowplaneError::serialization(e, "Failed to serialize existing TLS config")
+                    })
+                })
+                .transpose()?
         };
 
-        let target_listeners_json = if let Some(listeners) = &request.target_listeners {
-            Some(serde_json::to_string(listeners).map_err(|e| {
-                FlowplaneError::validation(format!("Invalid target_listeners JSON: {}", e))
-            })?)
-        } else {
-            current.target_listeners.as_ref().map(|v| serde_json::to_string(v).unwrap())
-        };
+        let target_listeners_json =
+            if let Some(listeners) = &request.target_listeners {
+                Some(serde_json::to_string(listeners).map_err(|e| {
+                    FlowplaneError::serialization(e, "Invalid target_listeners JSON")
+                })?)
+            } else {
+                current
+                    .target_listeners
+                    .as_ref()
+                    .map(|v| {
+                        serde_json::to_string(v).map_err(|e| {
+                            FlowplaneError::serialization(
+                                e,
+                                "Failed to serialize existing target_listeners",
+                            )
+                        })
+                    })
+                    .transpose()?
+            };
 
         sqlx::query(
             "UPDATE api_definitions
