@@ -119,9 +119,16 @@ impl DatabaseAggregatedDiscoveryService {
         resources::clusters_from_config(&self.state.config)
     }
 
-    async fn create_route_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+    async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
-            match repo.list(Some(100), None).await {
+            // Extract teams from scope for filtering
+            let teams = match scope {
+                Scope::All => vec![],
+                Scope::Team { team, .. } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
+            };
+
+            match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(route_data_list) => {
                     if route_data_list.is_empty() {
                         info!("No routes found in database, falling back to config-based routes");
@@ -333,7 +340,7 @@ impl DatabaseAggregatedDiscoveryService {
                 self.create_cluster_resources_from_db(scope).await
             }
             "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
-                self.create_route_resources_from_db().await
+                self.create_route_resources_from_db(scope).await
             }
             "type.googleapis.com/envoy.config.listener.v3.Listener" => {
                 self.create_listener_resources_from_db_scoped(scope).await
