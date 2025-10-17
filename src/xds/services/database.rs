@@ -68,6 +68,8 @@ impl DatabaseAggregatedDiscoveryService {
                 if *include_default {
                     span.record("include_default", true);
                 }
+                // Record team connection metric
+                crate::observability::metrics::record_team_xds_connection(team, true).await;
             }
             Scope::Allowlist { names } => {
                 span.record("scope_type", "allowlist");
@@ -113,6 +115,17 @@ impl DatabaseAggregatedDiscoveryService {
             match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(cluster_data_list) => {
                     span.record("filtered_count", cluster_data_list.len());
+
+                    // Record team-scoped resource count metrics
+                    if let Some(team) = teams.first() {
+                        crate::observability::metrics::update_team_resource_count(
+                            "cluster",
+                            team,
+                            cluster_data_list.len(),
+                        )
+                        .await;
+                    }
+
                     if cluster_data_list.is_empty() {
                         info!(
                             "No clusters found in database, falling back to config-based cluster"
@@ -173,6 +186,17 @@ impl DatabaseAggregatedDiscoveryService {
             match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
+
+                    // Record team-scoped resource count metrics
+                    if let Some(team) = teams.first() {
+                        crate::observability::metrics::update_team_resource_count(
+                            "route",
+                            team,
+                            route_data_list.len(),
+                        )
+                        .await;
+                    }
+
                     if route_data_list.is_empty() {
                         info!("No routes found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
@@ -363,6 +387,17 @@ impl DatabaseAggregatedDiscoveryService {
                             }
                         };
                         tracing::Span::current().record("filtered_count", filtered.len());
+
+                        // Record team-scoped listener count metrics
+                        if let Scope::Team { team, .. } = scope {
+                            crate::observability::metrics::update_team_resource_count(
+                                "listener",
+                                team,
+                                filtered.len(),
+                            )
+                            .await;
+                        }
+
                         info!(
                             phase = "ads_response",
                             listener_count = filtered.len(),
@@ -612,6 +647,14 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         request: Request<tonic::Streaming<DiscoveryRequest>>,
     ) -> std::result::Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
         info!("New database-enabled ADS stream connection established");
+
+        // Extract team from node metadata for connection tracking
+        let metadata = request.metadata();
+        if let Some(node_id) = metadata.get("node-id").and_then(|v| v.to_str().ok()) {
+            // Try to parse team from node_id or metadata
+            // For now, we'll track this when we see the first request with node metadata
+            tracing::debug!(node_id, "xDS stream established");
+        }
 
         let state = self.state.clone();
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {

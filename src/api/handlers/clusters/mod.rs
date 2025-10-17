@@ -32,7 +32,7 @@ use validation::{cluster_parts_from_body, cluster_response_from_data, ClusterCon
 
 /// Verify that a cluster belongs to one of the user's teams or is global.
 /// Returns the cluster if authorized, otherwise returns NotFound error (to avoid leaking existence).
-fn verify_cluster_access(
+async fn verify_cluster_access(
     cluster: crate::storage::ClusterData,
     team_scopes: &[String],
 ) -> Result<crate::storage::ClusterData, ApiError> {
@@ -48,6 +48,16 @@ fn verify_cluster_access(
             if team_scopes.contains(cluster_team) {
                 Ok(cluster)
             } else {
+                // Record cross-team access attempt for security monitoring
+                if let Some(from_team) = team_scopes.first() {
+                    crate::observability::metrics::record_cross_team_access_attempt(
+                        from_team,
+                        cluster_team,
+                        "clusters",
+                    )
+                    .await;
+                }
+
                 // Return 404 to avoid leaking existence of other teams' resources
                 Err(ApiError::NotFound(format!("Cluster with name '{}' not found", cluster.name)))
             }
@@ -173,7 +183,7 @@ pub async fn get_cluster_handler(
     let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;
 
     // Verify the cluster belongs to one of the user's teams or is global
-    let cluster = verify_cluster_access(cluster, &team_scopes)?;
+    let cluster = verify_cluster_access(cluster, &team_scopes).await?;
 
     let response = cluster_response_from_data(&service, cluster)?;
     Ok(Json(response))
@@ -220,7 +230,7 @@ pub async fn update_cluster_handler(
 
     // Get existing cluster to verify access
     let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
-    verify_cluster_access(existing, &team_scopes)?;
+    verify_cluster_access(existing, &team_scopes).await?;
 
     // Perform the update
     let updated =
@@ -255,7 +265,7 @@ pub async fn delete_cluster_handler(
 
     // Get existing cluster to verify access
     let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
-    verify_cluster_access(existing, &team_scopes)?;
+    verify_cluster_access(existing, &team_scopes).await?;
 
     // Perform the deletion
     service.delete_cluster(&name).await.map_err(ApiError::from)?;

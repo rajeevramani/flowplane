@@ -38,7 +38,7 @@ use validation::{
 
 /// Verify that a listener belongs to one of the user's teams or is global.
 /// Returns the listener if authorized, otherwise returns NotFound error (to avoid leaking existence).
-fn verify_listener_access(
+async fn verify_listener_access(
     listener: ListenerData,
     team_scopes: &[String],
 ) -> Result<ListenerData, ApiError> {
@@ -54,6 +54,16 @@ fn verify_listener_access(
             if team_scopes.contains(listener_team) {
                 Ok(listener)
             } else {
+                // Record cross-team access attempt for security monitoring
+                if let Some(from_team) = team_scopes.first() {
+                    crate::observability::metrics::record_cross_team_access_attempt(
+                        from_team,
+                        listener_team,
+                        "listeners",
+                    )
+                    .await;
+                }
+
                 // Return 404 to avoid leaking existence of other teams' resources
                 Err(ApiError::NotFound(format!("Listener with name '{}' not found", listener.name)))
             }
@@ -183,7 +193,7 @@ pub async fn get_listener_handler(
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the listener belongs to one of the user's teams or is global
-    let listener = verify_listener_access(listener, &team_scopes)?;
+    let listener = verify_listener_access(listener, &team_scopes).await?;
 
     let response = listener_response_from_data(listener)?;
     Ok(Json(response))
@@ -218,7 +228,7 @@ pub async fn update_listener_handler(
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_listener_access(existing.clone(), &team_scopes)?;
+    verify_listener_access(existing.clone(), &team_scopes).await?;
 
     let config = listener_config_from_update(name.clone(), &payload)?;
     let configuration = serde_json::to_value(&config).map_err(|err| {
@@ -279,7 +289,7 @@ pub async fn delete_listener_handler(
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_listener_access(existing.clone(), &team_scopes)?;
+    verify_listener_access(existing.clone(), &team_scopes).await?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 

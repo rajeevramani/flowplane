@@ -131,6 +131,37 @@ impl MetricsRecorder {
         gauge!("auth_tokens_active_total", "state" => "active").set(count as f64);
     }
 
+    /// Update team-scoped resource count gauge
+    pub fn update_team_resource_count(&self, resource_type: &str, team: &str, count: usize) {
+        let labels = [("resource_type", resource_type.to_string()), ("team", team.to_string())];
+        gauge!("xds_team_resources_total", &labels).set(count as f64);
+    }
+
+    /// Record cross-team access attempt
+    pub fn record_cross_team_access_attempt(
+        &self,
+        from_team: &str,
+        to_team: &str,
+        resource_type: &str,
+    ) {
+        let labels = [
+            ("from_team", from_team.to_string()),
+            ("to_team", to_team.to_string()),
+            ("resource_type", resource_type.to_string()),
+        ];
+        counter!("auth_cross_team_access_attempts_total", &labels).increment(1);
+    }
+
+    /// Record team-scoped xDS connection event
+    pub fn record_team_xds_connection(&self, team: &str, connected: bool) {
+        let labels = [("team", team.to_string())];
+        if connected {
+            gauge!("xds_team_connections", &labels).increment(1.0);
+        } else {
+            gauge!("xds_team_connections", &labels).decrement(1.0);
+        }
+    }
+
     /// Register baseline auth metrics so Prometheus exports appear before events occur.
     pub fn register_auth_metrics(&self) {
         describe_counter!(
@@ -179,6 +210,25 @@ impl MetricsRecorder {
             counter!("auth_authentications_total", "status" => *status).absolute(0);
         }
     }
+
+    /// Register team-based metrics for xDS resource distribution
+    pub fn register_team_metrics(&self) {
+        describe_gauge!(
+            "xds_team_resources_total",
+            Unit::Count,
+            "Number of resources (clusters, routes, listeners) served per team"
+        );
+        describe_counter!(
+            "auth_cross_team_access_attempts_total",
+            Unit::Count,
+            "Cross-team resource access attempts blocked by authorization"
+        );
+        describe_gauge!(
+            "xds_team_connections",
+            Unit::Count,
+            "Active xDS connections per team"
+        );
+    }
 }
 
 /// Global metrics recorder instance
@@ -220,6 +270,7 @@ pub async fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
     }
 
     recorder.register_auth_metrics();
+    recorder.register_team_metrics();
 
     info!(
         metrics_addr = %metrics_addr,
@@ -288,6 +339,27 @@ pub async fn record_authentication(status: &str) {
 pub async fn set_active_tokens(count: usize) {
     if let Some(metrics) = get_metrics().await {
         metrics.set_active_tokens(count);
+    }
+}
+
+/// Update team-scoped resource count via the global recorder
+pub async fn update_team_resource_count(resource_type: &str, team: &str, count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.update_team_resource_count(resource_type, team, count);
+    }
+}
+
+/// Record cross-team access attempt via the global recorder
+pub async fn record_cross_team_access_attempt(from_team: &str, to_team: &str, resource_type: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_cross_team_access_attempt(from_team, to_team, resource_type);
+    }
+}
+
+/// Record team-scoped xDS connection via the global recorder
+pub async fn record_team_xds_connection(team: &str, connected: bool) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_team_xds_connection(team, connected);
     }
 }
 
@@ -385,6 +457,15 @@ mod tests {
         recorder.update_uptime(7200.0);
         recorder.update_memory_usage(1024 * 1024 * 128);
         recorder.set_active_tokens(5);
+
+        // Test team-based metrics
+        recorder.update_team_resource_count("cluster", "payments", 42);
+        recorder.update_team_resource_count("route", "billing", 15);
+        recorder.update_team_resource_count("listener", "platform", 3);
+        recorder.record_cross_team_access_attempt("payments", "billing", "clusters");
+        recorder.record_team_xds_connection("payments", true);
+        recorder.record_team_xds_connection("billing", true);
+        recorder.record_team_xds_connection("payments", false);
     }
 
     #[tokio::test]

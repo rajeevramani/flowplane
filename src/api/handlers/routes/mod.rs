@@ -38,7 +38,7 @@ use validation::{
 
 /// Verify that a route belongs to one of the user's teams or is global.
 /// Returns the route if authorized, otherwise returns NotFound error (to avoid leaking existence).
-fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result<RouteData, ApiError> {
+async fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result<RouteData, ApiError> {
     // Admin:all or resource-level scopes (empty team_scopes) can access everything
     if team_scopes.is_empty() {
         return Ok(route);
@@ -51,6 +51,16 @@ fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result<Route
             if team_scopes.contains(route_team) {
                 Ok(route)
             } else {
+                // Record cross-team access attempt for security monitoring
+                if let Some(from_team) = team_scopes.first() {
+                    crate::observability::metrics::record_cross_team_access_attempt(
+                        from_team,
+                        route_team,
+                        "routes",
+                    )
+                    .await;
+                }
+
                 // Return 404 to avoid leaking existence of other teams' resources
                 Err(ApiError::NotFound(format!("Route with name '{}' not found", route.name)))
             }
@@ -186,7 +196,7 @@ pub async fn get_route_handler(
     let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the route belongs to one of the user's teams or is global
-    let route = verify_route_access(route, &team_scopes)?;
+    let route = verify_route_access(route, &team_scopes).await?;
 
     Ok(Json(route_response_from_data(route)?))
 }
@@ -229,7 +239,7 @@ pub async fn update_route_handler(
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
 
     // Verify the route belongs to one of the user's teams or is global
-    verify_route_access(existing.clone(), &team_scopes)?;
+    verify_route_access(existing.clone(), &team_scopes).await?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
     let (path_prefix, cluster_summary) = summarize_route(&payload);
@@ -295,7 +305,7 @@ pub async fn delete_route_handler(
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the route belongs to one of the user's teams or is global
-    verify_route_access(existing.clone(), &team_scopes)?;
+    verify_route_access(existing.clone(), &team_scopes).await?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
