@@ -54,11 +54,7 @@ impl DatabaseAggregatedDiscoveryService {
         let nonce = uuid::Uuid::new_v4().to_string();
 
         let scope = scope_from_discovery(&request.node);
-        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
-            self.create_listener_resources_from_db_scoped(&scope).await?
-        } else {
-            self.build_resources(request.type_url.as_str()).await?
-        };
+        let built = self.build_resources(request.type_url.as_str(), &scope).await?;
         let resources = built.iter().map(|r| r.resource.clone()).collect();
 
         Ok(DiscoveryResponse {
@@ -72,10 +68,17 @@ impl DatabaseAggregatedDiscoveryService {
         })
     }
 
-    /// Create cluster resources from database
-    async fn create_cluster_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+    /// Create cluster resources from database with team-based filtering
+    async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let built = if let Some(repo) = &self.state.cluster_repository {
-            match repo.list(Some(100), None).await {
+            // Extract teams from scope for filtering
+            let teams = match scope {
+                Scope::All => vec![],
+                Scope::Team { team, .. } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
+            };
+
+            match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(cluster_data_list) => {
                     if cluster_data_list.is_empty() {
                         info!(
@@ -324,16 +327,16 @@ impl DatabaseAggregatedDiscoveryService {
         resources::listeners_from_config(&self.state.config)
     }
 
-    async fn build_resources(&self, type_url: &str) -> Result<Vec<BuiltResource>> {
+    async fn build_resources(&self, type_url: &str, scope: &Scope) -> Result<Vec<BuiltResource>> {
         match type_url {
             "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
-                self.create_cluster_resources_from_db().await
+                self.create_cluster_resources_from_db(scope).await
             }
             "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
                 self.create_route_resources_from_db().await
             }
             "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                self.create_listener_resources_from_db_scoped(&Scope::All).await
+                self.create_listener_resources_from_db_scoped(scope).await
             }
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
@@ -356,11 +359,7 @@ impl DatabaseAggregatedDiscoveryService {
         // Build all available resources for this type
         // The stream logic will handle proper delta filtering and ACK detection
         let scope = scope_from_discovery(&request.node);
-        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
-            self.create_listener_resources_from_db_scoped(&scope).await?
-        } else {
-            self.build_resources(&request.type_url).await?
-        };
+        let built = self.build_resources(&request.type_url, &scope).await?;
 
         let resources: Vec<Resource> = built
             .into_iter()
