@@ -45,7 +45,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create discovery response with database-backed resources
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_resource_response(
         &self,
         request: &DiscoveryRequest,
@@ -54,7 +54,30 @@ impl DatabaseAggregatedDiscoveryService {
         let nonce = uuid::Uuid::new_v4().to_string();
 
         let scope = scope_from_discovery(&request.node);
+
+        // Record team and scope information in the span
+        let span = tracing::Span::current();
+        match &scope {
+            Scope::All => {
+                span.record("scope_type", "all");
+                span.record("team", "admin");
+            }
+            Scope::Team { team, include_default } => {
+                span.record("scope_type", "team");
+                span.record("team", team.as_str());
+                if *include_default {
+                    span.record("include_default", true);
+                }
+            }
+            Scope::Allowlist { names } => {
+                span.record("scope_type", "allowlist");
+                span.record("team", format!("allowlist:{}", names.len()).as_str());
+            }
+        }
+
         let built = self.build_resources(request.type_url.as_str(), &scope).await?;
+        span.record("resource_count", built.len());
+
         let resources = built.iter().map(|r| r.resource.clone()).collect();
 
         Ok(DiscoveryResponse {
@@ -69,6 +92,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create cluster resources from database with team-based filtering
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let built = if let Some(repo) = &self.state.cluster_repository {
             // Extract teams from scope for filtering
@@ -78,8 +102,17 @@ impl DatabaseAggregatedDiscoveryService {
                 Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
             };
 
+            // Record team filtering in span
+            let span = tracing::Span::current();
+            if teams.is_empty() {
+                span.record("teams", "all");
+            } else {
+                span.record("teams", format!("{:?}", teams).as_str());
+            }
+
             match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(cluster_data_list) => {
+                    span.record("filtered_count", cluster_data_list.len());
                     if cluster_data_list.is_empty() {
                         info!(
                             "No clusters found in database, falling back to config-based cluster"
@@ -119,6 +152,7 @@ impl DatabaseAggregatedDiscoveryService {
         resources::clusters_from_config(&self.state.config)
     }
 
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
             // Extract teams from scope for filtering
@@ -128,8 +162,17 @@ impl DatabaseAggregatedDiscoveryService {
                 Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
             };
 
+            // Record team filtering in span
+            let span = tracing::Span::current();
+            if teams.is_empty() {
+                span.record("teams", "all");
+            } else {
+                span.record("teams", format!("{:?}", teams).as_str());
+            }
+
             match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(route_data_list) => {
+                    span.record("filtered_count", route_data_list.len());
                     if route_data_list.is_empty() {
                         info!("No routes found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
@@ -261,6 +304,7 @@ impl DatabaseAggregatedDiscoveryService {
         resources::routes_from_config(&self.state.config)
     }
 
+    #[tracing::instrument(skip(self, scope), fields(scope_info, filtered_count))]
     async fn create_listener_resources_from_db_scoped(
         &self,
         scope: &Scope,
@@ -275,8 +319,13 @@ impl DatabaseAggregatedDiscoveryService {
                         self.create_fallback_listener_resources()?
                     } else {
                         let filtered: Vec<crate::storage::repository::ListenerData> = match scope {
-                            Scope::All => listener_data_list,
+                            Scope::All => {
+                                tracing::Span::current().record("scope_info", "all");
+                                listener_data_list
+                            }
                             Scope::Team { team, include_default } => {
+                                tracing::Span::current()
+                                    .record("scope_info", format!("team:{}", team).as_str());
                                 let mut keep = Vec::new();
                                 for entry in listener_data_list.into_iter() {
                                     if entry.name
@@ -302,11 +351,18 @@ impl DatabaseAggregatedDiscoveryService {
                                 }
                                 keep
                             }
-                            Scope::Allowlist { names } => listener_data_list
-                                .into_iter()
-                                .filter(|e| names.contains(&e.name))
-                                .collect(),
+                            Scope::Allowlist { names } => {
+                                tracing::Span::current().record(
+                                    "scope_info",
+                                    format!("allowlist:{}", names.len()).as_str(),
+                                );
+                                listener_data_list
+                                    .into_iter()
+                                    .filter(|e| names.contains(&e.name))
+                                    .collect()
+                            }
                         };
+                        tracing::Span::current().record("filtered_count", filtered.len());
                         info!(
                             phase = "ads_response",
                             listener_count = filtered.len(),
@@ -355,7 +411,7 @@ impl DatabaseAggregatedDiscoveryService {
         }
     }
 
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_delta_response(
         &self,
         request: &DeltaDiscoveryRequest,
@@ -366,7 +422,29 @@ impl DatabaseAggregatedDiscoveryService {
         // Build all available resources for this type
         // The stream logic will handle proper delta filtering and ACK detection
         let scope = scope_from_discovery(&request.node);
+
+        // Record team and scope information in the span
+        let span = tracing::Span::current();
+        match &scope {
+            Scope::All => {
+                span.record("scope_type", "all");
+                span.record("team", "admin");
+            }
+            Scope::Team { team, include_default } => {
+                span.record("scope_type", "team");
+                span.record("team", team.as_str());
+                if *include_default {
+                    span.record("include_default", true);
+                }
+            }
+            Scope::Allowlist { names } => {
+                span.record("scope_type", "allowlist");
+                span.record("team", format!("allowlist:{}", names.len()).as_str());
+            }
+        }
+
         let built = self.build_resources(&request.type_url, &scope).await?;
+        span.record("resource_count", built.len());
 
         let resources: Vec<Resource> = built
             .into_iter()
