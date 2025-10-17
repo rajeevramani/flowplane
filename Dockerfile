@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy dependency files
+# Copy dependency files and benches directory (required by Cargo.toml)
 COPY Cargo.toml Cargo.lock ./
+COPY benches ./benches
 
 # Create a dummy main.rs to build dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs

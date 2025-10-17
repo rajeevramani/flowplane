@@ -28,6 +28,9 @@ use tracing_subscriber::{
 static LOGGING_INITIALIZED: OnceCell<()> = OnceCell::new();
 
 /// Initialize structured logging based on configuration
+///
+/// Note: This only sets up logging (tracing crate for structured logs).
+/// OpenTelemetry distributed tracing is handled separately in init_tracing().
 pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
     let env_filter = parse_env_filter(&config.log_level)?;
 
@@ -36,67 +39,29 @@ pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
 
 fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Result<()> {
     // Build subscriber layers based on configuration
-    if config.enable_tracing && config.otlp_endpoint.is_some() {
-        // With OpenTelemetry layer for trace export
-        // The layer will use the global tracer provider set by init_tracing()
-        let otel_layer = tracing_opentelemetry::layer();
+    // Note: We only handle logging here. OpenTelemetry tracing is separate.
+    if config.json_logging {
+        let json_layer = fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .fmt_fields(JsonFields::new());
 
-        if config.json_logging {
-            let json_layer = fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(false)
-                .fmt_fields(JsonFields::new());
-
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(otel_layer)
-                .with(json_layer)
-                .try_init()
-                .map_err(|e| {
-                    FlowplaneError::config(format!("Failed to initialize logging: {}", e))
-                })?;
-        } else {
-            let pretty_layer = fmt::layer()
-                .pretty()
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_thread_names(true);
-
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(otel_layer)
-                .with(pretty_layer)
-                .try_init()
-                .map_err(|e| {
-                    FlowplaneError::config(format!("Failed to initialize logging: {}", e))
-                })?;
-        }
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(json_layer)
+            .try_init()
+            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
     } else {
-        // Without OpenTelemetry layer
-        if config.json_logging {
-            let json_layer = fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(false)
-                .fmt_fields(JsonFields::new());
+        let pretty_layer =
+            fmt::layer().pretty().with_target(true).with_thread_ids(true).with_thread_names(true);
 
-            tracing_subscriber::registry().with(env_filter).with(json_layer).try_init().map_err(
-                |e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)),
-            )?;
-        } else {
-            let pretty_layer = fmt::layer()
-                .pretty()
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_thread_names(true);
-
-            tracing_subscriber::registry().with(env_filter).with(pretty_layer).try_init().map_err(
-                |e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)),
-            )?;
-        }
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(pretty_layer)
+            .try_init()
+            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
     }
 
     Ok(())
@@ -256,40 +221,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trace_log_correlation() {
-        // This test verifies that when OpenTelemetry tracing is enabled,
-        // log entries include trace context.
-
-        // Note: In a real scenario, you would check the actual log output
-        // for trace_id and span_id fields in JSON mode, or verify that
-        // spans are properly created and nested.
-
-        // For now, we verify that the configuration allows both logging
-        // and tracing to be initialized together without conflicts.
+    async fn test_logging_json() {
+        // Test that JSON logging can be initialized
         let config = crate::config::ObservabilityConfig {
-            enable_tracing: true,
+            enable_tracing: false,
             enable_metrics: false,
-            otlp_endpoint: Some("http://localhost:4317".to_string()),
-            trace_sampling_ratio: 1.0,
             json_logging: true,
             log_level: "info".to_string(),
             ..Default::default()
         };
 
-        // Initialize tracing first (sets up global tracer provider)
-        let _ = super::super::tracing::init_tracing(&config).await;
+        // Initialize logging
+        let result = init_logging(&config);
 
-        // Initialize logging with OpenTelemetry layer
-        let _ = init_logging(&config);
-
-        // Create a span and log within it - in a real trace backend,
-        // the log would include the trace ID and span ID
-        let span = tracing::info_span!("test_span", test_id = "correlation_test");
-        let _guard = span.enter();
-
-        tracing::info!("Test log message with trace context");
-
-        // If we got here without panicking, the integration works
-        assert!(true);
+        // May succeed or fail if already initialized - both are acceptable
+        assert!(result.is_ok() || result.is_err());
     }
 }

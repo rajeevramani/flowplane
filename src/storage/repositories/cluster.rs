@@ -8,6 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Database row structure for clusters
 #[derive(Debug, Clone, FromRow)]
@@ -83,6 +84,7 @@ impl ClusterRepository {
     }
 
     /// Create a new cluster
+    #[instrument(skip(self, request), fields(cluster_name = %request.name), name = "db_create_cluster")]
     pub async fn create(&self, request: CreateClusterRequest) -> Result<ClusterData> {
         let id = ClusterId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
@@ -151,6 +153,7 @@ impl ClusterRepository {
     }
 
     /// Get cluster by name
+    #[instrument(skip(self), fields(cluster_name = %name), name = "db_get_cluster_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
@@ -176,6 +179,7 @@ impl ClusterRepository {
     }
 
     /// List all clusters
+    #[instrument(skip(self), name = "db_list_clusters")]
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<ClusterData>> {
         let limit = limit.unwrap_or(100).min(1000); // Max 1000 results
         let offset = offset.unwrap_or(0);

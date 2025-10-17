@@ -8,9 +8,14 @@ use tracing::{error, info};
 
 use crate::{
     errors::Error,
+    observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_listener,
     storage::{CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest},
     xds::{listener::ListenerConfig, XdsState},
+};
+use opentelemetry::{
+    trace::{Span, SpanKind},
+    KeyValue,
 };
 
 /// Service for managing listener business logic
@@ -42,32 +47,54 @@ impl ListenerService {
         protocol: String,
         config: ListenerConfig,
     ) -> Result<ListenerData, Error> {
-        let repository = self.repository()?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let configuration = serde_json::to_value(&config).map_err(|err| {
-            Error::internal(format!("Failed to serialize listener configuration: {}", err))
-        })?;
+        let mut span =
+            create_operation_span("listener_service.create_listener", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("listener.name", name.clone()));
+        span.set_attribute(KeyValue::new("listener.address", address.clone()));
+        span.set_attribute(KeyValue::new("listener.port", port as i64));
+        span.set_attribute(KeyValue::new("listener.protocol", protocol.clone()));
 
-        let request = CreateListenerRequest {
-            name: name.clone(),
-            address: address.clone(),
-            port: Some(port as i64),
-            protocol: Some(protocol.clone()),
-            configuration,
-            team: None, // Native API listeners don't have team assignment by default
-        };
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        let created = repository.create(request).await?;
+        async move {
+            let repository = self.repository()?;
 
-        info!(
-            listener_id = %created.id,
-            listener_name = %created.name,
-            "Listener created"
-        );
+            let configuration = serde_json::to_value(&config).map_err(|err| {
+                Error::internal(format!("Failed to serialize listener configuration: {}", err))
+            })?;
 
-        self.refresh_xds().await?;
+            let request = CreateListenerRequest {
+                name: name.clone(),
+                address: address.clone(),
+                port: Some(port as i64),
+                protocol: Some(protocol.clone()),
+                configuration,
+                team: None, // Native API listeners don't have team assignment by default
+            };
 
-        Ok(created)
+            let mut db_span = create_operation_span("db.listener.insert", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+            db_span.set_attribute(KeyValue::new("db.table", "listeners"));
+            let created = repository.create(request).await?;
+            drop(db_span);
+
+            info!(
+                listener_id = %created.id,
+                listener_name = %created.name,
+                "Listener created"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("listener.id", created.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(created)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// List all listeners
@@ -95,54 +122,96 @@ impl ListenerService {
         protocol: String,
         config: ListenerConfig,
     ) -> Result<ListenerData, Error> {
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let configuration = serde_json::to_value(&config).map_err(|err| {
-            Error::internal(format!("Failed to serialize listener configuration: {}", err))
-        })?;
+        let mut span =
+            create_operation_span("listener_service.update_listener", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("listener.name", name.to_string()));
+        span.set_attribute(KeyValue::new("listener.address", address.clone()));
+        span.set_attribute(KeyValue::new("listener.port", port as i64));
+        span.set_attribute(KeyValue::new("listener.protocol", protocol.clone()));
 
-        let update_request = UpdateListenerRequest {
-            address: Some(address),
-            port: Some(Some(port as i64)),
-            protocol: Some(protocol),
-            configuration: Some(configuration),
-            team: None, // Don't modify team on update unless explicitly set
-        };
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        let updated = repository.update(&existing.id, update_request).await?;
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        info!(
-            listener_id = %updated.id,
-            listener_name = %updated.name,
-            "Listener updated"
-        );
+            let configuration = serde_json::to_value(&config).map_err(|err| {
+                Error::internal(format!("Failed to serialize listener configuration: {}", err))
+            })?;
 
-        self.refresh_xds().await?;
+            let update_request = UpdateListenerRequest {
+                address: Some(address),
+                port: Some(Some(port as i64)),
+                protocol: Some(protocol),
+                configuration: Some(configuration),
+                team: None, // Don't modify team on update unless explicitly set
+            };
 
-        Ok(updated)
+            let mut db_span = create_operation_span("db.listener.update", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "UPDATE"));
+            db_span.set_attribute(KeyValue::new("db.table", "listeners"));
+            let updated = repository.update(&existing.id, update_request).await?;
+            drop(db_span);
+
+            info!(
+                listener_id = %updated.id,
+                listener_name = %updated.name,
+                "Listener updated"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("listener.id", updated.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(updated)
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Delete a listener by name
     pub async fn delete_listener(&self, name: &str) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
         if is_default_gateway_listener(name) {
             return Err(Error::validation("The default gateway listener cannot be deleted"));
         }
 
-        let repository = self.repository()?;
-        let existing = repository.get_by_name(name).await?;
+        let mut span =
+            create_operation_span("listener_service.delete_listener", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("listener.name", name.to_string()));
 
-        repository.delete(&existing.id).await?;
+        let cx = opentelemetry::Context::current().with_span(span);
 
-        info!(
-            listener_id = %existing.id,
-            listener_name = %existing.name,
-            "Listener deleted"
-        );
+        async move {
+            let repository = self.repository()?;
+            let existing = repository.get_by_name(name).await?;
 
-        self.refresh_xds().await?;
+            let mut db_span = create_operation_span("db.listener.delete", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
+            db_span.set_attribute(KeyValue::new("db.table", "listeners"));
+            db_span.set_attribute(KeyValue::new("listener.id", existing.id.to_string()));
+            repository.delete(&existing.id).await?;
+            drop(db_span);
 
-        Ok(())
+            info!(
+                listener_id = %existing.id,
+                listener_name = %existing.name,
+                "Listener deleted"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("listener.id", existing.id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
     }
 
     /// Parse listener configuration from stored JSON
