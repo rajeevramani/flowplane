@@ -5,7 +5,7 @@
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
 use ::tracing::{info, warn};
-use metrics::{counter, describe_counter, describe_gauge, gauge, histogram, Unit};
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -162,6 +162,36 @@ impl MetricsRecorder {
         }
     }
 
+    /// Record access log message received
+    pub fn record_access_log_message(&self, entry_count: usize) {
+        counter!("access_log_messages_total").increment(1);
+        counter!("access_log_entries_total").increment(entry_count as u64);
+    }
+
+    /// Record access log processing latency
+    pub fn record_access_log_latency(&self, duration: f64) {
+        histogram!("access_log_processing_duration_seconds").record(duration);
+    }
+
+    /// Record access log filtering result
+    pub fn record_access_log_filter(&self, matched: bool) {
+        let status = if matched { "matched" } else { "filtered" };
+        let labels = [("status", status.to_string())];
+        counter!("access_log_filter_results_total", &labels).increment(1);
+    }
+
+    /// Record queued access log entry
+    pub fn record_access_log_queued(&self, session_id: &str) {
+        counter!("access_log_entries_queued_total").increment(1);
+        let labels = [("session_id", session_id.to_string())];
+        counter!("access_log_entries_queued_total", &labels).increment(1);
+    }
+
+    /// Update active learning sessions gauge
+    pub fn update_active_learning_sessions(&self, count: usize) {
+        gauge!("access_log_learning_sessions_active").set(count as f64);
+    }
+
     /// Register baseline auth metrics so Prometheus exports appear before events occur.
     pub fn register_auth_metrics(&self) {
         describe_counter!(
@@ -225,6 +255,48 @@ impl MetricsRecorder {
         );
         describe_gauge!("xds_team_connections", Unit::Count, "Active xDS connections per team");
     }
+
+    /// Register access log service metrics
+    pub fn register_access_log_metrics(&self) {
+        describe_counter!(
+            "access_log_messages_total",
+            Unit::Count,
+            "Total number of access log messages received from Envoy"
+        );
+        describe_counter!(
+            "access_log_entries_total",
+            Unit::Count,
+            "Total number of access log entries processed"
+        );
+        describe_histogram!(
+            "access_log_processing_duration_seconds",
+            Unit::Seconds,
+            "Duration of access log message processing"
+        );
+        describe_counter!(
+            "access_log_filter_results_total",
+            Unit::Count,
+            "Access log filtering results (matched vs filtered)"
+        );
+        describe_counter!(
+            "access_log_entries_queued_total",
+            Unit::Count,
+            "Number of access log entries queued for background processing"
+        );
+        describe_gauge!(
+            "access_log_learning_sessions_active",
+            Unit::Count,
+            "Number of active learning sessions"
+        );
+
+        // Initialize counters to zero
+        counter!("access_log_messages_total").absolute(0);
+        counter!("access_log_entries_total").absolute(0);
+        counter!("access_log_filter_results_total", "status" => "matched").absolute(0);
+        counter!("access_log_filter_results_total", "status" => "filtered").absolute(0);
+        counter!("access_log_entries_queued_total").absolute(0);
+        gauge!("access_log_learning_sessions_active").set(0.0);
+    }
 }
 
 /// Global metrics recorder instance
@@ -267,6 +339,7 @@ pub async fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
 
     recorder.register_auth_metrics();
     recorder.register_team_metrics();
+    recorder.register_access_log_metrics();
 
     info!(
         metrics_addr = %metrics_addr,
@@ -356,6 +429,41 @@ pub async fn record_cross_team_access_attempt(from_team: &str, to_team: &str, re
 pub async fn record_team_xds_connection(team: &str, connected: bool) {
     if let Some(metrics) = get_metrics().await {
         metrics.record_team_xds_connection(team, connected);
+    }
+}
+
+/// Record access log message received via the global recorder
+pub async fn record_access_log_message(entry_count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_message(entry_count);
+    }
+}
+
+/// Record access log processing latency via the global recorder
+pub async fn record_access_log_latency(duration: f64) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_latency(duration);
+    }
+}
+
+/// Record access log filter result via the global recorder
+pub async fn record_access_log_filter(matched: bool) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_filter(matched);
+    }
+}
+
+/// Record access log entry queued via the global recorder
+pub async fn record_access_log_queued(session_id: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_queued(session_id);
+    }
+}
+
+/// Update active learning sessions count via the global recorder
+pub async fn update_active_learning_sessions(count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.update_active_learning_sessions(count);
     }
 }
 

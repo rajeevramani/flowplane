@@ -21,10 +21,14 @@ use std::sync::Arc;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
 
+use envoy_types::pb::envoy::service::accesslog::v3::access_log_service_server::AccessLogServiceServer;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
 
 pub use cluster_spec::*;
-pub use services::{DatabaseAggregatedDiscoveryService, MinimalAggregatedDiscoveryService};
+pub use services::{
+    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService,
+    MinimalAggregatedDiscoveryService,
+};
 pub use state::XdsState;
 
 /// Start the minimal xDS gRPC server with configuration and graceful shutdown
@@ -50,15 +54,23 @@ where
     // Create ADS service implementation
     let ads_service = MinimalAggregatedDiscoveryService::new(state.clone());
 
-    // Build and start the gRPC server with ADS service only
+    // Create AccessLogService for receiving Envoy access logs
+    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
+    // TODO: Spawn background task to process log_rx entries
+
+    // Build and start the gRPC server with ADS service and AccessLogService
     // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
+        .add_service(AccessLogServiceServer::new(access_log_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
-    info!("XDS server listening on {}", addr);
+    info!(
+        address = %addr,
+        "XDS server with AccessLogService listening"
+    );
 
     // Start the server with graceful shutdown
     server
@@ -114,13 +126,21 @@ where
 
     let ads_service = DatabaseAggregatedDiscoveryService::new(state.clone());
 
+    // Create AccessLogService for receiving Envoy access logs
+    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
+    // TODO: Spawn background task to process log_rx entries
+
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
+        .add_service(AccessLogServiceServer::new(access_log_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
-    info!("Database-enabled XDS server listening on {}", addr);
+    info!(
+        address = %addr,
+        "Database-enabled XDS server with AccessLogService listening"
+    );
 
     server
         .await
