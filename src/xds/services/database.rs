@@ -68,8 +68,8 @@ impl DatabaseAggregatedDiscoveryService {
                 if *include_default {
                     span.record("include_default", true);
                 }
-                // Record team connection metric
-                crate::observability::metrics::record_team_xds_connection(team, true).await;
+                // NOTE: Team connection metric is now tracked at stream lifecycle level
+                // in stream.rs (increment on stream start, decrement on stream close)
             }
             Scope::Allowlist { names } => {
                 span.record("scope_type", "allowlist");

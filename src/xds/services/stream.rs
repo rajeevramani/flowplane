@@ -173,7 +173,12 @@ where
                             {
                                 let mut team_guard = team_for_stream.lock().await;
                                 if team_guard.is_none() && team_extracted.is_some() {
-                                    *team_guard = team_extracted;
+                                    *team_guard = team_extracted.clone();
+                                    // Increment connection metric when we first track a team for this stream
+                                    if let Some(ref team) = team_extracted {
+                                        crate::observability::metrics::record_team_xds_connection(team, true).await;
+                                        info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
+                                    }
                                 }
                             }
 
@@ -462,7 +467,12 @@ where
                                 {
                                     let mut team_guard = team_for_stream.lock().await;
                                     if team_guard.is_none() && team_extracted.is_some() {
-                                        *team_guard = team_extracted;
+                                        *team_guard = team_extracted.clone();
+                                        // Increment connection metric when we first track a team for this stream
+                                        if let Some(ref team) = team_extracted {
+                                            crate::observability::metrics::record_team_xds_connection(team, true).await;
+                                            info!(stream = %label, team = %team, "New Delta xDS stream established, incrementing connection gauge");
+                                        }
                                     }
                                 }
 
