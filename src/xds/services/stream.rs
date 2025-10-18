@@ -71,6 +71,37 @@ struct LastDiscoverySnapshot {
     nonce: Arc<str>,
 }
 
+/// Extract team identifier from Envoy node metadata
+///
+/// # Arguments
+///
+/// * `node` - Optional Envoy node metadata from discovery request
+///
+/// # Returns
+///
+/// `Some(team)` if team metadata is present, `None` otherwise
+fn extract_team_from_node(
+    node: &Option<envoy_types::pb::envoy::config::core::v3::Node>,
+) -> Option<String> {
+    node.as_ref().and_then(|n| {
+        n.metadata.as_ref().and_then(|meta| {
+            meta.fields.get("team").and_then(|v| {
+                if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
+                    v.kind.as_ref()
+                {
+                    if !s.is_empty() {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        })
+    })
+}
+
 /// Run the shared SOTW (State of the World) ADS stream loop.
 ///
 /// This function implements the core xDS streaming protocol for CDS, RDS, LDS, and EDS.
@@ -117,9 +148,15 @@ where
     let mut update_rx = state.subscribe_updates();
     let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
 
+    // Track the team for this stream to decrement connection metric on stream close
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let team_for_cleanup = team_for_stream.clone();
+
     tokio::spawn(async move {
-        loop {
-            tokio::select! {
+        // Run the stream loop and ensure cleanup happens
+        async {
+            loop {
+                tokio::select! {
                 result = in_stream.next() => {
                     match result {
                         Some(Ok(discovery_request)) => {
@@ -130,6 +167,20 @@ where
                                 stream = %label,
                                 "Received discovery request"
                             );
+
+                            // Extract and track team from node metadata on first request
+                            let team_extracted = extract_team_from_node(&discovery_request.node);
+                            {
+                                let mut team_guard = team_for_stream.lock().await;
+                                if team_guard.is_none() && team_extracted.is_some() {
+                                    *team_guard = team_extracted.clone();
+                                    // Increment connection metric when we first track a team for this stream
+                                    if let Some(ref team) = team_extracted {
+                                        crate::observability::metrics::record_team_xds_connection(team, true).await;
+                                        info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
+                                    }
+                                }
+                            }
 
                             let state = state_clone.clone();
                             let responder = responder.clone();
@@ -321,7 +372,18 @@ where
                     info!(stream = %label, "Shutting down ADS stream");
                     break;
                 }
+                }
             }
+        }
+        .await;
+
+        // Stream cleanup: decrement the connection gauge for this team
+        let team_option = team_for_cleanup.lock().await;
+        if let Some(team) = team_option.as_ref() {
+            info!(stream = %label, team = %team, "xDS stream closing, decrementing connection gauge");
+            crate::observability::metrics::record_team_xds_connection(team, false).await;
+        } else {
+            debug!(stream = %label, "xDS stream closing, but no team was tracked");
         }
     });
 
@@ -380,27 +442,46 @@ where
     let label: Arc<str> = Arc::from(label);
     let mut update_rx = state.subscribe_updates();
 
+    // Track the team for this stream to decrement connection metric on stream close
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let team_for_cleanup = team_for_stream.clone();
+
     tokio::spawn(async move {
         let mut pending_types: HashSet<String> = HashSet::new();
 
-        loop {
-            tokio::select! {
-                result = in_stream.next() => {
-                    match result {
-                        Some(Ok(delta_request)) => {
-                            info!(
-                                type_url = %delta_request.type_url,
-                                nonce = %delta_request.response_nonce,
-                                stream = %label,
-                                "Received delta discovery request"
-                            );
+        async {
+            loop {
+                tokio::select! {
+                    result = in_stream.next() => {
+                        match result {
+                            Some(Ok(delta_request)) => {
+                                info!(
+                                    type_url = %delta_request.type_url,
+                                    nonce = %delta_request.response_nonce,
+                                    stream = %label,
+                                    "Received delta discovery request"
+                                );
 
-                            // Check if this is an ACK/NACK (has our previous nonce) or initial request
-                            let is_ack_or_nack = !delta_request.response_nonce.is_empty();
+                                // Extract and track team from node metadata on first request
+                                let team_extracted = extract_team_from_node(&delta_request.node);
+                                {
+                                    let mut team_guard = team_for_stream.lock().await;
+                                    if team_guard.is_none() && team_extracted.is_some() {
+                                        *team_guard = team_extracted.clone();
+                                        // Increment connection metric when we first track a team for this stream
+                                        if let Some(ref team) = team_extracted {
+                                            crate::observability::metrics::record_team_xds_connection(team, true).await;
+                                            info!(stream = %label, team = %team, "New Delta xDS stream established, incrementing connection gauge");
+                                        }
+                                    }
+                                }
 
-                            if is_ack_or_nack {
-                                if let Some(error_detail) = &delta_request.error_detail {
-                                    warn!(
+                                // Check if this is an ACK/NACK (has our previous nonce) or initial request
+                                let is_ack_or_nack = !delta_request.response_nonce.is_empty();
+
+                                if is_ack_or_nack {
+                                    if let Some(error_detail) = &delta_request.error_detail {
+                                        warn!(
                                         nonce = %delta_request.response_nonce,
                                         error_code = error_detail.code,
                                         error_message = %error_detail.message,
@@ -536,7 +617,18 @@ where
                     info!(stream = %label, "Shutting down delta ADS stream");
                     break;
                 }
+                }
             }
+        }
+        .await;
+
+        // Stream cleanup: decrement the connection gauge for this team
+        let team_option = team_for_cleanup.lock().await;
+        if let Some(team) = team_option.as_ref() {
+            info!(stream = %label, team = %team, "Delta xDS stream closing, decrementing connection gauge");
+            crate::observability::metrics::record_team_xds_connection(team, false).await;
+        } else {
+            debug!(stream = %label, "Delta xDS stream closing, but no team was tracked");
         }
     });
 
@@ -575,5 +667,123 @@ fn build_delta_response(update_version: u64, delta: &ResourceDelta) -> DeltaDisc
         resources,
         removed_resources: delta.removed.clone(),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use envoy_types::pb::envoy::config::core::v3::Node;
+    use envoy_types::pb::google::protobuf::value::Kind;
+    use envoy_types::pb::google::protobuf::{Struct, Value};
+    use std::collections::HashMap;
+
+    /// Test extracting team from node metadata with valid team field
+    #[test]
+    fn test_extract_team_from_node_with_team() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "team".to_string(),
+            Value { kind: Some(Kind::StringValue("payments".to_string())) },
+        );
+
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, Some("payments".to_string()));
+    }
+
+    /// Test extracting team from node metadata with empty team string
+    #[test]
+    fn test_extract_team_from_node_with_empty_team() {
+        let mut fields = HashMap::new();
+        fields.insert("team".to_string(), Value { kind: Some(Kind::StringValue("".to_string())) });
+
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, None);
+    }
+
+    /// Test extracting team from node metadata without team field
+    #[test]
+    fn test_extract_team_from_node_without_team() {
+        let fields = HashMap::new();
+
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, None);
+    }
+
+    /// Test extracting team from node without metadata
+    #[test]
+    fn test_extract_team_from_node_without_metadata() {
+        let node = Some(Node { id: "test-node".to_string(), metadata: None, ..Default::default() });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, None);
+    }
+
+    /// Test extracting team when node is None
+    #[test]
+    fn test_extract_team_from_none_node() {
+        let result = extract_team_from_node(&None);
+        assert_eq!(result, None);
+    }
+
+    /// Test extracting team with non-string metadata value
+    #[test]
+    fn test_extract_team_from_node_with_non_string_team() {
+        let mut fields = HashMap::new();
+        fields.insert("team".to_string(), Value { kind: Some(Kind::NumberValue(123.0)) });
+
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, None);
+    }
+
+    /// Test extracting team with multiple metadata fields
+    #[test]
+    fn test_extract_team_from_node_with_multiple_fields() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "team".to_string(),
+            Value { kind: Some(Kind::StringValue("platform".to_string())) },
+        );
+        fields.insert(
+            "cluster".to_string(),
+            Value { kind: Some(Kind::StringValue("prod".to_string())) },
+        );
+        fields.insert(
+            "region".to_string(),
+            Value { kind: Some(Kind::StringValue("us-west-2".to_string())) },
+        );
+
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = extract_team_from_node(&node);
+        assert_eq!(result, Some("platform".to_string()));
     }
 }

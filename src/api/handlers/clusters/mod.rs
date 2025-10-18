@@ -20,13 +20,50 @@ use axum::{
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
+    auth::authorization::{extract_team_scopes, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     services::ClusterService,
 };
 
 use validation::{cluster_parts_from_body, cluster_response_from_data, ClusterConfigParts};
+
+// === Helper Functions ===
+
+/// Verify that a cluster belongs to one of the user's teams or is global.
+/// Returns the cluster if authorized, otherwise returns NotFound error (to avoid leaking existence).
+async fn verify_cluster_access(
+    cluster: crate::storage::ClusterData,
+    team_scopes: &[String],
+) -> Result<crate::storage::ClusterData, ApiError> {
+    // Admin:all or resource-level scopes (empty team_scopes) can access everything
+    if team_scopes.is_empty() {
+        return Ok(cluster);
+    }
+
+    // Check if cluster is global (team = NULL) or belongs to one of user's teams
+    match &cluster.team {
+        None => Ok(cluster), // Global cluster, accessible to all
+        Some(cluster_team) => {
+            if team_scopes.contains(cluster_team) {
+                Ok(cluster)
+            } else {
+                // Record cross-team access attempt for security monitoring
+                if let Some(from_team) = team_scopes.first() {
+                    crate::observability::metrics::record_cross_team_access_attempt(
+                        from_team,
+                        cluster_team,
+                        "clusters",
+                    )
+                    .await;
+                }
+
+                // Return 404 to avoid leaking existence of other teams' resources
+                Err(ApiError::NotFound(format!("Cluster with name '{}' not found", cluster.name)))
+            }
+        }
+    }
+}
 
 // === Handler Implementations ===
 
@@ -54,9 +91,16 @@ pub async fn create_cluster_handler(
 
     let ClusterConfigParts { name, service_name, config } = cluster_parts_from_body(payload);
 
+    // Extract team from auth context
+    // - Team-scoped users create resources for their team
+    // - Admin/resource-level users create global resources (team = None)
+    let team = extract_team_scopes(&context).into_iter().next();
+
     let service = ClusterService::new(state.xds_state.clone());
-    let created =
-        service.create_cluster(name, service_name, config.clone()).await.map_err(ApiError::from)?;
+    let created = service
+        .create_cluster(name, service_name, config.clone(), team)
+        .await
+        .map_err(ApiError::from)?;
 
     Ok((
         StatusCode::CREATED,
@@ -89,9 +133,22 @@ pub async fn list_clusters_handler(
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
 
-    let service = ClusterService::new(state.xds_state.clone());
-    let rows = service.list_clusters(params.limit, params.offset).await.map_err(ApiError::from)?;
+    // Extract team scopes from auth context for filtering
+    let team_scopes = extract_team_scopes(&context);
 
+    // Get repository and apply team filtering
+    let repository = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Cluster repository unavailable"))?;
+
+    let rows = repository
+        .list_by_teams(&team_scopes, params.limit, params.offset)
+        .await
+        .map_err(ApiError::from)?;
+
+    let service = ClusterService::new(state.xds_state.clone());
     let mut clusters = Vec::with_capacity(rows.len());
     for row in rows {
         clusters.push(cluster_response_from_data(&service, row)?);
@@ -119,8 +176,15 @@ pub async fn get_cluster_handler(
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
 
+    // Extract team scopes for access verification
+    let team_scopes = extract_team_scopes(&context);
+
     let service = ClusterService::new(state.xds_state.clone());
     let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;
+
+    // Verify the cluster belongs to one of the user's teams or is global
+    let cluster = verify_cluster_access(cluster, &team_scopes).await?;
+
     let response = cluster_response_from_data(&service, cluster)?;
     Ok(Json(response))
 }
@@ -160,7 +224,15 @@ pub async fn update_cluster_handler(
         )));
     }
 
+    // Extract team scopes and verify access before updating
+    let team_scopes = extract_team_scopes(&context);
     let service = ClusterService::new(state.xds_state.clone());
+
+    // Get existing cluster to verify access
+    let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
+    verify_cluster_access(existing, &team_scopes).await?;
+
+    // Perform the update
     let updated =
         service.update_cluster(&name, service_name, config).await.map_err(ApiError::from)?;
 
@@ -187,7 +259,15 @@ pub async fn delete_cluster_handler(
     // Authorization: require clusters:write scope (delete is a write operation)
     require_resource_access(&context, "clusters", "write", None)?;
 
+    // Extract team scopes and verify access before deleting
+    let team_scopes = extract_team_scopes(&context);
     let service = ClusterService::new(state.xds_state.clone());
+
+    // Get existing cluster to verify access
+    let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
+    verify_cluster_access(existing, &team_scopes).await?;
+
+    // Perform the deletion
     service.delete_cluster(&name).await.map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -445,5 +525,316 @@ mod tests {
         let repo = state.xds_state.cluster_repository.as_ref().cloned().expect("repository");
         let result = repo.get_by_name("api-cluster").await;
         assert!(result.is_err());
+    }
+
+    // === Team Isolation Tests ===
+
+    /// Create a team-scoped AuthContext for testing
+    fn team_context(team: &str, resource: &str, actions: &[&str]) -> AuthContext {
+        let scopes =
+            actions.iter().map(|action| format!("team:{}:{}:{}", team, resource, action)).collect();
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("test-token"),
+            format!("{}-user", team),
+            scopes,
+        )
+    }
+
+    /// Directly insert a cluster into the database with a team assignment
+    async fn insert_cluster_with_team(
+        state: &ApiState,
+        name: &str,
+        team: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let config = serde_json::json!({
+            "endpoints": [{"host": "10.0.0.1", "port": 8080}],
+            "connectTimeout": "7s",
+            "useTls": false,
+        });
+
+        let request = crate::storage::CreateClusterRequest {
+            name: name.to_string(),
+            service_name: name.to_string(),
+            configuration: config,
+            team: team.map(String::from),
+        };
+
+        repo.create(request).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_clusters_filters_by_team() {
+        let state = setup_state().await;
+
+        // Insert clusters for different teams
+        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+            .await
+            .expect("insert team-a cluster");
+        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+            .await
+            .expect("insert team-b cluster");
+        insert_cluster_with_team(&state, "global-cluster", None)
+            .await
+            .expect("insert global cluster");
+
+        // User with team-a scope should see team-a and global clusters
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let response = list_clusters_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Query(ListClustersQuery::default()),
+        )
+        .await
+        .expect("list clusters for team-a");
+
+        let clusters = response.0;
+        assert_eq!(clusters.len(), 2);
+        let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"team-a-cluster"));
+        assert!(names.contains(&"global-cluster"));
+        assert!(!names.contains(&"team-b-cluster"));
+
+        // User with team-b scope should see team-b and global clusters
+        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let response = list_clusters_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Query(ListClustersQuery::default()),
+        )
+        .await
+        .expect("list clusters for team-b");
+
+        let clusters = response.0;
+        assert_eq!(clusters.len(), 2);
+        let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"team-b-cluster"));
+        assert!(names.contains(&"global-cluster"));
+        assert!(!names.contains(&"team-a-cluster"));
+
+        // Admin should see all clusters
+        let response = list_clusters_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Query(ListClustersQuery::default()),
+        )
+        .await
+        .expect("list clusters for admin");
+
+        let clusters = response.0;
+        assert_eq!(clusters.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn get_cluster_rejects_cross_team_access() {
+        let state = setup_state().await;
+
+        // Insert a cluster for team-a
+        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+            .await
+            .expect("insert team-a cluster");
+
+        // User from team-b tries to get team-a's cluster - should get 404
+        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Path("team-a-cluster".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ApiError::NotFound(msg) => {
+                assert!(msg.contains("team-a-cluster"));
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("Expected NotFound error, got {:?}", other),
+        }
+
+        // User from team-a can access their own cluster
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path("team-a-cluster".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_cluster_allows_global_cluster_access() {
+        let state = setup_state().await;
+
+        // Insert a global cluster (no team)
+        insert_cluster_with_team(&state, "global-cluster", None)
+            .await
+            .expect("insert global cluster");
+
+        // Users from any team can access global clusters
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path("global-cluster".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Path("global-cluster".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_cluster_rejects_cross_team_access() {
+        let state = setup_state().await;
+
+        // Insert a cluster for team-a
+        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+            .await
+            .expect("insert team-a cluster");
+
+        let mut update_body = sample_request();
+        update_body.name = "team-a-cluster".to_string();
+        update_body.service_name = Some("updated".to_string());
+
+        // User from team-b tries to update team-a's cluster - should get 404
+        let team_b_context = team_context("team-b", "clusters", &["write"]);
+        let result = update_cluster_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Path("team-a-cluster".to_string()),
+            Json(update_body.clone()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ApiError::NotFound(msg) => {
+                assert!(msg.contains("team-a-cluster"));
+            }
+            other => panic!("Expected NotFound error, got {:?}", other),
+        }
+
+        // User from team-a can update their own cluster
+        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let result = update_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path("team-a-cluster".to_string()),
+            Json(update_body),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_rejects_cross_team_access() {
+        let state = setup_state().await;
+
+        // Insert clusters for different teams
+        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+            .await
+            .expect("insert team-a cluster");
+        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+            .await
+            .expect("insert team-b cluster");
+
+        // User from team-a tries to delete team-b's cluster - should get 404
+        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let result = delete_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context.clone()),
+            Path("team-b-cluster".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ApiError::NotFound(msg) => {
+                assert!(msg.contains("team-b-cluster"));
+            }
+            other => panic!("Expected NotFound error, got {:?}", other),
+        }
+
+        // Verify team-b cluster still exists
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let cluster = repo.get_by_name("team-b-cluster").await;
+        assert!(cluster.is_ok());
+
+        // User from team-a can delete their own cluster
+        let result = delete_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path("team-a-cluster".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn team_scoped_user_creates_team_scoped_cluster() {
+        let state = setup_state().await;
+        let body = sample_request();
+
+        // Team-scoped user creates a cluster
+        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Extension(team_a_context), Json(body))
+                .await
+                .expect("create cluster");
+
+        // Verify the cluster was assigned to team-a
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
+        assert_eq!(stored.team, Some("team-a".to_string()));
+
+        // Verify that team-b user cannot access it
+        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_b_context),
+            Path(created.name.clone()),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_user_creates_global_cluster() {
+        let state = setup_state().await;
+        let body = sample_request();
+
+        // Admin creates a cluster
+        let (_status, Json(created)) =
+            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
+                .await
+                .expect("create cluster");
+
+        // Verify the cluster is global (no team)
+        let repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
+        assert_eq!(stored.team, None);
+
+        // Verify that team users can access global clusters
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(team_a_context),
+            Path(created.name.clone()),
+        )
+        .await;
+        assert!(result.is_ok());
     }
 }

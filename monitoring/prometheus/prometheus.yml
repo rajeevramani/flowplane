@@ -1,0 +1,36 @@
+# Prometheus configuration for Flowplane monitoring
+global:
+  scrape_interval: 15s      # Scrape metrics every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    monitor: 'flowplane-monitor'
+    environment: 'development'
+
+# Scrape configurations
+scrape_configs:
+  # Flowplane control plane metrics
+  - job_name: 'flowplane'
+    static_configs:
+      # Use host.docker.internal to access host machine from container
+      # On Linux, use 'host-gateway' extra_hosts in docker-compose
+      - targets: ['host.docker.internal:9090']
+        labels:
+          service: 'flowplane-control-plane'
+          component: 'api'
+
+    # Scrape metrics every 10 seconds for real-time monitoring
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+    # Relabel to add useful metadata
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'flowplane-control-plane'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'

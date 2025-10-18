@@ -45,6 +45,7 @@ impl ClusterService {
         name: String,
         service_name: String,
         config: ClusterSpec,
+        team: Option<String>,
     ) -> Result<ClusterData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -66,7 +67,7 @@ impl ClusterService {
                 name: name.clone(),
                 service_name: service_name.clone(),
                 configuration,
-                team: None, // Native API clusters don't have team assignment by default
+                team,
             };
 
             // Create nested span for database operation

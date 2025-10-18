@@ -45,7 +45,7 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create discovery response with database-backed resources
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_resource_response(
         &self,
         request: &DiscoveryRequest,
@@ -54,11 +54,32 @@ impl DatabaseAggregatedDiscoveryService {
         let nonce = uuid::Uuid::new_v4().to_string();
 
         let scope = scope_from_discovery(&request.node);
-        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
-            self.create_listener_resources_from_db_scoped(&scope).await?
-        } else {
-            self.build_resources(request.type_url.as_str()).await?
-        };
+
+        // Record team and scope information in the span
+        let span = tracing::Span::current();
+        match &scope {
+            Scope::All => {
+                span.record("scope_type", "all");
+                span.record("team", "admin");
+            }
+            Scope::Team { team, include_default } => {
+                span.record("scope_type", "team");
+                span.record("team", team.as_str());
+                if *include_default {
+                    span.record("include_default", true);
+                }
+                // NOTE: Team connection metric is now tracked at stream lifecycle level
+                // in stream.rs (increment on stream start, decrement on stream close)
+            }
+            Scope::Allowlist { names } => {
+                span.record("scope_type", "allowlist");
+                span.record("team", format!("allowlist:{}", names.len()).as_str());
+            }
+        }
+
+        let built = self.build_resources(request.type_url.as_str(), &scope).await?;
+        span.record("resource_count", built.len());
+
         let resources = built.iter().map(|r| r.resource.clone()).collect();
 
         Ok(DiscoveryResponse {
@@ -72,11 +93,39 @@ impl DatabaseAggregatedDiscoveryService {
         })
     }
 
-    /// Create cluster resources from database
-    async fn create_cluster_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+    /// Create cluster resources from database with team-based filtering
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
+    async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let built = if let Some(repo) = &self.state.cluster_repository {
-            match repo.list(Some(100), None).await {
+            // Extract teams from scope for filtering
+            let teams = match scope {
+                Scope::All => vec![],
+                Scope::Team { team, .. } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
+            };
+
+            // Record team filtering in span
+            let span = tracing::Span::current();
+            if teams.is_empty() {
+                span.record("teams", "all");
+            } else {
+                span.record("teams", format!("{:?}", teams).as_str());
+            }
+
+            match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(cluster_data_list) => {
+                    span.record("filtered_count", cluster_data_list.len());
+
+                    // Record team-scoped resource count metrics
+                    if let Some(team) = teams.first() {
+                        crate::observability::metrics::update_team_resource_count(
+                            "cluster",
+                            team,
+                            cluster_data_list.len(),
+                        )
+                        .await;
+                    }
+
                     if cluster_data_list.is_empty() {
                         info!(
                             "No clusters found in database, falling back to config-based cluster"
@@ -116,10 +165,38 @@ impl DatabaseAggregatedDiscoveryService {
         resources::clusters_from_config(&self.state.config)
     }
 
-    async fn create_route_resources_from_db(&self) -> Result<Vec<BuiltResource>> {
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
+    async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
-            match repo.list(Some(100), None).await {
+            // Extract teams from scope for filtering
+            let teams = match scope {
+                Scope::All => vec![],
+                Scope::Team { team, .. } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
+            };
+
+            // Record team filtering in span
+            let span = tracing::Span::current();
+            if teams.is_empty() {
+                span.record("teams", "all");
+            } else {
+                span.record("teams", format!("{:?}", teams).as_str());
+            }
+
+            match repo.list_by_teams(&teams, Some(100), None).await {
                 Ok(route_data_list) => {
+                    span.record("filtered_count", route_data_list.len());
+
+                    // Record team-scoped resource count metrics
+                    if let Some(team) = teams.first() {
+                        crate::observability::metrics::update_team_resource_count(
+                            "route",
+                            team,
+                            route_data_list.len(),
+                        )
+                        .await;
+                    }
+
                     if route_data_list.is_empty() {
                         info!("No routes found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
@@ -251,6 +328,7 @@ impl DatabaseAggregatedDiscoveryService {
         resources::routes_from_config(&self.state.config)
     }
 
+    #[tracing::instrument(skip(self, scope), fields(scope_info, filtered_count))]
     async fn create_listener_resources_from_db_scoped(
         &self,
         scope: &Scope,
@@ -265,8 +343,13 @@ impl DatabaseAggregatedDiscoveryService {
                         self.create_fallback_listener_resources()?
                     } else {
                         let filtered: Vec<crate::storage::repository::ListenerData> = match scope {
-                            Scope::All => listener_data_list,
+                            Scope::All => {
+                                tracing::Span::current().record("scope_info", "all");
+                                listener_data_list
+                            }
                             Scope::Team { team, include_default } => {
+                                tracing::Span::current()
+                                    .record("scope_info", format!("team:{}", team).as_str());
                                 let mut keep = Vec::new();
                                 for entry in listener_data_list.into_iter() {
                                     if entry.name
@@ -292,11 +375,29 @@ impl DatabaseAggregatedDiscoveryService {
                                 }
                                 keep
                             }
-                            Scope::Allowlist { names } => listener_data_list
-                                .into_iter()
-                                .filter(|e| names.contains(&e.name))
-                                .collect(),
+                            Scope::Allowlist { names } => {
+                                tracing::Span::current().record(
+                                    "scope_info",
+                                    format!("allowlist:{}", names.len()).as_str(),
+                                );
+                                listener_data_list
+                                    .into_iter()
+                                    .filter(|e| names.contains(&e.name))
+                                    .collect()
+                            }
                         };
+                        tracing::Span::current().record("filtered_count", filtered.len());
+
+                        // Record team-scoped listener count metrics
+                        if let Scope::Team { team, .. } = scope {
+                            crate::observability::metrics::update_team_resource_count(
+                                "listener",
+                                team,
+                                filtered.len(),
+                            )
+                            .await;
+                        }
+
                         info!(
                             phase = "ads_response",
                             listener_count = filtered.len(),
@@ -324,16 +425,16 @@ impl DatabaseAggregatedDiscoveryService {
         resources::listeners_from_config(&self.state.config)
     }
 
-    async fn build_resources(&self, type_url: &str) -> Result<Vec<BuiltResource>> {
+    async fn build_resources(&self, type_url: &str, scope: &Scope) -> Result<Vec<BuiltResource>> {
         match type_url {
             "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
-                self.create_cluster_resources_from_db().await
+                self.create_cluster_resources_from_db(scope).await
             }
             "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => {
-                self.create_route_resources_from_db().await
+                self.create_route_resources_from_db(scope).await
             }
             "type.googleapis.com/envoy.config.listener.v3.Listener" => {
-                self.create_listener_resources_from_db_scoped(&Scope::All).await
+                self.create_listener_resources_from_db_scoped(scope).await
             }
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
@@ -345,7 +446,7 @@ impl DatabaseAggregatedDiscoveryService {
         }
     }
 
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url))]
+    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_delta_response(
         &self,
         request: &DeltaDiscoveryRequest,
@@ -356,11 +457,29 @@ impl DatabaseAggregatedDiscoveryService {
         // Build all available resources for this type
         // The stream logic will handle proper delta filtering and ACK detection
         let scope = scope_from_discovery(&request.node);
-        let built = if request.type_url == "type.googleapis.com/envoy.config.listener.v3.Listener" {
-            self.create_listener_resources_from_db_scoped(&scope).await?
-        } else {
-            self.build_resources(&request.type_url).await?
-        };
+
+        // Record team and scope information in the span
+        let span = tracing::Span::current();
+        match &scope {
+            Scope::All => {
+                span.record("scope_type", "all");
+                span.record("team", "admin");
+            }
+            Scope::Team { team, include_default } => {
+                span.record("scope_type", "team");
+                span.record("team", team.as_str());
+                if *include_default {
+                    span.record("include_default", true);
+                }
+            }
+            Scope::Allowlist { names } => {
+                span.record("scope_type", "allowlist");
+                span.record("team", format!("allowlist:{}", names.len()).as_str());
+            }
+        }
+
+        let built = self.build_resources(&request.type_url, &scope).await?;
+        span.record("resource_count", built.len());
 
         let resources: Vec<Resource> = built
             .into_iter()
@@ -528,6 +647,14 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         request: Request<tonic::Streaming<DiscoveryRequest>>,
     ) -> std::result::Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
         info!("New database-enabled ADS stream connection established");
+
+        // Extract team from node metadata for connection tracking
+        let metadata = request.metadata();
+        if let Some(node_id) = metadata.get("node-id").and_then(|v| v.to_str().ok()) {
+            // Try to parse team from node_id or metadata
+            // For now, we'll track this when we see the first request with node metadata
+            tracing::debug!(node_id, "xDS stream established");
+        }
 
         let state = self.state.clone();
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
