@@ -27,11 +27,7 @@ pub struct LearningSessionService {
 impl LearningSessionService {
     /// Create a new learning session service
     pub fn new(repository: LearningSessionRepository) -> Self {
-        Self {
-            repository,
-            access_log_service: None,
-            webhook_service: None,
-        }
+        Self { repository, access_log_service: None, webhook_service: None }
     }
 
     /// Set the access log service for integration

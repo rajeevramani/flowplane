@@ -190,11 +190,8 @@ impl WebhookService {
 
         let (tx, rx) = broadcast::channel(100);
 
-        let service = Self {
-            client,
-            endpoints: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            tx,
-        };
+        let service =
+            Self { client, endpoints: Arc::new(tokio::sync::RwLock::new(Vec::new())), tx };
 
         (service, rx)
     }
@@ -305,9 +302,8 @@ impl WebhookService {
         endpoint: &WebhookEndpoint,
         event: &LearningSessionWebhookEvent,
     ) -> Result<reqwest::StatusCode> {
-        let body = serde_json::to_string(event).map_err(|e| {
-            Error::internal(format!("Failed to serialize webhook event: {}", e))
-        })?;
+        let body = serde_json::to_string(event)
+            .map_err(|e| Error::internal(format!("Failed to serialize webhook event: {}", e)))?;
 
         let mut request = client.post(&endpoint.url).header("Content-Type", "application/json");
 
