@@ -5,7 +5,9 @@
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
 use ::tracing::{info, warn};
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit};
+use metrics::{
+    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::sync::Arc;
