@@ -38,7 +38,10 @@ use validation::{
 
 /// Verify that a route belongs to one of the user's teams or is global.
 /// Returns the route if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result<RouteData, ApiError> {
+async fn verify_route_access(
+    route: RouteData,
+    team_scopes: &[String],
+) -> Result<RouteData, ApiError> {
     // Admin:all or resource-level scopes (empty team_scopes) can access everything
     if team_scopes.is_empty() {
         return Ok(route);
@@ -54,9 +57,7 @@ async fn verify_route_access(route: RouteData, team_scopes: &[String]) -> Result
                 // Record cross-team access attempt for security monitoring
                 if let Some(from_team) = team_scopes.first() {
                     crate::observability::metrics::record_cross_team_access_attempt(
-                        from_team,
-                        route_team,
-                        "routes",
+                        from_team, route_team, "routes",
                     )
                     .await;
                 }
