@@ -3,6 +3,7 @@
 pub mod api_definitions;
 pub mod auth;
 pub mod clusters;
+pub mod learning_sessions;
 pub mod listeners;
 pub mod reporting;
 pub mod routes;
@@ -21,6 +22,10 @@ pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
 };
+pub use learning_sessions::{
+    create_learning_session_handler, delete_learning_session_handler, get_learning_session_handler,
+    list_learning_sessions_handler,
+};
 pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,
     update_listener_handler,
@@ -35,4 +40,7 @@ pub use routes::{
 pub use clusters::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
+};
+pub use learning_sessions::{
+    CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
