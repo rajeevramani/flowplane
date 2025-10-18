@@ -19,10 +19,13 @@ use envoy_types::pb::envoy::service::accesslog::v3::{
 use prost::Message;
 use regex::Regex;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
+
+use crate::observability::metrics;
 
 #[allow(unused_imports)] // Will be used for logging unknown entry types
 use tracing::warn;
@@ -334,6 +337,7 @@ impl AccessLogService for FlowplaneAccessLogService {
         // Process incoming log messages
         let mut message_count = 0;
         while let Some(result) = stream.message().await? {
+            let start = Instant::now();
             message_count += 1;
 
             // Extract identifier information
@@ -350,10 +354,24 @@ impl AccessLogService for FlowplaneAccessLogService {
             // The exact structure will be validated when testing with real Envoy
             debug!("Access log message with entries received");
 
+            // Record message metrics (approximate entry count as 1 for now)
+            metrics::record_access_log_message(1).await;
+
+            // Update active session count
+            let session_count = {
+                let sessions = self.learning_sessions.read().await;
+                sessions.len()
+            };
+            metrics::update_active_learning_sessions(session_count).await;
+
             // TODO: Complete parsing once we test with real Envoy and understand the exact wire format
             // TODO: Use parse_http_log_entry() and process_http_log_entry() helpers defined above
             // TODO: Filter by active learning session patterns
             // TODO: Queue for background processing
+
+            // Record processing latency
+            let duration = start.elapsed().as_secs_f64();
+            metrics::record_access_log_latency(duration).await;
         }
 
         info!(total_messages = message_count, "Access log stream completed");
