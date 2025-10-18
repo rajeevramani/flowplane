@@ -318,6 +318,13 @@ impl LearningSessionService {
         Ok(failed)
     }
 
+    /// Get all active learning sessions
+    ///
+    /// This is used by XdsState to inject access log configuration
+    pub async fn list_active_sessions(&self) -> Result<Vec<LearningSessionData>> {
+        self.repository.list_active().await
+    }
+
     /// Background worker that checks all active sessions for completion
     ///
     /// This should be called periodically (e.g., every 30 seconds)
