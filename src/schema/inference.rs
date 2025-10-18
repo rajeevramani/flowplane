@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
@@ -107,6 +108,73 @@ pub struct ArrayConstraints {
     pub unique_items: Option<bool>,
 }
 
+/// Anonymization mode for field names
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnonymizationMode {
+    /// No anonymization - use original field names
+    None,
+    /// Hash field names using SHA-256 (truncated to 8 chars)
+    Hash,
+    /// Use sequential field names (field_1, field_2, etc.)
+    Sequential,
+}
+
+/// Configuration for field name anonymization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnonymizationConfig {
+    /// Anonymization mode
+    pub mode: AnonymizationMode,
+    /// Prefix for anonymized field names (e.g., "field_" for sequential mode)
+    pub prefix: String,
+    /// Store mapping for reversibility (original -> anonymized)
+    pub store_mapping: bool,
+}
+
+impl Default for AnonymizationConfig {
+    fn default() -> Self {
+        Self { mode: AnonymizationMode::None, prefix: "field_".to_string(), store_mapping: false }
+    }
+}
+
+impl AnonymizationConfig {
+    /// Create config with hash mode
+    pub fn hash() -> Self {
+        Self { mode: AnonymizationMode::Hash, prefix: "field_".to_string(), store_mapping: true }
+    }
+
+    /// Create config with sequential mode
+    pub fn sequential() -> Self {
+        Self {
+            mode: AnonymizationMode::Sequential,
+            prefix: "field_".to_string(),
+            store_mapping: true,
+        }
+    }
+
+    /// Anonymize a field name according to the configuration
+    pub fn anonymize_field_name(&self, original: &str, counter: &mut usize) -> String {
+        match self.mode {
+            AnonymizationMode::None => original.to_string(),
+            AnonymizationMode::Hash => {
+                let mut hasher = Sha256::new();
+                hasher.update(original.as_bytes());
+                let hash = hasher.finalize();
+                // Take first 8 characters of hex hash
+                format!(
+                    "{}{:x}",
+                    self.prefix,
+                    &hash[0..4].iter().fold(0u32, |acc, &b| (acc << 8) | b as u32)
+                )
+            }
+            AnonymizationMode::Sequential => {
+                *counter += 1;
+                format!("{}{}", self.prefix, counter)
+            }
+        }
+    }
+}
+
 /// Field statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldStats {
@@ -181,6 +249,11 @@ pub struct InferredSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
 
+    /// Field name anonymization mapping (anonymized -> original)
+    /// Only populated if anonymization is enabled and store_mapping is true
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_mapping: Option<HashMap<String, String>>,
+
     /// Field statistics
     #[serde(flatten)]
     pub stats: FieldStats,
@@ -192,6 +265,7 @@ impl InferredSchema {
         Self {
             schema_type,
             format: None,
+            field_mapping: None,
             numeric_constraints: None,
             array_constraints: None,
             items: None,
@@ -260,14 +334,22 @@ impl InferredSchema {
 pub struct SchemaInferenceEngine {
     /// Threshold for considering a field required (0.0 to 1.0)
     required_threshold: f64,
+    /// Anonymization configuration for field names
+    anonymization: AnonymizationConfig,
 }
 
 impl SchemaInferenceEngine {
-    /// Create a new schema inference engine
+    /// Create a new schema inference engine with default settings
     pub fn new() -> Self {
         Self {
             required_threshold: 0.95, // 95% presence = required
+            anonymization: AnonymizationConfig::default(),
         }
+    }
+
+    /// Create a new schema inference engine with custom anonymization
+    pub fn with_anonymization(anonymization: AnonymizationConfig) -> Self {
+        Self { required_threshold: 0.95, anonymization }
     }
 
     /// Set the required field threshold
@@ -362,13 +444,30 @@ impl SchemaInferenceEngine {
             Value::Object(obj) => {
                 let mut schema = InferredSchema::new(SchemaType::Object);
                 let mut properties = HashMap::new();
+                let mut field_mapping = HashMap::new();
+                let mut counter = 0;
 
                 for (key, val) in obj {
                     let prop_schema = self.infer_value_schema(val)?;
-                    properties.insert(key.clone(), prop_schema);
+
+                    // Apply anonymization to field name
+                    let anonymized_key = self.anonymization.anonymize_field_name(key, &mut counter);
+
+                    // Store mapping if requested
+                    if self.anonymization.store_mapping && anonymized_key != *key {
+                        field_mapping.insert(anonymized_key.clone(), key.clone());
+                    }
+
+                    properties.insert(anonymized_key, prop_schema);
                 }
 
                 schema.properties = Some(properties);
+
+                // Only include mapping if non-empty
+                if !field_mapping.is_empty() {
+                    schema.field_mapping = Some(field_mapping);
+                }
+
                 Ok(schema)
             }
         }
@@ -608,5 +707,187 @@ mod tests {
         assert_eq!(stats.sample_count, 3);
         assert_eq!(stats.presence_count, 2);
         assert!((stats.confidence - 0.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_anonymization_mode_none() {
+        let config = AnonymizationConfig::default();
+        assert_eq!(config.mode, AnonymizationMode::None);
+
+        let mut counter = 0;
+        let anonymized = config.anonymize_field_name("user_email", &mut counter);
+        assert_eq!(anonymized, "user_email"); // No change
+        assert_eq!(counter, 0); // Counter not used
+    }
+
+    #[test]
+    fn test_anonymization_mode_sequential() {
+        let config = AnonymizationConfig::sequential();
+        assert_eq!(config.mode, AnonymizationMode::Sequential);
+        assert!(config.store_mapping);
+
+        let mut counter = 0;
+        let anon1 = config.anonymize_field_name("user_email", &mut counter);
+        let anon2 = config.anonymize_field_name("user_name", &mut counter);
+        let anon3 = config.anonymize_field_name("user_id", &mut counter);
+
+        assert_eq!(anon1, "field_1");
+        assert_eq!(anon2, "field_2");
+        assert_eq!(anon3, "field_3");
+        assert_eq!(counter, 3);
+    }
+
+    #[test]
+    fn test_anonymization_mode_hash() {
+        let config = AnonymizationConfig::hash();
+        assert_eq!(config.mode, AnonymizationMode::Hash);
+        assert!(config.store_mapping);
+
+        let mut counter = 0;
+        let anon1 = config.anonymize_field_name("user_email", &mut counter);
+        let anon2 = config.anonymize_field_name("user_name", &mut counter);
+
+        // Hash should be deterministic
+        assert!(anon1.starts_with("field_"));
+        assert!(anon2.starts_with("field_"));
+        assert_ne!(anon1, anon2); // Different fields get different hashes
+        assert_eq!(counter, 0); // Counter not used in hash mode
+
+        // Same input produces same hash
+        let mut counter2 = 0;
+        let anon1_again = config.anonymize_field_name("user_email", &mut counter2);
+        assert_eq!(anon1, anon1_again);
+    }
+
+    #[test]
+    fn test_anonymization_with_object() {
+        let engine = SchemaInferenceEngine::with_anonymization(AnonymizationConfig::sequential());
+
+        let json = serde_json::json!({
+            "user_email": "test@example.com",
+            "user_name": "John Doe",
+            "user_age": 30
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Object);
+
+        let properties = schema.properties.unwrap();
+        // Check that all fields are anonymized (field_1, field_2, field_3)
+        let mut keys: Vec<_> = properties.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["field_1", "field_2", "field_3"]);
+        assert!(!properties.contains_key("user_email")); // Original keys not present
+
+        // Check mapping exists and contains all original fields
+        let mapping = schema.field_mapping.unwrap();
+        assert_eq!(mapping.len(), 3);
+        let mut orig_values: Vec<_> = mapping.values().cloned().collect();
+        orig_values.sort();
+        assert_eq!(
+            orig_values,
+            vec!["user_age".to_string(), "user_email".to_string(), "user_name".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_anonymization_with_hash_mode() {
+        let engine = SchemaInferenceEngine::with_anonymization(AnonymizationConfig::hash());
+
+        let json = serde_json::json!({
+            "sensitive_field": "secret data",
+            "public_field": "public data"
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+
+        let properties = schema.properties.unwrap();
+        assert!(!properties.contains_key("sensitive_field")); // Original not present
+        assert!(!properties.contains_key("public_field")); // Original not present
+
+        // All keys should be hashed
+        for key in properties.keys() {
+            assert!(key.starts_with("field_"));
+        }
+
+        // Mapping should exist
+        let mapping = schema.field_mapping.unwrap();
+        assert_eq!(mapping.len(), 2);
+    }
+
+    #[test]
+    fn test_no_anonymization_no_mapping() {
+        let engine = SchemaInferenceEngine::new(); // Default: no anonymization
+
+        let json = serde_json::json!({
+            "user_email": "test@example.com",
+            "user_name": "John Doe"
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+
+        let properties = schema.properties.unwrap();
+        assert!(properties.contains_key("user_email")); // Original keys present
+        assert!(properties.contains_key("user_name"));
+
+        // No mapping when anonymization is disabled
+        assert!(schema.field_mapping.is_none());
+    }
+
+    #[test]
+    fn test_anonymization_nested_objects() {
+        let engine = SchemaInferenceEngine::with_anonymization(AnonymizationConfig::sequential());
+
+        let json = serde_json::json!({
+            "user": {
+                "email": "test@example.com",
+                "profile": {
+                    "name": "John",
+                    "age": 30
+                }
+            },
+            "timestamp": "2023-10-18T12:00:00Z"
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+
+        // Top level should be anonymized
+        let properties = schema.properties.unwrap();
+        let mut top_keys: Vec<_> = properties.keys().cloned().collect();
+        top_keys.sort();
+        assert_eq!(top_keys, vec!["field_1", "field_2"]); // timestamp and user (order varies)
+
+        // Check that original field names are in the mapping
+        let mapping = schema.field_mapping.as_ref().unwrap();
+        assert_eq!(mapping.len(), 2);
+        let orig_values: Vec<_> = mapping.values().cloned().collect();
+        assert!(orig_values.contains(&"user".to_string()));
+        assert!(orig_values.contains(&"timestamp".to_string()));
+
+        // Find the user field (either field_1 or field_2)
+        let user_schema = properties
+            .values()
+            .find(|s| s.schema_type == SchemaType::Object && s.properties.is_some())
+            .unwrap();
+
+        // Check nested object also has anonymization
+        let user_props = user_schema.properties.as_ref().unwrap();
+        let mut nested_keys: Vec<_> = user_props.keys().cloned().collect();
+        nested_keys.sort();
+        assert_eq!(nested_keys, vec!["field_1", "field_2"]); // email and profile
+    }
+
+    #[test]
+    fn test_anonymization_config_custom_prefix() {
+        let config = AnonymizationConfig {
+            mode: AnonymizationMode::Sequential,
+            prefix: "prop_".to_string(),
+            store_mapping: true,
+        };
+
+        let mut counter = 0;
+        let anon = config.anonymize_field_name("test", &mut counter);
+        assert_eq!(anon, "prop_1");
     }
 }

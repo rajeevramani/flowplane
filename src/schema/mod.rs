@@ -6,4 +6,6 @@
 
 pub mod inference;
 
-pub use inference::{InferredSchema, SchemaInferenceEngine, SchemaType};
+pub use inference::{
+    AnonymizationConfig, AnonymizationMode, InferredSchema, SchemaInferenceEngine, SchemaType,
+};
