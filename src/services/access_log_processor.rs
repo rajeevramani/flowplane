@@ -29,12 +29,15 @@
 //! Workers drain the queue before terminating.
 
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, watch, Mutex};
+use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::schema::inference::SchemaInferenceEngine;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::Result;
+use sqlx::{Pool, Sqlite};
 
 /// Configuration for the access log processor
 #[derive(Debug, Clone)]
@@ -42,14 +45,36 @@ pub struct ProcessorConfig {
     /// Number of worker tasks to spawn
     /// Default: num_cpus::get() (one per CPU core)
     pub worker_count: usize,
+
+    /// Maximum number of schemas to accumulate before batch write
+    /// Default: 100 schemas
+    pub batch_size: usize,
+
+    /// Maximum time (in seconds) to wait before flushing batch
+    /// Default: 5 seconds
+    pub batch_flush_interval_secs: u64,
 }
 
 impl Default for ProcessorConfig {
     fn default() -> Self {
         Self {
             worker_count: num_cpus::get().max(1), // At least 1 worker
+            batch_size: 100,                      // Batch write every 100 schemas
+            batch_flush_interval_secs: 5,         // Or every 5 seconds
         }
     }
+}
+
+/// Inferred schema record ready for database persistence
+#[derive(Debug, Clone)]
+pub struct InferredSchemaRecord {
+    pub session_id: String,
+    pub team: String,
+    pub http_method: String,
+    pub path_pattern: String,
+    pub request_schema: Option<String>,  // JSON Schema as string
+    pub response_schema: Option<String>, // JSON Schema as string
+    pub response_status_code: Option<u32>,
 }
 
 /// Background processor for access log entries
@@ -61,6 +86,12 @@ pub struct AccessLogProcessor {
     /// Shared receiver for access log entries from AccessLogService
     /// Wrapped in Arc<Mutex<>> to allow multiple workers to share access
     log_rx: Arc<Mutex<mpsc::UnboundedReceiver<ProcessedLogEntry>>>,
+    /// Channel for sending inferred schemas to the batcher task
+    schema_tx: mpsc::UnboundedSender<InferredSchemaRecord>,
+    /// Receiver for inferred schemas (moved to batcher task)
+    schema_rx: Arc<Mutex<mpsc::UnboundedReceiver<InferredSchemaRecord>>>,
+    /// Database pool for batch writes (optional for testing)
+    db_pool: Option<Pool<Sqlite>>,
     /// Shutdown signal sender (broadcast to all workers)
     shutdown_tx: watch::Sender<bool>,
     /// Shutdown signal receiver (cloned for each worker)
@@ -101,6 +132,7 @@ impl AccessLogProcessor {
     /// # Arguments
     ///
     /// * `log_rx` - Receiver for processed log entries from AccessLogService
+    /// * `db_pool` - Optional database pool for batch writes
     /// * `config` - Optional configuration (uses defaults if None)
     ///
     /// # Returns
@@ -108,14 +140,30 @@ impl AccessLogProcessor {
     /// Returns the processor instance ready to spawn workers
     pub fn new(
         log_rx: mpsc::UnboundedReceiver<ProcessedLogEntry>,
+        db_pool: Option<Pool<Sqlite>>,
         config: Option<ProcessorConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (schema_tx, schema_rx) = mpsc::unbounded_channel();
 
-        info!(worker_count = config.worker_count, "Created AccessLogProcessor");
+        info!(
+            worker_count = config.worker_count,
+            batch_size = config.batch_size,
+            flush_interval_secs = config.batch_flush_interval_secs,
+            has_database = db_pool.is_some(),
+            "Created AccessLogProcessor"
+        );
 
-        Self { config, log_rx: Arc::new(Mutex::new(log_rx)), shutdown_tx, shutdown_rx }
+        Self {
+            config,
+            log_rx: Arc::new(Mutex::new(log_rx)),
+            schema_tx,
+            schema_rx: Arc::new(Mutex::new(schema_rx)),
+            db_pool,
+            shutdown_tx,
+            shutdown_rx,
+        }
     }
 
     /// Spawn worker tasks
@@ -322,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn test_processor_creation() {
         let (_tx, rx) = mpsc::unbounded_channel();
-        let processor = AccessLogProcessor::new(rx, None);
+        let processor = AccessLogProcessor::new(rx, None, None);
 
         // Should use default config (num_cpus)
         assert!(processor.config.worker_count >= 1);
@@ -331,8 +379,9 @@ mod tests {
     #[tokio::test]
     async fn test_processor_with_custom_config() {
         let (_tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 4 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 4, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         assert_eq!(processor.config.worker_count, 4);
     }
@@ -340,8 +389,9 @@ mod tests {
     #[tokio::test]
     async fn test_worker_spawning() {
         let (_tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 2 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 2, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -358,8 +408,9 @@ mod tests {
     #[tokio::test]
     async fn test_log_processing() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -391,8 +442,9 @@ mod tests {
     #[tokio::test]
     async fn test_graceful_shutdown() {
         let (_tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 2 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 2, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -410,8 +462,9 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_drains_queue() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -445,8 +498,9 @@ mod tests {
     #[tokio::test]
     async fn test_schema_inference_with_json_bodies() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -482,8 +536,9 @@ mod tests {
     #[tokio::test]
     async fn test_schema_inference_with_non_json_bodies() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -517,8 +572,9 @@ mod tests {
     #[tokio::test]
     async fn test_schema_inference_with_malformed_json() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -552,8 +608,9 @@ mod tests {
     #[tokio::test]
     async fn test_schema_inference_with_nested_json() {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = ProcessorConfig { worker_count: 1 };
-        let processor = AccessLogProcessor::new(rx, Some(config));
+        let config =
+            ProcessorConfig { worker_count: 1, batch_size: 100, batch_flush_interval_secs: 5 };
+        let processor = AccessLogProcessor::new(rx, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
