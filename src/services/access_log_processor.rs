@@ -39,6 +39,24 @@ use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::Result;
 use sqlx::{Pool, Sqlite};
 
+/// Convert HTTP method code to string
+fn method_to_string(method: i32) -> String {
+    match method {
+        0 => "UNKNOWN",
+        1 => "GET",
+        2 => "POST",
+        3 => "PUT",
+        4 => "DELETE",
+        5 => "PATCH",
+        6 => "HEAD",
+        7 => "OPTIONS",
+        8 => "TRACE",
+        9 => "CONNECT",
+        _ => "UNKNOWN",
+    }
+    .to_string()
+}
+
 /// Configuration for the access log processor
 #[derive(Debug, Clone)]
 pub struct ProcessorConfig {
@@ -104,6 +122,7 @@ pub struct AccessLogProcessor {
 pub struct ProcessorHandle {
     shutdown_tx: watch::Sender<bool>,
     worker_handles: Vec<tokio::task::JoinHandle<()>>,
+    batcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ProcessorHandle {
@@ -118,10 +137,14 @@ impl ProcessorHandle {
 
     /// Wait for all workers to finish
     ///
-    /// This consumes the handle and waits for all worker tasks to complete
+    /// This consumes the handle and waits for all worker tasks and batcher to complete
     pub async fn join(self) {
         for handle in self.worker_handles {
             let _ = handle.await;
+        }
+
+        if let Some(batcher) = self.batcher_handle {
+            let _ = batcher.await;
         }
     }
 }
@@ -186,6 +209,7 @@ impl AccessLogProcessor {
         for worker_id in 0..self.config.worker_count {
             let mut shutdown_rx = self.shutdown_rx.clone();
             let log_rx = Arc::clone(&self.log_rx);
+            let schema_tx = self.schema_tx.clone();
 
             let handle = tokio::spawn(async move {
                 info!(worker_id, "Access log processor worker started");
@@ -198,7 +222,7 @@ impl AccessLogProcessor {
                             rx.recv().await
                         } => {
                             if let Some(entry) = entry {
-                                if let Err(e) = Self::process_entry(worker_id, entry).await {
+                                if let Err(e) = Self::process_entry(worker_id, entry, &schema_tx).await {
                                     error!(
                                         worker_id,
                                         error = %e,
@@ -223,7 +247,7 @@ impl AccessLogProcessor {
 
                                     match entry {
                                         Ok(entry) => {
-                                            if let Err(e) = Self::process_entry(worker_id, entry).await {
+                                            if let Err(e) = Self::process_entry(worker_id, entry, &schema_tx).await {
                                                 warn!(
                                                     worker_id,
                                                     error = %e,
@@ -253,17 +277,37 @@ impl AccessLogProcessor {
 
         info!(spawned_workers = handles.len(), "All access log processor workers spawned");
 
-        ProcessorHandle { shutdown_tx: self.shutdown_tx, worker_handles: handles }
+        // Spawn schema batcher task if database is configured
+        let batcher_handle = if let Some(pool) = self.db_pool {
+            let batcher = Self::spawn_schema_batcher(
+                Arc::clone(&self.schema_rx),
+                pool,
+                self.config.batch_size,
+                self.config.batch_flush_interval_secs,
+                self.shutdown_rx.clone(),
+            );
+            info!("Schema batcher task spawned");
+            Some(batcher)
+        } else {
+            debug!("No database configured, schema batcher not spawned");
+            None
+        };
+
+        ProcessorHandle { shutdown_tx: self.shutdown_tx, worker_handles: handles, batcher_handle }
     }
 
     /// Process a single log entry
     ///
     /// Task 5.1: ✅ Worker pool infrastructure
     /// Task 5.2: ✅ Schema inference integration
-    /// Task 5.3: TODO - Batched DB writes
+    /// Task 5.3: ✅ Batched DB writes (schemas sent to batcher)
     /// Task 5.4: TODO - Retry logic
     /// Task 5.5: TODO - Metrics
-    async fn process_entry(worker_id: usize, entry: ProcessedLogEntry) -> Result<()> {
+    async fn process_entry(
+        worker_id: usize,
+        entry: ProcessedLogEntry,
+        schema_tx: &mpsc::UnboundedSender<InferredSchemaRecord>,
+    ) -> Result<()> {
         debug!(
             worker_id,
             session_id = %entry.session_id,
@@ -292,7 +336,23 @@ impl AccessLogProcessor {
                                 schema_type = ?schema.schema_type,
                                 "Inferred request schema"
                             );
-                            // TODO (Task 5.3): Store schema in database
+
+                            // TODO: Get team from learning session lookup
+                            // For now, using placeholder team value
+                            let record = InferredSchemaRecord {
+                                session_id: entry.session_id.clone(),
+                                team: "placeholder-team".to_string(), // TODO: lookup from session
+                                http_method: method_to_string(entry.method),
+                                path_pattern: entry.path.clone(),
+                                request_schema: Some(serde_json::to_string(
+                                    &schema.to_json_schema(),
+                                )?),
+                                response_schema: None,
+                                response_status_code: None,
+                            };
+
+                            // Send to batcher (ignore errors if channel is closed)
+                            let _ = schema_tx.send(record);
                         }
                         Err(e) => {
                             // Non-JSON or malformed body - log but don't fail
@@ -330,7 +390,23 @@ impl AccessLogProcessor {
                                 schema_type = ?schema.schema_type,
                                 "Inferred response schema"
                             );
-                            // TODO (Task 5.3): Store schema in database
+
+                            // TODO: Get team from learning session lookup
+                            // For now, using placeholder team value
+                            let record = InferredSchemaRecord {
+                                session_id: entry.session_id.clone(),
+                                team: "placeholder-team".to_string(), // TODO: lookup from session
+                                http_method: method_to_string(entry.method),
+                                path_pattern: entry.path.clone(),
+                                request_schema: None,
+                                response_schema: Some(serde_json::to_string(
+                                    &schema.to_json_schema(),
+                                )?),
+                                response_status_code: Some(entry.response_status),
+                            };
+
+                            // Send to batcher (ignore errors if channel is closed)
+                            let _ = schema_tx.send(record);
                         }
                         Err(e) => {
                             // Non-JSON or malformed body - log but don't fail
@@ -359,6 +435,161 @@ impl AccessLogProcessor {
         // TODO (Task 5.5): Add metrics here
 
         Ok(())
+    }
+
+    /// Write a batch of inferred schemas to the database
+    ///
+    /// Uses a single transaction for all inserts to ensure atomicity and performance.
+    /// Task 5.3: Batch database writes for schema aggregation
+    async fn write_schema_batch(
+        pool: &Pool<Sqlite>,
+        batch: Vec<InferredSchemaRecord>,
+    ) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let batch_size = batch.len();
+        debug!(batch_size, "Writing schema batch to database");
+
+        // Begin transaction
+        let mut tx = pool.begin().await?;
+
+        // Insert all schemas in the batch
+        for record in batch {
+            sqlx::query(
+                r#"
+                INSERT INTO inferred_schemas (
+                    team, session_id, http_method, path_pattern,
+                    request_schema, response_schema, response_status_code,
+                    sample_count, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1.0)
+                "#,
+            )
+            .bind(&record.team)
+            .bind(&record.session_id)
+            .bind(&record.http_method)
+            .bind(&record.path_pattern)
+            .bind(&record.request_schema)
+            .bind(&record.response_schema)
+            .bind(record.response_status_code.map(|s| s as i64))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Commit transaction
+        tx.commit().await?;
+
+        info!(batch_size, "Successfully wrote schema batch to database");
+
+        Ok(())
+    }
+
+    /// Spawn a schema batcher task that accumulates and batch-writes schemas
+    ///
+    /// This task:
+    /// 1. Receives inferred schemas from workers via schema_rx channel
+    /// 2. Accumulates them into batches based on batch_size
+    /// 3. Flushes batches periodically based on batch_flush_interval
+    /// 4. Handles graceful shutdown by flushing remaining batch
+    ///
+    /// Task 5.3: Batch accumulation and periodic flushing
+    fn spawn_schema_batcher(
+        schema_rx: Arc<Mutex<mpsc::UnboundedReceiver<InferredSchemaRecord>>>,
+        db_pool: Pool<Sqlite>,
+        batch_size: usize,
+        flush_interval_secs: u64,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut batch: Vec<InferredSchemaRecord> = Vec::with_capacity(batch_size);
+            let mut flush_timer = interval(Duration::from_secs(flush_interval_secs));
+            flush_timer.tick().await; // Skip first immediate tick
+
+            info!("Schema batcher task started");
+
+            loop {
+                tokio::select! {
+                    // Receive schema from workers
+                    schema = async {
+                        let mut rx = schema_rx.lock().await;
+                        rx.recv().await
+                    } => {
+                        if let Some(schema) = schema {
+                            batch.push(schema);
+
+                            // Flush if batch is full
+                            if batch.len() >= batch_size {
+                                debug!(
+                                    batch_size = batch.len(),
+                                    "Batch size limit reached, flushing"
+                                );
+
+                                if let Err(e) = Self::write_schema_batch(&db_pool, batch.clone()).await {
+                                    error!(error = %e, "Failed to write schema batch");
+                                }
+
+                                batch.clear();
+                                flush_timer.reset(); // Reset timer after flush
+                            }
+                        }
+                    }
+
+                    // Periodic flush timer
+                    _ = flush_timer.tick() => {
+                        if !batch.is_empty() {
+                            debug!(
+                                batch_size = batch.len(),
+                                "Flush interval reached, flushing batch"
+                            );
+
+                            if let Err(e) = Self::write_schema_batch(&db_pool, batch.clone()).await {
+                                error!(error = %e, "Failed to write schema batch");
+                            }
+
+                            batch.clear();
+                        }
+                    }
+
+                    // Shutdown signal
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            info!("Schema batcher received shutdown signal");
+
+                            // Drain remaining schemas from channel
+                            loop {
+                                let schema = {
+                                    let mut rx = schema_rx.lock().await;
+                                    rx.try_recv()
+                                };
+
+                                match schema {
+                                    Ok(schema) => {
+                                        batch.push(schema);
+                                    }
+                                    Err(_) => break, // Channel empty
+                                }
+                            }
+
+                            // Final flush
+                            if !batch.is_empty() {
+                                info!(
+                                    batch_size = batch.len(),
+                                    "Flushing final batch on shutdown"
+                                );
+
+                                if let Err(e) = Self::write_schema_batch(&db_pool, batch).await {
+                                    error!(error = %e, "Failed to write final schema batch");
+                                }
+                            }
+
+                            info!("Schema batcher task shutdown complete");
+                            break;
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 
