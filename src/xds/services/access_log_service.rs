@@ -88,11 +88,11 @@ impl LearningSession {
 /// asynchronously. Filters logs based on active learning sessions and queues
 /// valid entries for background processing.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Will be used when integrated into server in subtask 1.4
 pub struct FlowplaneAccessLogService {
     /// Active learning sessions (shared across streams)
     learning_sessions: Arc<RwLock<Vec<LearningSession>>>,
     /// Channel sender for queuing processed log entries
+    #[allow(dead_code)] // Will be used when wiring up actual log processing
     log_queue_tx: mpsc::UnboundedSender<ProcessedLogEntry>,
 }
 
