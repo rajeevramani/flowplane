@@ -94,6 +94,7 @@ owo-colors = "3.5"
 # API documentation
 utoipa = { version = "5.4.0", features = ["macros", "chrono"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

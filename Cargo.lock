@@ -1260,6 +1260,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "mime",
+ "num_cpus",
  "once_cell",
  "openapiv3",
  "opentelemetry",
