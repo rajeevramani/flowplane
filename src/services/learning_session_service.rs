@@ -17,17 +17,35 @@ use crate::{
 };
 
 /// Service for managing learning session lifecycle and state machine
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LearningSessionService {
     repository: LearningSessionRepository,
     access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     webhook_service: Option<Arc<WebhookService>>,
+    xds_state: Option<Arc<crate::xds::XdsState>>,
+}
+
+// Manual Debug implementation to avoid XdsState debug requirements
+impl std::fmt::Debug for LearningSessionService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LearningSessionService")
+            .field("repository", &self.repository)
+            .field("has_access_log_service", &self.access_log_service.is_some())
+            .field("has_webhook_service", &self.webhook_service.is_some())
+            .field("has_xds_state", &self.xds_state.is_some())
+            .finish()
+    }
 }
 
 impl LearningSessionService {
     /// Create a new learning session service
     pub fn new(repository: LearningSessionRepository) -> Self {
-        Self { repository, access_log_service: None, webhook_service: None }
+        Self {
+            repository,
+            access_log_service: None,
+            webhook_service: None,
+            xds_state: None,
+        }
     }
 
     /// Set the access log service for integration
@@ -39,6 +57,12 @@ impl LearningSessionService {
     /// Set the webhook service for event notifications
     pub fn with_webhook_service(mut self, service: Arc<WebhookService>) -> Self {
         self.webhook_service = Some(service);
+        self
+    }
+
+    /// Set the XDS state for dynamic listener configuration
+    pub fn with_xds_state(mut self, state: Arc<crate::xds::XdsState>) -> Self {
+        self.xds_state = Some(state);
         self
     }
 
@@ -97,6 +121,22 @@ impl LearningSessionService {
                 updated.target_sample_count,
             );
             webhook_service.publish_event(event).await;
+        }
+
+        // Trigger LDS update to inject access log configuration
+        if let Some(xds_state) = &self.xds_state {
+            if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                error!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to refresh listeners after session activation"
+                );
+            } else {
+                info!(
+                    session_id = %session_id,
+                    "Triggered LDS update for access log configuration"
+                );
+            }
         }
 
         Ok(updated)
@@ -179,6 +219,22 @@ impl LearningSessionService {
                 session_id = %session_id,
                 "Unregistered learning session from Access Log Service"
             );
+        }
+
+        // Trigger LDS update to remove access log configuration
+        if let Some(xds_state) = &self.xds_state {
+            if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                error!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to refresh listeners after session completion"
+                );
+            } else {
+                info!(
+                    session_id = %session_id,
+                    "Triggered LDS update to remove access log configuration"
+                );
+            }
         }
 
         // TODO: Trigger schema aggregation here (Task 6)

@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
     let webhook_service = Arc::new(webhook_service);
 
     // Create Learning Session Service with Access Log Service and Webhook Service integration
+    // Note: XdsState will be added after XdsState creation to avoid circular dependency
     let learning_session_repo = LearningSessionRepository::new(pool.clone());
     let learning_session_service = LearningSessionService::new(learning_session_repo)
         .with_access_log_service(access_log_service.clone())
@@ -87,6 +88,16 @@ async fn main() -> Result<()> {
         XdsState::with_database(simple_xds_config.clone(), pool)
             .with_services(access_log_service.clone(), learning_session_service.clone()),
     );
+
+    // Now wire XdsState back into LearningSessionService for LDS refresh triggers
+    // This creates a weak circular reference: LearningSessionService -> XdsState -> LearningSessionService
+    // which is acceptable as both are Arc<> wrapped
+    let learning_session_service_with_xds = Arc::new(
+        Arc::try_unwrap(learning_session_service)
+            .unwrap_or_else(|arc| (*arc).clone())
+            .with_xds_state(state.clone())
+    );
+    let learning_session_service = learning_session_service_with_xds;
 
     // Spawn background worker for learning session auto-completion
     let learning_session_service_bg = learning_session_service.clone();
