@@ -223,11 +223,7 @@ impl MetricsRecorder {
             Unit::Count,
             "Cross-team resource access attempts blocked by authorization"
         );
-        describe_gauge!(
-            "xds_team_connections",
-            Unit::Count,
-            "Active xDS connections per team"
-        );
+        describe_gauge!("xds_team_connections", Unit::Count, "Active xDS connections per team");
     }
 }
 
