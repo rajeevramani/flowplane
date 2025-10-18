@@ -327,6 +327,26 @@ impl InferredSchema {
         self.stats.presence_count += other.stats.presence_count;
         self.stats.update_confidence();
     }
+
+    /// Convert to JSON Schema Draft 2020-12 format
+    ///
+    /// Returns a serde_json::Value that conforms to JSON Schema Draft 2020-12
+    /// with custom extensions for confidence and sample count.
+    pub fn to_json_schema(&self) -> serde_json::Value {
+        let mut schema = serde_json::to_value(self).expect("Failed to serialize schema");
+
+        // Add $schema field for JSON Schema Draft 2020-12
+        if let serde_json::Value::Object(ref mut map) = schema {
+            map.insert(
+                "$schema".to_string(),
+                serde_json::Value::String(
+                    "https://json-schema.org/draft/2020-12/schema".to_string(),
+                ),
+            );
+        }
+
+        schema
+    }
 }
 
 /// Schema inference engine
@@ -889,5 +909,199 @@ mod tests {
         let mut counter = 0;
         let anon = config.anonymize_field_name("test", &mut counter);
         assert_eq!(anon, "prop_1");
+    }
+
+    #[test]
+    fn test_json_schema_output_with_schema_field() {
+        let engine = SchemaInferenceEngine::new();
+
+        let json = serde_json::json!({
+            "name": "John Doe",
+            "email": "john@example.com",
+            "age": 30
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Verify $schema field exists
+        assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
+
+        // Verify type field
+        assert_eq!(json_schema["type"], "object");
+
+        // Verify properties exist
+        assert!(json_schema["properties"].is_object());
+        assert!(json_schema["properties"]["name"].is_object());
+        assert!(json_schema["properties"]["email"].is_object());
+        assert!(json_schema["properties"]["age"].is_object());
+    }
+
+    #[test]
+    fn test_json_schema_custom_extensions() {
+        let engine = SchemaInferenceEngine::new();
+
+        let json = serde_json::json!({
+            "user_id": 12345,
+            "active": true
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Verify custom extensions (sample_count, presence_count, confidence) are included
+        assert!(json_schema["sample_count"].is_number());
+        assert!(json_schema["presence_count"].is_number());
+        assert!(json_schema["confidence"].is_number());
+
+        // These should be in stats (sample_count is 1 because we inferred from one sample)
+        assert_eq!(json_schema["sample_count"], 1);
+        assert_eq!(json_schema["presence_count"], 1);
+        assert_eq!(json_schema["confidence"], 1.0);
+    }
+
+    #[test]
+    fn test_json_schema_complete_structure() {
+        let engine = SchemaInferenceEngine::new();
+
+        let json = serde_json::json!({
+            "user": {
+                "id": 123,
+                "email": "test@example.com",
+                "profile": {
+                    "name": "Test User",
+                    "age": 25
+                }
+            },
+            "tags": ["rust", "testing"],
+            "created_at": "2023-10-18T12:00:00Z"
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Root level
+        assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
+        assert_eq!(json_schema["type"], "object");
+
+        // Verify nested object (user)
+        let user_schema = &json_schema["properties"]["user"];
+        assert_eq!(user_schema["type"], "object");
+        assert!(user_schema["properties"]["id"].is_object());
+        assert!(user_schema["properties"]["email"].is_object());
+        assert!(user_schema["properties"]["profile"].is_object());
+
+        // Verify deeply nested object (profile)
+        let profile_schema = &user_schema["properties"]["profile"];
+        assert_eq!(profile_schema["type"], "object");
+        assert!(profile_schema["properties"]["name"].is_object());
+        assert!(profile_schema["properties"]["age"].is_object());
+
+        // Verify array
+        let tags_schema = &json_schema["properties"]["tags"];
+        assert_eq!(tags_schema["type"], "array");
+        assert!(tags_schema["items"].is_object());
+
+        // Verify string with format (JSON Schema uses "date-time" not "datetime")
+        let created_schema = &json_schema["properties"]["created_at"];
+        assert_eq!(created_schema["type"], "string");
+        assert_eq!(created_schema["format"], "date-time");
+    }
+
+    #[test]
+    fn test_json_schema_serialization() {
+        let engine = SchemaInferenceEngine::new();
+
+        let json = serde_json::json!({
+            "count": 42,
+            "ratio": 2.5,
+            "enabled": true,
+            "data": null
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Should be valid JSON
+        let json_str = serde_json::to_string_pretty(&json_schema).unwrap();
+        assert!(json_str.contains("$schema"));
+        assert!(json_str.contains("json-schema.org"));
+        assert!(json_str.contains("draft/2020-12"));
+
+        // Should be parseable
+        let reparsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(reparsed["$schema"], json_schema["$schema"]);
+    }
+
+    #[test]
+    fn test_json_schema_with_numeric_constraints() {
+        let engine = SchemaInferenceEngine::new();
+
+        let json1 = serde_json::json!({"value": 10});
+        let mut schema = engine.infer_from_value(&json1).unwrap();
+
+        let json2 = serde_json::json!({"value": 20});
+        let schema2 = engine.infer_from_value(&json2).unwrap();
+        schema.merge(&schema2);
+
+        let json_schema = schema.to_json_schema();
+
+        // Check that numeric constraints are in the output
+        let value_schema = &json_schema["properties"]["value"];
+        assert!(value_schema["numeric_constraints"].is_object());
+        assert!(value_schema["numeric_constraints"]["minimum"].is_number());
+        assert!(value_schema["numeric_constraints"]["maximum"].is_number());
+    }
+
+    #[test]
+    fn test_json_schema_with_anonymization() {
+        let engine = SchemaInferenceEngine::with_anonymization(AnonymizationConfig::hash());
+
+        let json = serde_json::json!({
+            "sensitive_data": "secret",
+            "public_info": "public"
+        });
+
+        let schema = engine.infer_from_value(&json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Should have $schema
+        assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
+
+        // Should have anonymized properties
+        assert!(json_schema["properties"].is_object());
+
+        // Should have field_mapping
+        assert!(json_schema["field_mapping"].is_object());
+        let mapping = json_schema["field_mapping"].as_object().unwrap();
+        assert_eq!(mapping.len(), 2);
+    }
+
+    #[test]
+    fn test_no_payload_data_in_schema() {
+        let engine = SchemaInferenceEngine::new();
+
+        let sensitive_json = serde_json::json!({
+            "password": "super_secret_password_12345",
+            "ssn": "123-45-6789",
+            "credit_card": "4111-1111-1111-1111"
+        });
+
+        let schema = engine.infer_from_value(&sensitive_json).unwrap();
+        let json_schema = schema.to_json_schema();
+
+        // Schema should NOT contain any actual values
+        let schema_str = serde_json::to_string(&json_schema).unwrap();
+        assert!(!schema_str.contains("super_secret_password"));
+        assert!(!schema_str.contains("123-45-6789"));
+        assert!(!schema_str.contains("4111-1111-1111-1111"));
+
+        // But should contain field names (if not anonymized)
+        assert!(schema_str.contains("password"));
+        assert!(schema_str.contains("ssn"));
+        assert!(schema_str.contains("credit_card"));
+
+        // Should contain only type information
+        assert!(schema_str.contains("string"));
     }
 }
