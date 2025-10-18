@@ -231,7 +231,24 @@ pub async fn create_learning_session_handler(
         ApiError::Internal(format!("Failed to create learning session: {}", e))
     })?;
 
-    let response = session_response_from_data(created);
+    // Automatically activate the session if learning session service is available
+    let activated = if let Some(learning_service) = &state.xds_state.learning_session_service {
+        match learning_service.activate_session(&created.id).await {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %created.id,
+                    "Failed to activate learning session, leaving in pending state"
+                );
+                created // Return the created session in pending state
+            }
+        }
+    } else {
+        created // No service available, return pending session
+    };
+
+    let response = session_response_from_data(activated);
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -386,22 +403,33 @@ pub async fn delete_learning_session_handler(
 
     // Verify access
     let team_scopes = extract_team_scopes(&context);
-    verify_session_access(session, &team_scopes).await?;
+    verify_session_access(session.clone(), &team_scopes).await?;
 
-    // Update status to cancelled instead of deleting
-    let update_request = UpdateLearningSessionRequest {
-        status: Some(LearningSessionStatus::Cancelled),
-        started_at: None,
-        ends_at: None,
-        completed_at: Some(chrono::Utc::now()),
-        current_sample_count: None,
-        error_message: Some("Cancelled by user".to_string()),
-    };
+    // Use the learning session service to properly handle cancellation
+    // This ensures Access Log Service is unregistered
+    if let Some(learning_service) = &state.xds_state.learning_session_service {
+        // If session is active, we need to unregister from Access Log Service
+        // The fail_session method handles this
+        learning_service.fail_session(&id, "Cancelled by user".to_string()).await.map_err(|e| {
+            tracing::error!(error = %e, session_id = %id, team = %team, "Failed to cancel learning session via service");
+            ApiError::Internal(format!("Failed to cancel learning session: {}", e))
+        })?;
+    } else {
+        // Fallback to direct repository update if service not available
+        let update_request = UpdateLearningSessionRequest {
+            status: Some(LearningSessionStatus::Cancelled),
+            started_at: None,
+            ends_at: None,
+            completed_at: Some(chrono::Utc::now()),
+            current_sample_count: None,
+            error_message: Some("Cancelled by user".to_string()),
+        };
 
-    session_repo.update(&id, update_request).await.map_err(|e| {
-        tracing::error!(error = %e, session_id = %id, team = %team, "Failed to cancel learning session");
-        ApiError::Internal(format!("Failed to cancel learning session: {}", e))
-    })?;
+        session_repo.update(&id, update_request).await.map_err(|e| {
+            tracing::error!(error = %e, session_id = %id, team = %team, "Failed to cancel learning session");
+            ApiError::Internal(format!("Failed to cancel learning session: {}", e))
+        })?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

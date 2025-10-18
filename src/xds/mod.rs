@@ -12,7 +12,7 @@ pub mod filters;
 pub mod listener;
 pub(crate) mod resources;
 pub mod route;
-mod services;
+pub mod services;
 mod state;
 
 use crate::{config::SimpleXdsConfig, storage::DbPool, Result};
@@ -126,15 +126,21 @@ where
 
     let ads_service = DatabaseAggregatedDiscoveryService::new(state.clone());
 
-    // Create AccessLogService for receiving Envoy access logs
-    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
-    // TODO: Spawn background task to process log_rx entries
-
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
+
+    // Use the AccessLogService from state if available, otherwise create a new one
+    let access_log_service = if let Some(service) = &state.access_log_service {
+        Arc::clone(service)
+    } else {
+        let (service, _log_rx) = FlowplaneAccessLogService::new();
+        Arc::new(service)
+    };
 
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
-        .add_service(AccessLogServiceServer::new(access_log_service))
+        .add_service(AccessLogServiceServer::new(
+            Arc::try_unwrap(access_log_service).unwrap_or_else(|arc| (*arc).clone()),
+        ))
         .serve_with_shutdown(addr, shutdown_signal);
 
     info!(

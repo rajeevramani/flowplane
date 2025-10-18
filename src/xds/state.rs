@@ -9,9 +9,11 @@ use crate::xds::resources::{
 };
 use crate::{
     config::SimpleXdsConfig,
+    services::LearningSessionService,
     storage::{
         ApiDefinitionRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
     },
+    xds::services::access_log_service::FlowplaneAccessLogService,
     Result,
 };
 use envoy_types::pb::google::protobuf::Any;
@@ -58,6 +60,8 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub api_definition_repository: Option<ApiDefinitionRepository>,
+    pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
+    pub learning_session_service: Option<Arc<LearningSessionService>>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -72,6 +76,8 @@ impl XdsState {
             route_repository: None,
             listener_repository: None,
             api_definition_repository: None,
+            access_log_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -90,6 +96,8 @@ impl XdsState {
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
             api_definition_repository: Some(api_definition_repository),
+            access_log_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -101,6 +109,17 @@ impl XdsState {
 
     pub fn get_version_number(&self) -> u64 {
         self.version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Create a new XdsState with services (builder pattern)
+    pub fn with_services(
+        mut self,
+        access_log_service: Arc<FlowplaneAccessLogService>,
+        learning_session_service: Arc<LearningSessionService>,
+    ) -> Self {
+        self.access_log_service = Some(access_log_service);
+        self.learning_session_service = Some(learning_session_service);
+        self
     }
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.

@@ -5,8 +5,12 @@ use flowplane::{
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
     openapi::defaults::ensure_default_gateway_resources,
-    storage::create_pool,
-    xds::{start_database_xds_server_with_state, XdsState},
+    services::LearningSessionService,
+    storage::{create_pool, repositories::LearningSessionRepository},
+    xds::{
+        services::access_log_service::FlowplaneAccessLogService,
+        start_database_xds_server_with_state, XdsState,
+    },
     Config, Result, APP_NAME, VERSION,
 };
 use tokio::signal;
@@ -63,7 +67,51 @@ async fn main() -> Result<()> {
     let simple_xds_config: SimpleXdsConfig = config.xds.clone();
     let api_config: ApiServerConfig = config.api.clone();
 
-    let state = Arc::new(XdsState::with_database(simple_xds_config.clone(), pool));
+    // Create Access Log Service for learning sessions
+    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
+    let access_log_service = Arc::new(access_log_service);
+
+    // Create Learning Session Service with Access Log Service integration
+    let learning_session_repo = LearningSessionRepository::new(pool.clone());
+    let learning_session_service = LearningSessionService::new(learning_session_repo)
+        .with_access_log_service(access_log_service.clone());
+    let learning_session_service = Arc::new(learning_session_service);
+
+    // Create XdsState with services
+    let state = Arc::new(
+        XdsState::with_database(simple_xds_config.clone(), pool)
+            .with_services(access_log_service.clone(), learning_session_service.clone()),
+    );
+
+    // Spawn background worker for learning session auto-completion
+    let learning_session_service_bg = learning_session_service.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            match learning_session_service_bg.check_all_active_sessions().await {
+                Ok(completed) if !completed.is_empty() => {
+                    info!(
+                        count = completed.len(),
+                        sessions = ?completed,
+                        "Background worker completed learning sessions"
+                    );
+                }
+                Ok(_) => {} // No sessions completed
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "Background worker failed to check active sessions"
+                    );
+                }
+            }
+        }
+    });
+
+    // Sync existing active sessions with Access Log Service on startup
+    if let Err(e) = learning_session_service.sync_active_sessions_with_access_log_service().await {
+        error!(error = %e, "Failed to sync active sessions with Access Log Service on startup");
+    }
 
     ensure_default_gateway_resources(&state).await?;
 
