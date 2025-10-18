@@ -5,7 +5,7 @@ use flowplane::{
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
     openapi::defaults::ensure_default_gateway_resources,
-    services::LearningSessionService,
+    services::{LearningSessionService, WebhookService},
     storage::{create_pool, repositories::LearningSessionRepository},
     xds::{
         services::access_log_service::FlowplaneAccessLogService,
@@ -71,10 +71,15 @@ async fn main() -> Result<()> {
     let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
     let access_log_service = Arc::new(access_log_service);
 
-    // Create Learning Session Service with Access Log Service integration
+    // Create Webhook Service for learning session event notifications
+    let (webhook_service, _webhook_rx) = WebhookService::new();
+    let webhook_service = Arc::new(webhook_service);
+
+    // Create Learning Session Service with Access Log Service and Webhook Service integration
     let learning_session_repo = LearningSessionRepository::new(pool.clone());
     let learning_session_service = LearningSessionService::new(learning_session_repo)
-        .with_access_log_service(access_log_service.clone());
+        .with_access_log_service(access_log_service.clone())
+        .with_webhook_service(webhook_service.clone());
     let learning_session_service = Arc::new(learning_session_service);
 
     // Create XdsState with services

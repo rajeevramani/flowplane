@@ -8,6 +8,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     errors::{Error, Result},
+    services::webhook_service::{LearningSessionWebhookEvent, WebhookService},
     storage::repositories::{
         LearningSessionData, LearningSessionRepository, LearningSessionStatus,
         UpdateLearningSessionRequest,
@@ -20,17 +21,28 @@ use crate::{
 pub struct LearningSessionService {
     repository: LearningSessionRepository,
     access_log_service: Option<Arc<FlowplaneAccessLogService>>,
+    webhook_service: Option<Arc<WebhookService>>,
 }
 
 impl LearningSessionService {
     /// Create a new learning session service
     pub fn new(repository: LearningSessionRepository) -> Self {
-        Self { repository, access_log_service: None }
+        Self {
+            repository,
+            access_log_service: None,
+            webhook_service: None,
+        }
     }
 
     /// Set the access log service for integration
     pub fn with_access_log_service(mut self, service: Arc<FlowplaneAccessLogService>) -> Self {
         self.access_log_service = Some(service);
+        self
+    }
+
+    /// Set the webhook service for event notifications
+    pub fn with_webhook_service(mut self, service: Arc<WebhookService>) -> Self {
+        self.webhook_service = Some(service);
         self
     }
 
@@ -79,6 +91,17 @@ impl LearningSessionService {
             session_id = %session_id,
             "Activated learning session: pending → active"
         );
+
+        // Publish webhook event if webhook service is available
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::activated(
+                updated.id.clone(),
+                updated.team.clone(),
+                updated.route_pattern.clone(),
+                updated.target_sample_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
 
         Ok(updated)
     }
@@ -184,6 +207,18 @@ impl LearningSessionService {
             "Session completed: completing → completed"
         );
 
+        // Publish webhook event if webhook service is available
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::completed(
+                completed.id.clone(),
+                completed.team.clone(),
+                completed.route_pattern.clone(),
+                completed.target_sample_count,
+                completed.current_sample_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
+
         Ok(completed)
     }
 
@@ -214,6 +249,19 @@ impl LearningSessionService {
             error = %error_message,
             "Session failed"
         );
+
+        // Publish webhook event if webhook service is available
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::failed(
+                failed.id.clone(),
+                failed.team.clone(),
+                failed.route_pattern.clone(),
+                error_message,
+                failed.current_sample_count,
+                failed.target_sample_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
 
         Ok(failed)
     }
