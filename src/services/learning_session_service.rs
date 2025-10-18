@@ -40,12 +40,7 @@ impl std::fmt::Debug for LearningSessionService {
 impl LearningSessionService {
     /// Create a new learning session service
     pub fn new(repository: LearningSessionRepository) -> Self {
-        Self {
-            repository,
-            access_log_service: None,
-            webhook_service: None,
-            xds_state: None,
-        }
+        Self { repository, access_log_service: None, webhook_service: None, xds_state: None }
     }
 
     /// Set the access log service for integration

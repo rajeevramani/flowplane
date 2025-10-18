@@ -495,14 +495,19 @@ impl XdsState {
                                     // Decode HCM, add access log, re-encode
                                     use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
 
-                                    let mut hcm = HttpConnectionManager::decode(&typed_config.value[..])
-                                        .map_err(|e| crate::Error::internal(format!(
-                                            "Failed to decode HCM for listener '{}': {}",
-                                            built.name, e
-                                        )))?;
+                                    let mut hcm =
+                                        HttpConnectionManager::decode(&typed_config.value[..])
+                                            .map_err(|e| {
+                                                crate::Error::internal(format!(
+                                                    "Failed to decode HCM for listener '{}': {}",
+                                                    built.name, e
+                                                ))
+                                            })?;
 
                                     // Add access log to the HCM (avoid duplicates)
-                                    let already_has_log = hcm.access_log.iter()
+                                    let already_has_log = hcm
+                                        .access_log
+                                        .iter()
                                         .any(|al| al.name.contains(&session.id));
 
                                     if !already_has_log {

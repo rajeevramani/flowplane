@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
     let learning_session_service_with_xds = Arc::new(
         Arc::try_unwrap(learning_session_service)
             .unwrap_or_else(|arc| (*arc).clone())
-            .with_xds_state(state.clone())
+            .with_xds_state(state.clone()),
     );
     let learning_session_service = learning_session_service_with_xds;
 

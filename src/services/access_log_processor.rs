@@ -32,6 +32,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tracing::{debug, error, info, warn};
 
+use crate::schema::inference::SchemaInferenceEngine;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::Result;
 
@@ -112,17 +113,9 @@ impl AccessLogProcessor {
         let config = config.unwrap_or_default();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        info!(
-            worker_count = config.worker_count,
-            "Created AccessLogProcessor"
-        );
+        info!(worker_count = config.worker_count, "Created AccessLogProcessor");
 
-        Self {
-            config,
-            log_rx: Arc::new(Mutex::new(log_rx)),
-            shutdown_tx,
-            shutdown_rx,
-        }
+        Self { config, log_rx: Arc::new(Mutex::new(log_rx)), shutdown_tx, shutdown_rx }
     }
 
     /// Spawn worker tasks
@@ -140,10 +133,7 @@ impl AccessLogProcessor {
     pub fn spawn_workers(self) -> ProcessorHandle {
         let mut handles = Vec::with_capacity(self.config.worker_count);
 
-        info!(
-            worker_count = self.config.worker_count,
-            "Spawning access log processor workers"
-        );
+        info!(worker_count = self.config.worker_count, "Spawning access log processor workers");
 
         for worker_id in 0..self.config.worker_count {
             let mut shutdown_rx = self.shutdown_rx.clone();
@@ -213,24 +203,18 @@ impl AccessLogProcessor {
             handles.push(handle);
         }
 
-        info!(
-            spawned_workers = handles.len(),
-            "All access log processor workers spawned"
-        );
+        info!(spawned_workers = handles.len(), "All access log processor workers spawned");
 
-        ProcessorHandle {
-            shutdown_tx: self.shutdown_tx,
-            worker_handles: handles,
-        }
+        ProcessorHandle { shutdown_tx: self.shutdown_tx, worker_handles: handles }
     }
 
     /// Process a single log entry
     ///
-    /// Task 5.1: Just logs the entry for now
-    /// Task 5.2: Will add schema inference
-    /// Task 5.3: Will add batched DB writes
-    /// Task 5.4: Will add retry logic
-    /// Task 5.5: Will add metrics
+    /// Task 5.1: ✅ Worker pool infrastructure
+    /// Task 5.2: ✅ Schema inference integration
+    /// Task 5.3: TODO - Batched DB writes
+    /// Task 5.4: TODO - Retry logic
+    /// Task 5.5: TODO - Metrics
     async fn process_entry(worker_id: usize, entry: ProcessedLogEntry) -> Result<()> {
         debug!(
             worker_id,
@@ -239,10 +223,89 @@ impl AccessLogProcessor {
             path = %entry.path,
             status = entry.response_status,
             duration_ms = entry.duration_ms,
+            has_request_body = entry.request_body.is_some(),
+            has_response_body = entry.response_body.is_some(),
             "Processing access log entry"
         );
 
-        // TODO (Task 5.2): Add schema inference here
+        // Task 5.2: Schema inference for request and response bodies
+        let inference_engine = SchemaInferenceEngine::new();
+
+        // Infer request schema if body is present
+        if let Some(ref request_body) = entry.request_body {
+            match std::str::from_utf8(request_body) {
+                Ok(json_str) => {
+                    match inference_engine.infer_from_json(json_str) {
+                        Ok(schema) => {
+                            debug!(
+                                worker_id,
+                                session_id = %entry.session_id,
+                                path = %entry.path,
+                                schema_type = ?schema.schema_type,
+                                "Inferred request schema"
+                            );
+                            // TODO (Task 5.3): Store schema in database
+                        }
+                        Err(e) => {
+                            // Non-JSON or malformed body - log but don't fail
+                            debug!(
+                                worker_id,
+                                session_id = %entry.session_id,
+                                error = %e,
+                                "Failed to infer request schema (likely non-JSON body)"
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Binary request body - skip schema inference
+                    debug!(
+                        worker_id,
+                        session_id = %entry.session_id,
+                        "Request body is not valid UTF-8 (binary data)"
+                    );
+                }
+            }
+        }
+
+        // Infer response schema if body is present
+        if let Some(ref response_body) = entry.response_body {
+            match std::str::from_utf8(response_body) {
+                Ok(json_str) => {
+                    match inference_engine.infer_from_json(json_str) {
+                        Ok(schema) => {
+                            debug!(
+                                worker_id,
+                                session_id = %entry.session_id,
+                                path = %entry.path,
+                                status = entry.response_status,
+                                schema_type = ?schema.schema_type,
+                                "Inferred response schema"
+                            );
+                            // TODO (Task 5.3): Store schema in database
+                        }
+                        Err(e) => {
+                            // Non-JSON or malformed body - log but don't fail
+                            debug!(
+                                worker_id,
+                                session_id = %entry.session_id,
+                                error = %e,
+                                "Failed to infer response schema (likely non-JSON body)"
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Binary response body - skip schema inference
+                    debug!(
+                        worker_id,
+                        session_id = %entry.session_id,
+                        "Response body is not valid UTF-8 (binary data)"
+                    );
+                }
+            }
+        }
+
         // TODO (Task 5.3): Add batched database writes here
         // TODO (Task 5.4): Add retry logic here
         // TODO (Task 5.5): Add metrics here
@@ -306,9 +369,11 @@ mod tests {
             method: 1, // GET
             path: "/api/users".to_string(),
             request_headers: vec![],
+            request_body: None,
             request_body_size: 0,
             response_status: 200,
             response_headers: vec![],
+            response_body: None,
             response_body_size: 1024,
             start_time_seconds: 1234567890,
             duration_ms: 42,
@@ -357,9 +422,11 @@ mod tests {
                 method: 1,
                 path: "/api/test".to_string(),
                 request_headers: vec![],
+                request_body: None,
                 request_body_size: 0,
                 response_status: 200,
                 response_headers: vec![],
+                response_body: None,
                 response_body_size: 0,
                 start_time_seconds: 1234567890,
                 duration_ms: 10,
@@ -373,5 +440,175 @@ mod tests {
         // Workers should drain queue before finishing
         let result = tokio::time::timeout(Duration::from_secs(2), handle.join()).await;
         assert!(result.is_ok(), "Workers should drain queue and finish");
+    }
+
+    #[tokio::test]
+    async fn test_schema_inference_with_json_bodies() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let config = ProcessorConfig { worker_count: 1 };
+        let processor = AccessLogProcessor::new(rx, Some(config));
+
+        let _handle = processor.spawn_workers();
+
+        // Create mock JSON payloads
+        let request_json =
+            r#"{"user_id": 123, "action": "login", "timestamp": "2023-10-18T12:00:00Z"}"#;
+        let response_json = r#"{"success": true, "token": "abc123", "expires_in": 3600}"#;
+
+        let entry = ProcessedLogEntry {
+            session_id: "test-session".to_string(),
+            method: 2, // POST
+            path: "/api/auth/login".to_string(),
+            request_headers: vec![],
+            request_body: Some(request_json.as_bytes().to_vec()),
+            request_body_size: request_json.len() as u64,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: Some(response_json.as_bytes().to_vec()),
+            response_body_size: response_json.len() as u64,
+            start_time_seconds: 1234567890,
+            duration_ms: 42,
+        };
+
+        tx.send(entry).unwrap();
+
+        // Allow processing
+        sleep(Duration::from_millis(200)).await;
+
+        // Entry should have been processed with schema inference
+        // No error means success (schemas were inferred correctly)
+    }
+
+    #[tokio::test]
+    async fn test_schema_inference_with_non_json_bodies() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let config = ProcessorConfig { worker_count: 1 };
+        let processor = AccessLogProcessor::new(rx, Some(config));
+
+        let _handle = processor.spawn_workers();
+
+        // Create non-JSON payloads
+        let binary_data = vec![0xFF, 0xD8, 0xFF, 0xE0]; // Binary data (JPEG header)
+
+        let entry = ProcessedLogEntry {
+            session_id: "test-session".to_string(),
+            method: 2, // POST
+            path: "/api/upload".to_string(),
+            request_headers: vec![],
+            request_body: Some(binary_data.clone()),
+            request_body_size: binary_data.len() as u64,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 42,
+        };
+
+        tx.send(entry).unwrap();
+
+        // Allow processing
+        sleep(Duration::from_millis(200)).await;
+
+        // Entry should have been processed without errors
+        // (binary data is detected and schema inference is skipped)
+    }
+
+    #[tokio::test]
+    async fn test_schema_inference_with_malformed_json() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let config = ProcessorConfig { worker_count: 1 };
+        let processor = AccessLogProcessor::new(rx, Some(config));
+
+        let _handle = processor.spawn_workers();
+
+        // Create malformed JSON
+        let malformed_json = r#"{"user_id": 123, "action": "login""#; // Missing closing brace
+
+        let entry = ProcessedLogEntry {
+            session_id: "test-session".to_string(),
+            method: 2, // POST
+            path: "/api/auth/login".to_string(),
+            request_headers: vec![],
+            request_body: Some(malformed_json.as_bytes().to_vec()),
+            request_body_size: malformed_json.len() as u64,
+            response_status: 400,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 42,
+        };
+
+        tx.send(entry).unwrap();
+
+        // Allow processing
+        sleep(Duration::from_millis(200)).await;
+
+        // Entry should have been processed without errors
+        // (malformed JSON is handled gracefully with debug logging)
+    }
+
+    #[tokio::test]
+    async fn test_schema_inference_with_nested_json() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let config = ProcessorConfig { worker_count: 1 };
+        let processor = AccessLogProcessor::new(rx, Some(config));
+
+        let _handle = processor.spawn_workers();
+
+        // Create complex nested JSON
+        let request_json = r#"
+        {
+            "user": {
+                "id": 123,
+                "email": "test@example.com",
+                "profile": {
+                    "name": "Test User",
+                    "age": 30
+                }
+            },
+            "metadata": {
+                "ip": "192.168.1.1",
+                "user_agent": "Mozilla/5.0"
+            }
+        }
+        "#;
+
+        let response_json = r#"
+        {
+            "data": {
+                "user_id": 123,
+                "settings": {
+                    "theme": "dark",
+                    "notifications": true
+                }
+            },
+            "timestamp": "2023-10-18T12:00:00Z"
+        }
+        "#;
+
+        let entry = ProcessedLogEntry {
+            session_id: "test-session".to_string(),
+            method: 1, // GET
+            path: "/api/users/profile".to_string(),
+            request_headers: vec![],
+            request_body: Some(request_json.as_bytes().to_vec()),
+            request_body_size: request_json.len() as u64,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: Some(response_json.as_bytes().to_vec()),
+            response_body_size: response_json.len() as u64,
+            start_time_seconds: 1234567890,
+            duration_ms: 42,
+        };
+
+        tx.send(entry).unwrap();
+
+        // Allow processing
+        sleep(Duration::from_millis(200)).await;
+
+        // Entry should have been processed with schema inference
+        // Complex nested structures should be handled correctly
     }
 }

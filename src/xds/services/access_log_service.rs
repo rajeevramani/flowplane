@@ -54,13 +54,17 @@ pub struct ProcessedLogEntry {
     pub path: String,
     /// Request headers (limited subset)
     pub request_headers: Vec<(String, String)>,
-    /// Request body bytes (first 10KB)
+    /// Request body (first 10KB) - for schema inference only, NOT persisted
+    pub request_body: Option<Vec<u8>>,
+    /// Request body size
     pub request_body_size: u64,
     /// Response status code
     pub response_status: u32,
     /// Response headers (limited subset)
     pub response_headers: Vec<(String, String)>,
-    /// Response body bytes (first 10KB)
+    /// Response body (first 10KB) - for schema inference only, NOT persisted
+    pub response_body: Option<Vec<u8>>,
+    /// Response body size
     pub response_body_size: u64,
     /// Request start timestamp
     pub start_time_seconds: i64,
@@ -229,7 +233,7 @@ impl FlowplaneAccessLogService {
     #[allow(dead_code)] // Will be used once we determine exact wire format
     fn process_http_log_entry(entry: &HttpAccessLogEntry, session_id: String) -> ProcessedLogEntry {
         // Extract request details
-        let (method, path, request_headers, request_body_size) =
+        let (method, path, request_headers, request_body, request_body_size) =
             if let Some(request) = &entry.request {
                 let method = request.request_method;
                 let path = request.path.clone();
@@ -238,6 +242,14 @@ impl FlowplaneAccessLogService {
                 // Note: Actual header structure will be validated with real Envoy
                 let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
 
+                // TODO: Extract request body (up to 10KB for schema inference)
+                // Note: The HttpRequestProperties protobuf from Envoy does NOT include
+                // the actual body content by default. To capture bodies, we need to:
+                // 1. Enable body buffering in Envoy's HTTP connection manager
+                // 2. Use the `body` field in access log format configuration
+                // For now, bodies are not available in the protobuf message.
+                let body = None;
+
                 let body_size = request.request_body_bytes;
 
                 debug!(
@@ -245,16 +257,17 @@ impl FlowplaneAccessLogService {
                     path = %path,
                     headers_count = headers.len(),
                     body_bytes = body_size,
+                    has_body = body.is_some(),
                     "HTTP request extracted"
                 );
 
-                (method, path, headers, body_size)
+                (method, path, headers, body, body_size)
             } else {
-                (0, String::new(), Vec::new(), 0)
+                (0, String::new(), Vec::new(), None, 0)
             };
 
         // Extract response details
-        let (response_status, response_headers, response_body_size) =
+        let (response_status, response_headers, response_body, response_body_size) =
             if let Some(response) = &entry.response {
                 let status = response.response_code.as_ref().map(|c| c.value).unwrap_or(0);
 
@@ -262,18 +275,27 @@ impl FlowplaneAccessLogService {
                 // Note: Actual header structure will be validated with real Envoy
                 let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
 
+                // TODO: Extract response body (up to 10KB for schema inference)
+                // Note: The HttpResponseProperties protobuf from Envoy does NOT include
+                // the actual body content by default. To capture bodies, we need to:
+                // 1. Enable body buffering in Envoy's HTTP connection manager
+                // 2. Use the `body` field in access log format configuration
+                // For now, bodies are not available in the protobuf message.
+                let body = None;
+
                 let body_size = response.response_body_bytes;
 
                 debug!(
                     status = status,
                     headers_count = headers.len(),
                     body_bytes = body_size,
+                    has_body = body.is_some(),
                     "HTTP response extracted"
                 );
 
-                (status, headers, body_size)
+                (status, headers, body, body_size)
             } else {
-                (0, Vec::new(), 0)
+                (0, Vec::new(), None, 0)
             };
 
         // Extract timing information
@@ -296,9 +318,11 @@ impl FlowplaneAccessLogService {
             method,
             path,
             request_headers,
+            request_body,
             request_body_size,
             response_status,
             response_headers,
+            response_body,
             response_body_size,
             start_time_seconds,
             duration_ms,
