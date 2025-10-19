@@ -128,14 +128,6 @@ impl SchemaAggregator {
             }
         }
 
-        let response_schemas = if response_schemas_map.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_value(response_schemas_map).map_err(|e| {
-                FlowplaneError::validation(format!("Failed to serialize response_schemas: {}", e))
-            })?)
-        };
-
         // Calculate sample count
         let sample_count = observations.len() as i64;
 
@@ -144,9 +136,18 @@ impl SchemaAggregator {
 
         let last_observed = observations.iter().map(|obs| obs.last_seen_at).max().unwrap();
 
-        // Task 6.4 will implement proper confidence scoring
-        // For now, use a simple heuristic: more samples = higher confidence
-        let confidence_score = calculate_simple_confidence(sample_count);
+        // Task 6.4: Calculate comprehensive confidence score (before serializing response_schemas_map)
+        let confidence_score =
+            calculate_confidence_score(sample_count, &request_schema, &response_schemas_map);
+
+        // Serialize response schemas (this consumes response_schemas_map)
+        let response_schemas = if response_schemas_map.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(response_schemas_map).map_err(|e| {
+                FlowplaneError::validation(format!("Failed to serialize response_schemas: {}", e))
+            })?)
+        };
 
         // Task 6.5 will implement breaking change detection
         // For now, check if there's a previous version
@@ -370,14 +371,156 @@ fn calculate_required_fields(schema: &mut InferredSchema, total_observations: us
     }
 }
 
-/// Simple confidence calculation based on sample size
+/// Calculate comprehensive confidence score for aggregated schema
 ///
-/// This is a placeholder for Task 6.4's comprehensive confidence scoring.
-/// Current logic:
-/// - 1-5 samples: 0.5 confidence
-/// - 6-20 samples: 0.7 confidence
-/// - 21-50 samples: 0.85 confidence
-/// - 51+ samples: 0.95 confidence
+/// Task 6.4: Confidence score based on multiple factors:
+/// 1. Sample size (40% weight) - More samples = higher confidence
+/// 2. Field consistency (40% weight) - All fields present in all samples = higher confidence
+/// 3. Type stability (20% weight) - No type conflicts = higher confidence
+///
+/// Returns a score between 0.0 and 1.0
+fn calculate_confidence_score(
+    sample_count: i64,
+    request_schema: &Option<serde_json::Value>,
+    response_schemas: &HashMap<String, serde_json::Value>,
+) -> f64 {
+    // Component 1: Sample size score (40% weight)
+    let sample_score = calculate_sample_size_score(sample_count);
+
+    // Component 2: Field consistency score (40% weight)
+    let field_score = calculate_field_consistency_score(request_schema, response_schemas);
+
+    // Component 3: Type stability score (20% weight)
+    let type_score = calculate_type_stability_score(request_schema, response_schemas);
+
+    // Weighted average
+    let confidence = (sample_score * 0.4) + (field_score * 0.4) + (type_score * 0.2);
+
+    // Clamp to [0.0, 1.0]
+    confidence.clamp(0.0, 1.0)
+}
+
+/// Calculate score based on sample size
+/// Uses logarithmic scale to reward more samples with diminishing returns
+fn calculate_sample_size_score(sample_count: i64) -> f64 {
+    if sample_count <= 0 {
+        return 0.0;
+    }
+
+    // Logarithmic scaling: ln(n) / ln(100)
+    // 1 sample: 0.0
+    // 5 samples: ~0.35
+    // 10 samples: 0.5
+    // 20 samples: ~0.65
+    // 50 samples: ~0.85
+    // 100 samples: 1.0
+    let log_score = (sample_count as f64).ln() / (100.0_f64).ln();
+    log_score.clamp(0.0, 1.0)
+}
+
+/// Calculate score based on field consistency
+/// Checks what percentage of fields are required (100% presence)
+fn calculate_field_consistency_score(
+    request_schema: &Option<serde_json::Value>,
+    response_schemas: &HashMap<String, serde_json::Value>,
+) -> f64 {
+    let mut total_fields = 0;
+    let mut required_fields = 0;
+
+    // Check request schema
+    if let Some(schema) = request_schema {
+        count_field_consistency(schema, &mut total_fields, &mut required_fields);
+    }
+
+    // Check all response schemas
+    for schema in response_schemas.values() {
+        count_field_consistency(schema, &mut total_fields, &mut required_fields);
+    }
+
+    if total_fields == 0 {
+        return 1.0; // No fields means perfect consistency
+    }
+
+    required_fields as f64 / total_fields as f64
+}
+
+/// Helper to count total fields and required fields in a schema
+fn count_field_consistency(schema: &serde_json::Value, total: &mut usize, required: &mut usize) {
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (field_name, field_schema) in properties {
+            *total += 1;
+
+            // Check if field is in required array
+            if let Some(req_array) = schema.get("required").and_then(|r| r.as_array()) {
+                if req_array.iter().any(|r| r.as_str() == Some(field_name)) {
+                    *required += 1;
+                }
+            }
+
+            // Recursively check nested objects
+            if field_schema.get("type").and_then(|t| t.as_str()) == Some("object") {
+                count_field_consistency(field_schema, total, required);
+            }
+        }
+    }
+}
+
+/// Calculate score based on type stability (inverse of type conflicts)
+/// Checks how many fields have oneOf types (type conflicts)
+fn calculate_type_stability_score(
+    request_schema: &Option<serde_json::Value>,
+    response_schemas: &HashMap<String, serde_json::Value>,
+) -> f64 {
+    let mut total_fields = 0;
+    let mut stable_fields = 0;
+
+    // Check request schema
+    if let Some(schema) = request_schema {
+        count_type_stability(schema, &mut total_fields, &mut stable_fields);
+    }
+
+    // Check all response schemas
+    for schema in response_schemas.values() {
+        count_type_stability(schema, &mut total_fields, &mut stable_fields);
+    }
+
+    if total_fields == 0 {
+        return 1.0; // No fields means perfect stability
+    }
+
+    stable_fields as f64 / total_fields as f64
+}
+
+/// Helper to count total fields and stable-type fields
+fn count_type_stability(schema: &serde_json::Value, total: &mut usize, stable: &mut usize) {
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (_field_name, field_schema) in properties {
+            *total += 1;
+
+            // Check if type is stable (not a oneOf)
+            if let Some(type_val) = field_schema.get("type") {
+                let has_conflict = type_val.is_object() && type_val.get("oneof").is_some();
+
+                if !has_conflict {
+                    *stable += 1;
+                }
+            } else {
+                // No type field means stable
+                *stable += 1;
+            }
+
+            // Recursively check nested objects
+            if let Some(type_str) = field_schema.get("type").and_then(|t| t.as_str()) {
+                if type_str == "object" {
+                    count_type_stability(field_schema, total, stable);
+                }
+            }
+        }
+    }
+}
+
+/// Legacy simple confidence calculation (kept for backward compatibility in tests)
+#[allow(dead_code)]
 fn calculate_simple_confidence(sample_count: i64) -> f64 {
     match sample_count {
         1..=5 => 0.5,
@@ -502,7 +645,9 @@ mod tests {
         assert_eq!(aggregated.http_method, "GET");
         assert_eq!(aggregated.path, "/users/{id}");
         assert_eq!(aggregated.sample_count, 3);
-        assert_eq!(aggregated.confidence_score, 0.5); // 3 samples = 0.5 confidence
+        // Comprehensive confidence: sample=0.239, field=1.0, type=1.0
+        // (0.239 * 0.4) + (1.0 * 0.4) + (1.0 * 0.2) = 0.6954
+        assert!((aggregated.confidence_score - 0.695).abs() < 0.01);
         assert_eq!(aggregated.version, 1);
         assert!(aggregated.response_schemas.is_some());
     }
@@ -558,13 +703,161 @@ mod tests {
         assert_eq!(ids.len(), 3);
     }
 
-    #[tokio::test]
-    async fn test_confidence_scoring() {
-        assert_eq!(calculate_simple_confidence(1), 0.5);
-        assert_eq!(calculate_simple_confidence(5), 0.5);
-        assert_eq!(calculate_simple_confidence(10), 0.7);
-        assert_eq!(calculate_simple_confidence(30), 0.85);
-        assert_eq!(calculate_simple_confidence(100), 0.95);
+    #[test]
+    fn test_sample_size_scoring() {
+        // Test logarithmic scaling: ln(n) / ln(100)
+        assert_eq!(calculate_sample_size_score(1), 0.0); // ln(1) = 0
+        assert!((calculate_sample_size_score(5) - 0.35).abs() < 0.01); // ~0.35 for 5 samples
+        assert_eq!(calculate_sample_size_score(10), 0.5); // ln(10) / ln(100) = 0.5
+        assert!((calculate_sample_size_score(20) - 0.65).abs() < 0.01); // ~0.65 for 20 samples
+        assert!((calculate_sample_size_score(50) - 0.85).abs() < 0.01); // ~0.85 for 50 samples
+        assert_eq!(calculate_sample_size_score(100), 1.0); // ln(100) / ln(100) = 1.0
+        assert_eq!(calculate_sample_size_score(0), 0.0); // 0 for no samples
+    }
+
+    #[test]
+    fn test_field_consistency_perfect() {
+        // Schema with all fields required (100% presence)
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"}
+            },
+            "required": ["id", "name"]
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_field_consistency_score(&None, &response_map);
+        assert_eq!(score, 1.0); // Perfect consistency
+    }
+
+    #[test]
+    fn test_field_consistency_partial() {
+        // Schema with some fields required, some optional
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            },
+            "required": ["id"] // Only 1 out of 3 required
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_field_consistency_score(&None, &response_map);
+        assert!((score - 0.333).abs() < 0.01); // ~33% required
+    }
+
+    #[test]
+    fn test_type_stability_perfect() {
+        // Schema with no type conflicts (all stable types)
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"}
+            }
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_type_stability_score(&None, &response_map);
+        assert_eq!(score, 1.0); // Perfect stability
+    }
+
+    #[test]
+    fn test_type_stability_with_conflicts() {
+        // Schema with type conflicts (oneOf)
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "value": {
+                    "type": {
+                        "oneof": ["string", "integer"]
+                    }
+                }
+            }
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_type_stability_score(&None, &response_map);
+        assert_eq!(score, 0.5); // 1 stable out of 2 fields = 50%
+    }
+
+    #[test]
+    fn test_comprehensive_confidence_high() {
+        // Perfect scenario: many samples, all fields required, no conflicts
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"}
+            },
+            "required": ["id", "name"]
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_confidence_score(100, &None, &response_map);
+        // Should be very high: sample_score(100)=~0.92, field=1.0, type=1.0
+        // (0.92 * 0.4) + (1.0 * 0.4) + (1.0 * 0.2) = 0.368 + 0.4 + 0.2 = 0.968
+        assert!(score > 0.95);
+    }
+
+    #[test]
+    fn test_comprehensive_confidence_low() {
+        // Poor scenario: few samples, few required fields, type conflicts
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": {
+                        "oneof": ["string", "integer", "boolean"]
+                    }
+                }
+            },
+            "required": []
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_confidence_score(1, &None, &response_map);
+        // Should be low: sample_score(1)=~0.0, field=0.0, type=0.0
+        assert!(score < 0.1);
+    }
+
+    #[test]
+    fn test_comprehensive_confidence_medium() {
+        // Medium scenario: moderate samples, some required fields, no conflicts
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "name": {"type": "string"},
+                "email": {"type": "string"}
+            },
+            "required": ["id"] // 1 out of 3
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_confidence_score(10, &None, &response_map);
+        // sample_score(10)=0.5, field=0.33, type=1.0
+        // (0.5 * 0.4) + (0.33 * 0.4) + (1.0 * 0.2) = 0.2 + 0.132 + 0.2 = 0.532
+        assert!(score > 0.50 && score < 0.56);
     }
 
     #[tokio::test]
