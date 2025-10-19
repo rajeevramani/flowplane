@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
+use crate::observability::metrics;
 use crate::schema::inference::SchemaInferenceEngine;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::Result;
@@ -223,6 +224,12 @@ impl AccessLogProcessor {
 
         info!(worker_count = self.config.worker_count, "Spawning access log processor workers");
 
+        // Update worker count metric
+        let worker_count = self.config.worker_count;
+        tokio::spawn(async move {
+            metrics::update_processor_workers(worker_count).await;
+        });
+
         for worker_id in 0..self.config.worker_count {
             let mut shutdown_rx = self.shutdown_rx.clone();
             let log_rx = Arc::clone(&self.log_rx);
@@ -321,12 +328,14 @@ impl AccessLogProcessor {
     /// Task 5.2: ✅ Schema inference integration
     /// Task 5.3: ✅ Batched DB writes (schemas sent to batcher)
     /// Task 5.4: ✅ Retry logic with backpressure
-    /// Task 5.5: TODO - Metrics
+    /// Task 5.5: ✅ Metrics
     async fn process_entry(
         worker_id: usize,
         entry: ProcessedLogEntry,
         schema_tx: &mpsc::Sender<InferredSchemaRecord>,
     ) -> Result<()> {
+        let start = std::time::Instant::now();
+
         debug!(
             worker_id,
             session_id = %entry.session_id,
@@ -374,6 +383,7 @@ impl AccessLogProcessor {
                             match schema_tx.try_send(record) {
                                 Ok(_) => {
                                     debug!(worker_id, "Sent schema to batcher");
+                                    metrics::record_schema_inferred("request", true).await;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     // Queue is full - drop the schema and log for metrics
@@ -383,10 +393,12 @@ impl AccessLogProcessor {
                                         path = %entry.path,
                                         "Schema queue full, dropping schema (backpressure)"
                                     );
+                                    metrics::record_schema_dropped("request").await;
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     // Batcher is shut down, ignore silently
                                     debug!(worker_id, "Batcher channel closed, dropping schema");
+                                    metrics::record_schema_dropped("request").await;
                                 }
                             }
                         }
@@ -398,6 +410,7 @@ impl AccessLogProcessor {
                                 error = %e,
                                 "Failed to infer request schema (likely non-JSON body)"
                             );
+                            metrics::record_schema_inferred("request", false).await;
                         }
                     }
                 }
@@ -445,6 +458,7 @@ impl AccessLogProcessor {
                             match schema_tx.try_send(record) {
                                 Ok(_) => {
                                     debug!(worker_id, "Sent schema to batcher");
+                                    metrics::record_schema_inferred("response", true).await;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     // Queue is full - drop the schema and log for metrics
@@ -454,10 +468,12 @@ impl AccessLogProcessor {
                                         path = %entry.path,
                                         "Schema queue full, dropping schema (backpressure)"
                                     );
+                                    metrics::record_schema_dropped("response").await;
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     // Batcher is shut down, ignore silently
                                     debug!(worker_id, "Batcher channel closed, dropping schema");
+                                    metrics::record_schema_dropped("response").await;
                                 }
                             }
                         }
@@ -469,6 +485,7 @@ impl AccessLogProcessor {
                                 error = %e,
                                 "Failed to infer response schema (likely non-JSON body)"
                             );
+                            metrics::record_schema_inferred("response", false).await;
                         }
                     }
                 }
@@ -483,9 +500,9 @@ impl AccessLogProcessor {
             }
         }
 
-        // TODO (Task 5.3): Add batched database writes here
-        // TODO (Task 5.4): Add retry logic here
-        // TODO (Task 5.5): Add metrics here
+        // Record processing duration
+        let duration = start.elapsed().as_secs_f64();
+        metrics::record_processor_entry_duration(duration).await;
 
         Ok(())
     }
@@ -501,6 +518,7 @@ impl AccessLogProcessor {
         max_retries: usize,
         initial_backoff_ms: u64,
     ) -> Result<()> {
+        let batch_size = batch.len();
         let mut attempt = 0;
         let mut backoff_ms = initial_backoff_ms;
 
@@ -510,6 +528,7 @@ impl AccessLogProcessor {
                     if attempt > 0 {
                         info!(attempts = attempt + 1, "Batch write succeeded after retries");
                     }
+                    metrics::record_schema_batch_write(batch_size, true, attempt).await;
                     return Ok(());
                 }
                 Err(e) => {
@@ -521,6 +540,7 @@ impl AccessLogProcessor {
                             attempts = attempt,
                             "Batch write failed after max retries, dropping batch"
                         );
+                        metrics::record_schema_batch_write(batch_size, false, attempt).await;
                         return Err(e);
                     }
 
