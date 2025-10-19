@@ -8,6 +8,7 @@ pub mod cluster_service;
 pub mod learning_session_service;
 pub mod listener_service;
 pub mod route_service;
+pub mod schema_aggregator;
 pub mod webhook_service;
 
 pub use access_log_processor::{AccessLogProcessor, ProcessorConfig, ProcessorHandle};
@@ -15,4 +16,5 @@ pub use cluster_service::ClusterService;
 pub use learning_session_service::LearningSessionService;
 pub use listener_service::ListenerService;
 pub use route_service::RouteService;
+pub use schema_aggregator::SchemaAggregator;
 pub use webhook_service::{LearningSessionWebhookEvent, WebhookEndpoint, WebhookService};
