@@ -9,9 +9,11 @@ use crate::xds::resources::{
 };
 use crate::{
     config::SimpleXdsConfig,
+    services::LearningSessionService,
     storage::{
         ApiDefinitionRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
     },
+    xds::services::access_log_service::FlowplaneAccessLogService,
     Result,
 };
 use envoy_types::pb::google::protobuf::Any;
@@ -58,6 +60,8 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub api_definition_repository: Option<ApiDefinitionRepository>,
+    pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
+    pub learning_session_service: Option<Arc<LearningSessionService>>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -72,6 +76,8 @@ impl XdsState {
             route_repository: None,
             listener_repository: None,
             api_definition_repository: None,
+            access_log_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -90,6 +96,8 @@ impl XdsState {
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
             api_definition_repository: Some(api_definition_repository),
+            access_log_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -101,6 +109,17 @@ impl XdsState {
 
     pub fn get_version_number(&self) -> u64 {
         self.version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Create a new XdsState with services (builder pattern)
+    pub fn with_services(
+        mut self,
+        access_log_service: Arc<FlowplaneAccessLogService>,
+        learning_session_service: Arc<LearningSessionService>,
+    ) -> Self {
+        self.access_log_service = Some(access_log_service);
+        self.learning_session_service = Some(learning_session_service);
+        self
     }
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
@@ -356,11 +375,19 @@ impl XdsState {
 
         let listener_rows = repository.list(Some(1000), None).await?;
 
-        let built = if listener_rows.is_empty() {
+        let mut built = if listener_rows.is_empty() {
             listeners_from_config(&self.config)?
         } else {
             listeners_from_database_entries(listener_rows, "cache_refresh")?
         };
+
+        // Inject access log configuration for active learning sessions
+        if let Err(e) = self.inject_learning_session_access_logs(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject access log configuration for learning sessions"
+            );
+        }
 
         let total_resources = built.len();
         match self.apply_built_resources(LISTENER_TYPE_URL, built) {
@@ -383,6 +410,132 @@ impl XdsState {
                     type_url = LISTENER_TYPE_URL,
                     total_resources,
                     "Listener cache refresh detected no changes"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inject access log configuration into listeners for active learning sessions
+    ///
+    /// This method:
+    /// 1. Queries active learning sessions from the service
+    /// 2. For each active session, decodes the listener protobuf
+    /// 3. Injects HttpGrpcAccessLogConfig into the listener's filter chains
+    /// 4. Re-encodes the modified listener back into the BuiltResource
+    ///
+    /// This enables dynamic access logging for routes in active learning sessions
+    /// without modifying the stored listener configuration.
+    #[instrument(skip(self, built_listeners), name = "xds_inject_access_logs")]
+    async fn inject_learning_session_access_logs(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        use crate::xds::access_log::LearningSessionAccessLogConfig;
+        use envoy_types::pb::envoy::config::listener::v3::Listener;
+        use prost::Message;
+
+        // Get learning session service
+        let session_service = match &self.learning_session_service {
+            Some(service) => service,
+            None => {
+                debug!("No learning session service available, skipping access log injection");
+                return Ok(());
+            }
+        };
+
+        // Query active learning sessions
+        let active_sessions = session_service.list_active_sessions().await?;
+
+        if active_sessions.is_empty() {
+            debug!("No active learning sessions, skipping access log injection");
+            return Ok(());
+        }
+
+        info!(
+            session_count = active_sessions.len(),
+            "Injecting access log configuration for active learning sessions"
+        );
+
+        // For each listener, check if it needs access log injection
+        for built in built_listeners.iter_mut() {
+            // Decode the listener protobuf
+            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
+                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
+            })?;
+
+            // Track if we modified this listener
+            let mut modified = false;
+
+            // Check each active session to see if it applies to this listener
+            for session in &active_sessions {
+                // For now, we inject access log into ALL listeners when ANY session is active
+                // TODO: In the future, we could be more selective based on session.route_pattern
+                // and match it against the listener's routes
+
+                // Create access log config for this session
+                let access_log_config = LearningSessionAccessLogConfig::new(
+                    session.id.clone(),
+                    session.team.clone(),
+                    self.config.bind_address.clone() + ":" + &self.config.port.to_string(),
+                );
+
+                let access_log = access_log_config.build_access_log()?;
+
+                // Inject access log into each filter chain's HTTP connection manager
+                for filter_chain in &mut listener.filter_chains {
+                    for filter in &mut filter_chain.filters {
+                        // Check if this is an HTTP connection manager
+                        if filter.name == "envoy.filters.network.http_connection_manager" {
+                            if let Some(config_type) = &mut filter.config_type {
+                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+
+                                if let ConfigType::TypedConfig(typed_config) = config_type {
+                                    // Decode HCM, add access log, re-encode
+                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+
+                                    let mut hcm =
+                                        HttpConnectionManager::decode(&typed_config.value[..])
+                                            .map_err(|e| {
+                                                crate::Error::internal(format!(
+                                                    "Failed to decode HCM for listener '{}': {}",
+                                                    built.name, e
+                                                ))
+                                            })?;
+
+                                    // Add access log to the HCM (avoid duplicates)
+                                    let already_has_log = hcm
+                                        .access_log
+                                        .iter()
+                                        .any(|al| al.name.contains(&session.id));
+
+                                    if !already_has_log {
+                                        hcm.access_log.push(access_log.clone());
+                                        modified = true;
+
+                                        debug!(
+                                            listener = %built.name,
+                                            session_id = %session.id,
+                                            "Injected access log configuration"
+                                        );
+                                    }
+
+                                    // Re-encode HCM back into typed_config
+                                    typed_config.value = hcm.encode_to_vec();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we modified the listener, re-encode it
+            if modified {
+                built.resource.value = listener.encode_to_vec();
+                debug!(
+                    listener = %built.name,
+                    "Re-encoded listener with access log configuration"
                 );
             }
         }

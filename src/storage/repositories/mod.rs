@@ -6,6 +6,7 @@
 pub mod api_definition;
 pub mod audit_log;
 pub mod cluster;
+pub mod learning_session;
 pub mod listener;
 pub mod reporting;
 pub mod route;
@@ -18,6 +19,10 @@ pub use api_definition::{
 };
 pub use audit_log::{AuditEvent, AuditLogRepository};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
+pub use learning_session::{
+    CreateLearningSessionRequest, LearningSessionData, LearningSessionRepository,
+    LearningSessionStatus, UpdateLearningSessionRequest,
+};
 pub use listener::{
     CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest,
 };
