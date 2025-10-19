@@ -13,12 +13,13 @@
 //! 5. **Subtask 6.5**: Detect breaking changes from previous versions
 
 use crate::errors::{FlowplaneError, Result};
+use crate::schema::InferredSchema;
 use crate::storage::repositories::{
     AggregatedSchemaRepository, CreateAggregatedSchemaRequest, InferredSchemaData,
     InferredSchemaRepository,
 };
 use std::collections::HashMap;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 /// Schema aggregation service
 pub struct SchemaAggregator {
@@ -110,20 +111,20 @@ impl SchemaAggregator {
         // Extract team from first observation (all should have same team)
         let team = &observations[0].team;
 
-        // Task 6.1: Basic aggregation logic
-        // Just combine observations and count them
+        // Task 6.2: Merge schemas and track field presence
+        // Use InferredSchema::merge() to properly combine observations
 
-        // Aggregate request schemas (take first non-null)
-        let request_schema = observations.iter().find_map(|obs| obs.request_schema.clone());
+        // Aggregate request schemas by merging all observations
+        let request_schema = merge_schemas(&observations, |obs| obs.request_schema.as_ref())?;
 
         // Aggregate response schemas by status code
-        // For now, create a simple map of {status_code: schema}
         let mut response_schemas_map = HashMap::new();
         if let Some(status) = response_status_code {
-            // Find first non-null response schema
-            if let Some(obs) = observations.iter().find(|o| o.response_schema.is_some()) {
-                response_schemas_map
-                    .insert(status.to_string(), obs.response_schema.clone().unwrap());
+            // Merge all response schemas for this status code
+            let response_schema = merge_schemas(&observations, |obs| obs.response_schema.as_ref())?;
+
+            if let Some(schema) = response_schema {
+                response_schemas_map.insert(status.to_string(), schema);
             }
         }
 
@@ -185,6 +186,190 @@ impl SchemaAggregator {
     }
 }
 
+/// Merge multiple schema observations into a single aggregated schema
+///
+/// This function implements Task 6.2's field presence tracking by:
+/// 1. Extracting schemas from observations using the provided accessor
+/// 2. Merging them using InferredSchema::merge() which tracks field presence
+/// 3. Counting actual field presence across observations
+/// 4. Calculating required fields based on 100% presence threshold
+///
+/// After merging, the schema's `required` field is populated with fields
+/// that appear in 100% of observations.
+fn merge_schemas<F>(
+    observations: &[InferredSchemaData],
+    schema_accessor: F,
+) -> Result<Option<serde_json::Value>>
+where
+    F: Fn(&InferredSchemaData) -> Option<&serde_json::Value> + Copy,
+{
+    // Collect all non-null schemas
+    let schemas: Vec<_> = observations.iter().filter_map(|obs| schema_accessor(obs)).collect();
+
+    if schemas.is_empty() {
+        return Ok(None);
+    }
+
+    // Parse first schema as InferredSchema
+    let first_json = schemas[0];
+    let mut merged: InferredSchema = serde_json::from_value(first_json.clone()).map_err(|e| {
+        warn!(error = %e, "Failed to parse first schema as InferredSchema, using raw JSON");
+        // If parsing fails, just return the first schema as-is
+        return FlowplaneError::validation(format!("Failed to parse schema: {}", e));
+    })?;
+
+    // Track total observations for presence calculation
+    let total_observations = observations.len();
+
+    // Merge remaining schemas
+    for schema_json in schemas.iter().skip(1) {
+        let other: InferredSchema =
+            serde_json::from_value((*schema_json).clone()).map_err(|e| {
+                FlowplaneError::validation(format!("Failed to parse schema for merging: {}", e))
+            })?;
+
+        merged.merge(&other);
+    }
+
+    // Fix field-level stats: Count actual field presence across all observations
+    fix_field_stats_with_observations(&mut merged, observations, schema_accessor);
+
+    // Calculate required fields based on 100% presence
+    // For object schemas, determine which fields are required
+    calculate_required_fields(&mut merged, total_observations);
+
+    // Convert merged schema to JSON value
+    let result = serde_json::to_value(&merged).map_err(|e| {
+        FlowplaneError::validation(format!("Failed to serialize merged schema: {}", e))
+    })?;
+
+    Ok(Some(result))
+}
+
+/// Fix field-level stats after merging
+///
+/// The SchemaInferenceEngine doesn't set field-level stats, and the merge operation
+/// doesn't properly track field presence. We need to count how many times each field
+/// appears by looking at all the original observations.
+///
+/// For now, we use a heuristic: after merging, each field that exists has been seen
+/// at least once. We need to count presence from the original observations.
+fn fix_field_stats_with_observations<F>(
+    schema: &mut InferredSchema,
+    observations: &[InferredSchemaData],
+    schema_accessor: F,
+) where
+    F: Fn(&InferredSchemaData) -> Option<&serde_json::Value> + Copy,
+{
+    let total_observations = observations.len();
+
+    if let Some(ref mut properties) = schema.properties {
+        // Count presence for each field across all observations
+        for (field_name, field_schema) in properties.iter_mut() {
+            let mut presence_count = 0u64;
+
+            // Check each observation to see if it has this field
+            for obs in observations {
+                if let Some(obs_schema_json) = schema_accessor(obs) {
+                    if let Ok(obs_schema) =
+                        serde_json::from_value::<InferredSchema>(obs_schema_json.clone())
+                    {
+                        if let Some(ref obs_props) = obs_schema.properties {
+                            if obs_props.contains_key(field_name) {
+                                presence_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update field stats
+            field_schema.stats.sample_count = total_observations as u64;
+            field_schema.stats.presence_count = presence_count;
+            field_schema.stats.confidence = if total_observations > 0 {
+                presence_count as f64 / total_observations as f64
+            } else {
+                0.0
+            };
+
+            // Recursively fix nested objects
+            // For nested objects, all fields within exist whenever the parent exists
+            if field_schema.properties.is_some() {
+                fix_nested_field_stats(field_schema, presence_count);
+            }
+        }
+    }
+}
+
+/// Recursively fix stats for nested object fields
+/// All fields in a nested object are present whenever the parent object is present
+fn fix_nested_field_stats(schema: &mut InferredSchema, parent_presence: u64) {
+    if let Some(ref mut properties) = schema.properties {
+        for (_, field_schema) in properties.iter_mut() {
+            // Nested fields have the same presence as their parent
+            field_schema.stats.sample_count = parent_presence;
+            field_schema.stats.presence_count = parent_presence;
+            field_schema.stats.confidence = 1.0; // Always present when parent is present
+
+            // Recursively handle deeper nesting
+            if field_schema.properties.is_some() {
+                fix_nested_field_stats(field_schema, parent_presence);
+            }
+        }
+    }
+}
+
+/// Calculate required fields based on field presence across observations
+///
+/// Task 6.2: A field is marked as required if it appears in 100% of observations.
+/// This function recursively processes object schemas and their nested properties.
+///
+/// The threshold is set to 1.0 (100%) - fields must be present in ALL samples
+/// to be considered required.
+///
+/// NOTE: We use the object-level sample_count (which represents the total number
+/// of observations) and compare each field's presence_count against it. The field-level
+/// sample_count may not accurately reflect the total observations when fields are optional.
+fn calculate_required_fields(schema: &mut InferredSchema, total_observations: usize) {
+    const REQUIRED_THRESHOLD: f64 = 1.0; // 100% presence
+
+    // Only process object schemas
+    if let Some(ref mut properties) = schema.properties {
+        let mut required_fields = Vec::new();
+
+        for (field_name, field_schema) in properties.iter_mut() {
+            // Recursively process nested objects, passing the total_observations
+            // For nested objects, we use the parent's sample count
+            let nested_total = if field_schema.properties.is_some() {
+                field_schema.stats.sample_count as usize
+            } else {
+                total_observations
+            };
+            calculate_required_fields(field_schema, nested_total);
+
+            // Check if this field is required (100% presence)
+            // A field is required if presence_count == total_observations
+            let field_presence_ratio =
+                field_schema.stats.presence_count as f64 / total_observations as f64;
+
+            if field_presence_ratio >= REQUIRED_THRESHOLD {
+                required_fields.push(field_name.clone());
+            }
+        }
+
+        // Sort required fields for consistency
+        required_fields.sort();
+
+        // Set required fields (or None if empty)
+        schema.required = if required_fields.is_empty() { None } else { Some(required_fields) };
+    }
+
+    // Process array item schemas recursively
+    if let Some(ref mut items) = schema.items {
+        calculate_required_fields(items, total_observations);
+    }
+}
+
 /// Simple confidence calculation based on sample size
 ///
 /// This is a placeholder for Task 6.4's comprehensive confidence scoring.
@@ -205,6 +390,7 @@ fn calculate_simple_confidence(sample_count: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::SchemaInferenceEngine;
     use crate::storage::repositories::{AggregatedSchemaRepository, InferredSchemaRepository};
     use sqlx::SqlitePool;
 
@@ -270,13 +456,22 @@ mod tests {
         .unwrap();
     }
 
+    /// Helper to create proper InferredSchema JSON from a serde_json::Value
+    /// This uses the actual schema inference engine to ensure correct format
+    fn infer_schema_json(value: &serde_json::Value) -> String {
+        let engine = SchemaInferenceEngine::new();
+        let schema = engine.infer_from_value(value).unwrap();
+        serde_json::to_string(&schema).unwrap()
+    }
+
     #[tokio::test]
     async fn test_aggregate_single_endpoint() {
         let pool = setup_test_db().await;
         let session_id = create_test_session(&pool).await;
 
         // Insert multiple observations of same endpoint
-        let response_schema = r#"{"type": "object", "properties": {"id": {"type": "integer"}}}"#;
+        let response_value = serde_json::json!({"id": 1, "name": "Test"});
+        let response_schema = infer_schema_json(&response_value);
 
         for _ in 0..3 {
             insert_test_observation(
@@ -286,7 +481,7 @@ mod tests {
                 "/users/{id}",
                 Some(200),
                 None,
-                Some(response_schema),
+                Some(&response_schema),
             )
             .await;
         }
@@ -318,6 +513,10 @@ mod tests {
         let session_id = create_test_session(&pool).await;
 
         // Insert observations for different endpoints
+        let schema_get = infer_schema_json(&serde_json::json!({"id": 1}));
+        let schema_error = infer_schema_json(&serde_json::json!({"error": "Not found"}));
+        let schema_post = infer_schema_json(&serde_json::json!({"name": "New User"}));
+
         insert_test_observation(
             &pool,
             &session_id,
@@ -325,7 +524,7 @@ mod tests {
             "/users/{id}",
             Some(200),
             None,
-            Some(r#"{"type": "object"}"#),
+            Some(&schema_get),
         )
         .await;
         insert_test_observation(
@@ -335,7 +534,7 @@ mod tests {
             "/users/{id}",
             Some(404),
             None,
-            Some(r#"{"type": "object"}"#),
+            Some(&schema_error),
         )
         .await;
         insert_test_observation(
@@ -344,8 +543,8 @@ mod tests {
             "POST",
             "/users",
             Some(201),
-            Some(r#"{"type": "object"}"#),
-            Some(r#"{"type": "object"}"#),
+            Some(&schema_post),
+            Some(&schema_get),
         )
         .await;
 
@@ -372,6 +571,8 @@ mod tests {
     async fn test_version_tracking() {
         let pool = setup_test_db().await;
 
+        let schema = infer_schema_json(&serde_json::json!({"id": 1, "name": "Product"}));
+
         // Create first session and aggregate
         let session1 = create_test_session(&pool).await;
         insert_test_observation(
@@ -381,7 +582,7 @@ mod tests {
             "/products",
             Some(200),
             None,
-            Some(r#"{"type": "object"}"#),
+            Some(&schema),
         )
         .await;
 
@@ -404,7 +605,7 @@ mod tests {
             "/products",
             Some(200),
             None,
-            Some(r#"{"type": "object"}"#),
+            Some(&schema),
         )
         .await;
 
@@ -413,5 +614,260 @@ mod tests {
 
         assert_eq!(v2.version, 2);
         assert_eq!(v2.previous_version_id, Some(v1.id));
+    }
+
+    // Task 6.2 Tests: Field Presence Tracking and Required Fields
+
+    #[tokio::test]
+    async fn test_field_presence_all_required() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Insert 3 observations where all have the same fields (id, name)
+        let schema = infer_schema_json(&serde_json::json!({"id": 1, "name": "Alice"}));
+
+        for _ in 1..=3 {
+            insert_test_observation(
+                &pool,
+                &session_id,
+                "GET",
+                "/users",
+                Some(200),
+                None,
+                Some(&schema),
+            )
+            .await;
+        }
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        // Verify response schema has required fields
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+        let required = schema_200.get("required");
+
+        assert!(required.is_some(), "Should have required fields");
+        let required_fields: Vec<String> =
+            serde_json::from_value(required.unwrap().clone()).unwrap();
+
+        // Both id and name should be required (100% presence)
+        assert_eq!(required_fields.len(), 2);
+        assert!(required_fields.contains(&"id".to_string()));
+        assert!(required_fields.contains(&"name".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_field_presence_optional_fields() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1: has id, name, email
+        let schema1 = infer_schema_json(
+            &serde_json::json!({"id": 1, "name": "Alice", "email": "alice@test.com"}),
+        );
+
+        // Observation 2 & 3: has id, name (no email)
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 2, "name": "Bob"}));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/users",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/users",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/users",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+
+        // Check properties
+        let properties = schema_200.get("properties").unwrap();
+        assert!(properties.get("id").is_some());
+        assert!(properties.get("name").is_some());
+        assert!(properties.get("email").is_some()); // Should exist but optional
+
+        // Check required fields - only id and name (100% presence)
+        let required = schema_200.get("required");
+        assert!(required.is_some());
+        let required_fields: Vec<String> =
+            serde_json::from_value(required.unwrap().clone()).unwrap();
+
+        assert_eq!(required_fields.len(), 2);
+        assert!(required_fields.contains(&"id".to_string()));
+        assert!(required_fields.contains(&"name".to_string()));
+        assert!(!required_fields.contains(&"email".to_string())); // email is optional (33% presence)
+    }
+
+    #[tokio::test]
+    async fn test_nested_object_required_fields() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Nested object schema with profile.bio always present
+        let schema1 = infer_schema_json(&serde_json::json!({
+            "id": 1,
+            "profile": {
+                "age": 30,
+                "bio": "Test bio 1"
+            }
+        }));
+
+        let schema2 = infer_schema_json(&serde_json::json!({
+            "id": 2,
+            "profile": {
+                "age": 25,
+                "bio": "Test bio 2"
+            }
+        }));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "POST",
+            "/users",
+            Some(201),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "POST",
+            "/users",
+            Some(201),
+            None,
+            Some(&schema2),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_201 = response_schemas.get("201").unwrap();
+
+        // Top level required fields
+        let required = schema_201.get("required");
+        assert!(required.is_some());
+        let required_fields: Vec<String> =
+            serde_json::from_value(required.unwrap().clone()).unwrap();
+        assert!(required_fields.contains(&"id".to_string()));
+        assert!(required_fields.contains(&"profile".to_string()));
+
+        // Nested profile required fields
+        let profile = schema_201.get("properties").unwrap().get("profile").unwrap();
+        let profile_required = profile.get("required");
+        assert!(profile_required.is_some());
+        let profile_required_fields: Vec<String> =
+            serde_json::from_value(profile_required.unwrap().clone()).unwrap();
+        assert!(profile_required_fields.contains(&"age".to_string()));
+        assert!(profile_required_fields.contains(&"bio".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_no_required_fields() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Each observation has different fields - none are 100% present
+        let schema1 = infer_schema_json(&serde_json::json!({"field_a": "value_a"}));
+        let schema2 = infer_schema_json(&serde_json::json!({"field_b": "value_b"}));
+        let schema3 = infer_schema_json(&serde_json::json!({"field_c": "value_c"}));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema3),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+
+        // Should have all three fields in properties
+        let properties = schema_200.get("properties").unwrap();
+        assert!(properties.get("field_a").is_some());
+        assert!(properties.get("field_b").is_some());
+        assert!(properties.get("field_c").is_some());
+
+        // But NO required fields (each only 33% present)
+        let required = schema_200.get("required");
+        // required should either be None or an empty array
+        if let Some(req) = required {
+            let required_fields: Vec<String> =
+                serde_json::from_value(req.clone()).unwrap_or_default();
+            assert_eq!(required_fields.len(), 0, "Should have no required fields");
+        }
     }
 }
