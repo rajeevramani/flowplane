@@ -205,7 +205,7 @@ where
     F: Fn(&InferredSchemaData) -> Option<&serde_json::Value> + Copy,
 {
     // Collect all non-null schemas
-    let schemas: Vec<_> = observations.iter().filter_map(|obs| schema_accessor(obs)).collect();
+    let schemas: Vec<_> = observations.iter().filter_map(&schema_accessor).collect();
 
     if schemas.is_empty() {
         return Ok(None);
@@ -216,7 +216,7 @@ where
     let mut merged: InferredSchema = serde_json::from_value(first_json.clone()).map_err(|e| {
         warn!(error = %e, "Failed to parse first schema as InferredSchema, using raw JSON");
         // If parsing fails, just return the first schema as-is
-        return FlowplaneError::validation(format!("Failed to parse schema: {}", e));
+        FlowplaneError::validation(format!("Failed to parse schema: {}", e))
     })?;
 
     // Track total observations for presence calculation
