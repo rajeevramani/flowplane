@@ -870,4 +870,245 @@ mod tests {
             assert_eq!(required_fields.len(), 0, "Should have no required fields");
         }
     }
+
+    #[tokio::test]
+    async fn test_type_conflict_resolution() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1: "value" field is a string
+        let schema1 = infer_schema_json(&serde_json::json!({"id": 1, "value": "text"}));
+
+        // Observation 2: "value" field is a number
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 2, "value": 42}));
+
+        // Observation 3: "value" field is a boolean
+        let schema3 = infer_schema_json(&serde_json::json!({"id": 3, "value": true}));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/dynamic",
+            Some(200),
+            None,
+            Some(&schema3),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+        let properties = schema_200.get("properties").unwrap();
+
+        // "id" should be integer (consistent across all observations)
+        let id_field = properties.get("id").unwrap();
+        assert_eq!(id_field.get("type").unwrap().as_str().unwrap(), "integer");
+
+        // "value" should have oneOf with multiple types
+        let value_field = properties.get("value").unwrap();
+
+        // The type field should be an object with "oneof" key containing array of types
+        let type_val = value_field.get("type").unwrap();
+        assert!(type_val.is_object(), "Type should be an object for oneOf");
+
+        let type_obj = type_val.as_object().unwrap();
+        let oneof_types = type_obj.get("oneof").expect("Should have 'oneof' key");
+        let types_array = oneof_types.as_array().unwrap();
+
+        // Should have 3 different types: boolean, integer, string
+        assert_eq!(types_array.len(), 3, "Should have 3 different types");
+
+        // Verify all three types are present
+        let type_names: Vec<String> =
+            types_array.iter().map(|t| t.as_str().unwrap().to_string()).collect();
+
+        assert!(type_names.contains(&"boolean".to_string()));
+        assert!(type_names.contains(&"integer".to_string()));
+        assert!(type_names.contains(&"string".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_partial_type_conflicts() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1 & 2: "status" field is a string
+        let schema1 = infer_schema_json(&serde_json::json!({"id": 1, "status": "active"}));
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 2, "status": "inactive"}));
+
+        // Observation 3: "status" field is a number (conflict!)
+        let schema3 = infer_schema_json(&serde_json::json!({"id": 3, "status": 1}));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/items",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/items",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/items",
+            Some(200),
+            None,
+            Some(&schema3),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+        let properties = schema_200.get("properties").unwrap();
+
+        // "id" should still be integer (no conflict)
+        let id_field = properties.get("id").unwrap();
+        assert_eq!(id_field.get("type").unwrap().as_str().unwrap(), "integer");
+
+        // "status" should have oneOf with string and integer
+        let status_field = properties.get("status").unwrap();
+        let type_val = status_field.get("type").unwrap();
+        let type_obj = type_val.as_object().unwrap();
+        let oneof_types = type_obj.get("oneof").unwrap();
+        let types_array = oneof_types.as_array().unwrap();
+
+        // Should have 2 types: integer and string
+        assert_eq!(types_array.len(), 2);
+
+        let type_names: Vec<String> =
+            types_array.iter().map(|t| t.as_str().unwrap().to_string()).collect();
+
+        assert!(type_names.contains(&"integer".to_string()));
+        assert!(type_names.contains(&"string".to_string()));
+
+        // Verify field presence is correct (3/3)
+        assert_eq!(status_field.get("sample_count").unwrap().as_u64().unwrap(), 3);
+        assert_eq!(status_field.get("presence_count").unwrap().as_u64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_nested_type_conflicts() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1: nested "age" is integer
+        let schema1 = infer_schema_json(&serde_json::json!({
+            "user": {
+                "name": "Alice",
+                "age": 30
+            }
+        }));
+
+        // Observation 2: nested "age" is string (conflict in nested field!)
+        let schema2 = infer_schema_json(&serde_json::json!({
+            "user": {
+                "name": "Bob",
+                "age": "25"
+            }
+        }));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/profile",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/profile",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+        let properties = schema_200.get("properties").unwrap();
+
+        // Navigate to nested "user" object
+        let user_field = properties.get("user").unwrap();
+        assert_eq!(user_field.get("type").unwrap().as_str().unwrap(), "object");
+
+        let user_props = user_field.get("properties").unwrap();
+
+        // "name" should be string (no conflict)
+        let name_field = user_props.get("name").unwrap();
+        assert_eq!(name_field.get("type").unwrap().as_str().unwrap(), "string");
+
+        // "age" should have oneOf with integer and string
+        let age_field = user_props.get("age").unwrap();
+        let type_val = age_field.get("type").unwrap();
+        let type_obj = type_val.as_object().unwrap();
+        let oneof_types = type_obj.get("oneof").unwrap();
+        let types_array = oneof_types.as_array().unwrap();
+
+        assert_eq!(types_array.len(), 2);
+
+        let type_names: Vec<String> =
+            types_array.iter().map(|t| t.as_str().unwrap().to_string()).collect();
+
+        assert!(type_names.contains(&"integer".to_string()));
+        assert!(type_names.contains(&"string".to_string()));
+    }
 }
