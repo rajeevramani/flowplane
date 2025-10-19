@@ -7,7 +7,14 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, Sqlite};
+use std::collections::HashMap;
 use tracing::instrument;
+
+/// Type alias for endpoint grouping key: (http_method, path_pattern, status_code)
+type EndpointKey = (String, String, Option<i64>);
+
+/// Type alias for grouped schemas map
+type GroupedSchemas = HashMap<EndpointKey, Vec<InferredSchemaData>>;
 
 /// Database row structure for inferred schemas
 #[derive(Debug, Clone, FromRow)]
@@ -154,11 +161,11 @@ impl InferredSchemaRepository {
     pub async fn list_by_session_grouped(
         &self,
         session_id: &str,
-    ) -> Result<std::collections::HashMap<(String, String, Option<i64>), Vec<InferredSchemaData>>>
+    ) -> Result<GroupedSchemas>
     {
         let schemas = self.list_by_session_id(session_id).await?;
 
-        let mut grouped = std::collections::HashMap::new();
+        let mut grouped = GroupedSchemas::new();
 
         for schema in schemas {
             let key = (
@@ -167,7 +174,7 @@ impl InferredSchemaRepository {
                 schema.response_status_code,
             );
 
-            grouped.entry(key).or_insert_with(Vec::new).push(schema);
+            grouped.entry(key).or_default().push(schema);
         }
 
         Ok(grouped)

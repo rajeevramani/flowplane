@@ -244,7 +244,7 @@ impl AggregatedSchemaRepository {
             tracing::error!(error = %e, team = %team, path = %path, method = %http_method, "Failed to get latest aggregated schema");
             FlowplaneError::Database {
                 source: e,
-                context: format!("Failed to get latest aggregated schema for endpoint"),
+                context: "Failed to get latest aggregated schema for endpoint".to_string(),
             }
         })?;
 
