@@ -158,11 +158,7 @@ impl InferredSchemaRepository {
     /// List inferred schemas for a session grouped by endpoint
     /// Returns a map of (method, path, status_code) -> Vec<InferredSchemaData>
     #[instrument(skip(self), fields(session_id = %session_id), name = "db_list_inferred_schemas_grouped")]
-    pub async fn list_by_session_grouped(
-        &self,
-        session_id: &str,
-    ) -> Result<GroupedSchemas>
-    {
+    pub async fn list_by_session_grouped(&self, session_id: &str) -> Result<GroupedSchemas> {
         let schemas = self.list_by_session_id(session_id).await?;
 
         let mut grouped = GroupedSchemas::new();
