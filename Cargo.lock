@@ -1234,6 +1234,7 @@ version = "0.0.4"
 dependencies = [
  "anyhow",
  "argon2",
+ "async-stream",
  "async-trait",
  "axum 0.8.4",
  "axum-extra",

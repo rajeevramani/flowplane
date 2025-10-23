@@ -176,7 +176,7 @@ async fn verify_session_access(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/teams/{team}/learning-sessions",
+    path = "/api/v1/learning-sessions",
     request_body = CreateLearningSessionBody,
     responses(
         (status = 201, description = "Learning session created", body = LearningSessionResponse),
@@ -189,11 +189,15 @@ async fn verify_session_access(
 pub async fn create_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(team): Path<String>,
     Json(payload): Json<CreateLearningSessionBody>,
 ) -> Result<(StatusCode, Json<LearningSessionResponse>), ApiError> {
-    // Authorization: require learning_sessions:write scope for the team
-    require_resource_access(&context, "learning_sessions", "write", Some(&team))?;
+    // Authorization: require learning-sessions:write scope
+    require_resource_access(&context, "learning-sessions", "write", None)?;
+
+    // Extract team from auth context (team-scoped users create for their team)
+    let team = extract_team_scopes(&context).into_iter().next().ok_or_else(|| {
+        ApiError::BadRequest("Team scope required for learning sessions".to_string())
+    })?;
 
     // Validate payload
     use validator::Validate;
@@ -255,9 +259,8 @@ pub async fn create_learning_session_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/teams/{team}/learning-sessions",
+    path = "/api/v1/learning-sessions",
     params(
-        ("team" = String, Path, description = "Team name"),
         ("status" = Option<String>, Query, description = "Filter by status"),
         ("limit" = Option<i32>, Query, description = "Limit results"),
         ("offset" = Option<i32>, Query, description = "Offset for pagination")
@@ -272,11 +275,15 @@ pub async fn create_learning_session_handler(
 pub async fn list_learning_sessions_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(team): Path<String>,
     Query(query): Query<ListLearningSessionsQuery>,
 ) -> Result<Json<Vec<LearningSessionResponse>>, ApiError> {
-    // Authorization: require learning_sessions:read scope for the team
-    require_resource_access(&context, "learning_sessions", "read", Some(&team))?;
+    // Authorization: require learning-sessions:read scope
+    require_resource_access(&context, "learning-sessions", "read", None)?;
+
+    // Extract team from auth context
+    let team = extract_team_scopes(&context).into_iter().next().ok_or_else(|| {
+        ApiError::BadRequest("Team scope required for learning sessions".to_string())
+    })?;
 
     // Get repository
     let repo = state
@@ -312,9 +319,8 @@ pub async fn list_learning_sessions_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/teams/{team}/learning-sessions/{id}",
+    path = "/api/v1/learning-sessions/{id}",
     params(
-        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Learning session ID")
     ),
     responses(
@@ -328,10 +334,16 @@ pub async fn list_learning_sessions_handler(
 pub async fn get_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((team, id)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<Json<LearningSessionResponse>, ApiError> {
-    // Authorization: require learning_sessions:read scope for the team
-    require_resource_access(&context, "learning_sessions", "read", Some(&team))?;
+    // Authorization: require learning-sessions:read scope
+    require_resource_access(&context, "learning-sessions", "read", None)?;
+
+    // Extract team from auth context
+    let team_scopes = extract_team_scopes(&context);
+    let team = team_scopes.first().ok_or_else(|| {
+        ApiError::BadRequest("Team scope required for learning sessions".to_string())
+    })?;
 
     // Get repository
     let repo = state
@@ -343,7 +355,7 @@ pub async fn get_learning_session_handler(
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
     // Get session
-    let session = session_repo.get_by_id_and_team(&id, &team).await.map_err(|e| {
+    let session = session_repo.get_by_id_and_team(&id, team).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, team = %team, "Failed to get learning session");
         match e {
             Error::NotFound { .. } => ApiError::NotFound(format!("Learning session with ID '{}' not found", id)),
@@ -352,7 +364,6 @@ pub async fn get_learning_session_handler(
     })?;
 
     // Verify access
-    let team_scopes = extract_team_scopes(&context);
     let authorized_session = verify_session_access(session, &team_scopes).await?;
 
     let response = session_response_from_data(authorized_session);
@@ -362,9 +373,8 @@ pub async fn get_learning_session_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/teams/{team}/learning-sessions/{id}",
+    path = "/api/v1/learning-sessions/{id}",
     params(
-        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Learning session ID")
     ),
     responses(
@@ -378,10 +388,16 @@ pub async fn get_learning_session_handler(
 pub async fn delete_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((team, id)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require learning_sessions:write scope for the team
-    require_resource_access(&context, "learning_sessions", "write", Some(&team))?;
+    // Authorization: require learning-sessions:write scope
+    require_resource_access(&context, "learning-sessions", "write", None)?;
+
+    // Extract team from auth context
+    let team_scopes = extract_team_scopes(&context);
+    let team = team_scopes.first().ok_or_else(|| {
+        ApiError::BadRequest("Team scope required for learning sessions".to_string())
+    })?;
 
     // Get repository
     let repo = state
@@ -393,7 +409,7 @@ pub async fn delete_learning_session_handler(
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
     // First, get the session to update its status to cancelled
-    let session = session_repo.get_by_id_and_team(&id, &team).await.map_err(|e| {
+    let session = session_repo.get_by_id_and_team(&id, team).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, team = %team, "Failed to get learning session for cancellation");
         match e {
             Error::NotFound { .. } => ApiError::NotFound(format!("Learning session with ID '{}' not found", id)),
@@ -402,7 +418,6 @@ pub async fn delete_learning_session_handler(
     })?;
 
     // Verify access
-    let team_scopes = extract_team_scopes(&context);
     verify_session_access(session.clone(), &team_scopes).await?;
 
     // Use the learning session service to properly handle cancellation

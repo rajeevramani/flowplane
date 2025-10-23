@@ -22,12 +22,12 @@ use super::{
         create_token_handler, delete_cluster_handler, delete_learning_session_handler,
         delete_listener_handler, delete_route_handler, get_api_definition_handler,
         get_bootstrap_handler, get_cluster_handler, get_learning_session_handler,
-        get_listener_handler, get_route_handler, get_token_handler, import_openapi_handler,
-        list_api_definitions_handler, list_clusters_handler, list_learning_sessions_handler,
-        list_listeners_handler, list_route_flows_handler, list_routes_handler, list_tokens_handler,
-        revoke_token_handler, rotate_token_handler, update_api_definition_handler,
-        update_cluster_handler, update_listener_handler, update_route_handler,
-        update_token_handler,
+        get_listener_handler, get_route_handler, get_token_handler, health_handler,
+        import_openapi_handler, list_api_definitions_handler, list_clusters_handler,
+        list_learning_sessions_handler, list_listeners_handler, list_route_flows_handler,
+        list_routes_handler, list_tokens_handler, revoke_token_handler, rotate_token_handler,
+        update_api_definition_handler, update_cluster_handler, update_listener_handler,
+        update_route_handler, update_token_handler,
     },
 };
 
@@ -91,20 +91,20 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/listeners/{name}", get(get_listener_handler))
         .route("/api/v1/listeners/{name}", put(update_listener_handler))
         .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
-        // Learning session endpoints
-        .route("/api/v1/teams/{team}/learning-sessions", get(list_learning_sessions_handler))
-        .route("/api/v1/teams/{team}/learning-sessions", post(create_learning_session_handler))
-        .route("/api/v1/teams/{team}/learning-sessions/{id}", get(get_learning_session_handler))
-        .route(
-            "/api/v1/teams/{team}/learning-sessions/{id}",
-            delete(delete_learning_session_handler),
-        )
+        // Learning session endpoints (team-scoped like other resources)
+        .route("/api/v1/learning-sessions", get(list_learning_sessions_handler))
+        .route("/api/v1/learning-sessions", post(create_learning_session_handler))
+        .route("/api/v1/learning-sessions/{id}", get(get_learning_session_handler))
+        .route("/api/v1/learning-sessions/{id}", delete(delete_learning_session_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
-        .with_state(api_state)
+        .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
         .layer(auth_layer);
 
-    secured_api.merge(docs::docs_router())
+    // Public endpoints (no authentication required)
+    let public_api = Router::new().route("/health", get(health_handler)).with_state(api_state);
+
+    secured_api.merge(public_api).merge(docs::docs_router())
 }

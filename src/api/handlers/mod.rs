@@ -3,6 +3,7 @@
 pub mod api_definitions;
 pub mod auth;
 pub mod clusters;
+pub mod health;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod reporting;
@@ -22,6 +23,7 @@ pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
 };
+pub use health::health_handler;
 pub use learning_sessions::{
     create_learning_session_handler, delete_learning_session_handler, get_learning_session_handler,
     list_learning_sessions_handler,
