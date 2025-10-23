@@ -14,6 +14,7 @@
 
 use crate::errors::{FlowplaneError, Result};
 use crate::schema::InferredSchema;
+use crate::services::schema_diff::detect_breaking_changes;
 use crate::storage::repositories::{
     AggregatedSchemaRepository, CreateAggregatedSchemaRequest, InferredSchemaData,
     InferredSchemaRepository,
@@ -149,12 +150,26 @@ impl SchemaAggregator {
             })?)
         };
 
-        // Task 6.5 will implement breaking change detection
-        // For now, check if there's a previous version
+        // Task 6.5: Detect breaking changes from previous version
         let previous_version =
             self.aggregated_repo.get_latest(team, path_pattern, http_method).await?;
 
         let previous_version_id = previous_version.as_ref().map(|v| v.id);
+
+        // Detect breaking changes if there's a previous version
+        let breaking_changes = if let Some(ref prev) = previous_version {
+            detect_schema_breaking_changes(
+                &prev.request_schema,
+                &request_schema,
+                &prev.response_schemas,
+                &response_schemas,
+            )
+        } else {
+            None
+        };
+
+        // Check for breaking changes before moving the value
+        let has_breaking_changes = breaking_changes.is_some();
 
         // Create aggregated schema
         let request = CreateAggregatedSchemaRequest {
@@ -165,7 +180,7 @@ impl SchemaAggregator {
             response_schemas,
             sample_count,
             confidence_score,
-            breaking_changes: None, // Task 6.5 will implement this
+            breaking_changes,
             first_observed,
             last_observed,
             previous_version_id,
@@ -180,7 +195,8 @@ impl SchemaAggregator {
             version = aggregated.version,
             sample_count = sample_count,
             confidence = confidence_score,
-            "Created aggregated schema"
+            has_breaking_changes = has_breaking_changes,
+            "Successfully wrote aggregated schema to aggregated_api_schemas table"
         );
 
         Ok(aggregated.id)
@@ -527,6 +543,83 @@ fn calculate_simple_confidence(sample_count: i64) -> f64 {
         6..=20 => 0.7,
         21..=50 => 0.85,
         _ => 0.95,
+    }
+}
+
+/// Detect breaking changes between old and new schemas (both request and response)
+///
+/// Task 6.5: Compare request schemas and all response schemas to detect breaking changes.
+/// Returns a Vec of BreakingChange objects if any breaking changes are found, or None if schemas are compatible.
+fn detect_schema_breaking_changes(
+    old_request: &Option<serde_json::Value>,
+    new_request: &Option<serde_json::Value>,
+    old_responses: &Option<serde_json::Value>,
+    new_responses: &Option<serde_json::Value>,
+) -> Option<Vec<serde_json::Value>> {
+    let mut all_changes = Vec::new();
+
+    // Compare request schemas
+    if let (Some(old_req), Some(new_req)) = (old_request, new_request) {
+        let diff = detect_breaking_changes(old_req, new_req);
+        for change in diff.breaking_changes {
+            // Prefix path with "request" to indicate it's in the request schema
+            let mut change_json = serde_json::to_value(&change).unwrap();
+            if let Some(path) = change_json.get_mut("path") {
+                if let Some(path_str) = path.as_str() {
+                    *path = serde_json::Value::String(format!("request{}", path_str));
+                }
+            }
+            all_changes.push(change_json);
+        }
+    } else if old_request.is_some() && new_request.is_none() {
+        // Request body was removed - this could be breaking
+        warn!("Request body was removed from schema");
+    } else if old_request.is_none() && new_request.is_some() {
+        // Request body was added - non-breaking
+        info!("Request body was added to schema");
+    }
+
+    // Compare response schemas by status code
+    if let (Some(old_resp), Some(new_resp)) = (old_responses, new_responses) {
+        if let (Some(old_map), Some(new_map)) = (old_resp.as_object(), new_resp.as_object()) {
+            // Check each status code in old responses
+            for (status_code, old_schema) in old_map {
+                if let Some(new_schema) = new_map.get(status_code) {
+                    // Status code exists in both - compare schemas
+                    let diff = detect_breaking_changes(old_schema, new_schema);
+                    for change in diff.breaking_changes {
+                        // Prefix path with "response[status]" to indicate location
+                        let mut change_json = serde_json::to_value(&change).unwrap();
+                        if let Some(path) = change_json.get_mut("path") {
+                            if let Some(path_str) = path.as_str() {
+                                *path = serde_json::Value::String(format!(
+                                    "response[{}]{}",
+                                    status_code, path_str
+                                ));
+                            }
+                        }
+                        all_changes.push(change_json);
+                    }
+                } else {
+                    // Status code was removed - potentially breaking
+                    warn!(status_code = %status_code, "Response status code removed from schema");
+                }
+            }
+
+            // Check for new status codes (non-breaking)
+            for status_code in new_map.keys() {
+                if !old_map.contains_key(status_code) {
+                    info!(status_code = %status_code, "New response status code added to schema");
+                }
+            }
+        }
+    }
+
+    if all_changes.is_empty() {
+        None
+    } else {
+        info!(breaking_change_count = all_changes.len(), "Detected breaking changes in schema");
+        Some(all_changes)
     }
 }
 
@@ -1403,5 +1496,293 @@ mod tests {
 
         assert!(type_names.contains(&"integer".to_string()));
         assert!(type_names.contains(&"string".to_string()));
+    }
+
+    // Task 6.5 Tests: Breaking Change Detection
+
+    #[tokio::test]
+    async fn test_no_breaking_changes_on_first_version() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        let schema = infer_schema_json(&serde_json::json!({"id": 1, "name": "Test"}));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/items",
+            Some(200),
+            None,
+            Some(&schema),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        // First version should have no breaking changes
+        assert_eq!(aggregated.version, 1);
+        assert!(aggregated.breaking_changes.is_none());
+        assert!(aggregated.previous_version_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_detect_required_field_removed() {
+        let pool = setup_test_db().await;
+
+        // Version 1: Schema with id and name (both required)
+        let session1 = create_test_session(&pool).await;
+        let schema1 = infer_schema_json(&serde_json::json!({"id": 1, "name": "Alice"}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session1,
+                "GET",
+                "/users",
+                Some(200),
+                None,
+                Some(&schema1),
+            )
+            .await;
+        }
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo.clone(), aggregated_repo.clone());
+
+        let ids1 = aggregator.aggregate_session(&session1).await.unwrap();
+        let v1 = aggregated_repo.get_by_id(ids1[0]).await.unwrap();
+
+        assert_eq!(v1.version, 1);
+        assert!(v1.breaking_changes.is_none());
+
+        // Version 2: Schema with only id (name removed - BREAKING!)
+        let session2 = create_test_session(&pool).await;
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 2}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session2,
+                "GET",
+                "/users",
+                Some(200),
+                None,
+                Some(&schema2),
+            )
+            .await;
+        }
+
+        let ids2 = aggregator.aggregate_session(&session2).await.unwrap();
+        let v2 = aggregated_repo.get_by_id(ids2[0]).await.unwrap();
+
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.previous_version_id, Some(v1.id));
+        assert!(v2.breaking_changes.is_some());
+
+        let breaking_changes = v2.breaking_changes.unwrap();
+        assert!(!breaking_changes.is_empty());
+
+        // Verify breaking change details
+        let change = &breaking_changes[0];
+        assert_eq!(change["type"].as_str().unwrap(), "required_field_removed");
+        assert!(change["path"].as_str().unwrap().contains("name"));
+    }
+
+    #[tokio::test]
+    async fn test_detect_type_change() {
+        let pool = setup_test_db().await;
+
+        // Version 1: age is integer
+        let session1 = create_test_session(&pool).await;
+        let schema1 = infer_schema_json(&serde_json::json!({"id": 1, "age": 30}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session1,
+                "POST",
+                "/profiles",
+                Some(201),
+                None,
+                Some(&schema1),
+            )
+            .await;
+        }
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo.clone(), aggregated_repo.clone());
+
+        let ids1 = aggregator.aggregate_session(&session1).await.unwrap();
+        let _v1 = aggregated_repo.get_by_id(ids1[0]).await.unwrap();
+
+        // Version 2: age is string (type change - BREAKING!)
+        let session2 = create_test_session(&pool).await;
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 2, "age": "30"}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session2,
+                "POST",
+                "/profiles",
+                Some(201),
+                None,
+                Some(&schema2),
+            )
+            .await;
+        }
+
+        let ids2 = aggregator.aggregate_session(&session2).await.unwrap();
+        let v2 = aggregated_repo.get_by_id(ids2[0]).await.unwrap();
+
+        assert_eq!(v2.version, 2);
+        assert!(v2.breaking_changes.is_some());
+
+        let breaking_changes = v2.breaking_changes.unwrap();
+        assert!(!breaking_changes.is_empty());
+
+        // Verify it's a type change
+        let change = &breaking_changes
+            .iter()
+            .find(|c| c["type"].as_str() == Some("incompatible_type_change"));
+        assert!(change.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_no_breaking_changes_on_compatible_change() {
+        let pool = setup_test_db().await;
+
+        // Version 1: Just id
+        let session1 = create_test_session(&pool).await;
+        let schema1 = infer_schema_json(&serde_json::json!({"id": 1}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session1,
+                "GET",
+                "/products",
+                Some(200),
+                None,
+                Some(&schema1),
+            )
+            .await;
+        }
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo.clone(), aggregated_repo.clone());
+
+        aggregator.aggregate_session(&session1).await.unwrap();
+
+        // Version 2: Added optional field (non-breaking)
+        let session2 = create_test_session(&pool).await;
+        let schema2_a = infer_schema_json(&serde_json::json!({"id": 2}));
+        let schema2_b = infer_schema_json(&serde_json::json!({"id": 3, "name": "Product"}));
+
+        // Mix of with and without name - name is optional
+        insert_test_observation(
+            &pool,
+            &session2,
+            "GET",
+            "/products",
+            Some(200),
+            None,
+            Some(&schema2_a),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session2,
+            "GET",
+            "/products",
+            Some(200),
+            None,
+            Some(&schema2_b),
+        )
+        .await;
+
+        let ids2 = aggregator.aggregate_session(&session2).await.unwrap();
+        let v2 = aggregated_repo.get_by_id(ids2[0]).await.unwrap();
+
+        assert_eq!(v2.version, 2);
+        // Adding optional field is non-breaking
+        assert!(v2.breaking_changes.is_none() || v2.breaking_changes.as_ref().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_detect_field_became_required() {
+        let pool = setup_test_db().await;
+
+        // Version 1: email is optional (appears in some observations)
+        let session1 = create_test_session(&pool).await;
+        let schema1_a = infer_schema_json(&serde_json::json!({"id": 1, "email": "a@test.com"}));
+        let schema1_b = infer_schema_json(&serde_json::json!({"id": 2}));
+
+        insert_test_observation(
+            &pool,
+            &session1,
+            "POST",
+            "/users",
+            Some(201),
+            None,
+            Some(&schema1_a),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session1,
+            "POST",
+            "/users",
+            Some(201),
+            None,
+            Some(&schema1_b),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo.clone(), aggregated_repo.clone());
+
+        aggregator.aggregate_session(&session1).await.unwrap();
+
+        // Version 2: email is required (appears in all observations)
+        let session2 = create_test_session(&pool).await;
+        let schema2 = infer_schema_json(&serde_json::json!({"id": 3, "email": "b@test.com"}));
+
+        for _ in 0..3 {
+            insert_test_observation(
+                &pool,
+                &session2,
+                "POST",
+                "/users",
+                Some(201),
+                None,
+                Some(&schema2),
+            )
+            .await;
+        }
+
+        let ids2 = aggregator.aggregate_session(&session2).await.unwrap();
+        let v2 = aggregated_repo.get_by_id(ids2[0]).await.unwrap();
+
+        assert_eq!(v2.version, 2);
+        assert!(v2.breaking_changes.is_some());
+
+        let breaking_changes = v2.breaking_changes.unwrap();
+        assert!(!breaking_changes.is_empty());
+
+        // Verify it's a field-became-required change
+        let has_field_became_required =
+            breaking_changes.iter().any(|c| c["type"].as_str() == Some("field_became_required"));
+        assert!(has_field_became_required);
     }
 }

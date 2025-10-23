@@ -28,6 +28,7 @@
 //! The processor supports graceful shutdown via tokio::select and shutdown signals.
 //! Workers drain the queue before terminating.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, Mutex};
@@ -37,6 +38,7 @@ use tracing::{debug, error, info, warn};
 use crate::observability::metrics;
 use crate::schema::inference::SchemaInferenceEngine;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
+use crate::xds::services::ext_proc_service::CapturedBody;
 use crate::Result;
 use sqlx::{Pool, Sqlite};
 
@@ -120,6 +122,15 @@ pub struct AccessLogProcessor {
     /// Shared receiver for access log entries from AccessLogService
     /// Wrapped in Arc<Mutex<>> to allow multiple workers to share access
     log_rx: Arc<Mutex<mpsc::UnboundedReceiver<ProcessedLogEntry>>>,
+    /// Shared receiver for captured request/response bodies from ExtProc
+    /// Wrapped in Arc<Mutex<>> to allow body merging
+    ext_proc_rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<CapturedBody>>>>,
+    /// Pending log entries waiting for matching bodies
+    /// Key: "{session_id}:{request_id}"
+    pending_logs: Arc<Mutex<HashMap<String, ProcessedLogEntry>>>,
+    /// Pending captured bodies waiting for matching log entries
+    /// Key: "{session_id}:{request_id}"
+    pending_bodies: Arc<Mutex<HashMap<String, CapturedBody>>>,
     /// Channel for sending inferred schemas to the batcher task (bounded for backpressure)
     schema_tx: mpsc::Sender<InferredSchemaRecord>,
     /// Receiver for inferred schemas (moved to batcher task)
@@ -171,6 +182,7 @@ impl AccessLogProcessor {
     /// # Arguments
     ///
     /// * `log_rx` - Receiver for processed log entries from AccessLogService
+    /// * `ext_proc_rx` - Optional receiver for captured bodies from ExtProc service
     /// * `db_pool` - Optional database pool for batch writes
     /// * `config` - Optional configuration (uses defaults if None)
     ///
@@ -179,6 +191,7 @@ impl AccessLogProcessor {
     /// Returns the processor instance ready to spawn workers
     pub fn new(
         log_rx: mpsc::UnboundedReceiver<ProcessedLogEntry>,
+        ext_proc_rx: Option<mpsc::UnboundedReceiver<CapturedBody>>,
         db_pool: Option<Pool<Sqlite>>,
         config: Option<ProcessorConfig>,
     ) -> Self {
@@ -193,12 +206,16 @@ impl AccessLogProcessor {
             flush_interval_secs = config.batch_flush_interval_secs,
             max_queue_capacity = config.max_queue_capacity,
             has_database = db_pool.is_some(),
+            has_ext_proc = ext_proc_rx.is_some(),
             "Created AccessLogProcessor"
         );
 
         Self {
             config,
             log_rx: Arc::new(Mutex::new(log_rx)),
+            ext_proc_rx: ext_proc_rx.map(|rx| Arc::new(Mutex::new(rx))),
+            pending_logs: Arc::new(Mutex::new(HashMap::new())),
+            pending_bodies: Arc::new(Mutex::new(HashMap::new())),
             schema_tx,
             schema_rx: Arc::new(Mutex::new(schema_rx)),
             db_pool,
@@ -233,6 +250,9 @@ impl AccessLogProcessor {
         for worker_id in 0..self.config.worker_count {
             let mut shutdown_rx = self.shutdown_rx.clone();
             let log_rx = Arc::clone(&self.log_rx);
+            let ext_proc_rx = self.ext_proc_rx.as_ref().map(Arc::clone);
+            let pending_logs = Arc::clone(&self.pending_logs);
+            let pending_bodies = Arc::clone(&self.pending_bodies);
             let schema_tx = self.schema_tx.clone();
 
             let handle = tokio::spawn(async move {
@@ -240,13 +260,47 @@ impl AccessLogProcessor {
 
                 loop {
                     tokio::select! {
-                        // Process log entries
+                        // Process log entries from AccessLogService
                         entry = async {
                             let mut rx = log_rx.lock().await;
                             rx.recv().await
                         } => {
                             if let Some(entry) = entry {
-                                if let Err(e) = Self::process_entry(worker_id, entry, &schema_tx).await {
+                                // Try to merge with pending body if request_id is present
+                                let entry_to_process = if let Some(merge_key) = Self::make_merge_key(&entry.session_id, entry.request_id.as_deref()) {
+                                    let mut bodies_map = pending_bodies.lock().await;
+                                    if let Some(captured_body) = bodies_map.remove(&merge_key) {
+                                        // Found matching body - merge and process immediately
+                                        debug!(
+                                            worker_id,
+                                            session_id = %entry.session_id,
+                                            request_id = ?entry.request_id,
+                                            "Merged log entry with pending body"
+                                        );
+                                        Self::merge_bodies(entry, captured_body)
+                                    } else {
+                                        // No matching body yet - store log entry and skip processing for now
+                                        debug!(
+                                            worker_id,
+                                            session_id = %entry.session_id,
+                                            request_id = ?entry.request_id,
+                                            "Stored log entry, waiting for body"
+                                        );
+                                        let mut logs_map = pending_logs.lock().await;
+                                        logs_map.insert(merge_key, entry);
+                                        continue;
+                                    }
+                                } else {
+                                    // No request_id - cannot merge, process as-is
+                                    debug!(
+                                        worker_id,
+                                        session_id = %entry.session_id,
+                                        "Processing log entry without request_id (no body merge possible)"
+                                    );
+                                    entry
+                                };
+
+                                if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx).await {
                                     error!(
                                         worker_id,
                                         error = %e,
@@ -256,13 +310,60 @@ impl AccessLogProcessor {
                             }
                         }
 
+                        // Process captured bodies from ExtProcService
+                        body = async {
+                            if let Some(ref ext_proc_rx) = ext_proc_rx {
+                                let mut rx = ext_proc_rx.lock().await;
+                                rx.recv().await
+                            } else {
+                                // No ExtProc channel - wait forever (will be cancelled by other branches)
+                                std::future::pending().await
+                            }
+                        }, if ext_proc_rx.is_some() => {
+                            if let Some(captured_body) = body {
+                                // Try to merge with pending log entry
+                                let merge_key = format!("{}:{}", captured_body.session_id, captured_body.request_id);
+                                let mut logs_map = pending_logs.lock().await;
+                                if let Some(log_entry) = logs_map.remove(&merge_key) {
+                                    // Found matching log entry - merge and process immediately
+                                    debug!(
+                                        worker_id,
+                                        session_id = %captured_body.session_id,
+                                        request_id = %captured_body.request_id,
+                                        "Merged captured body with pending log entry"
+                                    );
+                                    drop(logs_map); // Release lock before processing
+
+                                    let merged_entry = Self::merge_bodies(log_entry, captured_body);
+                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx).await {
+                                        error!(
+                                            worker_id,
+                                            error = %e,
+                                            "Failed to process merged entry"
+                                        );
+                                    }
+                                } else {
+                                    // No matching log entry yet - store body
+                                    debug!(
+                                        worker_id,
+                                        session_id = %captured_body.session_id,
+                                        request_id = %captured_body.request_id,
+                                        "Stored captured body, waiting for log entry"
+                                    );
+                                    drop(logs_map); // Release logs lock
+                                    let mut bodies_map = pending_bodies.lock().await;
+                                    bodies_map.insert(merge_key, captured_body);
+                                }
+                            }
+                        }
+
                         // Watch for shutdown signal
                         _ = shutdown_rx.changed() => {
                             if *shutdown_rx.borrow() {
-                                info!(worker_id, "Received shutdown signal, draining queue");
+                                info!(worker_id, "Received shutdown signal, draining queues");
 
-                                // Drain remaining entries in queue
-                                let mut drained = 0;
+                                // Drain remaining log entries
+                                let mut drained_logs = 0;
                                 loop {
                                     let entry = {
                                         let mut rx = log_rx.lock().await;
@@ -271,22 +372,93 @@ impl AccessLogProcessor {
 
                                     match entry {
                                         Ok(entry) => {
-                                            if let Err(e) = Self::process_entry(worker_id, entry, &schema_tx).await {
+                                            // Best-effort merge on shutdown
+                                            let entry_to_process = if let Some(merge_key) = Self::make_merge_key(&entry.session_id, entry.request_id.as_deref()) {
+                                                let mut bodies_map = pending_bodies.lock().await;
+                                                if let Some(captured_body) = bodies_map.remove(&merge_key) {
+                                                    Self::merge_bodies(entry, captured_body)
+                                                } else {
+                                                    entry
+                                                }
+                                            } else {
+                                                entry
+                                            };
+
+                                            if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx).await {
                                                 warn!(
                                                     worker_id,
                                                     error = %e,
                                                     "Failed to process entry during shutdown drain"
                                                 );
                                             }
-                                            drained += 1;
+                                            drained_logs += 1;
                                         }
                                         Err(_) => break, // Queue is empty
                                     }
                                 }
 
+                                // Drain remaining captured bodies (process orphaned bodies)
+                                let mut drained_bodies = 0;
+                                if let Some(ref ext_proc_rx) = ext_proc_rx {
+                                    loop {
+                                        let body = {
+                                            let mut rx = ext_proc_rx.lock().await;
+                                            rx.try_recv()
+                                        };
+
+                                        match body {
+                                            Ok(captured_body) => {
+                                                let merge_key = format!("{}:{}", captured_body.session_id, captured_body.request_id);
+                                                let mut logs_map = pending_logs.lock().await;
+                                                if let Some(log_entry) = logs_map.remove(&merge_key) {
+                                                    drop(logs_map);
+                                                    let merged_entry = Self::merge_bodies(log_entry, captured_body);
+                                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx).await {
+                                                        warn!(
+                                                            worker_id,
+                                                            error = %e,
+                                                            "Failed to process merged entry during shutdown"
+                                                        );
+                                                    }
+                                                } else {
+                                                    warn!(
+                                                        worker_id,
+                                                        session_id = %captured_body.session_id,
+                                                        request_id = %captured_body.request_id,
+                                                        "Orphaned captured body during shutdown (no matching log entry)"
+                                                    );
+                                                }
+                                                drained_bodies += 1;
+                                            }
+                                            Err(_) => break, // Queue is empty
+                                        }
+                                    }
+                                }
+
+                                // Warn about any remaining unmatched entries
+                                let pending_logs_count = pending_logs.lock().await.len();
+                                let pending_bodies_count = pending_bodies.lock().await.len();
+
+                                if pending_logs_count > 0 {
+                                    warn!(
+                                        worker_id,
+                                        count = pending_logs_count,
+                                        "Orphaned log entries at shutdown (no matching bodies)"
+                                    );
+                                }
+
+                                if pending_bodies_count > 0 {
+                                    warn!(
+                                        worker_id,
+                                        count = pending_bodies_count,
+                                        "Orphaned bodies at shutdown (no matching log entries)"
+                                    );
+                                }
+
                                 info!(
                                     worker_id,
-                                    drained_entries = drained,
+                                    drained_logs,
+                                    drained_bodies,
                                     "Worker shutdown complete"
                                 );
                                 break;
@@ -320,6 +492,40 @@ impl AccessLogProcessor {
         };
 
         ProcessorHandle { shutdown_tx: self.shutdown_tx, worker_handles: handles, batcher_handle }
+    }
+
+    /// Merge captured body data into a processed log entry
+    ///
+    /// Task 12.4: Body merge logic (simplified MVP)
+    fn merge_bodies(
+        mut log_entry: ProcessedLogEntry,
+        captured_body: CapturedBody,
+    ) -> ProcessedLogEntry {
+        // Only merge if bodies were actually captured (non-empty)
+        if let Some(req_body) = captured_body.request_body {
+            if !req_body.is_empty() {
+                log_entry.request_body = Some(req_body);
+                log_entry.request_body_size =
+                    log_entry.request_body.as_ref().map(|b| b.len() as u64).unwrap_or(0);
+            }
+        }
+
+        if let Some(resp_body) = captured_body.response_body {
+            if !resp_body.is_empty() {
+                log_entry.response_body = Some(resp_body);
+                log_entry.response_body_size =
+                    log_entry.response_body.as_ref().map(|b| b.len() as u64).unwrap_or(0);
+            }
+        }
+
+        log_entry
+    }
+
+    /// Create a merge key from session_id and request_id
+    ///
+    /// Returns None if request_id is missing (cannot merge without it)
+    fn make_merge_key(session_id: &str, request_id: Option<&str>) -> Option<String> {
+        request_id.map(|rid| format!("{}:{}", session_id, rid))
     }
 
     /// Process a single log entry
@@ -365,11 +571,9 @@ impl AccessLogProcessor {
                                 "Inferred request schema"
                             );
 
-                            // TODO: Get team from learning session lookup
-                            // For now, using placeholder team value
                             let record = InferredSchemaRecord {
                                 session_id: entry.session_id.clone(),
-                                team: "placeholder-team".to_string(), // TODO: lookup from session
+                                team: entry.team.clone(),
                                 http_method: method_to_string(entry.method),
                                 path_pattern: entry.path.clone(),
                                 request_schema: Some(serde_json::to_string(
@@ -382,7 +586,13 @@ impl AccessLogProcessor {
                             // Send to batcher with backpressure handling
                             match schema_tx.try_send(record) {
                                 Ok(_) => {
-                                    debug!(worker_id, "Sent schema to batcher");
+                                    info!(
+                                        worker_id,
+                                        session_id = %entry.session_id,
+                                        path = %entry.path,
+                                        schema_type = "request",
+                                        "Inferred schema sent to batcher for persistence"
+                                    );
                                     metrics::record_schema_inferred("request", true).await;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -440,11 +650,9 @@ impl AccessLogProcessor {
                                 "Inferred response schema"
                             );
 
-                            // TODO: Get team from learning session lookup
-                            // For now, using placeholder team value
                             let record = InferredSchemaRecord {
                                 session_id: entry.session_id.clone(),
-                                team: "placeholder-team".to_string(), // TODO: lookup from session
+                                team: entry.team.clone(),
                                 http_method: method_to_string(entry.method),
                                 path_pattern: entry.path.clone(),
                                 request_schema: None,
@@ -457,7 +665,14 @@ impl AccessLogProcessor {
                             // Send to batcher with backpressure handling
                             match schema_tx.try_send(record) {
                                 Ok(_) => {
-                                    debug!(worker_id, "Sent schema to batcher");
+                                    info!(
+                                        worker_id,
+                                        session_id = %entry.session_id,
+                                        path = %entry.path,
+                                        status = entry.response_status,
+                                        schema_type = "response",
+                                        "Inferred schema sent to batcher for persistence"
+                                    );
                                     metrics::record_schema_inferred("response", true).await;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -645,9 +860,9 @@ impl AccessLogProcessor {
 
                             // Flush if batch is full
                             if batch.len() >= batch_size {
-                                debug!(
+                                info!(
                                     batch_size = batch.len(),
-                                    "Batch size limit reached, flushing"
+                                    "Batch size limit reached, flushing to inferred_schemas table"
                                 );
 
                                 if let Err(e) = Self::write_schema_batch_with_retry(
@@ -670,9 +885,9 @@ impl AccessLogProcessor {
                     // Periodic flush timer
                     _ = flush_timer.tick() => {
                         if !batch.is_empty() {
-                            debug!(
+                            info!(
                                 batch_size = batch.len(),
-                                "Flush interval reached, flushing batch"
+                                "Periodic flush interval reached, flushing batch to inferred_schemas table"
                             );
 
                             if let Err(e) = Self::write_schema_batch(&db_pool, batch.clone()).await {
@@ -740,7 +955,7 @@ mod tests {
     #[tokio::test]
     async fn test_processor_creation() {
         let (_tx, rx) = mpsc::unbounded_channel();
-        let processor = AccessLogProcessor::new(rx, None, None);
+        let processor = AccessLogProcessor::new(rx, None, None, None);
 
         // Should use default config (num_cpus)
         assert!(processor.config.worker_count >= 1);
@@ -757,7 +972,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         assert_eq!(processor.config.worker_count, 4);
     }
@@ -773,7 +988,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -798,13 +1013,15 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
         // Send a test log entry
         let entry = ProcessedLogEntry {
             session_id: "test-session".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
             method: 1, // GET
             path: "/api/users".to_string(),
             request_headers: vec![],
@@ -838,7 +1055,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -864,7 +1081,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let handle = processor.spawn_workers();
 
@@ -872,6 +1089,8 @@ mod tests {
         for i in 0..10 {
             let entry = ProcessedLogEntry {
                 session_id: format!("session-{}", i),
+                request_id: None,
+                team: "test-team".to_string(),
                 method: 1,
                 path: "/api/test".to_string(),
                 request_headers: vec![],
@@ -906,7 +1125,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -917,6 +1136,8 @@ mod tests {
 
         let entry = ProcessedLogEntry {
             session_id: "test-session".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
             method: 2, // POST
             path: "/api/auth/login".to_string(),
             request_headers: vec![],
@@ -950,7 +1171,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -959,6 +1180,8 @@ mod tests {
 
         let entry = ProcessedLogEntry {
             session_id: "test-session".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
             method: 2, // POST
             path: "/api/upload".to_string(),
             request_headers: vec![],
@@ -992,7 +1215,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -1001,6 +1224,8 @@ mod tests {
 
         let entry = ProcessedLogEntry {
             session_id: "test-session".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
             method: 2, // POST
             path: "/api/auth/login".to_string(),
             request_headers: vec![],
@@ -1034,7 +1259,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
         };
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
         let _handle = processor.spawn_workers();
 
@@ -1071,6 +1296,8 @@ mod tests {
 
         let entry = ProcessedLogEntry {
             session_id: "test-session".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
             method: 1, // GET
             path: "/api/users/profile".to_string(),
             request_headers: vec![],
@@ -1107,7 +1334,7 @@ mod tests {
         };
 
         // Create processor without database to avoid actual writes
-        let processor = AccessLogProcessor::new(rx, None, Some(config));
+        let processor = AccessLogProcessor::new(rx, None, None, Some(config));
         let _handle = processor.spawn_workers();
 
         // Send entries - the bounded schema queue should fill up
@@ -1116,6 +1343,8 @@ mod tests {
             let json_body = r#"{"test": "data"}"#;
             let entry = ProcessedLogEntry {
                 session_id: format!("session-{}", i),
+                request_id: None,
+                team: "test-team".to_string(),
                 method: 2, // POST
                 path: "/api/test".to_string(),
                 request_headers: vec![],
