@@ -1142,7 +1142,6 @@ pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        http2_protocol_options: Some(envoy_types::pb::envoy::config::core::v3::Http2ProtocolOptions::default()),
         // Envoy will auto-negotiate HTTP/2 for gRPC services
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_ext_proc_service".to_string(),
@@ -1193,7 +1192,6 @@ pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Resul
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        http2_protocol_options: Some(envoy_types::pb::envoy::config::core::v3::Http2ProtocolOptions::default()),
         // Envoy will auto-negotiate HTTP/2 for gRPC services
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_access_log_service".to_string(),
