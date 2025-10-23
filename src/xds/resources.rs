@@ -1129,6 +1129,106 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
     }])
 }
 
+/// Create built-in internal cluster for ExtProc gRPC service
+///
+/// This cluster enables Envoy to route External Processor filter requests
+/// to the FlowplaneExtProcService running on the xDS server.
+pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<BuiltResource> {
+    // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
+    let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
+
+    let cluster = Cluster {
+        name: "flowplane_ext_proc_service".to_string(),
+        connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
+        // Use STATIC discovery for localhost
+        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
+        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        load_assignment: Some(ClusterLoadAssignment {
+            cluster_name: "flowplane_ext_proc_service".to_string(),
+            endpoints: vec![LocalityLbEndpoints {
+                lb_endpoints: vec![LbEndpoint {
+                    host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                        address: Some(Address {
+                            address: Some(
+                                envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                                    SocketAddress {
+                                        address: target_address.to_string(),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(
+                                            xds_port.into(),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let encoded = cluster.encode_to_vec();
+    Ok(BuiltResource {
+        name: "flowplane_ext_proc_service".to_string(),
+        resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
+    })
+}
+
+/// Create built-in internal cluster for Access Log gRPC service
+///
+/// This cluster enables Envoy to send HTTP access logs to the
+/// FlowplaneAccessLogService running on the same xDS server.
+pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Result<BuiltResource> {
+    // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
+    let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
+
+    let cluster = Cluster {
+        name: "flowplane_access_log_service".to_string(),
+        connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
+        // Use STATIC discovery for localhost
+        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
+        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        load_assignment: Some(ClusterLoadAssignment {
+            cluster_name: "flowplane_access_log_service".to_string(),
+            endpoints: vec![LocalityLbEndpoints {
+                lb_endpoints: vec![LbEndpoint {
+                    host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                        address: Some(Address {
+                            address: Some(
+                                envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                                    SocketAddress {
+                                        address: target_address.to_string(),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(
+                                            xds_port.into(),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let encoded = cluster.encode_to_vec();
+    Ok(BuiltResource {
+        name: "flowplane_access_log_service".to_string(),
+        resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1525,5 +1625,84 @@ mod tests {
         strip_gateway_tags(&mut value);
 
         assert!(!contains_gateway_tag(&value));
+    }
+
+    #[test]
+    fn test_create_ext_proc_cluster() {
+        let bind_address = "127.0.0.1";
+        let port = 18000;
+
+        let built_resource = create_ext_proc_cluster(bind_address, port).unwrap();
+
+        // Verify resource metadata
+        assert_eq!(built_resource.name, "flowplane_ext_proc_service");
+        assert_eq!(built_resource.resource.type_url, CLUSTER_TYPE_URL);
+
+        // Decode the cluster
+        let cluster = Cluster::decode(&built_resource.resource.value[..]).unwrap();
+
+        // Verify cluster properties
+        assert_eq!(cluster.name, "flowplane_ext_proc_service");
+        assert!(cluster.connect_timeout.is_some());
+        assert_eq!(cluster.connect_timeout.unwrap().seconds, 5);
+
+        // Verify discovery type is STATIC
+        assert!(cluster.cluster_discovery_type.is_some());
+        match cluster.cluster_discovery_type.unwrap() {
+            ClusterDiscoveryType::Type(t) => assert_eq!(t, DiscoveryType::Static as i32),
+            _ => panic!("Expected STATIC discovery type"),
+        }
+
+        // Verify load assignment
+        let load_assignment = cluster.load_assignment.unwrap();
+        assert_eq!(load_assignment.cluster_name, "flowplane_ext_proc_service");
+        assert_eq!(load_assignment.endpoints.len(), 1);
+
+        let locality_endpoints = &load_assignment.endpoints[0];
+        assert_eq!(locality_endpoints.lb_endpoints.len(), 1);
+
+        // Verify endpoint address
+        let lb_endpoint = &locality_endpoints.lb_endpoints[0];
+        if let Some(lb_endpoint::HostIdentifier::Endpoint(endpoint)) = &lb_endpoint.host_identifier
+        {
+            if let Some(address) = &endpoint.address {
+                if let Some(
+                    envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                        socket_addr,
+                    ),
+                ) = &address.address
+                {
+                    assert_eq!(socket_addr.address, bind_address);
+                    if let Some(socket_address::PortSpecifier::PortValue(p)) =
+                        &socket_addr.port_specifier
+                    {
+                        assert_eq!(*p, port as u32);
+                    } else {
+                        panic!("Expected port value");
+                    }
+                } else {
+                    panic!("Expected socket address");
+                }
+            } else {
+                panic!("Expected address");
+            }
+        } else {
+            panic!("Expected endpoint host identifier");
+        }
+    }
+
+    #[test]
+    fn test_create_access_log_cluster() {
+        let bind_address = "127.0.0.1";
+        let port = 18000u16;
+
+        let built_resource = create_access_log_cluster(bind_address, port).unwrap();
+        assert_eq!(built_resource.name, "flowplane_access_log_service");
+
+        // Decode and verify cluster properties
+        let cluster: Cluster = Cluster::decode(&*built_resource.resource.value).unwrap();
+        assert_eq!(cluster.name, "flowplane_access_log_service");
+        let load_assignment = cluster.load_assignment.unwrap();
+        assert_eq!(load_assignment.cluster_name, "flowplane_access_log_service");
     }
 }

@@ -26,6 +26,7 @@ use crate::xds::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        crate::api::handlers::health::health_handler,
         crate::api::handlers::auth::create_token_handler,
         crate::api::handlers::auth::list_tokens_handler,
         crate::api::handlers::auth::get_token_handler,
@@ -58,6 +59,7 @@ use crate::xds::{
     ),
     components(
         schemas(
+            crate::api::handlers::health::HealthResponse,
             CreateClusterBody,
             EndpointRequest,
             HealthCheckRequest,

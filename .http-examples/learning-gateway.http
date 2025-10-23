@@ -1,0 +1,165 @@
+### Variables
+@base_url = http://localhost:8080
+@admin_token = {{$dotenv API_TOKEN}}
+
+# Team and resource names
+@team = test-team-a
+@cluster_name = httpbin-cluster
+@route_name = users-route
+@listener_name = learning-test-listener
+@envoy_learning_port = 10001
+
+# Upstream target
+@httpbin_host = httpbin.org
+@httpbin_port = 80
+
+### Health Check (Control Plane)
+GET {{base_url}}/health
+
+### Create Team-Scoped Token (use admin token)
+# @name createTeamPat
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "learning-gateway-{{team}}",
+  "description": "Team-scoped PAT for learning session",
+  "scopes": [
+    "team:{{team}}:clusters:read",
+    "team:{{team}}:routes:read",
+    "team:{{team}}:listeners:read",
+    "team:{{team}}:api-definitions:read",
+    "team:{{team}}:learning-sessions:read",
+    "team:{{team}}:learning-sessions:write"
+  ],
+  "expiresIn": 2592000
+}
+
+@learning_token = {{createTeamPat.response.body.token}}
+
+### Create Cluster (httpbin)
+POST {{base_url}}/api/v1/clusters
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "{{cluster_name}}",
+  "connectTimeoutSeconds": 5,
+  "endpoints": [
+    { "host": "{{httpbin_host}}", "port": {{httpbin_port}} }
+  ]
+}
+
+### Create Route: /users -> httpbin/anything/users
+POST {{base_url}}/api/v1/routes
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "{{route_name}}",
+  "virtualHosts": [
+    {
+      "name": "default",
+      "domains": ["*"],
+      "routes": [
+        {
+          "name": "users-to-httpbin",
+          "match": { "path": { "type": "prefix", "value": "/users" } },
+          "action": {
+            "type": "forward",
+            "cluster": "{{cluster_name}}",
+            "prefixRewrite": "/anything/users",
+            "timeoutSeconds": 15
+          }
+        }
+      ]
+    }
+  ]
+}
+
+### Create Listener on {{envoy_learning_port}} (with ExtProc before router)
+POST {{base_url}}/api/v1/listeners
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "{{listener_name}}",
+  "address": "0.0.0.0",
+  "port": {{envoy_learning_port}},
+  "protocol": "HTTP",
+  "filterChains": [
+    {
+      "name": "default",
+      "filters": [
+        {
+          "name": "envoy.filters.network.http_connection_manager",
+          "type": "httpConnectionManager",
+          "routeConfigName": "{{route_name}}",
+          "httpFilters": [
+            {
+              "filter": {
+                "type": "ext_proc",
+                "grpc_service": { "target_uri": "flowplane_ext_proc_service", "timeout_seconds": 5 },
+                "failure_mode_allow": true,
+                "processing_mode": {
+                  "request_header_mode": "SEND",
+                  "response_header_mode": "SEND",
+                  "request_body_mode": "BUFFERED",
+                  "response_body_mode": "BUFFERED"
+                }
+              }
+            },
+            { "filter": { "type": "router" } }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+### Test through Envoy (sanity)
+GET http://localhost:{{envoy_learning_port}}/users
+
+### Create Learning Session (match rewritten path)
+# Note: Envoy access logs see the rewritten path (/anything/users/*)
+# @name createSession
+POST {{base_url}}/api/v1/learning-sessions
+Authorization: Bearer {{learning_token}}
+Content-Type: application/json
+
+{
+  "routePattern": "^(/anything)?/users",
+  "targetSampleCount": 5,
+  "maxDurationSeconds": 300
+}
+
+@session_id = {{createSession.response.body.id}}
+
+### Get Learning Session Status
+GET {{base_url}}/api/v1/learning-sessions/{{session_id}}
+Authorization: Bearer {{learning_token}}
+
+### Send Real Traffic via Envoy (5 requests)
+GET http://localhost:{{envoy_learning_port}}/users/101
+x-request-id: rid-1
+
+### Send more traffic via Envoy
+GET http://localhost:{{envoy_learning_port}}/users/102
+x-request-id: rid-2
+### Send more traffic via Envoy
+GET http://localhost:{{envoy_learning_port}}/users/103
+X-REQUEST-ID: rid-3
+
+### Send more traffic via Envoy
+GET http://localhost:{{envoy_learning_port}}/users/104
+### Send more traffic via Envoy
+GET http://localhost:{{envoy_learning_port}}/users/105
+
+### Check Learning Session Progress
+GET {{base_url}}/api/v1/learning-sessions/{{session_id}}
+Authorization: Bearer {{learning_token}}
+
+### Optional: Cancel Learning Session (cleanup)
+DELETE {{base_url}}/api/v1/learning-sessions/{{session_id}}
+Authorization: Bearer {{learning_token}}

@@ -65,6 +65,9 @@ flowplane.db-wal
 test_flowplane.db-shm
 test_flowplane.db-wal
 
+flowplane-debug.db-shm
+flowplane-debug.db-wal
+
 bruno/
 
 # Logs

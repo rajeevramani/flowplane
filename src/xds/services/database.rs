@@ -96,7 +96,7 @@ impl DatabaseAggregatedDiscoveryService {
     /// Create cluster resources from database with team-based filtering
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.cluster_repository {
+        let mut built = if let Some(repo) = &self.state.cluster_repository {
             // Extract teams from scope for filtering
             let teams = match scope {
                 Scope::All => vec![],
@@ -152,6 +152,22 @@ impl DatabaseAggregatedDiscoveryService {
             info!("No database repository available, using config-based cluster");
             self.create_fallback_cluster_resources()?
         };
+
+        // Always include internal gRPC clusters used by Envoy filters
+        // These are not stored in the database and must be emitted with CDS
+        if let Ok(ext_proc) = crate::xds::resources::create_ext_proc_cluster(
+            &self.state.config.bind_address,
+            self.state.config.port,
+        ) {
+            built.push(ext_proc);
+        }
+
+        if let Ok(als) = crate::xds::resources::create_access_log_cluster(
+            &self.state.config.bind_address,
+            self.state.config.port,
+        ) {
+            built.push(als);
+        }
 
         // NOTE: Platform API clusters are NOT added here to avoid duplicates
         // They are already stored in the database by materialize_native_resources()
@@ -333,7 +349,7 @@ impl DatabaseAggregatedDiscoveryService {
         &self,
         scope: &Scope,
     ) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.listener_repository {
+        let mut built = if let Some(repo) = &self.state.listener_repository {
             match repo.list(Some(100), None).await {
                 Ok(listener_data_list) => {
                     if listener_data_list.is_empty() {
@@ -417,6 +433,24 @@ impl DatabaseAggregatedDiscoveryService {
         };
 
         // Intentionally do not emit Platform API listeners here to avoid port conflicts
+
+        // Inject access log configuration for active learning sessions
+        // This ensures Envoy receives listeners with access log config when sessions are active
+        if let Err(e) = self.state.inject_learning_session_access_logs(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject access log configuration in ADS response"
+            );
+        }
+
+        // Inject ExtProc filter for request/response body capture during learning sessions
+        // Required for schema inference to produce inferred_schemas rows
+        if let Err(e) = self.state.inject_learning_session_ext_proc(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject ExtProc configuration in ADS response"
+            );
+        }
 
         Ok(built)
     }

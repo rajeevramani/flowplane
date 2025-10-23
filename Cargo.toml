@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 # Core async runtime
 tokio = { version = "1.47.1", features = ["full"] }
+async-stream = "0.3"
 
 # REST API framework
 axum = { version = "0.8.4", features = ["macros"] }

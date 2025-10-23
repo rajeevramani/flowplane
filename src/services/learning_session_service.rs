@@ -4,11 +4,14 @@
 //! including automatic completion and state transitions.
 
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::{
     errors::{Error, Result},
-    services::webhook_service::{LearningSessionWebhookEvent, WebhookService},
+    services::{
+        webhook_service::{LearningSessionWebhookEvent, WebhookService},
+        SchemaAggregator,
+    },
     storage::repositories::{
         LearningSessionData, LearningSessionRepository, LearningSessionStatus,
         UpdateLearningSessionRequest,
@@ -21,8 +24,10 @@ use crate::{
 pub struct LearningSessionService {
     repository: LearningSessionRepository,
     access_log_service: Option<Arc<FlowplaneAccessLogService>>,
+    ext_proc_service: Option<Arc<crate::xds::services::ext_proc_service::FlowplaneExtProcService>>,
     webhook_service: Option<Arc<WebhookService>>,
     xds_state: Option<Arc<crate::xds::XdsState>>,
+    schema_aggregator: Option<Arc<SchemaAggregator>>,
 }
 
 // Manual Debug implementation to avoid XdsState debug requirements
@@ -33,6 +38,7 @@ impl std::fmt::Debug for LearningSessionService {
             .field("has_access_log_service", &self.access_log_service.is_some())
             .field("has_webhook_service", &self.webhook_service.is_some())
             .field("has_xds_state", &self.xds_state.is_some())
+            .field("has_schema_aggregator", &self.schema_aggregator.is_some())
             .finish()
     }
 }
@@ -40,7 +46,14 @@ impl std::fmt::Debug for LearningSessionService {
 impl LearningSessionService {
     /// Create a new learning session service
     pub fn new(repository: LearningSessionRepository) -> Self {
-        Self { repository, access_log_service: None, webhook_service: None, xds_state: None }
+        Self {
+            repository,
+            access_log_service: None,
+            ext_proc_service: None,
+            webhook_service: None,
+            xds_state: None,
+            schema_aggregator: None,
+        }
     }
 
     /// Set the access log service for integration
@@ -55,13 +68,29 @@ impl LearningSessionService {
         self
     }
 
+    /// Set the ExtProc service for body capture session registration
+    pub fn with_ext_proc_service(
+        mut self,
+        service: Arc<crate::xds::services::ext_proc_service::FlowplaneExtProcService>,
+    ) -> Self {
+        self.ext_proc_service = Some(service);
+        self
+    }
+
     /// Set the XDS state for dynamic listener configuration
     pub fn with_xds_state(mut self, state: Arc<crate::xds::XdsState>) -> Self {
         self.xds_state = Some(state);
         self
     }
 
+    /// Set the schema aggregator for session completion
+    pub fn with_schema_aggregator(mut self, aggregator: Arc<SchemaAggregator>) -> Self {
+        self.schema_aggregator = Some(aggregator);
+        self
+    }
+
     /// Activate a learning session (transition: pending → active)
+    #[instrument(skip(self), fields(session_id = %session_id), name = "activate_learning_session")]
     ///
     /// This method:
     /// 1. Updates session status to 'active'
@@ -102,6 +131,26 @@ impl LearningSessionService {
             );
         }
 
+        // Register with ExtProc Service for body capture
+        if let Some(ext_proc_service) = &self.ext_proc_service {
+            if let Err(e) = ext_proc_service
+                .add_session(updated.id.clone(), updated.route_pattern.clone())
+                .await
+            {
+                warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to register learning session with ExtProc Service"
+                );
+            } else {
+                info!(
+                    session_id = %session_id,
+                    route_pattern = %updated.route_pattern,
+                    "Registered learning session with ExtProc Service"
+                );
+            }
+        }
+
         info!(
             session_id = %session_id,
             "Activated learning session: pending → active"
@@ -138,6 +187,7 @@ impl LearningSessionService {
     }
 
     /// Check if a session should be completed and transition if needed
+    #[instrument(skip(self), fields(session_id = %session_id), name = "check_learning_session_completion")]
     ///
     /// This method checks:
     /// 1. Has the target sample count been reached?
@@ -192,6 +242,7 @@ impl LearningSessionService {
     }
 
     /// Complete a learning session (active → completing → completed)
+    #[instrument(skip(self), fields(session_id = %session_id), name = "complete_learning_session")]
     async fn complete_session(&self, session_id: &str) -> Result<LearningSessionData> {
         // First, transition to 'completing' state
         let update_completing = UpdateLearningSessionRequest {
@@ -216,6 +267,15 @@ impl LearningSessionService {
             );
         }
 
+        // Unregister from ExtProc Service
+        if let Some(ext_proc_service) = &self.ext_proc_service {
+            ext_proc_service.remove_session(session_id).await;
+            info!(
+                session_id = %session_id,
+                "Unregistered learning session from ExtProc Service"
+            );
+        }
+
         // Trigger LDS update to remove access log configuration
         if let Some(xds_state) = &self.xds_state {
             if let Err(e) = xds_state.refresh_listeners_from_repository().await {
@@ -232,8 +292,35 @@ impl LearningSessionService {
             }
         }
 
-        // TODO: Trigger schema aggregation here (Task 6)
-        // For now, just complete immediately
+        // Task 6.6: Trigger schema aggregation
+        if let Some(schema_aggregator) = &self.schema_aggregator {
+            info!(session_id = %session_id, "Starting schema aggregation for completed session");
+
+            match schema_aggregator.aggregate_session(session_id).await {
+                Ok(aggregated_ids) => {
+                    info!(
+                        session_id = %session_id,
+                        aggregated_count = aggregated_ids.len(),
+                        aggregated_ids = ?aggregated_ids,
+                        "Successfully aggregated schemas for session"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to aggregate schemas for session - continuing with session completion"
+                    );
+                    // Continue with session completion even if aggregation fails
+                    // The session data is still valid and stored in inferred_schemas table
+                }
+            }
+        } else {
+            warn!(
+                session_id = %session_id,
+                "Schema aggregator not configured - skipping aggregation"
+            );
+        }
 
         // Transition to 'completed' state
         let now = chrono::Utc::now();
@@ -289,6 +376,11 @@ impl LearningSessionService {
         // Unregister from Access Log Service
         if let Some(access_log_service) = &self.access_log_service {
             access_log_service.remove_session(session_id).await;
+        }
+
+        // Unregister from ExtProc Service
+        if let Some(ext_proc_service) = &self.ext_proc_service {
+            ext_proc_service.remove_session(session_id).await;
         }
 
         error!(
@@ -399,6 +491,7 @@ fn convert_to_access_log_session(session: &LearningSessionData) -> Result<Learni
 
     Ok(LearningSession {
         id: session.id.clone(),
+        team: session.team.clone(),
         route_patterns: vec![pattern],
         methods: session.http_methods.clone(),
     })

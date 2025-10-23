@@ -24,10 +24,11 @@ use tracing::info;
 
 use envoy_types::pb::envoy::service::accesslog::v3::access_log_service_server::AccessLogServiceServer;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 
 pub use cluster_spec::*;
 pub use services::{
-    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService,
+    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService, FlowplaneExtProcService,
     MinimalAggregatedDiscoveryService,
 };
 pub use state::XdsState;
@@ -59,18 +60,22 @@ where
     let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
     // TODO: Spawn background task to process log_rx entries
 
-    // Build and start the gRPC server with ADS service and AccessLogService
+    // Create ExtProcService for body capture
+    let (ext_proc_service, _ext_proc_rx) = FlowplaneExtProcService::new();
+
+    // Build and start the gRPC server with ADS service, AccessLogService, and ExtProcService
     // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .add_service(AccessLogServiceServer::new(access_log_service))
+        .add_service(ExternalProcessorServer::new(ext_proc_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
     info!(
         address = %addr,
-        "XDS server with AccessLogService listening"
+        "XDS server with AccessLogService and ExtProcService listening"
     );
 
     // Start the server with graceful shutdown
@@ -137,16 +142,29 @@ where
         Arc::new(service)
     };
 
+    // Use the ExtProcService from state if available, otherwise create a new one
+    let ext_proc_service = if let Some(service) = &state.ext_proc_service {
+        Arc::clone(service)
+    } else {
+        let (service, _ext_proc_rx) = FlowplaneExtProcService::new();
+        Arc::new(service)
+    };
+
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .add_service(AccessLogServiceServer::new(
-            Arc::try_unwrap(access_log_service).unwrap_or_else(|arc| (*arc).clone()),
+            // Clone the service (shares the inner Arc<RwLock<...>> with learning session service)
+            (*access_log_service).clone(),
+        ))
+        .add_service(ExternalProcessorServer::new(
+            // Clone the service (shares the inner Arc<RwLock<...>> for body capture state)
+            (*ext_proc_service).clone(),
         ))
         .serve_with_shutdown(addr, shutdown_signal);
 
     info!(
         address = %addr,
-        "Database-enabled XDS server with AccessLogService listening"
+        "Database-enabled XDS server with AccessLogService and ExtProcService listening"
     );
 
     server

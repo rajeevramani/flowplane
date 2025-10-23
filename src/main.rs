@@ -5,10 +5,18 @@ use flowplane::{
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
     openapi::defaults::ensure_default_gateway_resources,
-    services::{LearningSessionService, WebhookService},
-    storage::{create_pool, repositories::LearningSessionRepository},
+    services::{LearningSessionService, SchemaAggregator, WebhookService},
+    storage::{
+        create_pool,
+        repositories::{
+            AggregatedSchemaRepository, InferredSchemaRepository, LearningSessionRepository,
+        },
+    },
     xds::{
-        services::access_log_service::FlowplaneAccessLogService,
+        services::{
+            access_log_service::FlowplaneAccessLogService,
+            ext_proc_service::FlowplaneExtProcService,
+        },
         start_database_xds_server_with_state, XdsState,
     },
     Config, Result, APP_NAME, VERSION,
@@ -67,27 +75,52 @@ async fn main() -> Result<()> {
     let simple_xds_config: SimpleXdsConfig = config.xds.clone();
     let api_config: ApiServerConfig = config.api.clone();
 
-    // Create Access Log Service for learning sessions
-    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
-    let access_log_service = Arc::new(access_log_service);
+    // Create Access Log Service for learning sessions and wire repository + processor
+    let (access_log_service, log_rx) = FlowplaneAccessLogService::new();
+    // Attach repository so ALS can increment sample counts for sessions
+    let als_session_repo = LearningSessionRepository::new(pool.clone());
+    let access_log_service = Arc::new(access_log_service.with_repository(als_session_repo));
+
+    // Create External Processor Service for request/response body capture during learning sessions
+    let (ext_proc_service, ext_proc_rx) = FlowplaneExtProcService::new();
+    let ext_proc_service = Arc::new(ext_proc_service);
 
     // Create Webhook Service for learning session event notifications
     let (webhook_service, _webhook_rx) = WebhookService::new();
     let webhook_service = Arc::new(webhook_service);
 
-    // Create Learning Session Service with Access Log Service and Webhook Service integration
+    // Create Schema Aggregator for learning session completion
+    let inferred_schema_repo = InferredSchemaRepository::new(pool.clone());
+    let aggregated_schema_repo = AggregatedSchemaRepository::new(pool.clone());
+    let schema_aggregator =
+        Arc::new(SchemaAggregator::new(inferred_schema_repo, aggregated_schema_repo));
+
+    // Create Learning Session Service with Access Log Service, Webhook Service, and Schema Aggregator integration
     // Note: XdsState will be added after XdsState creation to avoid circular dependency
     let learning_session_repo = LearningSessionRepository::new(pool.clone());
     let learning_session_service = LearningSessionService::new(learning_session_repo)
         .with_access_log_service(access_log_service.clone())
-        .with_webhook_service(webhook_service.clone());
+        .with_ext_proc_service(ext_proc_service.clone())
+        .with_webhook_service(webhook_service.clone())
+        .with_schema_aggregator(schema_aggregator.clone());
     let learning_session_service = Arc::new(learning_session_service);
 
+    // Start background Access Log Processor to handle inference + persistence
+    // Wire ExtProc body channel for request/response body capture (Task 12.3)
+    {
+        use flowplane::services::AccessLogProcessor;
+        let db_pool = Some(pool.clone());
+        let processor = AccessLogProcessor::new(log_rx, Some(ext_proc_rx), db_pool, None);
+        // Spawn workers (handles internal batching and metrics). We don't need the handle here.
+        let _handle = processor.spawn_workers();
+    }
+
     // Create XdsState with services
-    let state = Arc::new(
-        XdsState::with_database(simple_xds_config.clone(), pool)
-            .with_services(access_log_service.clone(), learning_session_service.clone()),
-    );
+    let state = Arc::new(XdsState::with_database(simple_xds_config.clone(), pool).with_services(
+        access_log_service.clone(),
+        ext_proc_service.clone(),
+        learning_session_service.clone(),
+    ));
 
     // Now wire XdsState back into LearningSessionService for LDS refresh triggers
     // This creates a weak circular reference: LearningSessionService -> XdsState -> LearningSessionService
