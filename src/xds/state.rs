@@ -11,7 +11,8 @@ use crate::{
     config::SimpleXdsConfig,
     services::LearningSessionService,
     storage::{
-        ApiDefinitionRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
+        AggregatedSchemaRepository, ApiDefinitionRepository, ClusterRepository, DbPool,
+        ListenerRepository, RouteRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -62,6 +63,7 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub api_definition_repository: Option<ApiDefinitionRepository>,
+    pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
     pub learning_session_service: Option<Arc<LearningSessionService>>,
@@ -79,6 +81,7 @@ impl XdsState {
             route_repository: None,
             listener_repository: None,
             api_definition_repository: None,
+            aggregated_schema_repository: None,
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: None,
@@ -92,7 +95,8 @@ impl XdsState {
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_repository = RouteRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
-        let api_definition_repository = ApiDefinitionRepository::new(pool);
+        let api_definition_repository = ApiDefinitionRepository::new(pool.clone());
+        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -100,6 +104,7 @@ impl XdsState {
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
             api_definition_repository: Some(api_definition_repository),
+            aggregated_schema_repository: Some(aggregated_schema_repository),
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: None,
