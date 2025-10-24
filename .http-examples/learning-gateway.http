@@ -163,3 +163,99 @@ Authorization: Bearer {{learning_token}}
 ### Optional: Cancel Learning Session (cleanup)
 DELETE {{base_url}}/api/v1/learning-sessions/{{session_id}}
 Authorization: Bearer {{learning_token}}
+
+###############################################################################
+### Task 7: API Catalog - Aggregated Schema Endpoints
+###############################################################################
+### Prerequisites: Learning session must complete and schemas must be aggregated
+### The aggregation happens automatically when a session completes
+
+### Create Token with Aggregated Schema Read Access
+# @name createSchemaToken
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "schema-reader-{{team}}",
+  "description": "Token for reading aggregated schemas",
+  "scopes": [
+    "team:{{team}}:aggregated-schemas:read"
+  ],
+  "expiresIn": 2592000
+}
+
+@schema_token = {{createSchemaToken.response.body.token}}
+
+### List All Aggregated Schemas (for this team)
+# @name listSchemas
+GET {{base_url}}/api/v1/aggregated-schemas
+Authorization: Bearer {{schema_token}}
+
+### List Aggregated Schemas - Filter by Path (text search)
+GET {{base_url}}/api/v1/aggregated-schemas?path=users
+Authorization: Bearer {{schema_token}}
+
+### List Aggregated Schemas - Filter by HTTP Method
+GET {{base_url}}/api/v1/aggregated-schemas?http_method=GET
+Authorization: Bearer {{schema_token}}
+
+### List Aggregated Schemas - Filter by Minimum Confidence
+GET {{base_url}}/api/v1/aggregated-schemas?min_confidence=0.8
+Authorization: Bearer {{schema_token}}
+
+### List Aggregated Schemas - Multiple Filters
+GET {{base_url}}/api/v1/aggregated-schemas?path=users&http_method=GET&min_confidence=0.9
+Authorization: Bearer {{schema_token}}
+
+### Get Specific Aggregated Schema by ID
+# Note: Replace {schema_id} with actual ID from list response
+# @name getSchema
+GET {{base_url}}/api/v1/aggregated-schemas/1
+Authorization: Bearer {{schema_token}}
+
+@schema_id = {{getSchema.response.body.id}}
+
+### Compare Schema Versions
+# Note: This requires multiple versions of the same endpoint to exist
+# Compare current version (e.g., v2) with previous version (e.g., v1)
+GET {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/compare?with_version=1
+Authorization: Bearer {{schema_token}}
+
+### Export Schema as OpenAPI 3.1 (with Flowplane metadata)
+POST {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=true
+Authorization: Bearer {{schema_token}}
+
+### Export Schema as OpenAPI 3.1 (without Flowplane metadata)
+POST {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=false
+Authorization: Bearer {{schema_token}}
+
+###############################################################################
+### Task 7: Team Isolation Tests (Security)
+###############################################################################
+
+### Create Token for Different Team
+# @name createTeamBToken
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "schema-reader-team-b",
+  "description": "Token for team-b",
+  "scopes": [
+    "team:test-team-b:aggregated-schemas:read"
+  ],
+  "expiresIn": 2592000
+}
+
+@team_b_token = {{createTeamBToken.response.body.token}}
+
+### Attempt Cross-Team Access (should return 404, not 403)
+# This should fail with 404 (not 403) to avoid leaking resource existence
+GET {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}
+Authorization: Bearer {{team_b_token}}
+
+### List Schemas for Team B (should be empty or only team-b schemas)
+GET {{base_url}}/api/v1/aggregated-schemas
+Authorization: Bearer {{team_b_token}}
