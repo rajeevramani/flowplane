@@ -49,7 +49,8 @@ use crate::xds::{filters::http::build_http_filters, listener::ListenerConfig, ro
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
-pub const HTTP_PROTOCOL_OPTIONS_TYPE_URL: &str = "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions";
+pub const HTTP_PROTOCOL_OPTIONS_TYPE_URL: &str =
+    "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions";
 pub const PLATFORM_ROUTE_PREFIX: &str = "platform-api";
 
 fn strip_gateway_tags(value: &mut Value) {
@@ -1153,10 +1154,7 @@ fn create_http2_typed_extension_protocol_options() -> Result<HashMap<String, Any
     };
 
     let encoded = http_protocol_options.encode_to_vec();
-    let any = Any {
-        type_url: HTTP_PROTOCOL_OPTIONS_TYPE_URL.to_string(),
-        value: encoded,
-    };
+    let any = Any { type_url: HTTP_PROTOCOL_OPTIONS_TYPE_URL.to_string(), value: encoded };
 
     let mut options = HashMap::new();
     options.insert("envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(), any);
