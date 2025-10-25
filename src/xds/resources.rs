@@ -21,8 +21,14 @@ use envoy_types::pb::envoy::config::core::v3::transport_socket::ConfigType as Tr
 use envoy_types::pb::envoy::config::core::v3::{
     health_check::{self, HttpHealthCheck, TcpHealthCheck},
     socket_address::{self, Protocol},
-    Address, HealthCheck, RequestMethod, RoutingPriority, SocketAddress, TransportSocket,
+    Address, HealthCheck, Http2ProtocolOptions, RequestMethod, RoutingPriority, SocketAddress,
+    TransportSocket,
 };
+use envoy_types::pb::envoy::extensions::upstreams::http::v3::{
+    http_protocol_options::{ExplicitHttpConfig, UpstreamProtocolOptions},
+    HttpProtocolOptions as UpstreamHttpProtocolOptionsV3,
+};
+use envoy_types::pb::envoy::extensions::upstreams::http::v3::http_protocol_options::explicit_http_config::ProtocolConfig;
 use envoy_types::pb::envoy::config::endpoint::v3::{
     lb_endpoint, ClusterLoadAssignment, Endpoint, LbEndpoint, LocalityLbEndpoints,
 };
@@ -43,6 +49,7 @@ use crate::xds::{filters::http::build_http_filters, listener::ListenerConfig, ro
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
+pub const HTTP_PROTOCOL_OPTIONS_TYPE_URL: &str = "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions";
 pub const PLATFORM_ROUTE_PREFIX: &str = "platform-api";
 
 fn strip_gateway_tags(value: &mut Value) {
@@ -1129,6 +1136,34 @@ pub fn endpoints_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResour
     }])
 }
 
+/// Helper function to create HTTP/2 protocol options using the non-deprecated approach.
+///
+/// Creates typed_extension_protocol_options with HttpProtocolOptions configured for HTTP/2.
+/// This is the modern replacement for the deprecated `http2_protocol_options` field.
+fn create_http2_typed_extension_protocol_options() -> Result<HashMap<String, Any>> {
+    let http_protocol_options = UpstreamHttpProtocolOptionsV3 {
+        upstream_protocol_options: Some(UpstreamProtocolOptions::ExplicitHttpConfig(
+            ExplicitHttpConfig {
+                protocol_config: Some(ProtocolConfig::Http2ProtocolOptions(
+                    Http2ProtocolOptions::default(),
+                )),
+            },
+        )),
+        ..Default::default()
+    };
+
+    let encoded = http_protocol_options.encode_to_vec();
+    let any = Any {
+        type_url: HTTP_PROTOCOL_OPTIONS_TYPE_URL.to_string(),
+        value: encoded,
+    };
+
+    let mut options = HashMap::new();
+    options.insert("envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(), any);
+
+    Ok(options)
+}
+
 /// Create built-in internal cluster for ExtProc gRPC service
 ///
 /// This cluster enables Envoy to route External Processor filter requests
@@ -1142,7 +1177,8 @@ pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        // Configure HTTP/2 for gRPC communication using modern typed extension approach
+        typed_extension_protocol_options: create_http2_typed_extension_protocol_options()?,
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_ext_proc_service".to_string(),
             endpoints: vec![LocalityLbEndpoints {
@@ -1192,7 +1228,8 @@ pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Resul
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        // Configure HTTP/2 for gRPC communication using modern typed extension approach
+        typed_extension_protocol_options: create_http2_typed_extension_protocol_options()?,
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_access_log_service".to_string(),
             endpoints: vec![LocalityLbEndpoints {
