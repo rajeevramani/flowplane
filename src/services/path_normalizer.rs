@@ -3,17 +3,42 @@
 //! This module provides functionality to detect and normalize path parameters in API endpoints,
 //! converting literal paths like `/users/123` into parameterized templates like `/users/{id}`.
 //!
+//! ## Integration with Schema Aggregation
+//!
+//! Path normalization is applied during access log processing (before storing to `inferred_schemas`),
+//! ensuring that all observations of the same endpoint pattern are grouped together during aggregation:
+//!
+//! 1. **Access Log Processing**: Raw paths → Normalized paths (e.g., `/users/101`, `/users/102` → `/users/{id}`)
+//! 2. **Schema Storage**: Normalized paths stored in `inferred_schemas.path_pattern`
+//! 3. **Schema Aggregation**: Groups by `(http_method, path_pattern, response_status_code)`
+//!    - Without normalization: 5 separate schemas for `/users/101`, `/users/102`, etc.
+//!    - With normalization: 1 aggregated schema for `/users/{id}` with 5+ samples
+//!
+//! This improves schema quality, confidence scoring, and API catalog usability.
+//!
 //! ## Supported Parameter Types
 //!
 //! - **Numeric IDs**: `/users/123` → `/users/{id}`
 //! - **UUIDs**: `/orders/550e8400-e29b-41d4-a716-446655440000` → `/orders/{id}`
 //! - **Alphanumeric codes**: `/products/ABC123` → `/products/{code}`
+//! - **Date parameters**: `/events/2024-01-15` → `/events/{date}`
+//! - **Timestamp parameters**: `/logs/1640000000` → `/logs/{timestamp}`
 //! - **Composite paths**: `/users/123/orders/456` → `/users/{userId}/orders/{orderId}`
+//!
+//! ## Configuration
+//!
+//! The module supports API-agnostic configuration with presets for common API styles:
+//!
+//! - **Default**: Minimal assumptions, no plural conversion, no protected keywords
+//! - **REST API** (`rest_defaults()`): English plural conversion, common REST keywords protected
+//! - **GraphQL** (`graphql_defaults()`): No plural conversion, GraphQL keywords protected
+//! - **Custom**: Fully configurable via `PathNormalizationConfig`
 //!
 //! ## Design Goals
 //!
 //! - Avoid false positives by carefully distinguishing literals from parameters
-//! - Support configurable parameter naming conventions
+//! - Support multiple API styles (REST, GraphQL, gRPC, custom)
+//! - Provide configurable parameter naming conventions
 //! - Provide consistent normalization across the application
 //! - Handle edge cases gracefully (mixed literal/parameterized paths)
 
