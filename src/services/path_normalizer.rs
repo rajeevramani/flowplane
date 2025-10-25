@@ -34,11 +34,65 @@ pub struct PathNormalizationConfig {
     /// Maximum segment length to consider for parameterization (default: 100)
     /// Prevents extremely long segments from being parameterized
     pub max_param_length: usize,
+
+    /// Custom literal keywords that should never be parameterized (default: empty)
+    /// Examples: ["api", "v1", "admin"] for REST, ["query", "mutation"] for GraphQL
+    /// Empty list means no custom keywords are protected
+    pub literal_keywords: Vec<String>,
+
+    /// Enable automatic plural-to-singular conversion for parameter names (default: false)
+    /// When true: /users/123 → /users/{userId}
+    /// When false: /users/123 → /users/{usersId}
+    /// Disable for non-English APIs or when plural forms don't follow -s pattern
+    pub enable_plural_conversion: bool,
 }
 
 impl Default for PathNormalizationConfig {
     fn default() -> Self {
-        Self { enabled: true, min_param_length: 1, max_param_length: 100 }
+        Self {
+            enabled: true,
+            min_param_length: 1,
+            max_param_length: 100,
+            literal_keywords: Vec::new(),
+            enable_plural_conversion: false,
+        }
+    }
+}
+
+impl PathNormalizationConfig {
+    /// Create a config with common REST API defaults
+    pub fn rest_defaults() -> Self {
+        Self {
+            enabled: true,
+            min_param_length: 1,
+            max_param_length: 100,
+            literal_keywords: vec![
+                "api".to_string(),
+                "v1".to_string(),
+                "v2".to_string(),
+                "v3".to_string(),
+                "admin".to_string(),
+                "public".to_string(),
+                "private".to_string(),
+            ],
+            enable_plural_conversion: true,
+        }
+    }
+
+    /// Create a config with common GraphQL defaults
+    pub fn graphql_defaults() -> Self {
+        Self {
+            enabled: true,
+            min_param_length: 1,
+            max_param_length: 100,
+            literal_keywords: vec![
+                "graphql".to_string(),
+                "query".to_string(),
+                "mutation".to_string(),
+                "subscription".to_string(),
+            ],
+            enable_plural_conversion: false,
+        }
     }
 }
 
@@ -114,7 +168,7 @@ fn get_patterns() -> &'static RegexPatterns {
 }
 
 /// Check if a segment looks like a common literal value that shouldn't be parameterized
-fn is_common_literal(segment: &str) -> bool {
+fn is_common_literal(segment: &str, config: &PathNormalizationConfig) -> bool {
     // Version patterns: v1, v2, v1.0, v2.1, etc.
     if segment.starts_with('v') && segment.len() <= 5 {
         let rest = &segment[1..];
@@ -138,9 +192,8 @@ fn is_common_literal(segment: &str) -> bool {
         return true;
     }
 
-    // API namespace keywords that should stay literal
-    let keywords = ["api", "v1", "v2", "v3", "admin", "public", "private"];
-    if keywords.contains(&segment) {
+    // Check user-configured literal keywords
+    if config.literal_keywords.iter().any(|kw| kw == segment) {
         return true;
     }
 
@@ -155,7 +208,7 @@ fn detect_parameter_type(segment: &str, config: &PathNormalizationConfig) -> Opt
     }
 
     // Skip common literals
-    if is_common_literal(segment) {
+    if is_common_literal(segment, config) {
         return None;
     }
 
@@ -192,26 +245,33 @@ fn detect_parameter_type(segment: &str, config: &PathNormalizationConfig) -> Opt
 }
 
 /// Generate a contextual parameter name based on the preceding segment
-fn generate_parameter_name(param_type: ParameterType, previous_segment: Option<&str>) -> String {
+fn generate_parameter_name(
+    param_type: ParameterType,
+    previous_segment: Option<&str>,
+    config: &PathNormalizationConfig,
+) -> String {
     // If there's a preceding segment (like "users"), use it for context
     if let Some(prev) = previous_segment {
-        // Remove trailing 's' for common plural nouns
-        let singular =
-            if prev.ends_with('s') && prev.len() > 1 { &prev[..prev.len() - 1] } else { prev };
+        // Optionally convert plural to singular (English REST convention)
+        let base = if config.enable_plural_conversion && prev.ends_with('s') && prev.len() > 1 {
+            &prev[..prev.len() - 1]
+        } else {
+            prev
+        };
 
         // Combine with parameter type's default suffix
         match param_type {
             ParameterType::NumericId | ParameterType::Uuid => {
-                format!("{}Id", singular)
+                format!("{}Id", base)
             }
             ParameterType::AlphanumericCode => {
-                format!("{}Code", singular)
+                format!("{}Code", base)
             }
             ParameterType::Date => {
-                format!("{}Date", singular)
+                format!("{}Date", base)
             }
             ParameterType::Timestamp => {
-                format!("{}Timestamp", singular)
+                format!("{}Timestamp", base)
             }
         }
     } else {
@@ -265,7 +325,7 @@ pub fn normalize_path(path: &str, config: &PathNormalizationConfig) -> String {
         // Try to detect if this segment is a parameter
         if let Some(param_type) = detect_parameter_type(segment, config) {
             // Generate contextual parameter name
-            let param_name = generate_parameter_name(param_type, previous_segment);
+            let param_name = generate_parameter_name(param_type, previous_segment, config);
             normalized_segments.push(format!("{{{}}}", param_name));
         } else {
             // Keep literal segment
@@ -283,6 +343,10 @@ mod tests {
 
     fn default_config() -> PathNormalizationConfig {
         PathNormalizationConfig::default()
+    }
+
+    fn rest_config() -> PathNormalizationConfig {
+        PathNormalizationConfig::rest_defaults()
     }
 
     #[test]
@@ -326,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_normalize_simple_paths() {
-        let config = default_config();
+        let config = rest_config();
 
         assert_eq!(normalize_path("/users/123", &config), "/users/{userId}");
 
@@ -337,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_normalize_uuid_paths() {
-        let config = default_config();
+        let config = rest_config();
 
         assert_eq!(
             normalize_path("/orders/550e8400-e29b-41d4-a716-446655440000", &config),
@@ -347,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_normalize_composite_paths() {
-        let config = default_config();
+        let config = rest_config();
 
         assert_eq!(
             normalize_path("/users/123/orders/456", &config),
@@ -364,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_normalize_mixed_paths() {
-        let config = default_config();
+        let config = rest_config();
 
         // Path with both literals and parameters
         assert_eq!(
@@ -375,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_normalize_edge_cases() {
-        let config = default_config();
+        let config = rest_config();
 
         // Empty path
         assert_eq!(normalize_path("", &config), "");
@@ -400,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_length_constraints() {
-        let mut config = default_config();
+        let mut config = rest_config();
         config.min_param_length = 3;
 
         // "12" is too short
@@ -412,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_actual_flowplane_paths() {
-        let config = default_config();
+        let config = rest_config();
 
         // Real paths from the database issue
         assert_eq!(normalize_path("/anything/users/101", &config), "/anything/users/{userId}");
@@ -435,5 +499,50 @@ mod tests {
         // All should be identical
         assert_eq!(normalized.len(), 5);
         assert!(normalized.iter().all(|n| n == "/anything/users/{userId}"));
+    }
+
+    #[test]
+    fn test_api_agnostic_defaults() {
+        let config = PathNormalizationConfig::default();
+
+        // Default config has no literal keywords
+        assert_eq!(config.literal_keywords.len(), 0);
+
+        // Default config disables plural conversion (not assuming English)
+        assert!(!config.enable_plural_conversion);
+
+        // Without plural conversion: /users/123 → /users/{usersId}
+        assert_eq!(normalize_path("/users/123", &config), "/users/{usersId}");
+
+        // Version patterns (v1, v2) are still protected by default heuristics
+        // This is a reasonable default regardless of API type
+        assert_eq!(normalize_path("/api/v1/users/123", &config), "/api/v1/users/{usersId}");
+    }
+
+    #[test]
+    fn test_graphql_config() {
+        let config = PathNormalizationConfig::graphql_defaults();
+
+        // GraphQL keywords protected
+        assert_eq!(normalize_path("/graphql/query/123", &config), "/graphql/query/{queryId}");
+
+        // No plural conversion
+        assert_eq!(normalize_path("/users/123", &config), "/users/{usersId}");
+    }
+
+    #[test]
+    fn test_custom_keywords() {
+        let mut config = PathNormalizationConfig::default();
+        config.literal_keywords = vec!["custom".to_string(), "namespace".to_string()];
+
+        // Custom keywords are protected
+        // Parameter gets context from preceding segment
+        assert_eq!(
+            normalize_path("/custom/namespace/123", &config),
+            "/custom/namespace/{namespaceId}"
+        );
+
+        // Test keyword at different positions
+        assert_eq!(normalize_path("/custom/123", &config), "/custom/{customId}");
     }
 }
