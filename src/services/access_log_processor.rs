@@ -37,6 +37,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::observability::metrics;
 use crate::schema::inference::SchemaInferenceEngine;
+use crate::services::{normalize_path, PathNormalizationConfig};
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::xds::services::ext_proc_service::CapturedBody;
 use crate::Result;
@@ -86,6 +87,10 @@ pub struct ProcessorConfig {
     /// Maximum queue capacity before backpressure kicks in
     /// Default: 10,000 entries
     pub max_queue_capacity: usize,
+
+    /// Path normalization configuration
+    /// Default: REST API defaults (plural conversion enabled, common REST keywords)
+    pub path_normalization: PathNormalizationConfig,
 }
 
 impl Default for ProcessorConfig {
@@ -97,6 +102,7 @@ impl Default for ProcessorConfig {
             max_retries: 3,                       // Retry up to 3 times
             initial_backoff_ms: 100,              // Start with 100ms backoff
             max_queue_capacity: 10_000,           // Drop entries after 10k queued
+            path_normalization: PathNormalizationConfig::rest_defaults(), // Use REST defaults
         }
     }
 }
@@ -254,6 +260,7 @@ impl AccessLogProcessor {
             let pending_logs = Arc::clone(&self.pending_logs);
             let pending_bodies = Arc::clone(&self.pending_bodies);
             let schema_tx = self.schema_tx.clone();
+            let path_norm_config = self.config.path_normalization.clone();
 
             let handle = tokio::spawn(async move {
                 info!(worker_id, "Access log processor worker started");
@@ -300,7 +307,7 @@ impl AccessLogProcessor {
                                     entry
                                 };
 
-                                if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx).await {
+                                if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx, &path_norm_config).await {
                                     error!(
                                         worker_id,
                                         error = %e,
@@ -335,7 +342,7 @@ impl AccessLogProcessor {
                                     drop(logs_map); // Release lock before processing
 
                                     let merged_entry = Self::merge_bodies(log_entry, captured_body);
-                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx).await {
+                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx, &path_norm_config).await {
                                         error!(
                                             worker_id,
                                             error = %e,
@@ -384,7 +391,7 @@ impl AccessLogProcessor {
                                                 entry
                                             };
 
-                                            if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx).await {
+                                            if let Err(e) = Self::process_entry(worker_id, entry_to_process, &schema_tx, &path_norm_config).await {
                                                 warn!(
                                                     worker_id,
                                                     error = %e,
@@ -413,7 +420,7 @@ impl AccessLogProcessor {
                                                 if let Some(log_entry) = logs_map.remove(&merge_key) {
                                                     drop(logs_map);
                                                     let merged_entry = Self::merge_bodies(log_entry, captured_body);
-                                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx).await {
+                                                    if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx, &path_norm_config).await {
                                                         warn!(
                                                             worker_id,
                                                             error = %e,
@@ -539,6 +546,7 @@ impl AccessLogProcessor {
         worker_id: usize,
         entry: ProcessedLogEntry,
         schema_tx: &mpsc::Sender<InferredSchemaRecord>,
+        path_norm_config: &PathNormalizationConfig,
     ) -> Result<()> {
         let start = std::time::Instant::now();
 
@@ -571,11 +579,14 @@ impl AccessLogProcessor {
                                 "Inferred request schema"
                             );
 
+                            // Normalize path before storing
+                            let normalized_path = normalize_path(&entry.path, path_norm_config);
+
                             let record = InferredSchemaRecord {
                                 session_id: entry.session_id.clone(),
                                 team: entry.team.clone(),
                                 http_method: method_to_string(entry.method),
-                                path_pattern: entry.path.clone(),
+                                path_pattern: normalized_path,
                                 request_schema: Some(serde_json::to_string(
                                     &schema.to_json_schema(),
                                 )?),
@@ -650,11 +661,14 @@ impl AccessLogProcessor {
                                 "Inferred response schema"
                             );
 
+                            // Normalize path before storing
+                            let normalized_path = normalize_path(&entry.path, path_norm_config);
+
                             let record = InferredSchemaRecord {
                                 session_id: entry.session_id.clone(),
                                 team: entry.team.clone(),
                                 http_method: method_to_string(entry.method),
-                                path_pattern: entry.path.clone(),
+                                path_pattern: normalized_path,
                                 request_schema: None,
                                 response_schema: Some(serde_json::to_string(
                                     &schema.to_json_schema(),
@@ -971,6 +985,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -987,6 +1002,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1012,6 +1028,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1054,6 +1071,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1080,6 +1098,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1124,6 +1143,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1170,6 +1190,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1214,6 +1235,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1258,6 +1280,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1331,6 +1354,7 @@ mod tests {
             max_retries: 3,
             initial_backoff_ms: 100,
             max_queue_capacity: 2, // Very small queue to test backpressure
+            path_normalization: PathNormalizationConfig::rest_defaults(),
         };
 
         // Create processor without database to avoid actual writes
