@@ -312,7 +312,8 @@ fn generate_parameter_name(
 /// ```
 /// use flowplane::services::path_normalizer::{normalize_path, PathNormalizationConfig};
 ///
-/// let config = PathNormalizationConfig::default();
+/// // Use REST defaults for common API normalization with plural conversion
+/// let config = PathNormalizationConfig::rest_defaults();
 ///
 /// assert_eq!(
 ///     normalize_path("/users/123", &config),
