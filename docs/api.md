@@ -503,7 +503,7 @@ After learning sessions collect traffic samples, Flowplane automatically aggrega
 ```bash
 curl -sS \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/aggregated-schemas?path=users&httpMethod=GET&minConfidence=0.8"
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas?path=users&http_method=GET&min_confidence=0.8"
 ```
 
 **Query Parameters:**
@@ -511,8 +511,8 @@ curl -sS \
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | string | Filter by API path (substring match, e.g., `users`) |
-| `httpMethod` | string | Filter by HTTP method (exact match: `GET`, `POST`, etc.) |
-| `minConfidence` | number | Filter by minimum confidence score (0.0-1.0) |
+| `http_method` | string | Filter by HTTP method (exact match: `GET`, `POST`, etc.) |
+| `min_confidence` | number | Filter by minimum confidence score (0.0-1.0) |
 
 **Response (200 OK):**
 
@@ -583,14 +583,14 @@ Compare two versions of the same endpoint schema to detect changes:
 ```bash
 curl -sS \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/aggregated-schemas/42/compare?withVersion=2"
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas/42/compare?with_version=2"
 ```
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `withVersion` | integer | Yes | Version number to compare against current schema |
+| `with_version` | integer | Yes | Version number to compare against current schema |
 
 **Response (200 OK):**
 
