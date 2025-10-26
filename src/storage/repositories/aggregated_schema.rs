@@ -361,6 +361,100 @@ impl AggregatedSchemaRepository {
 
         Ok(result.get("next_version"))
     }
+
+    /// Get a specific version of a schema
+    #[instrument(skip(self), fields(team = %team, path = %path, method = %http_method, version = %version), name = "db_get_schema_by_version")]
+    pub async fn get_by_version(
+        &self,
+        team: &str,
+        path: &str,
+        http_method: &str,
+        version: i64,
+    ) -> Result<Option<AggregatedSchemaData>> {
+        let row = sqlx::query_as::<Sqlite, AggregatedSchemaRow>(
+            "SELECT id, team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+             FROM aggregated_api_schemas
+             WHERE team = $1 AND path = $2 AND http_method = $3 AND version = $4",
+        )
+        .bind(team)
+        .bind(path)
+        .bind(http_method)
+        .bind(version)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, path = %path, method = %http_method, version = %version, "Failed to get schema by version");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to get schema by version".to_string(),
+            }
+        })?;
+
+        row.map(|r| r.try_into()).transpose()
+    }
+
+    /// List aggregated schemas with filters
+    #[instrument(skip(self), fields(team = %team), name = "db_list_aggregated_schemas_filtered")]
+    pub async fn list_filtered(
+        &self,
+        team: &str,
+        path_search: Option<&str>,
+        http_method: Option<&str>,
+        min_confidence: Option<f64>,
+    ) -> Result<Vec<AggregatedSchemaData>> {
+        let mut query = String::from(
+            "SELECT id, team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+             FROM aggregated_api_schemas
+             WHERE team = $1",
+        );
+
+        let mut bind_count = 1;
+
+        if path_search.is_some() {
+            bind_count += 1;
+            query.push_str(&format!(" AND path LIKE ${}", bind_count));
+        }
+
+        if http_method.is_some() {
+            bind_count += 1;
+            query.push_str(&format!(" AND http_method = ${}", bind_count));
+        }
+
+        if min_confidence.is_some() {
+            bind_count += 1;
+            query.push_str(&format!(" AND confidence_score >= ${}", bind_count));
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        let mut query_builder = sqlx::query_as::<Sqlite, AggregatedSchemaRow>(&query).bind(team);
+
+        if let Some(search) = path_search {
+            query_builder = query_builder.bind(format!("%{}%", search));
+        }
+
+        if let Some(method) = http_method {
+            query_builder = query_builder.bind(method);
+        }
+
+        if let Some(confidence) = min_confidence {
+            query_builder = query_builder.bind(confidence);
+        }
+
+        let rows = query_builder.fetch_all(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, team = %team, "Failed to list filtered aggregated schemas");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list filtered aggregated schemas for team '{}'", team),
+            }
+        })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
 }
 
 #[cfg(test)]

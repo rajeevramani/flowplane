@@ -1,5 +1,6 @@
 //! HTTP request handlers organized by resource type
 
+pub mod aggregated_schemas;
 pub mod api_definitions;
 pub mod auth;
 pub mod clusters;
@@ -10,6 +11,10 @@ pub mod reporting;
 pub mod routes;
 
 // Re-export handler functions for backward compatibility
+pub use aggregated_schemas::{
+    compare_aggregated_schemas_handler, export_aggregated_schema_handler,
+    get_aggregated_schema_handler, list_aggregated_schemas_handler,
+};
 pub use api_definitions::{
     append_route_handler, create_api_definition_handler, get_api_definition_handler,
     get_bootstrap_handler, import_openapi_handler, list_api_definitions_handler,
@@ -39,6 +44,10 @@ pub use routes::{
 };
 
 // Re-export DTOs for OpenAPI docs
+pub use aggregated_schemas::{
+    AggregatedSchemaResponse, CompareSchemaQuery, ExportSchemaQuery, ListAggregatedSchemasQuery,
+    OpenApiExportResponse, SchemaComparisonResponse,
+};
 pub use clusters::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,

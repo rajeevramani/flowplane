@@ -15,6 +15,9 @@ pub use migrations::{
     validate_migrations, MigrationInfo,
 };
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
+pub use repositories::{
+    AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
+};
 pub use repository::{
     ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, AuditEvent, AuditLogRepository,
     ClusterData, ClusterRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
