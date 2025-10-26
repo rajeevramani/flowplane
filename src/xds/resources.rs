@@ -31,6 +31,13 @@ use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
     CommonTlsContext, UpstreamTlsContext,
 };
+use envoy_types::pb::envoy::extensions::upstreams::http::v3::{
+    http_protocol_options::{
+        explicit_http_config::ProtocolConfig, ExplicitHttpConfig, UpstreamProtocolOptions,
+    },
+    HttpProtocolOptions,
+};
+use envoy_types::pb::envoy::config::core::v3::Http2ProtocolOptions;
 use envoy_types::pb::envoy::r#type::v3::Int64Range;
 use envoy_types::pb::google::protobuf::{Any, Duration, UInt32Value, UInt64Value};
 use prost::Message;
@@ -1137,12 +1144,34 @@ pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<
     // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
     let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
 
+    // Configure HTTP/2 for gRPC
+    let http_protocol_options = HttpProtocolOptions {
+        upstream_protocol_options: Some(UpstreamProtocolOptions::ExplicitHttpConfig(
+            ExplicitHttpConfig {
+                protocol_config: Some(ProtocolConfig::Http2ProtocolOptions(
+                    Http2ProtocolOptions::default(),
+                )),
+            },
+        )),
+        ..Default::default()
+    };
+
+    let mut typed_extension_protocol_options = HashMap::new();
+    typed_extension_protocol_options.insert(
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+        Any {
+            type_url: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+                .to_string(),
+            value: http_protocol_options.encode_to_vec(),
+        },
+    );
+
     let cluster = Cluster {
         name: "flowplane_ext_proc_service".to_string(),
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        typed_extension_protocol_options,
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_ext_proc_service".to_string(),
             endpoints: vec![LocalityLbEndpoints {
@@ -1187,12 +1216,34 @@ pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Resul
     // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
     let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
 
+    // Configure HTTP/2 for gRPC
+    let http_protocol_options = HttpProtocolOptions {
+        upstream_protocol_options: Some(UpstreamProtocolOptions::ExplicitHttpConfig(
+            ExplicitHttpConfig {
+                protocol_config: Some(ProtocolConfig::Http2ProtocolOptions(
+                    Http2ProtocolOptions::default(),
+                )),
+            },
+        )),
+        ..Default::default()
+    };
+
+    let mut typed_extension_protocol_options = HashMap::new();
+    typed_extension_protocol_options.insert(
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+        Any {
+            type_url: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+                .to_string(),
+            value: http_protocol_options.encode_to_vec(),
+        },
+    );
+
     let cluster = Cluster {
         name: "flowplane_access_log_service".to_string(),
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
         // Use STATIC discovery for localhost
         cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
-        // Envoy will auto-negotiate HTTP/2 for gRPC services
+        typed_extension_protocol_options,
         load_assignment: Some(ClusterLoadAssignment {
             cluster_name: "flowplane_access_log_service".to_string(),
             endpoints: vec![LocalityLbEndpoints {
