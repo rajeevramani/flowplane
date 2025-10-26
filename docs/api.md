@@ -375,6 +375,329 @@ See [examples/README-x-flowplane-extensions.md](../examples/README-x-flowplane-e
 Each request returns a structured error payload on validation or authorization failure, and logs an
 audit entry for traceability.
 
+## Learning Sessions
+
+Learning sessions enable automatic API schema discovery by observing live traffic. They capture request/response patterns, infer JSON schemas, and build API documentation from actual usage. Learning sessions are team-scoped and track progress towards a configurable sample target.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/learning-sessions` | `POST` | `learning-sessions:write` | Create a new learning session to capture traffic |
+| `/api/v1/learning-sessions` | `GET` | `learning-sessions:read` | List all learning sessions for your team |
+| `/api/v1/learning-sessions/{id}` | `GET` | `learning-sessions:read` | Get learning session details and progress |
+| `/api/v1/learning-sessions/{id}` | `DELETE` | `learning-sessions:write` | Cancel an active learning session |
+
+### Create a Learning Session
+
+```bash
+curl -sS \
+  -X POST http://127.0.0.1:8080/api/v1/learning-sessions \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "routePattern": "^/api/v2/payments/.*",
+    "clusterName": "payments-api-prod",
+    "httpMethods": ["POST", "PUT"],
+    "targetSampleCount": 1000,
+    "maxDurationSeconds": 7200,
+    "triggeredBy": "deploy-pipeline-v2.3.4",
+    "deploymentVersion": "v2.3.4"
+  }'
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `routePattern` | string | Yes | Regex pattern to match request paths (1-500 chars) |
+| `clusterName` | string | No | Filter by cluster name |
+| `httpMethods` | string[] | No | Filter by HTTP methods (e.g., `["GET", "POST"]`) |
+| `targetSampleCount` | integer | Yes | Number of samples to collect (1-100000) |
+| `maxDurationSeconds` | integer | No | Maximum session duration in seconds |
+| `triggeredBy` | string | No | Who/what triggered this session (e.g., pipeline ID) |
+| `deploymentVersion` | string | No | Version being deployed/learned |
+| `configurationSnapshot` | object | No | Optional JSON snapshot of configuration |
+
+**Response (201 Created):**
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "team": "payments-team",
+  "routePattern": "^/api/v2/payments/.*",
+  "clusterName": "payments-api-prod",
+  "httpMethods": ["POST", "PUT"],
+  "status": "active",
+  "createdAt": "2025-10-26T12:00:00Z",
+  "startedAt": "2025-10-26T12:00:01Z",
+  "endsAt": "2025-10-26T14:00:01Z",
+  "completedAt": null,
+  "targetSampleCount": 1000,
+  "currentSampleCount": 0,
+  "progressPercentage": 0.0,
+  "triggeredBy": "deploy-pipeline-v2.3.4",
+  "deploymentVersion": "v2.3.4",
+  "errorMessage": null
+}
+```
+
+**Status Values:**
+
+- `pending` - Session created but not yet active
+- `active` - Currently capturing traffic
+- `completed` - Reached target sample count
+- `failed` - Encountered an error
+- `cancelled` - Manually cancelled by user
+
+### List Learning Sessions
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/learning-sessions?status=active&limit=20&offset=0"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status (`pending`, `active`, `completed`, `failed`, `cancelled`) |
+| `limit` | integer | Maximum number of results (default: 100) |
+| `offset` | integer | Pagination offset (default: 0) |
+
+Returns an array of learning session objects (same structure as create response).
+
+### Get Learning Session
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/learning-sessions/550e8400-e29b-41d4-a716-446655440000"
+```
+
+Returns a single learning session object with current progress.
+
+### Cancel Learning Session
+
+```bash
+curl -sS \
+  -X DELETE \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/learning-sessions/550e8400-e29b-41d4-a716-446655440000"
+```
+
+Returns `204 No Content` on success. Cancellation stops traffic observation and marks the session as `cancelled`.
+
+## Aggregated Schemas (API Catalog)
+
+After learning sessions collect traffic samples, Flowplane automatically aggregates the observed request/response patterns into versioned JSON schemas. These aggregated schemas represent the inferred API contract based on actual usage, including field presence, type consistency, and confidence scores. Schemas support version tracking, breaking change detection, and OpenAPI export.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/aggregated-schemas` | `GET` | `aggregated-schemas:read` | List all aggregated schemas for your team |
+| `/api/v1/aggregated-schemas/{id}` | `GET` | `aggregated-schemas:read` | Get detailed schema by ID |
+| `/api/v1/aggregated-schemas/{id}/compare` | `GET` | `aggregated-schemas:read` | Compare schema versions to detect changes |
+| `/api/v1/aggregated-schemas/{id}/export` | `POST` | `aggregated-schemas:read` | Export schema as OpenAPI 3.1 specification |
+
+### List Aggregated Schemas
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas?path=users&httpMethod=GET&minConfidence=0.8"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `path` | string | Filter by API path (substring match, e.g., `users`) |
+| `httpMethod` | string | Filter by HTTP method (exact match: `GET`, `POST`, etc.) |
+| `minConfidence` | number | Filter by minimum confidence score (0.0-1.0) |
+
+**Response (200 OK):**
+
+```json
+[
+  {
+    "id": 42,
+    "team": "payments-team",
+    "path": "/api/v2/users/{id}",
+    "httpMethod": "GET",
+    "version": 3,
+    "previousVersionId": 38,
+    "requestSchema": null,
+    "responseSchemas": {
+      "200": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "email": { "type": "string" },
+          "name": { "type": "string" }
+        },
+        "required": ["id", "email"]
+      }
+    },
+    "sampleCount": 1247,
+    "confidenceScore": 0.94,
+    "breakingChanges": null,
+    "firstObserved": "2025-10-20T08:30:00Z",
+    "lastObserved": "2025-10-26T12:00:00Z",
+    "createdAt": "2025-10-26T12:05:00Z",
+    "updatedAt": "2025-10-26T12:05:00Z"
+  }
+]
+```
+
+**Schema Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Unique schema identifier |
+| `team` | string | Team that owns this schema |
+| `path` | string | API path pattern |
+| `httpMethod` | string | HTTP method (GET, POST, etc.) |
+| `version` | integer | Version number (increments on schema changes) |
+| `previousVersionId` | integer | ID of previous version (null for v1) |
+| `requestSchema` | object | JSON Schema for request body (null for GET) |
+| `responseSchemas` | object | JSON Schemas keyed by status code |
+| `sampleCount` | integer | Number of observations aggregated |
+| `confidenceScore` | number | Quality score (0.0-1.0) based on consistency |
+| `breakingChanges` | array | List of breaking changes from previous version |
+| `firstObserved` | string | Timestamp of first observation |
+| `lastObserved` | string | Timestamp of most recent observation |
+
+### Get Aggregated Schema
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas/42"
+```
+
+Returns a single aggregated schema object (same structure as list response).
+
+### Compare Schema Versions
+
+Compare two versions of the same endpoint schema to detect changes:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas/42/compare?withVersion=2"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `withVersion` | integer | Yes | Version number to compare against current schema |
+
+**Response (200 OK):**
+
+```json
+{
+  "currentSchema": {
+    "id": 42,
+    "version": 3,
+    "sampleCount": 1247,
+    "confidenceScore": 0.94
+  },
+  "comparedSchema": {
+    "id": 38,
+    "version": 2,
+    "sampleCount": 856,
+    "confidenceScore": 0.89
+  },
+  "differences": {
+    "versionChange": 1,
+    "sampleCountChange": 391,
+    "confidenceChange": 0.05,
+    "hasBreakingChanges": true,
+    "breakingChanges": [
+      {
+        "type": "field_removed",
+        "field": "deprecated_field",
+        "message": "Field 'deprecated_field' was removed"
+      },
+      {
+        "type": "required_added",
+        "field": "email",
+        "message": "Field 'email' is now required"
+      }
+    ]
+  }
+}
+```
+
+**Breaking Change Types:**
+
+- `field_removed` - A field that existed in the old schema is gone
+- `field_type_changed` - A field's type changed (e.g., string → integer)
+- `required_added` - An optional field became required
+- `required_removed` - A required field became optional (usually safe)
+
+### Export Schema as OpenAPI
+
+Export an aggregated schema as an OpenAPI 3.1 specification for use with API tools:
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/aggregated-schemas/42/export?includeMetadata=true"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `includeMetadata` | boolean | `true` | Include Flowplane-specific extensions (x-flowplane-*) |
+
+**Response (200 OK):**
+
+```json
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Learned API Schema",
+    "version": "3",
+    "description": "API schema learned from 1247 traffic samples"
+  },
+  "paths": {
+    "/api/v2/users/{id}": {
+      "get": {
+        "summary": "GET /api/v2/users/{id}",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "email": { "type": "string" },
+                    "name": { "type": "string" }
+                  },
+                  "required": ["id", "email"]
+                }
+              }
+            }
+          }
+        },
+        "x-flowplane-confidence": 0.94,
+        "x-flowplane-samples": 1247
+      }
+    }
+  },
+  "components": {
+    "schemas": {}
+  }
+}
+```
+
+The exported OpenAPI spec can be imported into tools like Swagger UI, Postman, or used to generate client SDKs.
+
 ## Observability Endpoints
 
 | Endpoint | Method | Auth Required | Description |
