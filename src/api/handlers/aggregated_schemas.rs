@@ -141,18 +141,10 @@ fn strip_internal_attributes(schema: &mut serde_json::Value) {
             map.remove("presence_count");
             map.remove("sample_count");
 
-            // Recursively process nested objects
-            if let Some(properties) = map.get_mut("properties") {
-                if let serde_json::Value::Object(props) = properties {
-                    for (_, prop_schema) in props.iter_mut() {
-                        strip_internal_attributes(prop_schema);
-                    }
-                }
-            }
-
-            // Recursively process array items
-            if let Some(items) = map.get_mut("items") {
-                strip_internal_attributes(items);
+            // Recursively process ALL nested values in the object
+            // This handles properties, items, status codes (200, 201), and any other nested objects
+            for (_, value) in map.iter_mut() {
+                strip_internal_attributes(value);
             }
         }
         serde_json::Value::Array(arr) => {
@@ -509,11 +501,15 @@ fn build_openapi_spec(
 
     // Add request body if present
     if let Some(ref req_schema) = schema.request_schema {
+        // Clone and strip internal attributes from request schema
+        let mut cleaned_req_schema = req_schema.clone();
+        strip_internal_attributes(&mut cleaned_req_schema);
+
         let mut request_body = serde_json::json!({
             "required": true,
             "content": {
                 "application/json": {
-                    "schema": req_schema
+                    "schema": cleaned_req_schema
                 }
             }
         });
@@ -532,11 +528,15 @@ fn build_openapi_spec(
     if let Some(ref resp_schemas) = schema.response_schemas {
         if let Some(resp_map) = resp_schemas.as_object() {
             for (status_code, resp_schema) in resp_map {
+                // Clone and strip internal attributes from response schema
+                let mut cleaned_resp_schema = resp_schema.clone();
+                strip_internal_attributes(&mut cleaned_resp_schema);
+
                 let mut response_obj = serde_json::json!({
                     "description": format!("Response with status {}", status_code),
                     "content": {
                         "application/json": {
-                            "schema": resp_schema
+                            "schema": cleaned_resp_schema
                         }
                     }
                 });
