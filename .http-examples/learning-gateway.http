@@ -180,7 +180,8 @@ Content-Type: application/json
   "name": "schema-reader-{{team}}",
   "description": "Token for reading aggregated schemas",
   "scopes": [
-    "team:{{team}}:aggregated-schemas:read"
+    "team:{{team}}:aggregated-schemas:read",
+    "team:{{team}}:learning-sessions:read"
   ],
   "expiresIn": 2592000
 }
@@ -223,11 +224,11 @@ GET {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/compare?with_version=1
 Authorization: Bearer {{schema_token}}
 
 ### Export Schema as OpenAPI 3.1 (with Flowplane metadata)
-POST {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=true
+GET {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=true
 Authorization: Bearer {{schema_token}}
 
 ### Export Schema as OpenAPI 3.1 (without Flowplane metadata)
-POST {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=false
+GET {{base_url}}/api/v1/aggregated-schemas/{{schema_id}}/export?include_metadata=false
 Authorization: Bearer {{schema_token}}
 
 ###############################################################################
@@ -245,6 +246,7 @@ Content-Type: application/json
   "description": "Token for team-b",
   "scopes": [
     "team:test-team-b:aggregated-schemas:read"
+
   ],
   "expiresIn": 2592000
 }

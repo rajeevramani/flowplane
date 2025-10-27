@@ -102,7 +102,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
         .route("/api/v1/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
-        .route("/api/v1/aggregated-schemas/{id}/export", post(export_aggregated_schema_handler))
+        .route("/api/v1/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         .with_state(api_state.clone())

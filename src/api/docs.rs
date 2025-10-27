@@ -289,7 +289,13 @@ mod tests {
         );
         assert!(
             paths.contains_key("/api/v1/aggregated-schemas/{id}/export"),
-            "Missing POST /api/v1/aggregated-schemas/{{id}}/export"
+            "Missing GET /api/v1/aggregated-schemas/{{id}}/export"
+        );
+
+        // Reporting endpoints (1)
+        assert!(
+            paths.contains_key("/api/v1/reports/route-flows"),
+            "Missing GET /api/v1/reports/route-flows"
         );
     }
 

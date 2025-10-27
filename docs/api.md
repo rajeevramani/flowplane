@@ -496,7 +496,7 @@ After learning sessions collect traffic samples, Flowplane automatically aggrega
 | `/api/v1/aggregated-schemas` | `GET` | `aggregated-schemas:read` | List all aggregated schemas for your team |
 | `/api/v1/aggregated-schemas/{id}` | `GET` | `aggregated-schemas:read` | Get detailed schema by ID |
 | `/api/v1/aggregated-schemas/{id}/compare` | `GET` | `aggregated-schemas:read` | Compare schema versions to detect changes |
-| `/api/v1/aggregated-schemas/{id}/export` | `POST` | `aggregated-schemas:read` | Export schema as OpenAPI 3.1 specification |
+| `/api/v1/aggregated-schemas/{id}/export` | `GET` | `aggregated-schemas:read` | Export schema as OpenAPI 3.1 specification |
 
 ### List Aggregated Schemas
 
@@ -642,7 +642,6 @@ Export an aggregated schema as an OpenAPI 3.1 specification for use with API too
 
 ```bash
 curl -sS \
-  -X POST \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   "http://127.0.0.1:8080/api/v1/aggregated-schemas/42/export?includeMetadata=true"
 ```
@@ -697,6 +696,95 @@ curl -sS \
 ```
 
 The exported OpenAPI spec can be imported into tools like Swagger UI, Postman, or used to generate client SDKs.
+
+## Reporting API
+
+The Reporting API provides comprehensive visibility into your API gateway infrastructure. These endpoints allow you to view the current state of routes, clusters, listeners, and understand how requests flow through the system.
+
+All reporting endpoints respect team-based isolation:
+- Team-scoped tokens (`team:{name}:reports:read`) only see their team's resources
+- Resource-level tokens (`reports:read`) see all resources
+- `admin:all` scope grants full access across all teams
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/reports/route-flows` | `GET` | `reports:read` | List route flows showing end-to-end request routing |
+
+### List Route Flows
+
+View how requests flow through the system from listener → route → cluster → endpoint. This provides a comprehensive overview of your API gateway routing configuration.
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/reports/route-flows"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `50` | Maximum number of items to return (1-1000) |
+| `offset` | integer | `0` | Number of items to skip for pagination |
+| `team` | string | - | Filter by team name (admin tokens only) |
+
+**Examples:**
+
+```bash
+# List first 10 route flows
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/reports/route-flows?limit=10&offset=0"
+
+# Filter by team (requires admin:all or reports:read scope)
+curl -sS \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  "http://127.0.0.1:8080/api/v1/reports/route-flows?team=platform"
+```
+
+**Response:**
+
+```json
+{
+  "routeFlows": [
+    {
+      "routeName": "api-gateway-route",
+      "path": "/api/v1/*",
+      "cluster": "backend-cluster",
+      "endpoints": ["10.0.1.5:8080", "10.0.1.6:8080"],
+      "listener": {
+        "name": "public-https",
+        "port": 443,
+        "address": "0.0.0.0"
+      },
+      "team": "platform"
+    },
+    {
+      "routeName": "health-check-route",
+      "path": "/health",
+      "cluster": "health-cluster",
+      "endpoints": ["localhost:8081"],
+      "listener": {
+        "name": "public-https",
+        "port": 443,
+        "address": "0.0.0.0"
+      },
+      "team": null
+    }
+  ],
+  "total": 42,
+  "offset": 0,
+  "limit": 50
+}
+```
+
+**Use Cases:**
+
+- **Infrastructure Audit**: Verify routing configuration matches intended architecture
+- **Troubleshooting**: Understand request flow when debugging routing issues
+- **Capacity Planning**: Identify clusters with many routes for load distribution
+- **Security Review**: Audit which endpoints are exposed through which listeners
+- **Documentation**: Generate up-to-date routing diagrams from actual configuration
 
 ## Observability Endpoints
 
