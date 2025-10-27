@@ -382,7 +382,7 @@ pub async fn compare_aggregated_schemas_handler(
 
 /// Export schema as OpenAPI 3.1 specification
 #[utoipa::path(
-    post,
+    get,
     path = "/api/v1/aggregated-schemas/{id}/export",
     params(
         ("id" = i64, Path, description = "Schema ID to export"),
