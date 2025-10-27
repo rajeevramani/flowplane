@@ -124,9 +124,63 @@ pub struct OpenApiInfo {
 
 // === Helper Functions ===
 
+/// Strip internal attributes from schema JSON
+///
+/// Removes internal metadata fields (confidence, presence_count, sample_count)
+/// from inferred schemas to avoid exposing implementation details in API responses.
+///
+/// This function recursively processes schema objects and arrays to remove:
+/// - `confidence`: Field presence confidence score (0.0-1.0)
+/// - `presence_count`: Number of times field was observed
+/// - `sample_count`: Total number of samples processed
+fn strip_internal_attributes(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            // Remove internal attributes at this level
+            map.remove("confidence");
+            map.remove("presence_count");
+            map.remove("sample_count");
+
+            // Recursively process nested objects
+            if let Some(properties) = map.get_mut("properties") {
+                if let serde_json::Value::Object(props) = properties {
+                    for (_, prop_schema) in props.iter_mut() {
+                        strip_internal_attributes(prop_schema);
+                    }
+                }
+            }
+
+            // Recursively process array items
+            if let Some(items) = map.get_mut("items") {
+                strip_internal_attributes(items);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            // Process each element in the array
+            for item in arr.iter_mut() {
+                strip_internal_attributes(item);
+            }
+        }
+        _ => {
+            // Primitive values don't need processing
+        }
+    }
+}
+
 fn schema_response_from_data(
     data: crate::storage::repositories::AggregatedSchemaData,
 ) -> AggregatedSchemaResponse {
+    // Strip internal attributes from schemas before returning
+    let request_schema = data.request_schema.map(|mut schema| {
+        strip_internal_attributes(&mut schema);
+        schema
+    });
+
+    let response_schemas = data.response_schemas.map(|mut schemas| {
+        strip_internal_attributes(&mut schemas);
+        schemas
+    });
+
     AggregatedSchemaResponse {
         id: data.id,
         team: data.team,
@@ -134,8 +188,8 @@ fn schema_response_from_data(
         http_method: data.http_method,
         version: data.version,
         previous_version_id: data.previous_version_id,
-        request_schema: data.request_schema,
-        response_schemas: data.response_schemas,
+        request_schema,
+        response_schemas,
         sample_count: data.sample_count,
         confidence_score: data.confidence_score,
         breaking_changes: data.breaking_changes,
@@ -525,5 +579,169 @@ fn build_openapi_spec(
         components: serde_json::json!({
             "schemas": {}
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_internal_attributes_from_simple_object() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "confidence": 0.95,
+            "presence_count": 100,
+            "sample_count": 105,
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "confidence": 1.0,
+                    "presence_count": 105,
+                    "sample_count": 105
+                }
+            }
+        });
+
+        strip_internal_attributes(&mut schema);
+
+        // Root level internal attributes should be removed
+        assert!(!schema.get("confidence").is_some());
+        assert!(!schema.get("presence_count").is_some());
+        assert!(!schema.get("sample_count").is_some());
+
+        // Type should remain
+        assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
+
+        // Nested property internal attributes should also be removed
+        let name_prop = schema.get("properties").and_then(|p| p.get("name"));
+        assert!(name_prop.is_some());
+        assert!(!name_prop.unwrap().get("confidence").is_some());
+        assert!(!name_prop.unwrap().get("presence_count").is_some());
+        assert!(!name_prop.unwrap().get("sample_count").is_some());
+        assert_eq!(name_prop.unwrap().get("type").and_then(|v| v.as_str()), Some("string"));
+    }
+
+    #[test]
+    fn test_strip_internal_attributes_from_nested_objects() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "confidence": 0.90,
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "confidence": 0.95,
+                    "presence_count": 50,
+                    "properties": {
+                        "email": {
+                            "type": "string",
+                            "confidence": 1.0,
+                            "sample_count": 50
+                        }
+                    }
+                }
+            }
+        });
+
+        strip_internal_attributes(&mut schema);
+
+        // Check root
+        assert!(!schema.get("confidence").is_some());
+
+        // Check first level nesting
+        let user = schema.get("properties").and_then(|p| p.get("user"));
+        assert!(user.is_some());
+        assert!(!user.unwrap().get("confidence").is_some());
+        assert!(!user.unwrap().get("presence_count").is_some());
+
+        // Check second level nesting
+        let email = user.unwrap().get("properties").and_then(|p| p.get("email"));
+        assert!(email.is_some());
+        assert!(!email.unwrap().get("confidence").is_some());
+        assert!(!email.unwrap().get("sample_count").is_some());
+        assert_eq!(email.unwrap().get("type").and_then(|v| v.as_str()), Some("string"));
+    }
+
+    #[test]
+    fn test_strip_internal_attributes_from_array_items() {
+        let mut schema = serde_json::json!({
+            "type": "array",
+            "confidence": 0.85,
+            "sample_count": 20,
+            "items": {
+                "type": "object",
+                "confidence": 0.90,
+                "presence_count": 18,
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "confidence": 1.0
+                    }
+                }
+            }
+        });
+
+        strip_internal_attributes(&mut schema);
+
+        // Array level
+        assert!(!schema.get("confidence").is_some());
+        assert!(!schema.get("sample_count").is_some());
+
+        // Items level
+        let items = schema.get("items");
+        assert!(items.is_some());
+        assert!(!items.unwrap().get("confidence").is_some());
+        assert!(!items.unwrap().get("presence_count").is_some());
+
+        // Nested property in items
+        let id = items.unwrap().get("properties").and_then(|p| p.get("id"));
+        assert!(id.is_some());
+        assert!(!id.unwrap().get("confidence").is_some());
+        assert_eq!(id.unwrap().get("type").and_then(|v| v.as_str()), Some("integer"));
+    }
+
+    #[test]
+    fn test_strip_internal_attributes_preserves_other_fields() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "confidence": 0.95,
+            "required": ["id", "name"],
+            "sample_count": 100,
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "format": "int64",
+                    "confidence": 1.0
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "presence_count": 95
+                }
+            }
+        });
+
+        strip_internal_attributes(&mut schema);
+
+        // Internal attributes removed
+        assert!(!schema.get("confidence").is_some());
+        assert!(!schema.get("sample_count").is_some());
+
+        // Other fields preserved
+        assert!(schema.get("required").is_some());
+        assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
+
+        // Property constraints preserved
+        let id = schema.get("properties").and_then(|p| p.get("id"));
+        assert_eq!(id.and_then(|v| v.get("format")).and_then(|v| v.as_str()), Some("int64"));
+
+        let name = schema.get("properties").and_then(|p| p.get("name"));
+        assert_eq!(name.and_then(|v| v.get("minLength")).and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(name.and_then(|v| v.get("maxLength")).and_then(|v| v.as_u64()), Some(255));
+
+        // But internal attributes removed from properties
+        assert!(!id.unwrap().get("confidence").is_some());
+        assert!(!name.unwrap().get("presence_count").is_some());
     }
 }
