@@ -22,3 +22,5 @@ mod test_native_platform_compatibility;
 mod test_openapi_import;
 #[path = "platform_api/test_rbac_enforcement.rs"]
 mod test_rbac_enforcement;
+#[path = "platform_api/test_team_bootstrap.rs"]
+mod test_team_bootstrap;
