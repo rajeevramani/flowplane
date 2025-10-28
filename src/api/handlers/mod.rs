@@ -18,8 +18,7 @@ pub use aggregated_schemas::{
 };
 pub use api_definitions::{
     append_route_handler, create_api_definition_handler, get_api_definition_handler,
-    get_bootstrap_handler, import_openapi_handler, list_api_definitions_handler,
-    update_api_definition_handler,
+    import_openapi_handler, list_api_definitions_handler, update_api_definition_handler,
 };
 pub use auth::{
     create_token_handler, get_token_handler, list_tokens_handler, revoke_token_handler,

@@ -2,61 +2,6 @@ use super::support::{read_json, send_request, setup_platform_api_app};
 use axum::body::to_bytes;
 use axum::http::{Method, StatusCode};
 
-#[tokio::test]
-async fn team_bootstrap_simple_debug_test() {
-    let app = setup_platform_api_app().await;
-    // Use the exact same scopes as the old bootstrap test
-    let token = app
-        .issue_token("debug-team-bootstrap", &["api-definitions:write", "api-definitions:read"])
-        .await;
-
-    eprintln!("Token: {}", token.token);
-
-    // First, verify the old endpoint works
-    // Create a minimal API definition
-    let payload = serde_json::json!({
-        "team": "payments",
-        "domain": "test.flowplane.dev",
-        "listenerIsolation": false,
-        "routes": [ { "match": {"prefix":"/"}, "cluster": {"name":"b","endpoint":"b:8080"} } ]
-    });
-    let resp = send_request(
-        &app,
-        Method::POST,
-        "/api/v1/api-definitions",
-        Some(&token.token),
-        Some(payload),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body: serde_json::Value = read_json(resp).await;
-    let id = body["id"].as_str().unwrap();
-
-    // Old endpoint should work
-    let old_path = format!("/api/v1/api-definitions/{}/bootstrap", id);
-    let old_resp = send_request(&app, Method::GET, &old_path, Some(&token.token), None).await;
-    eprintln!("Old endpoint status: {}", old_resp.status());
-    assert_eq!(old_resp.status(), StatusCode::OK);
-
-    // Now try new endpoint with same token
-    let new_path = "/api/v1/teams/payments/bootstrap";
-    let new_resp = send_request(&app, Method::GET, new_path, Some(&token.token), None).await;
-    let new_status = new_resp.status();
-    eprintln!("New endpoint status: {}", new_status);
-
-    if new_status != StatusCode::OK {
-        let bytes = to_bytes(new_resp.into_body(), usize::MAX).await.unwrap();
-        let error_text = String::from_utf8(bytes.to_vec()).unwrap();
-        eprintln!("Error response: {}", error_text);
-        panic!("New endpoint returned non-200 status");
-    }
-
-    assert_eq!(
-        new_status,
-        StatusCode::OK,
-        "new endpoint should work with same token as old endpoint"
-    );
-}
 
 #[tokio::test]
 async fn team_bootstrap_returns_yaml_by_default() {

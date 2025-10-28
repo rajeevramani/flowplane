@@ -39,11 +39,11 @@ async fn platform_api_create_append_and_persist_routes() {
     let api_id = body.get("id").and_then(|v| v.as_str()).expect("api id");
     let bootstrap_uri = body.get("bootstrapUri").and_then(|v| v.as_str()).expect("bootstrap uri");
 
-    // Bootstrap is now served dynamically via API endpoint (no file on disk)
+    // Bootstrap is now served dynamically via team-scoped API endpoint (no file on disk)
     assert_eq!(
         bootstrap_uri,
-        format!("/api/v1/api-definitions/{}/bootstrap", api_id),
-        "bootstrap URI should point to API endpoint"
+        "/api/v1/teams/payments/bootstrap",
+        "bootstrap URI should point to team-scoped API endpoint"
     );
 
     let append_payload = json!({

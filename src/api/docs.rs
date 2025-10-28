@@ -54,7 +54,7 @@ use crate::xds::{
         crate::api::handlers::api_definitions::list_api_definitions_handler,
         crate::api::handlers::api_definitions::get_api_definition_handler,
         crate::api::handlers::api_definitions::update_api_definition_handler,
-        crate::api::handlers::api_definitions::get_bootstrap_handler,
+        crate::api::handlers::teams::get_team_bootstrap_handler,
         crate::api::handlers::reporting::list_route_flows_handler,
         // Learning session endpoints
         crate::api::handlers::learning_sessions::create_learning_session_handler,
@@ -111,7 +111,7 @@ use crate::xds::{
             crate::api::handlers::api_definitions::AppendRouteResponse,
             crate::api::handlers::api_definitions::ApiDefinitionSummary,
             crate::api::handlers::api_definitions::ListDefinitionsQuery,
-            crate::api::handlers::api_definitions::BootstrapQuery,
+            crate::api::handlers::teams::BootstrapQuery,
             // Commonly used HTTP filter configurations
             CorsPolicyConfig,
             CustomResponseConfig,
@@ -242,7 +242,7 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
         );
 
-        // API Definition endpoints (6)
+        // API Definition endpoints (5)
         assert!(
             paths.contains_key("/api/v1/api-definitions"),
             "Missing GET/POST /api/v1/api-definitions"
@@ -256,12 +256,14 @@ mod tests {
             "Missing GET /api/v1/api-definitions/{{id}}"
         );
         assert!(
-            paths.contains_key("/api/v1/api-definitions/{id}/bootstrap"),
-            "Missing GET /api/v1/api-definitions/{{id}}/bootstrap"
-        );
-        assert!(
             paths.contains_key("/api/v1/api-definitions/{id}/routes"),
             "Missing POST /api/v1/api-definitions/{{id}}/routes"
+        );
+
+        // Team endpoints (1)
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/bootstrap"),
+            "Missing GET /api/v1/teams/{{team}}/bootstrap"
         );
 
         // Learning session endpoints (4)
