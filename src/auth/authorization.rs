@@ -354,6 +354,12 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
     if parts.len() >= 3 && parts[0] == "api" && parts[1] == "v1" {
+        // Special case: /api/v1/teams/{team}/bootstrap is an api-definitions resource
+        // This allows tokens with api-definitions:read to access team bootstrap
+        if parts[2] == "teams" && parts.len() >= 4 && parts.last() == Some(&"bootstrap") {
+            return Some("api-definitions");
+        }
+
         Some(parts[2])
     } else {
         None
@@ -495,5 +501,29 @@ mod tests {
         assert_eq!(resource_from_path("/api/v1/tokens/revoke"), Some("tokens"));
         assert_eq!(resource_from_path("/health"), None);
         assert_eq!(resource_from_path("/api/v2/routes"), None); // Wrong version
+
+        // Special case: team bootstrap endpoint should be treated as api-definitions resource
+        assert_eq!(
+            resource_from_path("/api/v1/teams/payments/bootstrap"),
+            Some("api-definitions"),
+            "team bootstrap should be treated as api-definitions resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/engineering/bootstrap"),
+            Some("api-definitions"),
+            "team bootstrap should be treated as api-definitions resource"
+        );
+
+        // But other team endpoints should return "teams"
+        assert_eq!(
+            resource_from_path("/api/v1/teams/payments"),
+            Some("teams"),
+            "other team endpoints should return teams as resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/payments/settings"),
+            Some("teams"),
+            "other team endpoints should return teams as resource"
+        );
     }
 }

@@ -4,8 +4,6 @@ mod support;
 mod test_api_definition_team_filtering;
 #[path = "platform_api/test_append_route.rs"]
 mod test_append_route;
-#[path = "platform_api/test_bootstrap.rs"]
-mod test_bootstrap;
 #[path = "platform_api/test_collision_detection.rs"]
 mod test_collision_detection;
 #[path = "platform_api/test_create_api_definition.rs"]
@@ -22,3 +20,5 @@ mod test_native_platform_compatibility;
 mod test_openapi_import;
 #[path = "platform_api/test_rbac_enforcement.rs"]
 mod test_rbac_enforcement;
+#[path = "platform_api/test_team_bootstrap.rs"]
+mod test_team_bootstrap;

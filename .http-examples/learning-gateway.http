@@ -27,8 +27,11 @@ Content-Type: application/json
   "description": "Team-scoped PAT for learning session",
   "scopes": [
     "team:{{team}}:clusters:read",
+    "team:{{team}}:clusters:write",
     "team:{{team}}:routes:read",
+    "team:{{team}}:routes:write",
     "team:{{team}}:listeners:read",
+    "team:{{team}}:listeners:write",
     "team:{{team}}:api-definitions:read",
     "team:{{team}}:learning-sessions:read",
     "team:{{team}}:learning-sessions:write"
@@ -38,9 +41,30 @@ Content-Type: application/json
 
 @learning_token = {{createTeamPat.response.body.token}}
 
+###############################################################################
+### Get Team Bootstrap Configuration (New Team-Scoped Endpoint)
+###############################################################################
+
+### Get Bootstrap Config in YAML (default)
+# Save this to .local/envoy/team-a-envoy.yaml
+GET {{base_url}}/api/v1/teams/{{team}}/bootstrap
+Authorization: Bearer {{learning_token}}
+
+### Get Bootstrap Config in JSON
+GET {{base_url}}/api/v1/teams/{{team}}/bootstrap?format=json
+Authorization: Bearer {{learning_token}}
+
+### Get Bootstrap Config with Defaults
+GET {{base_url}}/api/v1/teams/{{team}}/bootstrap?include_default=true
+Authorization: Bearer {{learning_token}}
+
+###############################################################################
+### Create Native API Resources (Clusters, Routes, Listeners)
+###############################################################################
+
 ### Create Cluster (httpbin)
 POST {{base_url}}/api/v1/clusters
-Authorization: Bearer {{admin_token}}
+Authorization: Bearer {{learning_token}}
 Content-Type: application/json
 
 {
@@ -53,7 +77,7 @@ Content-Type: application/json
 
 ### Create Route: /users -> httpbin/anything/users
 POST {{base_url}}/api/v1/routes
-Authorization: Bearer {{admin_token}}
+Authorization: Bearer {{learning_token}}
 Content-Type: application/json
 
 {
@@ -80,7 +104,7 @@ Content-Type: application/json
 
 ### Create Listener on {{envoy_learning_port}} (with ExtProc before router)
 POST {{base_url}}/api/v1/listeners
-Authorization: Bearer {{admin_token}}
+Authorization: Bearer {{learning_token}}
 Content-Type: application/json
 
 {

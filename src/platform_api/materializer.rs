@@ -181,8 +181,8 @@ impl PlatformApiMaterializer {
                 created_routes.push(created_route);
             }
 
-            // Compute bootstrap URI without writing files
-            let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
+            // Compute bootstrap URI without writing files (team-scoped)
+            let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.team);
             let definition = self
                 .repository
                 .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
@@ -401,8 +401,8 @@ impl PlatformApiMaterializer {
                 .await?;
         }
 
-        // Compute bootstrap URI without writing files
-        let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
+        // Compute bootstrap URI without writing files (team-scoped)
+        let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.team);
         let definition = self
             .repository
             .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
@@ -500,8 +500,8 @@ impl PlatformApiMaterializer {
         let mut all_routes = existing_routes;
         all_routes.push(route.clone());
 
-        // Compute bootstrap URI without writing files
-        let bootstrap_uri = bootstrap::compute_bootstrap_uri(definition.id.as_str());
+        // Compute bootstrap URI without writing files (team-scoped)
+        let bootstrap_uri = bootstrap::compute_bootstrap_uri(&definition.team);
         let definition = self
             .repository
             .update_bootstrap_metadata(crate::storage::UpdateBootstrapMetadataRequest {
