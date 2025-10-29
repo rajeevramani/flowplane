@@ -419,4 +419,3 @@ async fn team_scoped_user_cannot_append_route_to_other_team_definition() {
         status
     );
 }
-

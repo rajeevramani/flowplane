@@ -41,8 +41,7 @@ async fn platform_api_create_append_and_persist_routes() {
 
     // Bootstrap is now served dynamically via team-scoped API endpoint (no file on disk)
     assert_eq!(
-        bootstrap_uri,
-        "/api/v1/teams/payments/bootstrap",
+        bootstrap_uri, "/api/v1/teams/payments/bootstrap",
         "bootstrap URI should point to team-scoped API endpoint"
     );
 

@@ -26,10 +26,10 @@ use super::{
         get_listener_handler, get_route_handler, get_team_bootstrap_handler, get_token_handler,
         health_handler, import_openapi_handler, list_aggregated_schemas_handler,
         list_api_definitions_handler, list_clusters_handler, list_learning_sessions_handler,
-        list_listeners_handler, list_route_flows_handler, list_routes_handler,
-        list_tokens_handler, revoke_token_handler, rotate_token_handler,
-        update_api_definition_handler, update_cluster_handler, update_listener_handler,
-        update_route_handler, update_token_handler,
+        list_listeners_handler, list_route_flows_handler, list_routes_handler, list_tokens_handler,
+        revoke_token_handler, rotate_token_handler, update_api_definition_handler,
+        update_cluster_handler, update_listener_handler, update_route_handler,
+        update_token_handler,
     },
 };
 

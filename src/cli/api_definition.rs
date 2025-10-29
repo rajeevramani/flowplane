@@ -254,11 +254,7 @@ async fn get_api_definition(client: &FlowplaneClient, id: &str, output: &str) ->
     Ok(())
 }
 
-async fn get_bootstrap_config(
-    client: &FlowplaneClient,
-    team: &str,
-    format: &str,
-) -> Result<()> {
+async fn get_bootstrap_config(client: &FlowplaneClient, team: &str, format: &str) -> Result<()> {
     let path = format!("/api/v1/teams/{}/bootstrap?format={}", team, format);
 
     let response = client.get(&path).send().await.context("Failed to get bootstrap config")?;
@@ -417,7 +413,6 @@ async fn validate_filters(file: PathBuf, output: &str) -> Result<()> {
         }
     }
 }
-
 
 /// Print filters in a table format for validation command
 fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEntry]) {

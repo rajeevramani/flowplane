@@ -2,7 +2,6 @@ use super::support::{read_json, send_request, setup_platform_api_app};
 use axum::body::to_bytes;
 use axum::http::{Method, StatusCode};
 
-
 #[tokio::test]
 async fn team_bootstrap_returns_yaml_by_default() {
     let app = setup_platform_api_app().await;
