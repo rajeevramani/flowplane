@@ -64,13 +64,13 @@ async fn verify_api_definition_access(
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
     "id": "api-def-abc123",
-    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "bootstrapUri": "/api/v1/teams/payments/bootstrap",
     "routes": ["route-xyz789", "route-uvw456"]
 }))]
 pub struct CreateApiDefinitionResponse {
     #[schema(example = "api-def-abc123")]
     id: String,
-    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
+    #[schema(example = "/api/v1/teams/payments/bootstrap")]
     bootstrap_uri: String,
     #[schema(example = json!(["route-xyz789", "route-uvw456"]))]
     routes: Vec<String>,
@@ -82,7 +82,7 @@ pub struct CreateApiDefinitionResponse {
     "apiId": "api-def-abc123",
     "routeId": "route-new999",
     "revision": 2,
-    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap"
+    "bootstrapUri": "/api/v1/teams/payments/bootstrap"
 }))]
 pub struct AppendRouteResponse {
     #[schema(example = "api-def-abc123")]
@@ -91,7 +91,7 @@ pub struct AppendRouteResponse {
     route_id: String,
     #[schema(example = 2)]
     revision: i64,
-    #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
+    #[schema(example = "/api/v1/teams/payments/bootstrap")]
     bootstrap_uri: String,
 }
 
@@ -102,7 +102,7 @@ pub struct AppendRouteResponse {
     "team": "payments",
     "domain": "payments.example.com",
     "listenerIsolation": false,
-    "bootstrapUri": "/api/v1/api-definitions/api-def-abc123/bootstrap",
+    "bootstrapUri": "/api/v1/teams/payments/bootstrap",
     "version": 1,
     "createdAt": "2025-10-06T09:00:00Z",
     "updatedAt": "2025-10-06T09:00:00Z"
