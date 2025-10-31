@@ -97,11 +97,11 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.cluster_repository {
-            // Extract teams from scope for filtering
-            let teams = match scope {
-                Scope::All => vec![],
-                Scope::Team { team, .. } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
+            // Extract teams and include_default flag from scope for filtering
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to clusters
             };
 
             // Record team filtering in span
@@ -112,7 +112,7 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, Some(100), None).await {
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(cluster_data_list) => {
                     span.record("filtered_count", cluster_data_list.len());
 
@@ -184,11 +184,11 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
-            // Extract teams from scope for filtering
-            let teams = match scope {
-                Scope::All => vec![],
-                Scope::Team { team, .. } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
+            // Extract teams and include_default flag from scope for filtering
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to routes
             };
 
             // Record team filtering in span
@@ -199,7 +199,7 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, Some(100), None).await {
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
@@ -350,11 +350,11 @@ impl DatabaseAggregatedDiscoveryService {
         scope: &Scope,
     ) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.listener_repository {
-            // Extract teams from scope for filtering (same pattern as clusters)
-            let teams = match scope {
-                Scope::All => vec![],
-                Scope::Team { team, .. } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to listeners
+            // Extract teams and include_default flag from scope for filtering (same pattern as clusters)
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to listeners
             };
 
             // Record team filtering in span
@@ -365,7 +365,7 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("scope_info", format!("team:{}", teams[0]).as_str());
             }
 
-            match repo.list_by_teams(&teams, Some(100), None).await {
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(listener_data_list) => {
                     span.record("filtered_count", listener_data_list.len());
 
@@ -390,7 +390,10 @@ impl DatabaseAggregatedDiscoveryService {
                             listener_count = listener_data_list.len(),
                             "Building listener resources from database for ADS response"
                         );
-                        resources::listeners_from_database_entries(listener_data_list, "ads_response")?
+                        resources::listeners_from_database_entries(
+                            listener_data_list,
+                            "ads_response",
+                        )?
                     }
                 }
                 Err(e) => {

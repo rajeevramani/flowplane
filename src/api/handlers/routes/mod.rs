@@ -159,7 +159,7 @@ pub async fn list_routes_handler(
 
     let repository = require_route_repository(&state)?;
     let rows = repository
-        .list_by_teams(&team_scopes, params.limit, params.offset)
+        .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
         .await
         .map_err(ApiError::from)?;
 

@@ -63,16 +63,16 @@ async fn cluster_repository_filters_by_team() {
     repo.create(team_b_cluster).await.unwrap();
     repo.create(global_cluster).await.unwrap();
 
-    // Test: Team A should see only their cluster + global cluster
-    let team_a_results = repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
+    // Test: Team A should see only their cluster + global cluster (include_default=true)
+    let team_a_results = repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-a-cluster"));
     assert!(names.contains(&"global-cluster"));
     assert!(!names.contains(&"team-b-cluster"));
 
-    // Test: Team B should see only their cluster + global cluster
-    let team_b_results = repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
+    // Test: Team B should see only their cluster + global cluster (include_default=true)
+    let team_b_results = repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-b-cluster"));
@@ -80,7 +80,7 @@ async fn cluster_repository_filters_by_team() {
     assert!(!names.contains(&"team-a-cluster"));
 
     // Test: Empty teams list (admin:all) should see all clusters
-    let admin_results = repo.list_by_teams(&[], None, None).await.unwrap();
+    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
     assert_eq!(admin_results.len(), 3);
     let names: Vec<&str> = admin_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-a-cluster"));
@@ -89,7 +89,7 @@ async fn cluster_repository_filters_by_team() {
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], None, None)
+        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -179,18 +179,18 @@ async fn route_repository_filters_by_team() {
     route_repo.create(team_b_route).await.unwrap();
     route_repo.create(global_route).await.unwrap();
 
-    // Test: Team A should see only their route + global route
+    // Test: Team A should see only their route + global route (include_default=true)
     let team_a_results =
-        route_repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
+        route_repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-a-routes"));
     assert!(names.contains(&"global-routes"));
     assert!(!names.contains(&"team-b-routes"));
 
-    // Test: Team B should see only their route + global route
+    // Test: Team B should see only their route + global route (include_default=true)
     let team_b_results =
-        route_repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
+        route_repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-b-routes"));
@@ -198,12 +198,12 @@ async fn route_repository_filters_by_team() {
     assert!(!names.contains(&"team-a-routes"));
 
     // Test: Empty teams list (admin:all) should see all routes
-    let admin_results = route_repo.list_by_teams(&[], None, None).await.unwrap();
+    let admin_results = route_repo.list_by_teams(&[], true, None, None).await.unwrap();
     assert_eq!(admin_results.len(), 3);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = route_repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], None, None)
+        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -261,16 +261,16 @@ async fn listener_repository_filters_by_team() {
     repo.create(team_b_listener).await.unwrap();
     repo.create(global_listener).await.unwrap();
 
-    // Test: Team A should see only their listener + global listener
-    let team_a_results = repo.list_by_teams(&["team-a".to_string()], None, None).await.unwrap();
+    // Test: Team A should see only their listener + global listener (include_default=true)
+    let team_a_results = repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-a-listener"));
     assert!(names.contains(&"global-listener"));
     assert!(!names.contains(&"team-b-listener"));
 
-    // Test: Team B should see only their listener + global listener
-    let team_b_results = repo.list_by_teams(&["team-b".to_string()], None, None).await.unwrap();
+    // Test: Team B should see only their listener + global listener (include_default=true)
+    let team_b_results = repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-b-listener"));
@@ -278,12 +278,12 @@ async fn listener_repository_filters_by_team() {
     assert!(!names.contains(&"team-a-listener"));
 
     // Test: Empty teams list (admin:all) should see all listeners
-    let admin_results = repo.list_by_teams(&[], None, None).await.unwrap();
+    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
     assert_eq!(admin_results.len(), 3);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], None, None)
+        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -308,11 +308,11 @@ async fn team_filtering_respects_pagination() {
         repo.create(cluster).await.unwrap();
     }
 
-    // Test pagination with limit
-    let page1 = repo.list_by_teams(&["team-a".to_string()], Some(2), Some(0)).await.unwrap();
+    // Test pagination with limit (include_default=false to only get team-scoped resources)
+    let page1 = repo.list_by_teams(&["team-a".to_string()], false, Some(2), Some(0)).await.unwrap();
     assert_eq!(page1.len(), 2);
 
-    let page2 = repo.list_by_teams(&["team-a".to_string()], Some(2), Some(2)).await.unwrap();
+    let page2 = repo.list_by_teams(&["team-a".to_string()], false, Some(2), Some(2)).await.unwrap();
     assert_eq!(page2.len(), 2);
 
     // Verify we got different clusters
@@ -337,9 +337,9 @@ async fn team_filtering_handles_special_characters_in_team_names() {
 
     repo.create(cluster).await.unwrap();
 
-    // Test: Special characters in team name should work correctly
+    // Test: Special characters in team name should work correctly (include_default=false)
     let results = repo
-        .list_by_teams(&["team-with-dashes_and_underscores".to_string()], None, None)
+        .list_by_teams(&["team-with-dashes_and_underscores".to_string()], false, None, None)
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
