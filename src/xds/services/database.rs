@@ -380,10 +380,30 @@ impl DatabaseAggregatedDiscoveryService {
                     }
 
                     if listener_data_list.is_empty() {
-                        info!(
-                            "No listeners found in database, falling back to config-based listener"
-                        );
-                        self.create_fallback_listener_resources()?
+                        // Only provide fallback listener for admin scope (Scope::All)
+                        // Team-scoped requests get empty list to enforce explicit listener definition
+                        // This prevents port conflicts when multiple teams have no listeners
+                        match scope {
+                            Scope::All => {
+                                info!(
+                                    "No listeners in database, providing config-based fallback for admin scope"
+                                );
+                                self.create_fallback_listener_resources()?
+                            }
+                            Scope::Team { team, .. } => {
+                                info!(
+                                    team = %team,
+                                    "No listeners found for team, returning empty list (teams must define listeners explicitly)"
+                                );
+                                vec![]
+                            }
+                            Scope::Allowlist { .. } => {
+                                info!(
+                                    "No listeners found for allowlist scope, returning empty list"
+                                );
+                                vec![]
+                            }
+                        }
                     } else {
                         info!(
                             phase = "ads_response",
@@ -397,13 +417,39 @@ impl DatabaseAggregatedDiscoveryService {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to load listeners from database: {}, falling back to config", e);
-                    self.create_fallback_listener_resources()?
+                    // On database error, only provide fallback for admin scope
+                    match scope {
+                        Scope::All => {
+                            warn!("Failed to load listeners from database: {}, falling back to config", e);
+                            self.create_fallback_listener_resources()?
+                        }
+                        Scope::Team { team, .. } => {
+                            warn!(team = %team, error = %e, "Failed to load listeners from database for team, returning empty list");
+                            vec![]
+                        }
+                        Scope::Allowlist { .. } => {
+                            warn!(error = %e, "Failed to load listeners from database for allowlist, returning empty list");
+                            vec![]
+                        }
+                    }
                 }
             }
         } else {
-            info!("No database repository available, using config-based listener");
-            self.create_fallback_listener_resources()?
+            // No database repository - only provide fallback for admin scope
+            match scope {
+                Scope::All => {
+                    info!("No database repository available, using config-based listener");
+                    self.create_fallback_listener_resources()?
+                }
+                Scope::Team { team, .. } => {
+                    info!(team = %team, "No database repository available for team, returning empty list");
+                    vec![]
+                }
+                Scope::Allowlist { .. } => {
+                    info!("No database repository available for allowlist, returning empty list");
+                    vec![]
+                }
+            }
         };
 
         // Intentionally do not emit Platform API listeners here to avoid port conflicts
