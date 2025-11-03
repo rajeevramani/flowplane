@@ -369,6 +369,17 @@ impl DatabaseAggregatedDiscoveryService {
                 Ok(listener_data_list) => {
                     span.record("filtered_count", listener_data_list.len());
 
+                    // Log detailed listener information for debugging team isolation
+                    for listener in &listener_data_list {
+                        info!(
+                            listener_name = %listener.name,
+                            listener_port = listener.port,
+                            listener_team = ?listener.team,
+                            requested_teams = ?teams,
+                            "Listener retrieved for xDS response"
+                        );
+                    }
+
                     // Record team-scoped listener count metrics
                     if let Some(team) = teams.first() {
                         crate::observability::metrics::update_team_resource_count(
@@ -648,11 +659,11 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
-        if let Err(error) = state.refresh_listeners_from_repository().await {
-            warn!(%error, "Failed to initialize listener cache from repository");
-        }
+        // CRITICAL: Do NOT refresh listeners into global cache
+        // Listeners MUST be fetched per-team on each xDS request to maintain team isolation
+        // Only refresh Platform API resources which don't have the same port conflict issues
         if let Err(error) = state.refresh_platform_api_resources().await {
-            warn!(%error, "Failed to prime Platform API resources after listener refresh");
+            warn!(%error, "Failed to prime Platform API resources at startup");
         }
 
         let mut last_version: Option<i64> = None;
@@ -667,9 +678,12 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                     Some(previous) if previous == version => {}
                     Some(_) => {
                         last_version = Some(version);
-                        if let Err(error) = state.refresh_listeners_from_repository().await {
-                            warn!(%error, "Failed to refresh listener cache from repository");
-                        }
+                        // Increment version to trigger xDS push notifications
+                        // Each connected Envoy will then fetch listeners with team filtering
+                        let new_version = state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        info!(new_version, "Listener database changed, incremented xDS version to trigger team-scoped updates");
+
+                        // Refresh Platform API resources (these are not team-isolated)
                         if let Err(error) = state.refresh_platform_api_resources().await {
                             warn!(%error, "Failed to refresh Platform API resources after listener change");
                         }
