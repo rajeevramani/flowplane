@@ -369,17 +369,6 @@ impl DatabaseAggregatedDiscoveryService {
                 Ok(listener_data_list) => {
                     span.record("filtered_count", listener_data_list.len());
 
-                    // Log detailed listener information for debugging team isolation
-                    for listener in &listener_data_list {
-                        info!(
-                            listener_name = %listener.name,
-                            listener_port = listener.port,
-                            listener_team = ?listener.team,
-                            requested_teams = ?teams,
-                            "Listener retrieved for xDS response"
-                        );
-                    }
-
                     // Record team-scoped listener count metrics
                     if let Some(team) = teams.first() {
                         crate::observability::metrics::update_team_resource_count(
