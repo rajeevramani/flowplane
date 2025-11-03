@@ -266,11 +266,12 @@ impl RouteRepository {
     /// Lists routes filtered by team names for multi-tenancy support.
     ///
     /// Critical for team-based access control. Returns routes for specified
-    /// teams plus any team-agnostic routes.
+    /// teams and optionally includes team-agnostic routes (where team is NULL).
     ///
     /// # Arguments
     ///
     /// * `teams` - Team identifiers to filter by. Empty list returns all routes.
+    /// * `include_default` - If true, also include routes with team=NULL (default routes)
     /// * `limit` - Maximum results (default: 100, max: 1000)
     /// * `offset` - Pagination offset
     ///
@@ -280,6 +281,7 @@ impl RouteRepository {
     pub async fn list_by_teams(
         &self,
         teams: &[String],
+        include_default: bool,
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<RouteData>> {
@@ -299,13 +301,20 @@ impl RouteRepository {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // Conditionally include NULL team routes based on include_default flag
+        let where_clause = if include_default {
+            format!("WHERE team IN ({}) OR team IS NULL", placeholders)
+        } else {
+            format!("WHERE team IN ({})", placeholders)
+        };
+
         let query_str = format!(
             "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at \
              FROM routes \
-             WHERE team IN ({}) OR team IS NULL \
+             {} \
              ORDER BY created_at DESC \
              LIMIT ${} OFFSET ${}",
-            placeholders,
+            where_clause,
             teams.len() + 1,
             teams.len() + 2
         );
