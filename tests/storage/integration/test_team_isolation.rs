@@ -64,7 +64,8 @@ async fn cluster_repository_filters_by_team() {
     repo.create(global_cluster).await.unwrap();
 
     // Test: Team A should see only their cluster + global cluster (include_default=true)
-    let team_a_results = repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
+    let team_a_results =
+        repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-a-cluster"));
@@ -72,7 +73,8 @@ async fn cluster_repository_filters_by_team() {
     assert!(!names.contains(&"team-b-cluster"));
 
     // Test: Team B should see only their cluster + global cluster (include_default=true)
-    let team_b_results = repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
+    let team_b_results =
+        repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-b-cluster"));
@@ -262,7 +264,8 @@ async fn listener_repository_filters_by_team() {
     repo.create(global_listener).await.unwrap();
 
     // Test: Team A should see only their listener + global listener (include_default=true)
-    let team_a_results = repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
+    let team_a_results =
+        repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-a-listener"));
@@ -270,7 +273,8 @@ async fn listener_repository_filters_by_team() {
     assert!(!names.contains(&"team-b-listener"));
 
     // Test: Team B should see only their listener + global listener (include_default=true)
-    let team_b_results = repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
+    let team_b_results =
+        repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-b-listener"));
