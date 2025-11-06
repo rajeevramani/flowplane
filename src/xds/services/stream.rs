@@ -152,6 +152,10 @@ where
     let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let team_for_cleanup = team_for_stream.clone();
 
+    // Track the node metadata from the initial connection to preserve team context in push updates
+    let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
+        Arc::new(Mutex::new(None));
+
     tokio::spawn(async move {
         // Run the stream loop and ensure cleanup happens
         async {
@@ -179,6 +183,14 @@ where
                                         crate::observability::metrics::record_team_xds_connection(team, true).await;
                                         info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
                                     }
+                                }
+                            }
+
+                            // Store the node metadata for use in push updates to preserve team context
+                            {
+                                let mut node_guard = node_for_stream.lock().await;
+                                if node_guard.is_none() && discovery_request.node.is_some() {
+                                    *node_guard = discovery_request.node.clone();
                                 }
                             }
 
@@ -308,6 +320,12 @@ where
                             };
                             if interested.is_empty() { continue; }
 
+                            // Capture the node metadata for push updates to preserve team context
+                            let node_for_push = {
+                                let node_guard = node_for_stream.lock().await;
+                                node_guard.clone()
+                            };
+
                             for delta in &update.deltas {
                                 if !interested.contains(&delta.type_url) { continue; }
 
@@ -317,6 +335,7 @@ where
                                 let label_for_task = label.clone();
                                 let tracker_for_task = last_sent.clone();
                                 let type_url_for_task = delta.type_url.clone();
+                                let node_for_task = node_for_push.clone();
 
                                 tokio::spawn(async move {
                                     // Create a span for SOTW push updates
@@ -327,8 +346,14 @@ where
                                     );
                                     let _enter = span.enter();
 
-                                    // Build a minimal request for this type
-                                    let request = DiscoveryRequest { type_url: type_url_for_task.clone(), ..Default::default() };
+                                    // Build a request with node metadata to preserve team context for filtering
+                                    // This ensures push updates respect team isolation by including the original
+                                    // team metadata from the connection in scope_from_discovery()
+                                    let request = DiscoveryRequest {
+                                        type_url: type_url_for_task.clone(),
+                                        node: node_for_task,
+                                        ..Default::default()
+                                    };
                                     match responder_for_task(state_for_task, request).await {
                                         Ok(response) => {
                                             info!(

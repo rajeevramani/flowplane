@@ -669,7 +669,8 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                         last_version = Some(version);
                         // Increment version to trigger xDS push notifications
                         // Each connected Envoy will then fetch listeners with team filtering
-                        let new_version = state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let new_version =
+                            state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         info!(new_version, "Listener database changed, incremented xDS version to trigger team-scoped updates");
 
                         // Refresh Platform API resources (these are not team-isolated)
