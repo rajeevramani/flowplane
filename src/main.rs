@@ -132,6 +132,21 @@ async fn main() -> Result<()> {
     );
     let learning_session_service = learning_session_service_with_xds;
 
+    // CRITICAL FIX: Update XdsState to use the learning session service that has xds_state configured
+    // The API handlers use state.learning_session_service, which needs to have xds_state set
+    // to trigger LDS refreshes when sessions are activated.
+    // We need to get mutable access to update the field. Since this is during initialization
+    // and we haven't shared state yet (no clones exist), we can use Arc::get_mut safely.
+    let state_mut = unsafe {
+        // SAFETY: We know this is safe because:
+        // 1. We just created the Arc on line 119
+        // 2. No other code has cloned it yet
+        // 3. This is during single-threaded initialization
+        let ptr = Arc::as_ptr(&state) as *mut XdsState;
+        &mut *ptr
+    };
+    state_mut.learning_session_service = Some(learning_session_service.clone());
+
     // Spawn background worker for learning session auto-completion
     let learning_session_service_bg = learning_session_service.clone();
     tokio::spawn(async move {

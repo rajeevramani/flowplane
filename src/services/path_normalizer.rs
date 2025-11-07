@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(normalize_path("/anything/users/103", &config), "/anything/users/{userId}");
 
         // All should normalize to the same pattern
-        let paths = vec![
+        let paths = [
             "/anything/users/101",
             "/anything/users/102",
             "/anything/users/103",
@@ -558,8 +558,10 @@ mod tests {
 
     #[test]
     fn test_custom_keywords() {
-        let mut config = PathNormalizationConfig::default();
-        config.literal_keywords = vec!["custom".to_string(), "namespace".to_string()];
+        let config = PathNormalizationConfig {
+            literal_keywords: vec!["custom".to_string(), "namespace".to_string()],
+            ..Default::default()
+        };
 
         // Custom keywords are protected
         // Parameter gets context from preceding segment

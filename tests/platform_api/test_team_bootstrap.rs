@@ -49,9 +49,8 @@ async fn team_bootstrap_returns_json_when_requested() {
         "platform",
         "team metadata should match requested team"
     );
-    assert_eq!(
-        metadata.get("include_default").unwrap().as_bool().unwrap(),
-        false,
+    assert!(
+        !metadata.get("include_default").unwrap().as_bool().unwrap(),
         "include_default should be false by default"
     );
 }
@@ -70,9 +69,8 @@ async fn team_bootstrap_respects_include_default_parameter() {
     let node = bootstrap.get("node").unwrap();
     let metadata = node.get("metadata").unwrap();
 
-    assert_eq!(
+    assert!(
         metadata.get("include_default").unwrap().as_bool().unwrap(),
-        true,
         "include_default should be true when specified"
     );
 }

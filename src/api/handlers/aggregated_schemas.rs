@@ -606,9 +606,9 @@ mod tests {
         strip_internal_attributes(&mut schema);
 
         // Root level internal attributes should be removed
-        assert!(!schema.get("confidence").is_some());
-        assert!(!schema.get("presence_count").is_some());
-        assert!(!schema.get("sample_count").is_some());
+        assert!(schema.get("confidence").is_none());
+        assert!(schema.get("presence_count").is_none());
+        assert!(schema.get("sample_count").is_none());
 
         // Type should remain
         assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
@@ -616,9 +616,9 @@ mod tests {
         // Nested property internal attributes should also be removed
         let name_prop = schema.get("properties").and_then(|p| p.get("name"));
         assert!(name_prop.is_some());
-        assert!(!name_prop.unwrap().get("confidence").is_some());
-        assert!(!name_prop.unwrap().get("presence_count").is_some());
-        assert!(!name_prop.unwrap().get("sample_count").is_some());
+        assert!(name_prop.unwrap().get("confidence").is_none());
+        assert!(name_prop.unwrap().get("presence_count").is_none());
+        assert!(name_prop.unwrap().get("sample_count").is_none());
         assert_eq!(name_prop.unwrap().get("type").and_then(|v| v.as_str()), Some("string"));
     }
 
@@ -646,19 +646,19 @@ mod tests {
         strip_internal_attributes(&mut schema);
 
         // Check root
-        assert!(!schema.get("confidence").is_some());
+        assert!(schema.get("confidence").is_none());
 
         // Check first level nesting
         let user = schema.get("properties").and_then(|p| p.get("user"));
         assert!(user.is_some());
-        assert!(!user.unwrap().get("confidence").is_some());
-        assert!(!user.unwrap().get("presence_count").is_some());
+        assert!(user.unwrap().get("confidence").is_none());
+        assert!(user.unwrap().get("presence_count").is_none());
 
         // Check second level nesting
         let email = user.unwrap().get("properties").and_then(|p| p.get("email"));
         assert!(email.is_some());
-        assert!(!email.unwrap().get("confidence").is_some());
-        assert!(!email.unwrap().get("sample_count").is_some());
+        assert!(email.unwrap().get("confidence").is_none());
+        assert!(email.unwrap().get("sample_count").is_none());
         assert_eq!(email.unwrap().get("type").and_then(|v| v.as_str()), Some("string"));
     }
 
@@ -684,19 +684,19 @@ mod tests {
         strip_internal_attributes(&mut schema);
 
         // Array level
-        assert!(!schema.get("confidence").is_some());
-        assert!(!schema.get("sample_count").is_some());
+        assert!(schema.get("confidence").is_none());
+        assert!(schema.get("sample_count").is_none());
 
         // Items level
         let items = schema.get("items");
         assert!(items.is_some());
-        assert!(!items.unwrap().get("confidence").is_some());
-        assert!(!items.unwrap().get("presence_count").is_some());
+        assert!(items.unwrap().get("confidence").is_none());
+        assert!(items.unwrap().get("presence_count").is_none());
 
         // Nested property in items
         let id = items.unwrap().get("properties").and_then(|p| p.get("id"));
         assert!(id.is_some());
-        assert!(!id.unwrap().get("confidence").is_some());
+        assert!(id.unwrap().get("confidence").is_none());
         assert_eq!(id.unwrap().get("type").and_then(|v| v.as_str()), Some("integer"));
     }
 
@@ -725,8 +725,8 @@ mod tests {
         strip_internal_attributes(&mut schema);
 
         // Internal attributes removed
-        assert!(!schema.get("confidence").is_some());
-        assert!(!schema.get("sample_count").is_some());
+        assert!(schema.get("confidence").is_none());
+        assert!(schema.get("sample_count").is_none());
 
         // Other fields preserved
         assert!(schema.get("required").is_some());
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(name.and_then(|v| v.get("maxLength")).and_then(|v| v.as_u64()), Some(255));
 
         // But internal attributes removed from properties
-        assert!(!id.unwrap().get("confidence").is_some());
-        assert!(!name.unwrap().get("presence_count").is_some());
+        assert!(id.unwrap().get("confidence").is_none());
+        assert!(name.unwrap().get("presence_count").is_none());
     }
 }
