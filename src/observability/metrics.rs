@@ -5,7 +5,9 @@
 use crate::config::ObservabilityConfig;
 use crate::errors::{FlowplaneError, Result};
 use ::tracing::{info, warn};
-use metrics::{counter, describe_counter, describe_gauge, gauge, histogram, Unit};
+use metrics::{
+    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -162,6 +164,81 @@ impl MetricsRecorder {
         }
     }
 
+    /// Record access log message received
+    pub fn record_access_log_message(&self, entry_count: usize) {
+        counter!("access_log_messages_total").increment(1);
+        counter!("access_log_entries_total").increment(entry_count as u64);
+    }
+
+    /// Record access log processing latency
+    pub fn record_access_log_latency(&self, duration: f64) {
+        histogram!("access_log_processing_duration_seconds").record(duration);
+    }
+
+    /// Record access log filtering result
+    pub fn record_access_log_filter(&self, matched: bool) {
+        let status = if matched { "matched" } else { "filtered" };
+        let labels = [("status", status.to_string())];
+        counter!("access_log_filter_results_total", &labels).increment(1);
+    }
+
+    /// Record queued access log entry
+    pub fn record_access_log_queued(&self, session_id: &str) {
+        counter!("access_log_entries_queued_total").increment(1);
+        let labels = [("session_id", session_id.to_string())];
+        counter!("access_log_entries_queued_total", &labels).increment(1);
+    }
+
+    /// Update active learning sessions gauge
+    pub fn update_active_learning_sessions(&self, count: usize) {
+        gauge!("access_log_learning_sessions_active").set(count as f64);
+    }
+
+    /// Record schema inference from access log
+    pub fn record_schema_inferred(&self, schema_type: &str, success: bool) {
+        let status = if success { "success" } else { "error" };
+        let labels = [("schema_type", schema_type.to_string()), ("status", status.to_string())];
+        counter!("access_log_schemas_inferred_total", &labels).increment(1);
+    }
+
+    /// Record schema batch write operation
+    pub fn record_schema_batch_write(&self, batch_size: usize, success: bool, retry_count: usize) {
+        counter!("access_log_schema_batches_written_total").increment(1);
+        histogram!("access_log_schema_batch_size").record(batch_size as f64);
+
+        let status = if success { "success" } else { "error" };
+        let labels = [("status", status.to_string())];
+        counter!("access_log_schema_batches_written_total", &labels).increment(1);
+
+        if retry_count > 0 {
+            counter!("access_log_schema_batch_retries_total").increment(retry_count as u64);
+            histogram!("access_log_schema_batch_retry_count").record(retry_count as f64);
+        }
+    }
+
+    /// Record schema dropped due to backpressure
+    pub fn record_schema_dropped(&self, schema_type: &str) {
+        counter!("access_log_schemas_dropped_total").increment(1);
+        let labels = [("schema_type", schema_type.to_string())];
+        counter!("access_log_schemas_dropped_total", &labels).increment(1);
+    }
+
+    /// Update processor queue depth gauge
+    pub fn update_processor_queue_depth(&self, queue_type: &str, depth: usize) {
+        let labels = [("queue_type", queue_type.to_string())];
+        gauge!("access_log_processor_queue_depth", &labels).set(depth as f64);
+    }
+
+    /// Update active processor workers gauge
+    pub fn update_processor_workers(&self, count: usize) {
+        gauge!("access_log_processor_workers_active").set(count as f64);
+    }
+
+    /// Record processor entry processing duration
+    pub fn record_processor_entry_duration(&self, duration: f64) {
+        histogram!("access_log_processor_entry_duration_seconds").record(duration);
+    }
+
     /// Register baseline auth metrics so Prometheus exports appear before events occur.
     pub fn register_auth_metrics(&self) {
         describe_counter!(
@@ -225,6 +302,110 @@ impl MetricsRecorder {
         );
         describe_gauge!("xds_team_connections", Unit::Count, "Active xDS connections per team");
     }
+
+    /// Register access log service metrics
+    pub fn register_access_log_metrics(&self) {
+        describe_counter!(
+            "access_log_messages_total",
+            Unit::Count,
+            "Total number of access log messages received from Envoy"
+        );
+        describe_counter!(
+            "access_log_entries_total",
+            Unit::Count,
+            "Total number of access log entries processed"
+        );
+        describe_histogram!(
+            "access_log_processing_duration_seconds",
+            Unit::Seconds,
+            "Duration of access log message processing"
+        );
+        describe_counter!(
+            "access_log_filter_results_total",
+            Unit::Count,
+            "Access log filtering results (matched vs filtered)"
+        );
+        describe_counter!(
+            "access_log_entries_queued_total",
+            Unit::Count,
+            "Number of access log entries queued for background processing"
+        );
+        describe_gauge!(
+            "access_log_learning_sessions_active",
+            Unit::Count,
+            "Number of active learning sessions"
+        );
+
+        // Initialize counters to zero
+        counter!("access_log_messages_total").absolute(0);
+        counter!("access_log_entries_total").absolute(0);
+        counter!("access_log_filter_results_total", "status" => "matched").absolute(0);
+        counter!("access_log_filter_results_total", "status" => "filtered").absolute(0);
+        counter!("access_log_entries_queued_total").absolute(0);
+        gauge!("access_log_learning_sessions_active").set(0.0);
+    }
+
+    /// Register access log processor metrics
+    pub fn register_processor_metrics(&self) {
+        describe_counter!(
+            "access_log_schemas_inferred_total",
+            Unit::Count,
+            "Number of schemas inferred from access logs"
+        );
+        describe_counter!(
+            "access_log_schema_batches_written_total",
+            Unit::Count,
+            "Number of schema batches written to database"
+        );
+        describe_histogram!(
+            "access_log_schema_batch_size",
+            Unit::Count,
+            "Size of schema batches written"
+        );
+        describe_counter!(
+            "access_log_schema_batch_retries_total",
+            Unit::Count,
+            "Total number of batch write retries"
+        );
+        describe_histogram!(
+            "access_log_schema_batch_retry_count",
+            Unit::Count,
+            "Number of retries per batch write"
+        );
+        describe_counter!(
+            "access_log_schemas_dropped_total",
+            Unit::Count,
+            "Number of schemas dropped due to backpressure"
+        );
+        describe_gauge!(
+            "access_log_processor_queue_depth",
+            Unit::Count,
+            "Current depth of processor queues"
+        );
+        describe_gauge!(
+            "access_log_processor_workers_active",
+            Unit::Count,
+            "Number of active processor workers"
+        );
+        describe_histogram!(
+            "access_log_processor_entry_duration_seconds",
+            Unit::Seconds,
+            "Duration of processing a single log entry"
+        );
+
+        // Initialize counters to zero
+        counter!("access_log_schemas_inferred_total", "schema_type" => "request", "status" => "success").absolute(0);
+        counter!("access_log_schemas_inferred_total", "schema_type" => "request", "status" => "error").absolute(0);
+        counter!("access_log_schemas_inferred_total", "schema_type" => "response", "status" => "success").absolute(0);
+        counter!("access_log_schemas_inferred_total", "schema_type" => "response", "status" => "error").absolute(0);
+        counter!("access_log_schema_batches_written_total", "status" => "success").absolute(0);
+        counter!("access_log_schema_batches_written_total", "status" => "error").absolute(0);
+        counter!("access_log_schema_batch_retries_total").absolute(0);
+        counter!("access_log_schemas_dropped_total").absolute(0);
+        gauge!("access_log_processor_queue_depth", "queue_type" => "log_entries").set(0.0);
+        gauge!("access_log_processor_queue_depth", "queue_type" => "schemas").set(0.0);
+        gauge!("access_log_processor_workers_active").set(0.0);
+    }
 }
 
 /// Global metrics recorder instance
@@ -267,6 +448,8 @@ pub async fn init_metrics(config: &ObservabilityConfig) -> Result<()> {
 
     recorder.register_auth_metrics();
     recorder.register_team_metrics();
+    recorder.register_access_log_metrics();
+    recorder.register_processor_metrics();
 
     info!(
         metrics_addr = %metrics_addr,
@@ -356,6 +539,83 @@ pub async fn record_cross_team_access_attempt(from_team: &str, to_team: &str, re
 pub async fn record_team_xds_connection(team: &str, connected: bool) {
     if let Some(metrics) = get_metrics().await {
         metrics.record_team_xds_connection(team, connected);
+    }
+}
+
+/// Record access log message received via the global recorder
+pub async fn record_access_log_message(entry_count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_message(entry_count);
+    }
+}
+
+/// Record access log processing latency via the global recorder
+pub async fn record_access_log_latency(duration: f64) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_latency(duration);
+    }
+}
+
+/// Record access log filter result via the global recorder
+pub async fn record_access_log_filter(matched: bool) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_filter(matched);
+    }
+}
+
+/// Record access log entry queued via the global recorder
+pub async fn record_access_log_queued(session_id: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_access_log_queued(session_id);
+    }
+}
+
+/// Update active learning sessions count via the global recorder
+pub async fn update_active_learning_sessions(count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.update_active_learning_sessions(count);
+    }
+}
+
+/// Record schema inference via the global recorder
+pub async fn record_schema_inferred(schema_type: &str, success: bool) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_schema_inferred(schema_type, success);
+    }
+}
+
+/// Record schema batch write via the global recorder
+pub async fn record_schema_batch_write(batch_size: usize, success: bool, retry_count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_schema_batch_write(batch_size, success, retry_count);
+    }
+}
+
+/// Record schema dropped via the global recorder
+pub async fn record_schema_dropped(schema_type: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_schema_dropped(schema_type);
+    }
+}
+
+/// Update processor queue depth via the global recorder
+pub async fn update_processor_queue_depth(queue_type: &str, depth: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.update_processor_queue_depth(queue_type, depth);
+    }
+}
+
+/// Update processor workers via the global recorder
+pub async fn update_processor_workers(count: usize) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.update_processor_workers(count);
+    }
+}
+
+/// Record processor entry duration via the global recorder
+pub async fn record_processor_entry_duration(duration: f64) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_processor_entry_duration(duration);
     }
 }
 

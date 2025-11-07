@@ -70,31 +70,19 @@ pub enum ApiCommands {
         output: String,
     },
 
-    /// Get Envoy bootstrap configuration for an API definition
+    /// Get Envoy bootstrap configuration for a team
     #[command(
-        long_about = "Generate and retrieve the Envoy bootstrap configuration for a specific API definition.\n\nThe bootstrap config includes static resources like listeners, routes, and clusters that Envoy needs to start.",
-        after_help = "EXAMPLES:\n    # Get bootstrap config in YAML format\n    flowplane-cli api bootstrap abc123\n\n    # Get bootstrap config in JSON\n    flowplane-cli api bootstrap abc123 --format json\n\n    # Scope to team listeners only\n    flowplane-cli api bootstrap abc123 --scope team\n\n    # Use allowlist scope\n    flowplane-cli api bootstrap abc123 --scope allowlist --allowlist listener1,listener2\n\n    # Include default listeners in team scope\n    flowplane-cli api bootstrap abc123 --scope team --include-default"
+        long_about = "Generate and retrieve the Envoy bootstrap configuration for a specific team.\n\nThe bootstrap config includes xDS server information and node metadata that Envoy needs to start and discover team-scoped resources dynamically.",
+        after_help = "EXAMPLES:\n    # Get bootstrap config in YAML format\n    flowplane-cli api bootstrap test-team-a\n\n    # Get bootstrap config in JSON\n    flowplane-cli api bootstrap test-team-a --format json"
     )]
     Bootstrap {
-        /// API definition ID
-        #[arg(value_name = "ID")]
-        id: String,
+        /// Team name
+        #[arg(value_name = "TEAM")]
+        team: String,
 
         /// Output format (yaml or json)
         #[arg(short, long, default_value = "yaml", value_parser = ["yaml", "json"])]
         format: String,
-
-        /// Scoping mode (all, team, or allowlist)
-        #[arg(long, default_value = "all", value_parser = ["all", "team", "allowlist"])]
-        scope: String,
-
-        /// Listener allowlist (comma-separated) when scope=allowlist
-        #[arg(long, value_name = "LISTENERS")]
-        allowlist: Option<String>,
-
-        /// Include default listeners in team scope
-        #[arg(long)]
-        include_default: bool,
     },
 
     /// Import an API definition from an OpenAPI 3.0 specification
@@ -128,21 +116,6 @@ pub enum ApiCommands {
 
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
-        output: String,
-    },
-
-    /// Show deployed filter configurations from an API definition
-    #[command(
-        long_about = "Retrieve and display the HTTP filter configurations that are currently deployed for a specific API definition.",
-        after_help = "EXAMPLES:\n    # Show filters for an API definition\n    flowplane-cli api show-filters abc123\n\n    # Show filters as JSON\n    flowplane-cli api show-filters abc123 --output json\n\n    # Show filters as table\n    flowplane-cli api show-filters abc123 --output table"
-    )]
-    ShowFilters {
-        /// API definition ID
-        #[arg(value_name = "ID")]
-        id: String,
-
-        /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
 }
@@ -201,14 +174,13 @@ pub async fn handle_api_command(
             list_api_definitions(&client, team, domain, limit, offset, &output).await?
         }
         ApiCommands::Get { id, output } => get_api_definition(&client, &id, &output).await?,
-        ApiCommands::Bootstrap { id, format, scope, allowlist, include_default } => {
-            get_bootstrap_config(&client, &id, &format, &scope, allowlist, include_default).await?
+        ApiCommands::Bootstrap { team, format } => {
+            get_bootstrap_config(&client, &team, &format).await?
         }
         ApiCommands::ImportOpenapi { file, team, output } => {
             import_openapi(&client, file, &team, &output).await?
         }
         ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
-        ApiCommands::ShowFilters { id, output } => show_filters(&client, &id, &output).await?,
     }
 
     Ok(())
@@ -282,24 +254,8 @@ async fn get_api_definition(client: &FlowplaneClient, id: &str, output: &str) ->
     Ok(())
 }
 
-async fn get_bootstrap_config(
-    client: &FlowplaneClient,
-    id: &str,
-    format: &str,
-    scope: &str,
-    allowlist: Option<String>,
-    include_default: bool,
-) -> Result<()> {
-    let mut path =
-        format!("/api/v1/api-definitions/{}/bootstrap?format={}&scope={}", id, format, scope);
-
-    if include_default {
-        path.push_str("&includeDefault=true");
-    }
-
-    if let Some(list) = allowlist {
-        path.push_str(&format!("&allowlist={}", list));
-    }
+async fn get_bootstrap_config(client: &FlowplaneClient, team: &str, format: &str) -> Result<()> {
+    let path = format!("/api/v1/teams/{}/bootstrap?format={}", team, format);
 
     let response = client.get(&path).send().await.context("Failed to get bootstrap config")?;
 
@@ -458,75 +414,6 @@ async fn validate_filters(file: PathBuf, output: &str) -> Result<()> {
     }
 }
 
-/// Show filter configurations from an imported API definition
-async fn show_filters(client: &FlowplaneClient, id: &str, output: &str) -> Result<()> {
-    // Fetch bootstrap config which contains materialized filter configurations
-    let path = format!("/api/v1/api-definitions/{}/bootstrap?scope=all&format=json", id);
-    let bootstrap: serde_json::Value =
-        client.get_json(&path).await.context("Failed to fetch bootstrap configuration")?;
-
-    // Extract filter configurations from Envoy bootstrap config
-    let filters = extract_filters_from_bootstrap(&bootstrap)?;
-
-    if filters.is_empty() {
-        println!("No HTTP filters configured for API definition '{}'", id);
-        return Ok(());
-    }
-
-    println!("HTTP Filters for API definition '{}':", id);
-    println!();
-
-    if output == "json" {
-        let json = serde_json::to_string_pretty(&filters)
-            .context("Failed to serialize filters to JSON")?;
-        println!("{}", json);
-    } else if output == "table" {
-        print_bootstrap_filters_table(&filters);
-    } else {
-        let yaml =
-            serde_yaml::to_string(&filters).context("Failed to serialize filters to YAML")?;
-        println!("{}", yaml);
-    }
-
-    Ok(())
-}
-
-/// Extract HTTP filter names from Envoy bootstrap configuration
-fn extract_filters_from_bootstrap(bootstrap: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
-    let mut filters = Vec::new();
-
-    // Navigate through Envoy bootstrap structure to find HTTP filters
-    // Bootstrap -> static_resources -> listeners -> filter_chains -> filters -> typed_config -> http_filters
-    if let Some(static_resources) = bootstrap.get("static_resources") {
-        if let Some(listeners) = static_resources.get("listeners").and_then(|v| v.as_array()) {
-            for listener in listeners {
-                if let Some(filter_chains) =
-                    listener.get("filter_chains").and_then(|v| v.as_array())
-                {
-                    for chain in filter_chains {
-                        if let Some(chain_filters) = chain.get("filters").and_then(|v| v.as_array())
-                        {
-                            for filter in chain_filters {
-                                if let Some(typed_config) = filter.get("typed_config") {
-                                    if let Some(http_filters) =
-                                        typed_config.get("http_filters").and_then(|v| v.as_array())
-                                    {
-                                        for http_filter in http_filters {
-                                            filters.push(http_filter.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(filters)
-}
-
 /// Print filters in a table format for validation command
 fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEntry]) {
     println!("{:<5} {:<30} Configuration", "No.", "Filter Type");
@@ -544,27 +431,6 @@ fn print_filters_table(filters: &[crate::xds::filters::http::HttpFilterConfigEnt
         let truncated = truncate(&config_preview, 45);
 
         println!("{:<5} {:<30} {}", i + 1, filter_type, truncated);
-    }
-    println!();
-}
-
-/// Print bootstrap filters in a table format for show-filters command
-fn print_bootstrap_filters_table(filters: &[serde_json::Value]) {
-    println!("{:<5} {:<30} Type URL", "No.", "Filter Name");
-    println!("{}", "-".repeat(80));
-
-    for (i, filter) in filters.iter().enumerate() {
-        let name = filter.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-        let type_url = filter
-            .get("typed_config")
-            .and_then(|tc| tc.get("@type"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("unknown");
-
-        // Extract just the filter type from the type URL
-        let filter_type = type_url.rsplit('.').next().unwrap_or(type_url);
-
-        println!("{:<5} {:<30} {}", i + 1, name, filter_type);
     }
     println!();
 }

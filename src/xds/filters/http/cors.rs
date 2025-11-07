@@ -153,16 +153,12 @@ impl RuntimeFractionalPercentConfig {
 /// Denominator options mirroring Envoy enum values.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum FractionalPercentDenominator {
+    #[default]
     Hundred,
     TenThousand,
     Million,
-}
-
-impl Default for FractionalPercentDenominator {
-    fn default() -> Self {
-        Self::Hundred
-    }
 }
 
 impl FractionalPercentDenominator {

@@ -307,12 +307,13 @@ impl ListenerRepository {
     /// Lists listeners filtered by team names for multi-tenancy support.
     ///
     /// This method is critical for enforcing team-based access control.
-    /// Returns listeners that belong to any of the specified teams, plus
-    /// any team-agnostic listeners (where team is NULL).
+    /// Returns listeners that belong to any of the specified teams, and
+    /// optionally includes team-agnostic listeners (where team is NULL).
     ///
     /// # Arguments
     ///
     /// * `teams` - List of team identifiers to filter by. If empty, returns all listeners.
+    /// * `include_default` - If true, also include listeners with team=NULL (default listeners)
     /// * `limit` - Maximum number of results (default: 100, max: 1000)
     /// * `offset` - Number of results to skip for pagination
     ///
@@ -323,15 +324,24 @@ impl ListenerRepository {
     /// # Example
     ///
     /// ```rust,ignore
-    /// // Get listeners for specific teams
+    /// // Get listeners for specific teams (excluding default listeners)
     /// let listeners = repo.list_by_teams(
     ///     &["team-alpha".to_string(), "team-beta".to_string()],
+    ///     false,
     ///     Some(50),
     ///     Some(0)
     /// ).await?;
     ///
+    /// // Get listeners including default listeners
+    /// let listeners = repo.list_by_teams(
+    ///     &["team-alpha".to_string()],
+    ///     true,
+    ///     None,
+    ///     None
+    /// ).await?;
+    ///
     /// // Get all listeners (admin access)
-    /// let all_listeners = repo.list_by_teams(&[], None, None).await?;
+    /// let all_listeners = repo.list_by_teams(&[], true, None, None).await?;
     /// ```
     ///
     /// # Errors
@@ -340,6 +350,7 @@ impl ListenerRepository {
     pub async fn list_by_teams(
         &self,
         teams: &[String],
+        include_default: bool,
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ListenerData>> {
@@ -359,13 +370,20 @@ impl ListenerRepository {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // Conditionally include NULL team listeners based on include_default flag
+        let where_clause = if include_default {
+            format!("WHERE team IN ({}) OR team IS NULL", placeholders)
+        } else {
+            format!("WHERE team IN ({})", placeholders)
+        };
+
         let query_str = format!(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at \
              FROM listeners \
-             WHERE team IN ({}) OR team IS NULL \
+             {} \
              ORDER BY created_at DESC \
              LIMIT ${} OFFSET ${}",
-            placeholders,
+            where_clause,
             teams.len() + 1,
             teams.len() + 2
         );

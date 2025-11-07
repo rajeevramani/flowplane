@@ -26,6 +26,7 @@ use crate::xds::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        crate::api::handlers::health::health_handler,
         crate::api::handlers::auth::create_token_handler,
         crate::api::handlers::auth::list_tokens_handler,
         crate::api::handlers::auth::get_token_handler,
@@ -53,11 +54,22 @@ use crate::xds::{
         crate::api::handlers::api_definitions::list_api_definitions_handler,
         crate::api::handlers::api_definitions::get_api_definition_handler,
         crate::api::handlers::api_definitions::update_api_definition_handler,
-        crate::api::handlers::api_definitions::get_bootstrap_handler,
-        crate::api::handlers::reporting::list_route_flows_handler
+        crate::api::handlers::teams::get_team_bootstrap_handler,
+        crate::api::handlers::reporting::list_route_flows_handler,
+        // Learning session endpoints
+        crate::api::handlers::learning_sessions::create_learning_session_handler,
+        crate::api::handlers::learning_sessions::list_learning_sessions_handler,
+        crate::api::handlers::learning_sessions::get_learning_session_handler,
+        crate::api::handlers::learning_sessions::delete_learning_session_handler,
+        // Aggregated schema endpoints
+        crate::api::handlers::aggregated_schemas::list_aggregated_schemas_handler,
+        crate::api::handlers::aggregated_schemas::get_aggregated_schema_handler,
+        crate::api::handlers::aggregated_schemas::compare_aggregated_schemas_handler,
+        crate::api::handlers::aggregated_schemas::export_aggregated_schema_handler
     ),
     components(
         schemas(
+            crate::api::handlers::health::HealthResponse,
             CreateClusterBody,
             EndpointRequest,
             HealthCheckRequest,
@@ -99,7 +111,7 @@ use crate::xds::{
             crate::api::handlers::api_definitions::AppendRouteResponse,
             crate::api::handlers::api_definitions::ApiDefinitionSummary,
             crate::api::handlers::api_definitions::ListDefinitionsQuery,
-            crate::api::handlers::api_definitions::BootstrapQuery,
+            crate::api::handlers::teams::BootstrapQuery,
             // Commonly used HTTP filter configurations
             CorsPolicyConfig,
             CustomResponseConfig,
@@ -111,7 +123,20 @@ use crate::xds::{
             crate::api::handlers::reporting::ListRouteFlowsResponse,
             crate::api::handlers::reporting::RouteFlowEntry,
             crate::api::handlers::reporting::RouteFlowListener,
-            crate::api::handlers::reporting::ListRouteFlowsQuery
+            crate::api::handlers::reporting::ListRouteFlowsQuery,
+            // Learning session schemas
+            crate::api::handlers::learning_sessions::CreateLearningSessionBody,
+            crate::api::handlers::learning_sessions::LearningSessionResponse,
+            crate::api::handlers::learning_sessions::ListLearningSessionsQuery,
+            // Aggregated schema schemas
+            crate::api::handlers::aggregated_schemas::AggregatedSchemaResponse,
+            crate::api::handlers::aggregated_schemas::ListAggregatedSchemasQuery,
+            crate::api::handlers::aggregated_schemas::CompareSchemaQuery,
+            crate::api::handlers::aggregated_schemas::SchemaComparisonResponse,
+            crate::api::handlers::aggregated_schemas::SchemaDifferences,
+            crate::api::handlers::aggregated_schemas::ExportSchemaQuery,
+            crate::api::handlers::aggregated_schemas::OpenApiExportResponse,
+            crate::api::handlers::aggregated_schemas::OpenApiInfo
         )
     ),
     tags(
@@ -119,7 +144,9 @@ use crate::xds::{
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
         (name = "platform-api", description = "Platform API Abstraction endpoints"),
-        (name = "reports", description = "Platform visibility and reporting endpoints")
+        (name = "reports", description = "Platform visibility and reporting endpoints"),
+        (name = "learning-sessions", description = "API schema learning and traffic observation"),
+        (name = "aggregated-schemas", description = "Learned API schemas and catalog management")
     ),
     security(
         ("bearerAuth" = [])
@@ -215,7 +242,7 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
         );
 
-        // API Definition endpoints (6)
+        // API Definition endpoints (5)
         assert!(
             paths.contains_key("/api/v1/api-definitions"),
             "Missing GET/POST /api/v1/api-definitions"
@@ -229,12 +256,48 @@ mod tests {
             "Missing GET /api/v1/api-definitions/{{id}}"
         );
         assert!(
-            paths.contains_key("/api/v1/api-definitions/{id}/bootstrap"),
-            "Missing GET /api/v1/api-definitions/{{id}}/bootstrap"
-        );
-        assert!(
             paths.contains_key("/api/v1/api-definitions/{id}/routes"),
             "Missing POST /api/v1/api-definitions/{{id}}/routes"
+        );
+
+        // Team endpoints (1)
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/bootstrap"),
+            "Missing GET /api/v1/teams/{{team}}/bootstrap"
+        );
+
+        // Learning session endpoints (4)
+        assert!(
+            paths.contains_key("/api/v1/learning-sessions"),
+            "Missing GET/POST /api/v1/learning-sessions"
+        );
+        assert!(
+            paths.contains_key("/api/v1/learning-sessions/{id}"),
+            "Missing GET/DELETE /api/v1/learning-sessions/{{id}}"
+        );
+
+        // Aggregated schema endpoints (4)
+        assert!(
+            paths.contains_key("/api/v1/aggregated-schemas"),
+            "Missing GET /api/v1/aggregated-schemas"
+        );
+        assert!(
+            paths.contains_key("/api/v1/aggregated-schemas/{id}"),
+            "Missing GET /api/v1/aggregated-schemas/{{id}}"
+        );
+        assert!(
+            paths.contains_key("/api/v1/aggregated-schemas/{id}/compare"),
+            "Missing GET /api/v1/aggregated-schemas/{{id}}/compare"
+        );
+        assert!(
+            paths.contains_key("/api/v1/aggregated-schemas/{id}/export"),
+            "Missing GET /api/v1/aggregated-schemas/{{id}}/export"
+        );
+
+        // Reporting endpoints (1)
+        assert!(
+            paths.contains_key("/api/v1/reports/route-flows"),
+            "Missing GET /api/v1/reports/route-flows"
         );
     }
 
@@ -355,6 +418,42 @@ mod tests {
             "Missing LocalRateLimitConfig schema"
         );
         assert!(schemas.contains_key("RateLimitConfig"), "Missing RateLimitConfig schema");
+
+        // Learning session schemas
+        assert!(
+            schemas.contains_key("CreateLearningSessionBody"),
+            "Missing CreateLearningSessionBody schema"
+        );
+        assert!(
+            schemas.contains_key("LearningSessionResponse"),
+            "Missing LearningSessionResponse schema"
+        );
+        assert!(
+            schemas.contains_key("ListLearningSessionsQuery"),
+            "Missing ListLearningSessionsQuery schema"
+        );
+
+        // Aggregated schema schemas
+        assert!(
+            schemas.contains_key("AggregatedSchemaResponse"),
+            "Missing AggregatedSchemaResponse schema"
+        );
+        assert!(
+            schemas.contains_key("ListAggregatedSchemasQuery"),
+            "Missing ListAggregatedSchemasQuery schema"
+        );
+        assert!(schemas.contains_key("CompareSchemaQuery"), "Missing CompareSchemaQuery schema");
+        assert!(
+            schemas.contains_key("SchemaComparisonResponse"),
+            "Missing SchemaComparisonResponse schema"
+        );
+        assert!(schemas.contains_key("SchemaDifferences"), "Missing SchemaDifferences schema");
+        assert!(schemas.contains_key("ExportSchemaQuery"), "Missing ExportSchemaQuery schema");
+        assert!(
+            schemas.contains_key("OpenApiExportResponse"),
+            "Missing OpenApiExportResponse schema"
+        );
+        assert!(schemas.contains_key("OpenApiInfo"), "Missing OpenApiInfo schema");
     }
 
     #[test]
@@ -368,6 +467,9 @@ mod tests {
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
         assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");
         assert!(tag_names.contains(&"platform-api"), "Missing 'platform-api' tag");
+        assert!(tag_names.contains(&"reports"), "Missing 'reports' tag");
+        assert!(tag_names.contains(&"learning-sessions"), "Missing 'learning-sessions' tag");
+        assert!(tag_names.contains(&"aggregated-schemas"), "Missing 'aggregated-schemas' tag");
     }
 
     #[test]

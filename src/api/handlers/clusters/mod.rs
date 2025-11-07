@@ -144,7 +144,7 @@ pub async fn list_clusters_handler(
         .ok_or_else(|| ApiError::service_unavailable("Cluster repository unavailable"))?;
 
     let rows = repository
-        .list_by_teams(&team_scopes, params.limit, params.offset)
+        .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
         .await
         .map_err(ApiError::from)?;
 

@@ -2,15 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
-    clusters_from_config, clusters_from_database_entries, listeners_from_config,
-    listeners_from_database_entries, resources_from_api_definitions, routes_from_config,
-    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
-    ROUTE_TYPE_URL,
+    clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
+    listeners_from_config, listeners_from_database_entries, resources_from_api_definitions,
+    routes_from_config, routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL,
+    LISTENER_TYPE_URL, ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
+    services::LearningSessionService,
     storage::{
-        ApiDefinitionRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
+        AggregatedSchemaRepository, ApiDefinitionRepository, ClusterRepository, DbPool,
+        ListenerRepository, RouteRepository,
+    },
+    xds::services::{
+        access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
     },
     Result,
 };
@@ -58,6 +63,10 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub api_definition_repository: Option<ApiDefinitionRepository>,
+    pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
+    pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
+    pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
+    pub learning_session_service: Option<Arc<LearningSessionService>>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -72,6 +81,10 @@ impl XdsState {
             route_repository: None,
             listener_repository: None,
             api_definition_repository: None,
+            aggregated_schema_repository: None,
+            access_log_service: None,
+            ext_proc_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -82,7 +95,8 @@ impl XdsState {
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_repository = RouteRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
-        let api_definition_repository = ApiDefinitionRepository::new(pool);
+        let api_definition_repository = ApiDefinitionRepository::new(pool.clone());
+        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -90,6 +104,10 @@ impl XdsState {
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
             api_definition_repository: Some(api_definition_repository),
+            aggregated_schema_repository: Some(aggregated_schema_repository),
+            access_log_service: None,
+            ext_proc_service: None,
+            learning_session_service: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -101,6 +119,19 @@ impl XdsState {
 
     pub fn get_version_number(&self) -> u64 {
         self.version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Create a new XdsState with services (builder pattern)
+    pub fn with_services(
+        mut self,
+        access_log_service: Arc<FlowplaneAccessLogService>,
+        ext_proc_service: Arc<FlowplaneExtProcService>,
+        learning_session_service: Arc<LearningSessionService>,
+    ) -> Self {
+        self.access_log_service = Some(access_log_service);
+        self.ext_proc_service = Some(ext_proc_service);
+        self.learning_session_service = Some(learning_session_service);
+        self
     }
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
@@ -182,11 +213,23 @@ impl XdsState {
 
         let cluster_rows = repository.list(Some(1000), None).await?;
 
-        let built = if cluster_rows.is_empty() {
+        let mut built = if cluster_rows.is_empty() {
             clusters_from_config(&self.config)?
         } else {
             clusters_from_database_entries(cluster_rows, "cache_refresh")?
         };
+
+        // Always include the built-in ExtProc gRPC cluster for body capture
+        let ext_proc_cluster =
+            create_ext_proc_cluster(&self.config.bind_address, self.config.port)?;
+        built.push(ext_proc_cluster);
+
+        // Always include the built-in Access Log Service gRPC cluster for ALS
+        let access_log_cluster = crate::xds::resources::create_access_log_cluster(
+            &self.config.bind_address,
+            self.config.port,
+        )?;
+        built.push(access_log_cluster);
 
         let total_resources = built.len();
         match self.apply_built_resources(CLUSTER_TYPE_URL, built) {
@@ -356,11 +399,27 @@ impl XdsState {
 
         let listener_rows = repository.list(Some(1000), None).await?;
 
-        let built = if listener_rows.is_empty() {
+        let mut built = if listener_rows.is_empty() {
             listeners_from_config(&self.config)?
         } else {
             listeners_from_database_entries(listener_rows, "cache_refresh")?
         };
+
+        // Inject access log configuration for active learning sessions
+        if let Err(e) = self.inject_learning_session_access_logs(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject access log configuration for learning sessions"
+            );
+        }
+
+        // Inject ExtProc filter configuration for active learning sessions (body capture)
+        if let Err(e) = self.inject_learning_session_ext_proc(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject ExtProc configuration for learning sessions"
+            );
+        }
 
         let total_resources = built.len();
         match self.apply_built_resources(LISTENER_TYPE_URL, built) {
@@ -383,6 +442,338 @@ impl XdsState {
                     type_url = LISTENER_TYPE_URL,
                     total_resources,
                     "Listener cache refresh detected no changes"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inject access log configuration into listeners for active learning sessions
+    ///
+    /// This method:
+    /// 1. Queries active learning sessions from the service
+    /// 2. For each active session, decodes the listener protobuf
+    /// 3. Injects HttpGrpcAccessLogConfig into the listener's filter chains
+    /// 4. Re-encodes the modified listener back into the BuiltResource
+    ///
+    /// This enables dynamic access logging for routes in active learning sessions
+    /// without modifying the stored listener configuration.
+    #[instrument(skip(self, built_listeners), name = "xds_inject_access_logs")]
+    pub(crate) async fn inject_learning_session_access_logs(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        use crate::xds::access_log::LearningSessionAccessLogConfig;
+        use envoy_types::pb::envoy::config::listener::v3::Listener;
+        use prost::Message;
+
+        // Get learning session service
+        let session_service = match &self.learning_session_service {
+            Some(service) => service,
+            None => {
+                debug!("No learning session service available, skipping access log injection");
+                return Ok(());
+            }
+        };
+
+        // Query active learning sessions
+        let active_sessions = session_service.list_active_sessions().await?;
+
+        if active_sessions.is_empty() {
+            debug!("No active learning sessions, skipping access log injection");
+            return Ok(());
+        }
+
+        info!(
+            session_count = active_sessions.len(),
+            "Injecting access log configuration for active learning sessions"
+        );
+
+        // For each listener, check if it needs access log injection
+        for built in built_listeners.iter_mut() {
+            debug!(
+                listener = %built.name,
+                "Processing listener for access log injection"
+            );
+
+            // Decode the listener protobuf
+            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
+                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
+            })?;
+
+            debug!(
+                listener = %built.name,
+                filter_chain_count = listener.filter_chains.len(),
+                "Decoded listener, checking filter chains"
+            );
+
+            // Track if we modified this listener
+            let mut modified = false;
+
+            // Check each active session to see if it applies to this listener
+            for session in &active_sessions {
+                debug!(
+                    listener = %built.name,
+                    session_id = %session.id,
+                    "Checking session for injection"
+                );
+                // For now, we inject access log into ALL listeners when ANY session is active
+                // TODO: In the future, we could be more selective based on session.route_pattern
+                // and match it against the listener's routes
+
+                // Create access log config for this session
+                let access_log_config = LearningSessionAccessLogConfig::new(
+                    session.id.clone(),
+                    session.team.clone(),
+                    self.config.bind_address.clone() + ":" + &self.config.port.to_string(),
+                );
+
+                let access_log = access_log_config.build_access_log()?;
+
+                // Inject access log into each filter chain's HTTP connection manager
+                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
+                    debug!(
+                        listener = %built.name,
+                        filter_chain_index = fc_idx,
+                        filter_count = filter_chain.filters.len(),
+                        "Processing filter chain"
+                    );
+
+                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
+                        debug!(
+                            listener = %built.name,
+                            filter_chain_index = fc_idx,
+                            filter_index = f_idx,
+                            filter_name = %filter.name,
+                            "Examining filter"
+                        );
+
+                        // Check if this is an HTTP connection manager
+                        if filter.name == "envoy.filters.network.http_connection_manager" {
+                            if let Some(config_type) = &mut filter.config_type {
+                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+
+                                if let ConfigType::TypedConfig(typed_config) = config_type {
+                                    // Decode HCM, add access log, re-encode
+                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+
+                                    let mut hcm =
+                                        HttpConnectionManager::decode(&typed_config.value[..])
+                                            .map_err(|e| {
+                                                crate::Error::internal(format!(
+                                                    "Failed to decode HCM for listener '{}': {}",
+                                                    built.name, e
+                                                ))
+                                            })?;
+
+                                    // Add access log to the HCM (avoid duplicates)
+                                    let already_has_log = hcm
+                                        .access_log
+                                        .iter()
+                                        .any(|al| al.name.contains(&session.id));
+
+                                    if !already_has_log {
+                                        hcm.access_log.push(access_log.clone());
+                                        modified = true;
+
+                                        debug!(
+                                            listener = %built.name,
+                                            session_id = %session.id,
+                                            "Injected access log configuration"
+                                        );
+                                    }
+
+                                    // Re-encode HCM back into typed_config
+                                    typed_config.value = hcm.encode_to_vec();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we modified the listener, re-encode it
+            if modified {
+                built.resource.value = listener.encode_to_vec();
+                debug!(
+                    listener = %built.name,
+                    "Re-encoded listener with access log configuration"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inject ExtProc filter configuration into listeners for active learning sessions
+    ///
+    /// This method:
+    /// 1. Queries active learning sessions from the service
+    /// 2. For each active session, decodes the listener protobuf
+    /// 3. Injects ExtProc HTTP filter into the listener's filter chains
+    /// 4. Re-encodes the modified listener back into the BuiltResource
+    ///
+    /// This enables dynamic body capture for routes in active learning sessions
+    /// without modifying the stored listener configuration.
+    ///
+    /// The ExtProc filter is configured to:
+    /// - Buffer request and response bodies up to 10KB
+    /// - Send bodies to the Flowplane ExtProc service
+    /// - Fail-open (requests continue even if ExtProc fails)
+    #[instrument(skip(self, built_listeners), name = "xds_inject_ext_proc")]
+    pub(crate) async fn inject_learning_session_ext_proc(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        use crate::xds::filters::http::ext_proc::{
+            ExtProcConfig, GrpcServiceConfig, ProcessingMode,
+        };
+        use envoy_types::pb::envoy::config::listener::v3::Listener;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
+        use prost::Message;
+
+        // Get learning session service
+        let session_service = match &self.learning_session_service {
+            Some(service) => service,
+            None => {
+                debug!("No learning session service available, skipping ExtProc injection");
+                return Ok(());
+            }
+        };
+
+        // Query active learning sessions
+        let active_sessions = session_service.list_active_sessions().await?;
+
+        if active_sessions.is_empty() {
+            debug!("No active learning sessions, skipping ExtProc injection");
+            return Ok(());
+        }
+
+        info!(
+            session_count = active_sessions.len(),
+            "Injecting ExtProc configuration for active learning sessions"
+        );
+
+        // For each listener, check if it needs ExtProc injection
+        for built in built_listeners.iter_mut() {
+            debug!(
+                listener = %built.name,
+                "Processing listener for ExtProc injection"
+            );
+
+            // Decode the listener protobuf
+            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
+                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
+            })?;
+
+            // Track if we modified this listener
+            let mut modified = false;
+
+            // Check each active session to see if it applies to this listener
+            for session in &active_sessions {
+                debug!(
+                    listener = %built.name,
+                    session_id = %session.id,
+                    "Checking session for ExtProc injection"
+                );
+
+                // Create ExtProc config for body capture
+                let ext_proc_config = ExtProcConfig {
+                    grpc_service: GrpcServiceConfig {
+                        target_uri: "flowplane_ext_proc_service".to_string(),
+                        timeout_seconds: 5,
+                    },
+                    failure_mode_allow: true, // Fail-open: requests continue even if ExtProc fails
+                    processing_mode: Some(ProcessingMode {
+                        request_header_mode: Some("SEND".to_string()),
+                        response_header_mode: Some("SEND".to_string()),
+                        request_body_mode: Some("BUFFERED".to_string()), // Capture request body
+                        response_body_mode: Some("BUFFERED".to_string()), // Capture response body
+                        request_trailer_mode: Some("SKIP".to_string()),
+                        response_trailer_mode: Some("SKIP".to_string()),
+                    }),
+                    message_timeout_ms: Some(5000), // 5 second timeout per message
+                    request_attributes: vec![],
+                    response_attributes: vec![],
+                };
+
+                let ext_proc_any = ext_proc_config.to_any()?;
+
+                // Create HTTP filter for ExtProc
+                let ext_proc_filter = HttpFilter {
+                    name: format!("envoy.filters.http.ext_proc.session_{}", session.id),
+                    config_type: Some(
+                        envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(ext_proc_any)
+                    ),
+                    is_optional: true, // Make it optional so requests continue if filter fails
+                    disabled: false,
+                };
+
+                // Inject ExtProc filter into each filter chain's HTTP connection manager
+                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
+                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
+                        // Check if this is an HTTP connection manager
+                        if filter.name == "envoy.filters.network.http_connection_manager" {
+                            if let Some(config_type) = &mut filter.config_type {
+                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+
+                                if let ConfigType::TypedConfig(typed_config) = config_type {
+                                    // Decode HCM, add ExtProc filter, re-encode
+                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+
+                                    let mut hcm =
+                                        HttpConnectionManager::decode(&typed_config.value[..])
+                                            .map_err(|e| {
+                                                crate::Error::internal(format!(
+                                                    "Failed to decode HCM for listener '{}': {}",
+                                                    built.name, e
+                                                ))
+                                            })?;
+
+                                    // Check if ExtProc filter already exists for this session
+                                    let already_has_ext_proc = hcm
+                                        .http_filters
+                                        .iter()
+                                        .any(|f| f.name.contains(&session.id));
+
+                                    if !already_has_ext_proc {
+                                        // Insert ExtProc filter BEFORE the router filter
+                                        // Find router filter position
+                                        let router_pos = hcm
+                                            .http_filters
+                                            .iter()
+                                            .position(|f| f.name == "envoy.filters.http.router")
+                                            .unwrap_or(hcm.http_filters.len());
+
+                                        hcm.http_filters
+                                            .insert(router_pos, ext_proc_filter.clone());
+                                        modified = true;
+
+                                        debug!(
+                                            listener = %built.name,
+                                            filter_chain_index = fc_idx,
+                                            filter_index = f_idx,
+                                            session_id = %session.id,
+                                            "Injected ExtProc filter for body capture"
+                                        );
+                                    }
+
+                                    // Re-encode HCM back into typed_config
+                                    typed_config.value = hcm.encode_to_vec();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we modified the listener, re-encode it
+            if modified {
+                built.resource.value = listener.encode_to_vec();
+                debug!(
+                    listener = %built.name,
+                    "Re-encoded listener with ExtProc configuration"
                 );
             }
         }
@@ -481,5 +872,60 @@ mod tests {
     async fn refresh_listeners_without_repository_is_noop() {
         let state = build_state();
         assert!(state.refresh_listeners_from_repository().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ext_proc_cluster_created_with_correct_endpoint() {
+        use crate::xds::resources::create_ext_proc_cluster;
+        use prost::Message;
+
+        let bind_address = "192.168.1.100";
+        let port = 19000;
+
+        // Create the ExtProc cluster
+        let built_resource = create_ext_proc_cluster(bind_address, port).unwrap();
+
+        // Decode the cluster
+        let cluster = envoy_types::pb::envoy::config::cluster::v3::Cluster::decode(
+            &built_resource.resource.value[..],
+        )
+        .unwrap();
+
+        // Verify cluster name
+        assert_eq!(cluster.name, "flowplane_ext_proc_service");
+
+        // Verify endpoint address and port match the provided values
+        let load_assignment = cluster.load_assignment.unwrap();
+        let endpoints = &load_assignment.endpoints[0].lb_endpoints[0];
+
+        if let Some(
+            envoy_types::pb::envoy::config::endpoint::v3::lb_endpoint::HostIdentifier::Endpoint(
+                endpoint,
+            ),
+        ) = &endpoints.host_identifier
+        {
+            if let Some(address) = &endpoint.address {
+                if let Some(
+                    envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                        socket_addr,
+                    ),
+                ) = &address.address
+                {
+                    assert_eq!(socket_addr.address, bind_address);
+                    if let Some(
+                        envoy_types::pb::envoy::config::core::v3::socket_address::PortSpecifier::PortValue(
+                            p,
+                        ),
+                    ) = &socket_addr.port_specifier
+                    {
+                        assert_eq!(*p, port as u32);
+                    } else {
+                        panic!("Expected port value");
+                    }
+                } else {
+                    panic!("Expected socket address");
+                }
+            }
+        }
     }
 }

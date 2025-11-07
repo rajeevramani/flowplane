@@ -11,9 +11,8 @@ scrape_configs:
   # Flowplane control plane metrics
   - job_name: 'flowplane'
     static_configs:
-      # Use host.docker.internal to access host machine from container
-      # On Linux, use 'host-gateway' extra_hosts in docker-compose
-      - targets: ['host.docker.internal:9090']
+      # Use service name from docker-compose network
+      - targets: ['control-plane:9090']
         labels:
           service: 'flowplane-control-plane'
           component: 'api'

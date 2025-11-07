@@ -96,12 +96,12 @@ impl DatabaseAggregatedDiscoveryService {
     /// Create cluster resources from database with team-based filtering
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.cluster_repository {
-            // Extract teams from scope for filtering
-            let teams = match scope {
-                Scope::All => vec![],
-                Scope::Team { team, .. } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
+        let mut built = if let Some(repo) = &self.state.cluster_repository {
+            // Extract teams and include_default flag from scope for filtering
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to clusters
             };
 
             // Record team filtering in span
@@ -112,7 +112,7 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, Some(100), None).await {
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(cluster_data_list) => {
                     span.record("filtered_count", cluster_data_list.len());
 
@@ -153,6 +153,22 @@ impl DatabaseAggregatedDiscoveryService {
             self.create_fallback_cluster_resources()?
         };
 
+        // Always include internal gRPC clusters used by Envoy filters
+        // These are not stored in the database and must be emitted with CDS
+        if let Ok(ext_proc) = crate::xds::resources::create_ext_proc_cluster(
+            &self.state.config.bind_address,
+            self.state.config.port,
+        ) {
+            built.push(ext_proc);
+        }
+
+        if let Ok(als) = crate::xds::resources::create_access_log_cluster(
+            &self.state.config.bind_address,
+            self.state.config.port,
+        ) {
+            built.push(als);
+        }
+
         // NOTE: Platform API clusters are NOT added here to avoid duplicates
         // They are already stored in the database by materialize_native_resources()
         // and loaded above via cluster_repository.list()
@@ -168,11 +184,11 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
-            // Extract teams from scope for filtering
-            let teams = match scope {
-                Scope::All => vec![],
-                Scope::Team { team, .. } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
+            // Extract teams and include_default flag from scope for filtering
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to routes
             };
 
             // Record team filtering in span
@@ -183,7 +199,7 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, Some(100), None).await {
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
@@ -333,90 +349,128 @@ impl DatabaseAggregatedDiscoveryService {
         &self,
         scope: &Scope,
     ) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.listener_repository {
-            match repo.list(Some(100), None).await {
+        let mut built = if let Some(repo) = &self.state.listener_repository {
+            // Extract teams and include_default flag from scope for filtering (same pattern as clusters)
+            let (teams, include_default) = match scope {
+                Scope::All => (vec![], true), // Admin access includes all resources
+                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to listeners
+            };
+
+            // Record team filtering in span
+            let span = tracing::Span::current();
+            if teams.is_empty() {
+                span.record("scope_info", "all");
+            } else {
+                span.record("scope_info", format!("team:{}", teams[0]).as_str());
+            }
+
+            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
                 Ok(listener_data_list) => {
+                    span.record("filtered_count", listener_data_list.len());
+
+                    // Record team-scoped listener count metrics
+                    if let Some(team) = teams.first() {
+                        crate::observability::metrics::update_team_resource_count(
+                            "listener",
+                            team,
+                            listener_data_list.len(),
+                        )
+                        .await;
+                    }
+
                     if listener_data_list.is_empty() {
-                        info!(
-                            "No listeners found in database, falling back to config-based listener"
-                        );
-                        self.create_fallback_listener_resources()?
-                    } else {
-                        let filtered: Vec<crate::storage::repository::ListenerData> = match scope {
+                        // Only provide fallback listener for admin scope (Scope::All)
+                        // Team-scoped requests get empty list to enforce explicit listener definition
+                        // This prevents port conflicts when multiple teams have no listeners
+                        match scope {
                             Scope::All => {
-                                tracing::Span::current().record("scope_info", "all");
-                                listener_data_list
-                            }
-                            Scope::Team { team, include_default } => {
-                                tracing::Span::current()
-                                    .record("scope_info", format!("team:{}", team).as_str());
-                                let mut keep = Vec::new();
-                                for entry in listener_data_list.into_iter() {
-                                    if entry.name
-                                        == crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER
-                                        && *include_default
-                                    {
-                                        keep.push(entry);
-                                        continue;
-                                    }
-                                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(
-                                        &entry.configuration,
-                                    ) {
-                                        if let Some(tag_team) = value
-                                            .get("flowplaneGateway")
-                                            .and_then(|v| v.get("team"))
-                                            .and_then(|v| v.as_str())
-                                        {
-                                            if tag_team == team {
-                                                keep.push(entry);
-                                            }
-                                        }
-                                    }
-                                }
-                                keep
-                            }
-                            Scope::Allowlist { names } => {
-                                tracing::Span::current().record(
-                                    "scope_info",
-                                    format!("allowlist:{}", names.len()).as_str(),
+                                info!(
+                                    "No listeners in database, providing config-based fallback for admin scope"
                                 );
-                                listener_data_list
-                                    .into_iter()
-                                    .filter(|e| names.contains(&e.name))
-                                    .collect()
+                                self.create_fallback_listener_resources()?
                             }
-                        };
-                        tracing::Span::current().record("filtered_count", filtered.len());
-
-                        // Record team-scoped listener count metrics
-                        if let Scope::Team { team, .. } = scope {
-                            crate::observability::metrics::update_team_resource_count(
-                                "listener",
-                                team,
-                                filtered.len(),
-                            )
-                            .await;
+                            Scope::Team { team, .. } => {
+                                info!(
+                                    team = %team,
+                                    "No listeners found for team, returning empty list (teams must define listeners explicitly)"
+                                );
+                                vec![]
+                            }
+                            Scope::Allowlist { .. } => {
+                                info!(
+                                    "No listeners found for allowlist scope, returning empty list"
+                                );
+                                vec![]
+                            }
                         }
-
+                    } else {
                         info!(
                             phase = "ads_response",
-                            listener_count = filtered.len(),
+                            listener_count = listener_data_list.len(),
                             "Building listener resources from database for ADS response"
                         );
-                        resources::listeners_from_database_entries(filtered, "ads_response")?
+                        resources::listeners_from_database_entries(
+                            listener_data_list,
+                            "ads_response",
+                        )?
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to load listeners from database: {}, falling back to config", e);
-                    self.create_fallback_listener_resources()?
+                    // On database error, only provide fallback for admin scope
+                    match scope {
+                        Scope::All => {
+                            warn!("Failed to load listeners from database: {}, falling back to config", e);
+                            self.create_fallback_listener_resources()?
+                        }
+                        Scope::Team { team, .. } => {
+                            warn!(team = %team, error = %e, "Failed to load listeners from database for team, returning empty list");
+                            vec![]
+                        }
+                        Scope::Allowlist { .. } => {
+                            warn!(error = %e, "Failed to load listeners from database for allowlist, returning empty list");
+                            vec![]
+                        }
+                    }
                 }
             }
         } else {
-            info!("No database repository available, using config-based listener");
-            self.create_fallback_listener_resources()?
+            // No database repository - only provide fallback for admin scope
+            match scope {
+                Scope::All => {
+                    info!("No database repository available, using config-based listener");
+                    self.create_fallback_listener_resources()?
+                }
+                Scope::Team { team, .. } => {
+                    info!(team = %team, "No database repository available for team, returning empty list");
+                    vec![]
+                }
+                Scope::Allowlist { .. } => {
+                    info!("No database repository available for allowlist, returning empty list");
+                    vec![]
+                }
+            }
         };
 
         // Intentionally do not emit Platform API listeners here to avoid port conflicts
+
+        // Inject access log configuration for active learning sessions
+        // This ensures Envoy receives listeners with access log config when sessions are active
+        if let Err(e) = self.state.inject_learning_session_access_logs(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject access log configuration in ADS response"
+            );
+        }
+
+        // Inject ExtProc filter for request/response body capture during learning sessions
+        // Required for schema inference to produce inferred_schemas rows
+        if let Err(e) = self.state.inject_learning_session_ext_proc(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject ExtProc configuration in ADS response"
+            );
+        }
 
         Ok(built)
     }
@@ -594,38 +648,57 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
-        if let Err(error) = state.refresh_listeners_from_repository().await {
-            warn!(%error, "Failed to initialize listener cache from repository");
-        }
+        // CRITICAL: Do NOT refresh listeners into global cache
+        // Listeners MUST be fetched per-team on each xDS request to maintain team isolation
+        // Only refresh Platform API resources which don't have the same port conflict issues
         if let Err(error) = state.refresh_platform_api_resources().await {
-            warn!(%error, "Failed to prime Platform API resources after listener refresh");
+            warn!(%error, "Failed to prime Platform API resources at startup");
         }
 
-        let mut last_version: Option<i64> = None;
+        // Track listener state using count + last modification timestamp
+        // This avoids false positives from PRAGMA data_version which can change
+        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        let mut last_listener_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
-                .fetch_one(repository.pool())
-                .await;
+            // Query actual listener data: count and max updated_at timestamp
+            // This only changes when listeners are actually added/removed/modified
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM listeners",
+            )
+            .fetch_one(repository.pool())
+            .await;
 
             match poll_result {
-                Ok(version) => match last_version {
-                    Some(previous) if previous == version => {}
+                Ok(current_state) => match &last_listener_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual listener changes, skip update
+                    }
                     Some(_) => {
-                        last_version = Some(version);
-                        if let Err(error) = state.refresh_listeners_from_repository().await {
-                            warn!(%error, "Failed to refresh listener cache from repository");
-                        }
+                        last_listener_state = Some(current_state.clone());
+                        // Increment version to trigger xDS push notifications
+                        // Each connected Envoy will then fetch listeners with team filtering
+                        let new_version =
+                            state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        info!(
+                            new_version,
+                            listener_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Listener data changed, incremented xDS version to trigger team-scoped updates"
+                        );
+
+                        // Refresh Platform API resources (these are not team-isolated)
                         if let Err(error) = state.refresh_platform_api_resources().await {
                             warn!(%error, "Failed to refresh Platform API resources after listener change");
                         }
                     }
                     None => {
-                        last_version = Some(version);
+                        // First poll, just record the state without triggering update
+                        last_listener_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll SQLite data_version for listener changes");
+                    warn!(error = %e, "Failed to poll listener state for change detection");
                 }
             }
 

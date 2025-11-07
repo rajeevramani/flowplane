@@ -1,178 +1,198 @@
-<!--toc:start-->
-- [Flowplane Envoy Control Plane](#flowplane-envoy-control-plane)
-  - [The name](#the-name)
-  - [Overview](#overview)
-  - [Before You Start](#before-you-start)
-  - [Quick Start](#quick-start)
-    - [1. Launch the Control Plane](#1-launch-the-control-plane)
-    - [2. Get Your Admin Token](#2-get-your-admin-token)
-    - [3. Import an API from OpenAPI Spec](#3-import-an-api-from-openapi-spec)
-    - [4. Get Envoy Bootstrap Configuration](#4-get-envoy-bootstrap-configuration)
-    - [5. Start Envoy](#5-start-envoy)
-    - [6. Make API Calls Through Envoy](#6-make-api-calls-through-envoy)
-  - [Secure the xDS Channel](#secure-the-xds-channel)
-  - [Enable HTTPS for the Admin API](#enable-https-for-the-admin-api)
-  - [Authenticate API Calls](#authenticate-api-calls)
-  - [Build Your First Gateway](#build-your-first-gateway)
-  - [Bootstrap From OpenAPI](#bootstrap-from-openapi)
-  - [Rate Limiting at a Glance](#rate-limiting-at-a-glance)
-  - [Environment Variables Reference](#environment-variables-reference)
-    - [Core Configuration](#core-configuration)
-    - [TLS Configuration](#tls-configuration)
-    - [Observability](#observability)
-    - [CLI Configuration](#cli-configuration)
-    - [Legacy Development Variables](#legacy-development-variables)
-  - [API Endpoints](#api-endpoints)
-    - [Interactive Documentation](#interactive-documentation)
-    - [Authentication & Tokens](#authentication-tokens)
-    - [Clusters](#clusters)
-    - [Routes](#routes)
-    - [Listeners](#listeners)
-    - [API Definitions (BFF/Platform API)](#api-definitions-bffplatform-api)
-    - [Reports & Analytics](#reports-analytics)
-    - [Token Scopes](#token-scopes)
-  - [Documentation Map](#documentation-map)
-    - [Core Documentation](#core-documentation)
-    - [OpenAPI & Examples](#openapi-examples)
-  - [Staying Productive](#staying-productive)
-    - [Interactive API Testing](#interactive-api-testing)
-    - [Other Productivity Tools](#other-productivity-tools)
-  - [Contributing & Roadmap](#contributing-roadmap)
-<!--toc:end-->
+# Flowplane - Envoy Control Plane
 
-## Flowplane Envoy Control Plane
+Flowplane is a modern Envoy control plane that makes it simple to configure and manage Envoy proxies in non-Kubernetes environments. It provides structured JSON/YAML configuration models that translate automatically into Envoy protobufs, eliminating the need to hand-craft complex `Any` blobs.
 
-### Overview
+**Key Features:**
+- 🚀 Simple REST API for managing clusters, routes, and listeners
+- 📝 OpenAPI 3.0 spec import - automatically generate gateway configuration
+- 🔐 Built-in JWT authentication, rate limiting, and header manipulation
+- 🎯 Team-based multi-tenancy with fine-grained access control
+- 📊 Learning mode - capture real traffic to generate API schemas
+- 🔄 Dynamic xDS updates - changes propagate instantly to Envoy
+- 🛡️ Comprehensive security - TLS/mTLS support for both admin API and xDS
 
-Flowplane is an Envoy control plane that keeps listener, route, and cluster configuration in structured Rust/JSON models. Each payload is validated and then translated into Envoy protobufs through `envoy-types`, so you can assemble advanced filter chains—JWT auth, rate limiting, TLS, tracing—without hand-crafting `Any` blobs.
+## Table of Contents
 
-The goal of this project is make it simple to interact with Envoy in non kubernetes environments.
+- [Quick Start](#quick-start)
+- [Import an OpenAPI Specification](#import-an-openapi-specification)
+- [Learning Gateway](#learning-gateway)
+- [Cookbook](#cookbook)
+  - [JWT Authentication](#jwt-authentication)
+  - [Rate Limiting (Quota)](#rate-limiting-quota)
+  - [Local Rate Limiting](#local-rate-limiting)
+  - [Header Manipulation](#header-manipulation)
+  - [Circuit Breaking](#circuit-breaking)
+  - [External Processor (ext_proc)](#external-processor-ext_proc)
+  - [Clusters](#clusters)
+  - [Listeners](#listeners)
+  - [Routes](#routes)
+- [Examples](#examples)
+  - [Docker Compose](#docker-compose)
+  - [HTTPBin Example](#httpbin-example)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
 
-### Before You Start
+---
 
-- Rust toolchain (1.75+ required)
-- SQLite (for the default embedded database)
-- Envoy proxy (when you are ready to point a data-plane instance at the control plane)
-- **Bootstrap Token**: Generate a secure token for initial admin access (see Authentication section below)
+## Quick Start
 
-**Quick Start with Docker:** For the fastest way to get started, see [DOCKER.md](DOCKER.md) for Docker Compose instructions with:
-- Basic control plane setup
-- Tracing with Zipkin integration
-- Secrets management with HashiCorp Vault
-- Complete test environment with Envoy and httpbin
+Get Flowplane running with Envoy in under 5 minutes.
 
-### Quick Start
+### Prerequisites
 
-This 5-minute guide walks you through launching Flowplane, importing an API, and proxying traffic through Envoy.
+- Docker
+- curl
+- [Envoy proxy](https://www.envoyproxy.io/docs/envoy/latest/start/install) (optional - can use Docker)
 
-#### 1. Launch the Control Plane
+### 1. Pull and Start the Control Plane
 
 ```bash
-# Generate a secure bootstrap token
-export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
+# Pull the latest Flowplane image
+docker pull ghcr.io/rajeevramani/flowplane:latest
 
-# Start Flowplane (creates database automatically)
-DATABASE_URL=sqlite://./data/flowplane.db \
-BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
-FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-cargo run --bin flowplane 2>&1 | grep "Token: fp_pat_"
+# Run the control plane
+docker run -d \
+  --name flowplane \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  -e DATABASE_URL=sqlite:///app/data/flowplane.db \
+  -e FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
+  -e RUST_LOG=info \
+  -v flowplane_data:/app/data \
+  ghcr.io/rajeevramani/flowplane:latest
 ```
 
-#### 2. Get Your Admin Token
+### 2. Get Your Admin Token
 
-When Flowplane starts, it displays a bootstrap admin token in a prominent banner. **Copy this token** - you'll need it for API calls:
-
-```bash
-================================================================================
-🎉 Bootstrap Admin Token Created
-================================================================================
-
-  Token: fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=
-
-⚠️  IMPORTANT: Save this token securely!
-================================================================================
-```
-
-Extract it from logs if needed:
+When Flowplane starts for the first time, it creates a bootstrap admin token. Extract it from the logs:
 
 ```bash
-# From running process
-cargo run --bin flowplane 2>&1 | grep "Token: fp_pat_"
-
-# Or from Docker logs
+# View logs and find the token
 docker logs flowplane 2>&1 | grep "Token: fp_pat_"
+
+# You'll see output like:
+# ================================================================================
+# 🎉 Bootstrap Admin Token Created
+# ================================================================================
+#
+#   Token: fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=
+#
+# ⚠️  IMPORTANT: Save this token securely!
+# ================================================================================
+
+# Export the token for use in commands below
+export ADMIN_TOKEN="fp_pat_YOUR_TOKEN_HERE"
 ```
 
-Export it for use in subsequent commands:
+**Security Note:** Store this token securely (password manager, secrets vault). You'll use it to create additional scoped tokens for automation.
+
+### 3. Create Resources Using Native API
+
+Let's create a simple gateway manually using the Native API:
+
+**Create a Cluster:**
 
 ```bash
-export ADMIN_TOKEN="fp_pat_23ced1d1-3942-41de-9a1e-c0e399831b6e.9SxiaU3W5x9kYSfD8LWhU/TB3PmXiGyVp4nl2Q1K1z0="
-```
-
-#### 3. Import an API from OpenAPI Spec
-
-Import the included HTTPBin example to create a complete gateway (cluster, routes, and listener):
-
-```bash
-# Import httpbin-basic.yaml (uses shared default gateway listener)
-curl -sS \
-  -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false" \
+curl -X POST http://localhost:8080/api/v1/clusters \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/yaml" \
-  --data-binary @examples/httpbin-basic.yaml
-
-# Response includes the API definition ID:
-# {
-#   "id": "api_def_abc123",
-#   "team": "demo",
-#   "domain": "httpbin-org",
-#   "bootstrapUri": "/api/v1/api-definitions/api_def_abc123/bootstrap?scope=all",
-#   "routes": ["httpbin-org-get", "httpbin-org-headers", ...],
-#   "listeners": ["default-gateway-listener"]
-# }
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "httpbin-cluster",
+    "serviceName": "httpbin",
+    "endpoints": [
+      { "host": "httpbin.org", "port": 443 }
+    ],
+    "connectTimeoutSeconds": 5,
+    "useTls": true,
+    "tlsServerName": "httpbin.org"
+  }'
 ```
 
-**Note**: 
-
-> `listenerIsolation=false` means this API uses the shared `default-gateway-listener` on port 10000, allowing multiple APIs to coexist.
-
-Save the API ID from the response:
+**Create a Route:**
 
 ```bash
-export API_ID="api_def_abc123"  # Replace with actual ID from response
-```
-
-#### 4. Get Envoy Bootstrap Configuration
-
-Generate and save the Envoy bootstrap configuration:
-
-```bash
-# Get bootstrap config and save to file
-curl -sS \
+curl -X POST http://localhost:8080/api/v1/routes \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://localhost:8080/api/v1/api-definitions/$API_ID/bootstrap?scope=all" \
-  | yq '.' > envoy-bootstrap.yaml
-
-# Verify the configuration was saved
-cat envoy-bootstrap.yaml | yq '.listeners[].name'
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "httpbin-routes",
+    "virtualHosts": [
+      {
+        "name": "default",
+        "domains": ["*"],
+        "routes": [
+          {
+            "name": "catch-all",
+            "match": {
+              "path": { "type": "prefix", "value": "/" }
+            },
+            "action": {
+              "type": "forward",
+              "cluster": "httpbin-cluster",
+              "timeoutSeconds": 10
+            }
+          }
+        ]
+      }
+    ]
+  }'
 ```
 
-The bootstrap config includes:
+**Create a Listener:**
 
-- Listener configuration (address, port, filters)
-- Cluster definitions (upstream endpoints)
-- Route configurations (path matching rules)
-- xDS configuration for dynamic updates
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "edge-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [
+      {
+        "name": "default",
+        "filters": [
+          {
+            "name": "envoy.filters.network.http_connection_manager",
+            "type": "httpConnectionManager",
+            "routeConfigName": "httpbin-routes",
+            "httpFilters": [
+              {
+                "name": "envoy.filters.http.router",
+                "filter": { "type": "router" }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }'
+```
 
-#### 5. Start Envoy
+### 4. Generate Bootstrap Configuration
+
+Flowplane can generate an Envoy bootstrap configuration with all your resources:
+
+```bash
+# Get bootstrap config (using team-scoped endpoint)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/teams/admin/bootstrap" \
+  > envoy-bootstrap.yaml
+
+# Verify the configuration
+cat envoy-bootstrap.yaml
+```
+
+### 5. Start Envoy
 
 Launch Envoy with the generated bootstrap configuration:
 
 ```bash
-# Using envoy binary
+# Using Envoy binary
 envoy -c envoy-bootstrap.yaml
 
-# Using Docker
+# OR using Docker
 docker run -d \
   --name envoy-gateway \
   --network host \
@@ -182,365 +202,1526 @@ docker run -d \
 ```
 
 Envoy will:
-
 1. Load the bootstrap configuration
 2. Connect to Flowplane's xDS server (port 50051)
-3. Start listening on port 10000 (default gateway listener)
+3. Start listening on port 10000
 
-#### 6. Make API Calls Through Envoy
-
-Test the gateway with various endpoints from the HTTPBin API:
+### 6. Test the Gateway
 
 ```bash
-# Simple GET request (includes gateway headers)
+# Make a request through the gateway
 curl http://localhost:10000/get -H "Host: httpbin.org"
 
-# View request headers (see x-gateway and x-served-by added by Flowplane)
-curl http://localhost:10000/headers -H "Host: httpbin.org"
+# You should see a JSON response from httpbin with your request details
+```
 
-# POST request (stricter rate limit: 5/min)
+🎉 **Congratulations!** You now have a working Envoy gateway managed by Flowplane.
+
+**Next Steps:**
+- Import an OpenAPI spec (see below) for faster setup
+- Configure JWT authentication, rate limiting, and more (see [Cookbook](#cookbook))
+- Explore the interactive API docs at http://localhost:8080/swagger-ui
+
+---
+
+## Import an OpenAPI Specification
+
+The fastest way to create a complete gateway is to import an existing OpenAPI 3.0 specification. Flowplane automatically generates clusters, routes, and listeners from your spec.
+
+### Basic Import
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @examples/httpbin-basic.yaml
+```
+
+**Response:**
+```json
+{
+  "id": "api_def_abc123",
+  "team": "demo",
+  "domain": "httpbin-org",
+  "bootstrapUri": "/api/v1/teams/demo/bootstrap?scope=all",
+  "routes": ["httpbin-org-get", "httpbin-org-post", ...],
+  "listeners": ["default-gateway-listener"]
+}
+```
+
+**Save the API ID:**
+```bash
+export API_ID="api_def_abc123"  # Use the actual ID from the response
+```
+
+### Listener Isolation Modes
+
+Flowplane supports two listener isolation modes:
+
+#### Shared Listener Mode (`listenerIsolation=false`)
+
+Multiple APIs share a single listener on port 10000. This is the default and recommended for most use cases.
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @your-api.yaml
+```
+
+**Benefits:**
+- Simple port management (only port 10000)
+- Multiple APIs can coexist
+- Easier firewall configuration
+
+#### Isolated Listener Mode (`listenerIsolation=true`)
+
+Each API gets its own dedicated listener on a deterministic port (based on domain hash).
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @your-api.yaml
+```
+
+**Benefits:**
+- Complete traffic isolation per API
+- Independent filter configurations
+- Useful for multi-tenant scenarios
+
+### Get Bootstrap Configuration
+
+After importing, generate the Envoy bootstrap configuration:
+
+```bash
+# For team-scoped bootstrap (all APIs for a team)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/teams/demo/bootstrap" \
+  > envoy-bootstrap.yaml
+```
+
+### Start Envoy (if not already running)
+
+If Envoy is already running, it will automatically pick up the new configuration via xDS. If not:
+
+```bash
+docker run -d \
+  --name envoy-gateway \
+  --network host \
+  -v $(pwd)/envoy-bootstrap.yaml:/etc/envoy/envoy.yaml \
+  envoyproxy/envoy:v1.31-latest \
+  -c /etc/envoy/envoy.yaml
+```
+
+### Make API Calls
+
+```bash
+# For shared listener mode (port 10000)
+curl http://localhost:10000/get -H "Host: httpbin.org"
+curl http://localhost:10000/headers -H "Host: httpbin.org"
+curl -X POST http://localhost:10000/post -H "Host: httpbin.org" -d '{"test":"data"}'
+
+# For isolated listener mode, find your port first:
+PORT=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/teams/demo/bootstrap" | \
+  yq '.static_resources.listeners[] | select(.name | contains("platform")) | .address.socket_address.port_value')
+
+curl http://localhost:${PORT}/get -H "Host: httpbin.org"
+```
+
+**Important:** Always include the `Host` header matching your OpenAPI spec's server URL domain.
+
+### Adding Filters to OpenAPI Specs
+
+You can add HTTP filters directly in your OpenAPI spec using `x-flowplane-filters` extensions:
+
+**Example: Global Filters**
+```yaml
+openapi: 3.0.0
+info:
+  title: My API
+  version: 1.0.0
+
+servers:
+  - url: https://api.example.com
+
+# Global filters applied to all routes
+x-flowplane-filters:
+  - filter:
+      type: header_mutation
+      request_headers_to_add:
+        - key: x-gateway
+          value: "flowplane"
+  - filter:
+      type: local_rate_limit
+      stat_prefix: global_rl
+      token_bucket:
+        max_tokens: 100
+        tokens_per_fill: 100
+        fill_interval_ms: 60000
+
+paths:
+  /api/users:
+    get:
+      summary: List users
+      # Route-specific overrides
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: users_rl
+          token_bucket:
+            max_tokens: 10
+            tokens_per_fill: 10
+            fill_interval_ms: 60000
+```
+
+See [examples/README-x-flowplane-extensions.md](examples/README-x-flowplane-extensions.md) for complete filter reference.
+
+---
+
+## Learning Gateway
+
+Flowplane's Learning mode captures real traffic flowing through your gateway to automatically generate API schemas. This is useful for:
+
+- **API Discovery** - Document undocumented APIs
+- **Contract Testing** - Validate actual API behavior
+- **Schema Generation** - Create OpenAPI specs from live traffic
+
+### How Learning Mode Works
+
+1. **Capture Traffic**: Envoy access logs are sent to Flowplane's External Processor
+2. **Aggregate Schemas**: Request/response pairs are analyzed and aggregated
+3. **Export OpenAPI**: Generate OpenAPI 3.1 specs from learned patterns
+
+### Setting Up Learning Mode
+
+#### 1. Create a Team Token with Learning Permissions
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "learning-token",
+    "scopes": [
+      "team:demo:clusters:read",
+      "team:demo:clusters:write",
+      "team:demo:routes:read",
+      "team:demo:routes:write",
+      "team:demo:listeners:read",
+      "team:demo:listeners:write",
+      "team:demo:learning-sessions:read",
+      "team:demo:learning-sessions:write",
+      "team:demo:aggregated-schemas:read"
+    ],
+    "expiresIn": 2592000
+  }'
+
+export LEARNING_TOKEN="<token from response>"
+```
+
+#### 2. Create Resources with External Processor Filter
+
+**Create Cluster:**
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $LEARNING_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "httpbin-cluster",
+    "endpoints": [{"host": "httpbin.org", "port": 80}],
+    "connectTimeoutSeconds": 5
+  }'
+```
+
+**Create Route:**
+```bash
+curl -X POST http://localhost:8080/api/v1/routes \
+  -H "Authorization: Bearer $LEARNING_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "users-route",
+    "virtualHosts": [{
+      "name": "default",
+      "domains": ["*"],
+      "routes": [{
+        "name": "users",
+        "match": {"path": {"type": "prefix", "value": "/users"}},
+        "action": {
+          "type": "forward",
+          "cluster": "httpbin-cluster",
+          "prefixRewrite": "/anything/users"
+        }
+      }]
+    }]
+  }'
+```
+
+**Create Listener with External Processor:**
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $LEARNING_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "learning-listener",
+    "address": "0.0.0.0",
+    "port": 10001,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "users-route",
+        "httpFilters": [
+          {
+            "filter": {
+              "type": "ext_proc",
+              "grpc_service": {
+                "target_uri": "flowplane_ext_proc_service",
+                "timeout_seconds": 5
+              },
+              "failure_mode_allow": true,
+              "processing_mode": {
+                "request_header_mode": "SEND",
+                "response_header_mode": "SEND",
+                "request_body_mode": "BUFFERED",
+                "response_body_mode": "BUFFERED"
+              }
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+#### 3. Start a Learning Session
+
+```bash
+curl -X POST http://localhost:8080/api/v1/learning-sessions \
+  -H "Authorization: Bearer $LEARNING_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "routePattern": "^(/anything)?/users",
+    "targetSampleCount": 5,
+    "maxDurationSeconds": 300
+  }'
+
+# Save the session ID from response
+export SESSION_ID="<session_id>"
+```
+
+#### 4. Send Traffic Through the Gateway
+
+```bash
+# Send sample requests (at least 5 to complete the session)
+for i in {1..5}; do
+  curl http://localhost:10001/users/$i
+  sleep 1
+done
+```
+
+#### 5. Check Learning Progress
+
+```bash
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/learning-sessions/$SESSION_ID"
+```
+
+The session status will show:
+- `active` - Still collecting samples
+- `completed` - Target sample count reached
+- `expired` - Max duration exceeded
+
+#### 6. View Learned Schemas
+
+Once the session completes, schemas are automatically aggregated:
+
+```bash
+# List all aggregated schemas for your team
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/aggregated-schemas"
+
+# Filter by path
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/aggregated-schemas?path=users"
+
+# Get specific schema details
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/aggregated-schemas/<schema_id>"
+```
+
+#### 7. Export as OpenAPI
+
+```bash
+# Export with Flowplane metadata
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/aggregated-schemas/<schema_id>/export?include_metadata=true" \
+  > learned-api.yaml
+
+# Export clean OpenAPI (without metadata)
+curl -H "Authorization: Bearer $LEARNING_TOKEN" \
+  "http://localhost:8080/api/v1/aggregated-schemas/<schema_id>/export?include_metadata=false" \
+  > clean-api.yaml
+```
+
+### Learning Session Best Practices
+
+- **Sample Size**: Start with 5-10 samples, increase for complex APIs
+- **Route Patterns**: Use regex patterns to match route rewrites
+- **Session Duration**: Set appropriate `maxDurationSeconds` (300s = 5 min is typical)
+- **Traffic Variety**: Send requests with different parameters, headers, and bodies
+- **Team Isolation**: Schemas are team-scoped and never leak across teams
+
+---
+
+## Cookbook
+
+Practical recipes for common gateway patterns.
+
+### JWT Authentication
+
+JWT authentication validates bearer tokens against JWKS providers.
+
+#### Global JWT Authentication (All Routes)
+
+Add the JWT filter to your listener to protect all routes:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "secure-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {
+            "name": "envoy.filters.http.jwt_authn",
+            "filter": {
+              "type": "jwt_authn",
+              "providers": {
+                "auth0": {
+                  "issuer": "https://your-tenant.auth0.com/",
+                  "audiences": ["your-api-identifier"],
+                  "jwks": {
+                    "remote": {
+                      "httpUri": {
+                        "uri": "https://your-tenant.auth0.com/.well-known/jwks.json",
+                        "cluster": "jwks-cluster",
+                        "timeoutMs": 5000
+                      },
+                      "cacheDuration": "300s"
+                    }
+                  },
+                  "payloadInMetadata": "jwt_payload"
+                }
+              },
+              "rules": [
+                {
+                  "match": {"path": {"type": "prefix", "value": "/"}},
+                  "requires": {
+                    "type": "provider_name",
+                    "providerName": "auth0"
+                  }
+                }
+              ]
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+**Don't forget to create the JWKS cluster:**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "jwks-cluster",
+    "endpoints": [{"host": "your-tenant.auth0.com", "port": 443}],
+    "useTls": true,
+    "tlsServerName": "your-tenant.auth0.com",
+    "connectTimeoutSeconds": 5
+  }'
+```
+
+#### Route-Specific JWT Authentication
+
+Require JWT only for specific routes using `typedPerFilterConfig`:
+
+```bash
+{
+  "name": "api-routes",
+  "virtualHosts": [{
+    "name": "default",
+    "domains": ["*"],
+    "routes": [
+      {
+        "name": "public-health",
+        "match": {"path": {"type": "exact", "value": "/health"}},
+        "action": {"type": "forward", "cluster": "backend"},
+        "typedPerFilterConfig": {
+          "envoy.filters.http.jwt_authn": {
+            "requirement_name": "allow_missing"
+          }
+        }
+      },
+      {
+        "name": "protected-api",
+        "match": {"path": {"type": "prefix", "value": "/api"}},
+        "action": {"type": "forward", "cluster": "backend"},
+        "typedPerFilterConfig": {
+          "envoy.filters.http.jwt_authn": {
+            "requirement_name": "auth0"
+          }
+        }
+      }
+    ]
+  }]
+}
+```
+
+#### Using OpenAPI Extensions
+
+Add JWT authentication in your OpenAPI spec:
+
+```yaml
+x-flowplane-filters:
+  - filter:
+      type: jwt_authn
+      providers:
+        auth0:
+          issuer: https://your-tenant.auth0.com/
+          audiences: ["your-api-identifier"]
+          jwks:
+            remote:
+              httpUri:
+                uri: https://your-tenant.auth0.com/.well-known/jwks.json
+                cluster: jwks-cluster
+      rules:
+        - match:
+            path:
+              type: prefix
+              value: /api
+          requires:
+            type: provider_name
+            providerName: auth0
+```
+
+---
+
+### Rate Limiting (Quota)
+
+Quota-based rate limiting uses an external Rate Limit Quota Service (RLQS) for sophisticated rate limiting across multiple Envoy instances.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "quota-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {
+            "name": "envoy.filters.http.rate_limit_quota",
+            "filter": {
+              "type": "rate_limit_quota",
+              "rlqs_server": {
+                "cluster_name": "rlqs-cluster",
+                "timeout_ms": 500
+              },
+              "bucket_id_builder": {
+                "bucket_id_type": "client_id",
+                "header_name": "x-client-id"
+              }
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+**Create RLQS cluster:**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "rlqs-cluster",
+    "endpoints": [{"host": "rlqs-server.internal", "port": 8081}],
+    "connectTimeoutSeconds": 5,
+    "type": "STRICT_DNS"
+  }'
+```
+
+---
+
+### Local Rate Limiting
+
+Local rate limiting uses Envoy's built-in token bucket algorithm (no external service required).
+
+#### Global Rate Limit (Listener Level)
+
+Apply a rate limit to all traffic through the listener:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "rate-limited-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {
+            "name": "envoy.filters.http.local_ratelimit",
+            "filter": {
+              "type": "local_rate_limit",
+              "stat_prefix": "global_rate_limit",
+              "token_bucket": {
+                "max_tokens": 100,
+                "tokens_per_fill": 100,
+                "fill_interval_ms": 1000
+              },
+              "status_code": 429
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+This allows 100 requests per second globally.
+
+#### Per-Route Rate Limit
+
+Apply different rate limits to specific routes:
+
+```bash
+{
+  "name": "api-routes",
+  "virtualHosts": [{
+    "name": "default",
+    "domains": ["*"],
+    "routes": [
+      {
+        "name": "expensive-api",
+        "match": {"path": {"type": "prefix", "value": "/api/search"}},
+        "action": {"type": "forward", "cluster": "backend"},
+        "typedPerFilterConfig": {
+          "envoy.filters.http.local_ratelimit": {
+            "stat_prefix": "search_rate_limit",
+            "token_bucket": {
+              "max_tokens": 10,
+              "tokens_per_fill": 10,
+              "fill_interval_ms": 1000
+            },
+            "status_code": 429
+          }
+        }
+      },
+      {
+        "name": "normal-api",
+        "match": {"path": {"type": "prefix", "value": "/api"}},
+        "action": {"type": "forward", "cluster": "backend"}
+      }
+    ]
+  }]
+}
+```
+
+#### Using OpenAPI Extensions
+
+```yaml
+paths:
+  /api/search:
+    get:
+      x-flowplane-route-overrides:
+        rate_limit:
+          stat_prefix: search_rl
+          token_bucket:
+            max_tokens: 10
+            tokens_per_fill: 10
+            fill_interval_ms: 1000
+```
+
+---
+
+### Header Manipulation
+
+Add, modify, or remove headers on requests and responses.
+
+#### Add Headers to Request/Response
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "header-mutation-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {
+            "name": "envoy.filters.http.header_mutation",
+            "filter": {
+              "type": "header_mutation",
+              "request_headers_to_add": [
+                {"key": "x-gateway", "value": "flowplane", "append": false},
+                {"key": "x-request-id", "value": "%REQ(x-request-id)%", "append": false}
+              ],
+              "request_headers_to_remove": ["x-internal-header"],
+              "response_headers_to_add": [
+                {"key": "x-served-by", "value": "flowplane-gateway", "append": false},
+                {"key": "x-response-time", "value": "%RESPONSE_DURATION%", "append": false}
+              ],
+              "response_headers_to_remove": ["server", "x-powered-by"]
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+#### Per-Route Header Manipulation
+
+Apply different header rules per route:
+
+```bash
+{
+  "routes": [
+    {
+      "name": "api-v2",
+      "match": {"path": {"type": "prefix", "value": "/api/v2"}},
+      "action": {"type": "forward", "cluster": "backend-v2"},
+      "typedPerFilterConfig": {
+        "envoy.filters.http.header_mutation": {
+          "request_headers_to_add": [
+            {"key": "x-api-version", "value": "v2"}
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+#### Using OpenAPI Extensions
+
+```yaml
+x-flowplane-filters:
+  - filter:
+      type: header_mutation
+      request_headers_to_add:
+        - key: x-gateway
+          value: flowplane
+      response_headers_to_add:
+        - key: x-served-by
+          value: flowplane-gateway
+```
+
+---
+
+### Circuit Breaking
+
+Protect upstream services from overload with circuit breakers and outlier detection.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "protected-cluster",
+    "endpoints": [
+      {"host": "backend-1.internal", "port": 8080},
+      {"host": "backend-2.internal", "port": 8080}
+    ],
+    "circuitBreakers": {
+      "default": {
+        "maxConnections": 1000,
+        "maxPendingRequests": 100,
+        "maxRequests": 1000,
+        "maxRetries": 3
+      }
+    },
+    "outlierDetection": {
+      "consecutive5xx": 5,
+      "intervalSeconds": 30,
+      "baseEjectionTimeSeconds": 30,
+      "maxEjectionPercent": 50,
+      "enforcingSuccessRate": 100
+    }
+  }'
+```
+
+**Circuit Breaker Thresholds:**
+- `maxConnections`: Maximum concurrent connections
+- `maxPendingRequests`: Maximum pending requests (waiting for connection)
+- `maxRequests`: Maximum active requests
+- `maxRetries`: Maximum concurrent retry requests
+
+**Outlier Detection:**
+- `consecutive5xx`: Eject endpoint after N consecutive 5xx errors
+- `intervalSeconds`: Analysis interval
+- `baseEjectionTimeSeconds`: Minimum ejection duration
+- `maxEjectionPercent`: Maximum % of endpoints that can be ejected
+
+---
+
+### External Processor (ext_proc)
+
+Use external processors for custom request/response processing, including custom error responses.
+
+#### Basic External Processor
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "ext-proc-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {
+            "filter": {
+              "type": "ext_proc",
+              "grpc_service": {
+                "target_uri": "ext-proc.internal:9002",
+                "timeout_seconds": 5
+              },
+              "failure_mode_allow": true,
+              "processing_mode": {
+                "request_header_mode": "SEND",
+                "response_header_mode": "SEND",
+                "request_body_mode": "BUFFERED",
+                "response_body_mode": "BUFFERED"
+              }
+            }
+          },
+          { "filter": { "type": "router" } }
+        ]
+      }]
+    }]
+  }'
+```
+
+#### Custom Response (Per Route)
+
+Use external processor to generate custom responses for specific routes:
+
+```yaml
+paths:
+  /api/custom:
+    get:
+      summary: Returns custom response
+      x-flowplane-route-overrides:
+        custom_response:
+          status_code: 403
+          body: |
+            {
+              "error": "Forbidden",
+              "message": "You don't have permission to access this resource"
+            }
+          headers:
+            - key: content-type
+              value: application/json
+            - key: x-custom-header
+              value: custom-value
+```
+
+---
+
+### Clusters
+
+Clusters define upstream services and their configuration.
+
+#### Static Cluster (HTTP)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "basic-cluster",
+    "serviceName": "backend",
+    "endpoints": [
+      {"host": "backend-1.local", "port": 8080},
+      {"host": "backend-2.local", "port": 8080}
+    ],
+    "connectTimeoutSeconds": 5
+  }'
+```
+
+#### HTTPS Cluster (with TLS)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "tls-cluster",
+    "endpoints": [{"host": "api.example.com", "port": 443}],
+    "useTls": true,
+    "tlsServerName": "api.example.com",
+    "connectTimeoutSeconds": 5
+  }'
+```
+
+#### DNS Discovery Cluster (STRICT_DNS)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "dns-cluster",
+    "serviceName": "backend.internal",
+    "type": "STRICT_DNS",
+    "dnsLookupFamily": "AUTO",
+    "endpoints": [{"host": "backend.internal", "port": 8080}]
+  }'
+```
+
+**Cluster Types:**
+- `STATIC` (default): Fixed list of endpoints
+- `STRICT_DNS`: Periodic DNS resolution
+- `LOGICAL_DNS`: Single DNS resolution
+- `EDS`: Endpoint Discovery Service
+
+#### Health Checked Cluster
+
+```bash
+curl -X POST http://localhost:8080/api/v1/clusters \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "health-checked-cluster",
+    "endpoints": [
+      {"host": "backend-1", "port": 8080},
+      {"host": "backend-2", "port": 8080}
+    ],
+    "healthChecks": [
+      {
+        "type": "http",
+        "path": "/health",
+        "intervalSeconds": 10,
+        "timeoutSeconds": 3,
+        "healthyThreshold": 2,
+        "unhealthyThreshold": 3
+      }
+    ]
+  }'
+```
+
+**Health Check Types:**
+- `http`: HTTP health checks (GET request to path)
+- `tcp`: TCP connection checks
+- `grpc`: gRPC health checks
+
+---
+
+### Listeners
+
+Listeners bind Envoy to ports and configure filter chains.
+
+#### HTTP Listener (Minimal)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "http-listener",
+    "address": "0.0.0.0",
+    "port": 10000,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "my-routes",
+        "httpFilters": [
+          {"filter": {"type": "router"}}
+        ]
+      }]
+    }]
+  }'
+```
+
+#### HTTPS Listener (TLS Termination)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "https-listener",
+    "address": "0.0.0.0",
+    "port": 443,
+    "protocol": "HTTP",
+    "filterChains": [{
+      "name": "tls-chain",
+      "tlsContext": {
+        "certChainFile": "/etc/envoy/certs/server.crt",
+        "privateKeyFile": "/etc/envoy/certs/server.key",
+        "caCertFile": "/etc/envoy/certs/ca.crt",
+        "requireClientCertificate": false
+      },
+      "filters": [{
+        "name": "envoy.filters.network.http_connection_manager",
+        "type": "httpConnectionManager",
+        "routeConfigName": "secure-routes",
+        "httpFilters": [
+          {"filter": {"type": "router"}}
+        ]
+      }]
+    }]
+  }'
+```
+
+#### TCP Listener (Layer 4)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/listeners \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "tcp-listener",
+    "address": "0.0.0.0",
+    "port": 9000,
+    "protocol": "TCP",
+    "filterChains": [{
+      "name": "default",
+      "filters": [{
+        "name": "envoy.filters.network.tcp_proxy",
+        "type": "tcpProxy",
+        "cluster": "tcp-backend-cluster"
+      }]
+    }]
+  }'
+```
+
+---
+
+### Routes
+
+Routes map incoming requests to upstream clusters.
+
+#### Prefix Match Route
+
+```bash
+{
+  "name": "api-routes",
+  "virtualHosts": [{
+    "name": "default",
+    "domains": ["*"],
+    "routes": [
+      {
+        "name": "api-prefix",
+        "match": {
+          "path": {"type": "prefix", "value": "/api"}
+        },
+        "action": {
+          "type": "forward",
+          "cluster": "backend-cluster",
+          "timeoutSeconds": 30
+        }
+      }
+    ]
+  }]
+}
+```
+
+#### Exact Path Match
+
+```bash
+{
+  "routes": [
+    {
+      "name": "health-check",
+      "match": {
+        "path": {"type": "exact", "value": "/health"}
+      },
+      "action": {
+        "type": "forward",
+        "cluster": "backend-cluster",
+        "timeoutSeconds": 5
+      }
+    }
+  ]
+}
+```
+
+#### Regex Match Route
+
+```bash
+{
+  "routes": [
+    {
+      "name": "versioned-api",
+      "match": {
+        "path": {"type": "regex", "value": "^/api/v[0-9]+/"}
+      },
+      "action": {
+        "type": "forward",
+        "cluster": "backend-cluster"
+      }
+    }
+  ]
+}
+```
+
+#### Weighted Routing (Blue/Green)
+
+```bash
+{
+  "routes": [
+    {
+      "name": "blue-green",
+      "match": {
+        "path": {"type": "prefix", "value": "/"}
+      },
+      "action": {
+        "type": "weighted",
+        "totalWeight": 100,
+        "clusters": [
+          {"name": "app-blue", "weight": 80},
+          {"name": "app-green", "weight": 20}
+        ]
+      }
+    }
+  ]
+}
+```
+
+#### Redirect Route
+
+```bash
+{
+  "routes": [
+    {
+      "name": "redirect-to-https",
+      "match": {
+        "path": {"type": "prefix", "value": "/"}
+      },
+      "action": {
+        "type": "redirect",
+        "hostRedirect": "secure.example.com",
+        "responseCode": 301
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Examples
+
+### Docker Compose
+
+Flowplane includes several Docker Compose configurations for different use cases.
+
+#### Basic Setup (docker-compose.yml)
+
+The basic setup runs just the Flowplane control plane:
+
+```bash
+cd /path/to/flowplane
+docker-compose up -d
+```
+
+**What it includes:**
+- Flowplane control plane (ports 8080, 50051)
+- SQLite database (persisted in volume)
+- Health checks
+
+**Accessing the control plane:**
+```bash
+# API
+curl http://localhost:8080/swagger-ui
+
+# Get admin token
+docker-compose logs control-plane 2>&1 | grep "Token: fp_pat_"
+```
+
+#### With Zipkin Tracing (docker-compose-zipkin.yml)
+
+Includes distributed tracing with Zipkin:
+
+```bash
+docker-compose -f docker-compose-zipkin.yml up -d
+```
+
+**What it includes:**
+- Flowplane control plane
+- Zipkin server (port 9411)
+- Automatic trace collection
+
+**Accessing Zipkin:**
+```bash
+# Open Zipkin UI
+open http://localhost:9411
+
+# Traces appear automatically when traffic flows through Envoy
+```
+
+**Configuration:**
+The control plane automatically sends traces when `FLOWPLANE_ENABLE_TRACING=true` is set.
+
+#### With Monitoring (docker-compose-monitoring.yml)
+
+Includes Prometheus and Grafana for metrics:
+
+```bash
+docker-compose -f docker-compose-monitoring.yml up -d
+```
+
+**What it includes:**
+- Flowplane control plane
+- Prometheus (port 9090)
+- Grafana (port 3000)
+- Pre-configured dashboards
+
+**Accessing monitoring:**
+```bash
+# Prometheus
+open http://localhost:9090
+
+# Grafana (default credentials: admin/admin)
+open http://localhost:3000
+
+# Envoy metrics are scraped automatically
+```
+
+**Available Metrics:**
+- Request rates and latencies
+- xDS update statistics
+- Control plane health
+- Envoy resource counts
+
+#### Stopping and Cleanup
+
+```bash
+# Stop services
+docker-compose down
+
+# Stop and remove volumes (WARNING: deletes database)
+docker-compose down -v
+```
+
+---
+
+### HTTPBin Example
+
+The `examples/` directory contains working OpenAPI specifications using httpbin.org as the backend.
+
+#### Available Example Files
+
+| File | Description |
+|------|-------------|
+| `httpbin-basic.yaml` | Simple working example with global filters and rate limiting |
+| `httpbin-full.yaml` | Complete feature demonstration with all filter types |
+| `httpbin-with-filters.yaml` | Shows various filter combinations |
+| `httpbin-custom-response.yaml` | Custom response examples using ext_proc |
+| `httpbin-method-extraction.yaml` | Route-specific method handling patterns |
+
+#### Using httpbin-basic.yaml
+
+This is the recommended starting point. It demonstrates:
+- Global header mutation filters
+- Global rate limiting (100 req/min)
+- Per-route rate limit overrides
+- Multiple HTTP methods (GET, POST, PUT)
+
+**Import the spec:**
+
+```bash
+cd examples
+
+curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=false" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @httpbin-basic.yaml
+```
+
+**Expected response:**
+```json
+{
+  "id": "api_def_xyz789",
+  "team": "demo",
+  "domain": "httpbin-org",
+  "bootstrapUri": "/api/v1/teams/demo/bootstrap?scope=all",
+  "routes": [
+    "httpbin-org-get",
+    "httpbin-org-headers",
+    "httpbin-org-post",
+    "httpbin-org-put",
+    "httpbin-org-status-200",
+    "httpbin-org-json",
+    "httpbin-org-uuid"
+  ],
+  "listeners": ["default-gateway-listener"]
+}
+```
+
+**Get bootstrap config:**
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/teams/demo/bootstrap" \
+  > envoy-bootstrap.yaml
+```
+
+**Start Envoy:**
+
+```bash
+docker run -d \
+  --name envoy \
+  --network host \
+  -v $(pwd)/envoy-bootstrap.yaml:/etc/envoy/envoy.yaml \
+  envoyproxy/envoy:v1.31-latest \
+  -c /etc/envoy/envoy.yaml
+```
+
+**Test the endpoints:**
+
+```bash
+# Simple GET (with added headers)
+curl http://localhost:10000/get -H "Host: httpbin.org"
+
+# View headers added by gateway
+curl http://localhost:10000/headers -H "Host: httpbin.org" | jq '.headers'
+# Look for: x-gateway: flowplane
+
+# POST with stricter rate limit (5/min)
 curl -X POST http://localhost:10000/post \
   -H "Host: httpbin.org" \
   -H "Content-Type: application/json" \
   -d '{"test": "data"}'
 
-# PUT request (very strict rate limit: 3/min)
+# PUT with very strict rate limit (3/min)
 curl -X PUT http://localhost:10000/put \
   -H "Host: httpbin.org" \
   -H "Content-Type: application/json" \
   -d '{"update": "data"}'
 
-# JSON response
-curl http://localhost:10000/json -H "Host: httpbin.org"
-
-# UUID generator
-curl http://localhost:10000/uuid -H "Host: httpbin.org"
-
-# Status code endpoint
-curl http://localhost:10000/status/200 -H "Host: httpbin.org"
-```
-
-**Important**: The `Host: httpbin.org` header is required because Envoy uses it for upstream routing.
-
-**Rate Limiting in Action:**
-
-- Global rate limit: 100 requests/minute (all endpoints)
-- POST endpoint: 5 requests/minute
-- PUT endpoint: 3 requests/minute
-- Status endpoint: 3 requests/minute
-
-Make repeated requests to see rate limiting:
-
-```bash
-# Trigger rate limit on POST (make 10 requests quickly)
+# Test rate limiting
 for i in {1..10}; do
-  curl -X POST http://localhost:10000/post -H "Host: httpbin.org" -H "Content-Type: application/json" -d '{}'
-  echo ""
+  echo "Request $i:"
+  curl -s -X POST http://localhost:10000/post \
+    -H "Host: httpbin.org" \
+    -w "\nHTTP: %{http_code}\n" \
+    -o /dev/null
 done
-
-# You'll see 429 (Too Many Requests) after the 5th request
+# After 5 requests, you'll see HTTP: 429 (rate limited)
 ```
 
-The REST API is available on `http://127.0.0.1:8080`. Open the interactive API reference at **`http://127.0.0.1:8080/swagger-ui`** (OpenAPI JSON is served at `/api-docs/openapi.json`).
+#### Testing Other Examples
 
-### Secure the xDS Channel
-
-Protect Envoy → control plane traffic with TLS or mutual TLS by exporting the following environment variables before starting Flowplane:
-
-- `FLOWPLANE_XDS_TLS_CERT_PATH` – PEM-encoded server certificate chain returned to Envoy.
-- `FLOWPLANE_XDS_TLS_KEY_PATH` – PEM-encoded private key matching the certificate chain.
-- `FLOWPLANE_XDS_TLS_CLIENT_CA_PATH` – (optional) CA bundle used to validate Envoy client certificates.
-- `FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT` – (optional) defaults to `true`; set to `false` to allow TLS without client authentication.
-
-Example launch with mutual TLS:
+**httpbin-full.yaml** - Complete feature set:
 
 ```bash
+curl -X POST "http://localhost:8080/api/v1/api-definitions/from-openapi?team=demo&listenerIsolation=true" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @httpbin-full.yaml
+
+# Find the assigned port
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://localhost:8080/api/v1/teams/demo/bootstrap" | \
+  yq '.static_resources.listeners[] | select(.name | contains("platform")) | .address.socket_address.port_value'
+
+# Test with the assigned port
+curl http://localhost:<PORT>/get -H "Host: httpbin.org"
+```
+
+#### HTTPBin Example Features
+
+These examples demonstrate:
+
+**Global Filters:**
+- ✅ Header mutation (add tracking headers)
+- ✅ Rate limiting (global limits)
+- ✅ CORS configuration
+
+**Route-Level Overrides:**
+- ✅ Per-route rate limits
+- ✅ Per-route header manipulation
+- ✅ Method-specific handling
+
+**Rate Limiting Tiers:**
+- GET endpoints: 100/min (global)
+- POST endpoints: 5/min
+- PUT endpoints: 3/min
+- Status endpoints: 3/min
+
+**Testing Tips:**
+- Always include `Host: httpbin.org` header
+- Use `-v` flag to see response headers
+- Test rate limits with rapid requests
+- Check Envoy stats at `localhost:9901/stats` (if admin interface enabled)
+
+See [examples/HTTPBIN-TESTING.md](examples/HTTPBIN-TESTING.md) for comprehensive testing guide.
+
+---
+
+## Documentation
+
+Comprehensive guides are available in the `docs/` directory:
+
+### Core Documentation
+
+- **[Getting Started](docs/getting-started.md)** - Step-by-step tutorial from zero to working gateway
+- **[Platform API](docs/platform-api.md)** - Team-based multi-tenancy and OpenAPI import
+- **[CLI Usage](docs/cli-usage.md)** - Command-line interface documentation
+- **[Filters](docs/filters.md)** - Complete HTTP filter reference and configuration
+- **[Authentication](docs/authentication.md)** - Token management and access control
+- **[Token Management](docs/token-management.md)** - Creating and managing API tokens
+
+### Cookbooks
+
+- **[Cluster Cookbook](docs/cluster-cookbook.md)** - TLS, health checks, circuit breakers, DNS discovery
+- **[Routing Cookbook](docs/routing-cookbook.md)** - Route patterns, weighted routing, redirects
+- **[Listener Cookbook](docs/listener-cookbook.md)** - HTTP/HTTPS/TCP listeners, global filters, TLS termination
+- **[Gateway Recipes](docs/gateway-recipes.md)** - End-to-end gateway scenarios
+
+### Advanced Topics
+
+- **[TLS Configuration](docs/tls.md)** - Secure xDS and API endpoints with TLS/mTLS
+- **[Architecture](docs/architecture.md)** - System design and module layout
+- **[Configuration Model](docs/config-model.md)** - Schema reference for resources
+- **[Testing](docs/testing.md)** - Test suite commands and validation
+
+### API Reference
+
+- **Swagger UI:** http://localhost:8080/swagger-ui
+- **OpenAPI JSON:** http://localhost:8080/api-docs/openapi.json
+
+---
+
+## Contributing
+
+We welcome contributions! Here's how to get started:
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/rajeevramani/flowplane.git
+cd flowplane
+
+# Build
+cargo build
+
+# Run tests
+cargo test
+
+# Run linting
+cargo clippy
+
+# Format code
+cargo fmt
+
+# Start development server
 DATABASE_URL=sqlite://./data/flowplane.db \
-BOOTSTRAP_TOKEN="$(openssl rand -base64 32)" \
+BOOTSTRAP_TOKEN=$(openssl rand -base64 32) \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-FLOWPLANE_XDS_PORT=50051 \
-FLOWPLANE_XDS_TLS_CERT_PATH=certs/xds-server.pem \
-FLOWPLANE_XDS_TLS_KEY_PATH=certs/xds-server.key \
-FLOWPLANE_XDS_TLS_CLIENT_CA_PATH=certs/xds-ca.pem \
 cargo run --bin flowplane
 ```
 
-Point Envoy at the xDS server using a TLS-enabled cluster and reference the same CA, client certificate, and key inside the Envoy bootstrap (see `envoy-test.yaml` for a full example).
+### Code Quality Standards
 
-- Flowplane seeds a shared gateway trio (`default-gateway-cluster`, `default-gateway-routes`, `default-gateway-listener`) during startup. They fuel the default OpenAPI import path and are protected from deletion so the shared listener keeps working for every team.
+All code must pass:
+- ✅ `cargo fmt` - Code formatting
+- ✅ `cargo clippy` - Linting (zero warnings)
+- ✅ `cargo test` - All tests passing
 
-### Enable HTTPS for the Admin API
+### Development Guidelines
 
-Enable TLS termination on the admin API by supplying certificate paths at startup:
+See [CLAUDE.md](CLAUDE.md) for:
+- Rust best practices (error handling, testing, async/await)
+- Architectural patterns (DRY, code reuse, multi-tenancy)
+- Database guidelines (repository pattern, team isolation)
+- xDS integration patterns
 
-- `FLOWPLANE_API_TLS_ENABLED` – set to `true`, `1`, `yes`, or `on` to enable HTTPS (defaults to HTTP when unset).
-- `FLOWPLANE_API_TLS_CERT_PATH` – PEM-encoded leaf certificate served to clients.
-- `FLOWPLANE_API_TLS_KEY_PATH` – PEM-encoded private key matching the certificate.
-- `FLOWPLANE_API_TLS_CHAIN_PATH` *(optional)* – PEM bundle with intermediate issuers if clients need the full chain.
+See [docs/contributing.md](docs/contributing.md) for:
+- Pull request process
+- Code review checklist
+- Testing requirements
 
-When these variables are present the server binds HTTPS, logs the certificate subject and expiry, and rejects startup if the files are missing, unreadable, expired, or mismatched. See [`docs/tls.md`](docs/tls.md) for workflows covering ACME automation, corporate PKI, and local development certificates.
+### Reporting Issues
 
-### Authenticate API Calls
+- 🐛 **Bug Reports:** https://github.com/rajeevramani/flowplane/issues
+- 💡 **Feature Requests:** https://github.com/rajeevramani/flowplane/issues
+- 📖 **Documentation:** https://github.com/rajeevramani/flowplane/tree/main/docs
 
-Flowplane now protects every REST endpoint with bearer authentication:
+---
 
-1. Start the control plane. On first launch, a bootstrap admin token is **displayed in a prominent banner**
-   with security warnings and also recorded as `auth.token.seeded` in the audit log.
+## License
 
-   ```bash
-   # Extract the token from Docker logs
-   docker-compose logs control-plane 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+'
+Flowplane is open source software. See LICENSE file for details.
 
-   # Or from local logs
-   cargo run --bin flowplane 2>&1 | grep "Token:"
-   ```
+---
 
-2. Store the value securely (e.g., in a secrets manager) and use it to create scoped tokens via the
-   API or CLI:
+## Support
 
-   ```bash
-   export FLOWPLANE_ADMIN_TOKEN="fp_pat_..."
+- **Documentation:** https://github.com/rajeevramani/flowplane/tree/main/docs
+- **Issues:** https://github.com/rajeevramani/flowplane/issues
+- **Discussions:** https://github.com/rajeevramani/flowplane/discussions
 
-   curl -sS \
-     -X POST http://127.0.0.1:8080/api/v1/tokens \
-     -H "Authorization: Bearer $FLOWPLANE_ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "name": "ci-pipeline",
-           "scopes": ["clusters:write", "routes:write", "listeners:read"]
-         }'
-   ```
+---
 
-3. Use the returned token for automation and discard the bootstrap credential.
-
-Scopes map one-to-one with API groups (`clusters:*`, `routes:*`, `listeners:*`, `tokens:*`,
-`gateways:import`). See [`docs/authentication.md`](docs/authentication.md) for details and
-[`docs/token-management.md`](docs/token-management.md) for CLI recipes.
-
-### Build Your First Gateway
-
-Follow the [step-by-step guide](docs/getting-started.md) to:
-
-1. Register a cluster with upstream endpoints
-2. Publish a route configuration with optional per-route rate limiting
-3. Create a listener that wires in global filters (JWT auth, Local Rate Limit, tracing)
-4. Verify requests flowing through Envoy
-
-Each step includes `curl` examples and the JSON payloads the API expects.
-
-### Bootstrap From OpenAPI
-
-If you already have an OpenAPI 3.0 spec, Flowplane can generate clusters, routes, and a listener in one call:
-
-```bash
-curl -sS \
-  -X POST "http://127.0.0.1:8080/api/v1/api-definitions/from-openapi?team=example" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data-binary @openapi.json
-```
-
-The endpoint accepts either JSON or YAML documents. Flowplane derives upstream clusters from the spec's `servers` section, builds route matches from `paths`, and publishes a listener on the port you choose (override with `address` / `port` query parameters).
-
-By default the generated routes join the shared gateway listener `default-gateway-listener` on port `10000`, so multiple specs can coexist without wrestling over listener names or ports. To provision a dedicated listener instead, supply query parameters such as `listener=<custom-name>` (optionally `port`, `bind_address`, and `protocol`) and Flowplane will create separate route and listener resources for that gateway.
-
-**OpenAPI Filter Extensions:** You can add HTTP filters (CORS, rate limiting, JWT auth) directly in your OpenAPI spec using `x-flowplane-filters` and `x-flowplane-route-overrides`. See [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) for the complete filter alias reference and usage guide.
-
-### Rate Limiting at a Glance
-
-Flowplane models Envoy’s Local Rate Limit filter both globally and per-route:
-
-- **Listener-wide** limits: add a `local_rate_limit` entry to the HTTP filter chain when you create/update a listener. All requests passing through that connection manager share the token bucket.
-- **Route-specific** limits: attach a Local Rate Limit scoped config via `typedPerFilterConfig` on routes, virtual hosts, or weighted clusters to tailor traffic policies.
-
-See [docs/filters.md](docs/filters.md#local-rate-limit) for detailed examples of both patterns, including how to combine Local Rate Limit with JWT authentication.
-
-### Environment Variables Reference
-
-#### Core Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | *required* | SQLite or PostgreSQL connection string (e.g., `sqlite://./data/flowplane.db`) |
-| `BOOTSTRAP_TOKEN` | *required* | Secure token (min 32 chars) for creating initial admin PAT. Generate with `openssl rand -base64 32` |
-| `FLOWPLANE_API_BIND_ADDRESS` | `127.0.0.1` | API server bind address (use `0.0.0.0` for Docker/remote access) |
-| `FLOWPLANE_API_PORT` | `8080` | HTTP API server port |
-| `FLOWPLANE_XDS_BIND_ADDRESS` | `0.0.0.0` | xDS gRPC server bind address |
-| `FLOWPLANE_XDS_PORT` | `50051` | xDS gRPC server port |
-
-#### TLS Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLOWPLANE_API_TLS_ENABLED` | `false` | Enable HTTPS for API (set to `true`, `1`, `yes`, or `on`) |
-| `FLOWPLANE_API_TLS_CERT_PATH` | - | PEM-encoded API server certificate |
-| `FLOWPLANE_API_TLS_KEY_PATH` | - | PEM-encoded API server private key |
-| `FLOWPLANE_API_TLS_CHAIN_PATH` | - | Optional intermediate certificate chain |
-| `FLOWPLANE_XDS_TLS_CERT_PATH` | - | PEM-encoded xDS server certificate |
-| `FLOWPLANE_XDS_TLS_KEY_PATH` | - | PEM-encoded xDS server private key |
-| `FLOWPLANE_XDS_TLS_CLIENT_CA_PATH` | - | CA bundle for validating Envoy client certificates |
-| `FLOWPLANE_XDS_TLS_REQUIRE_CLIENT_CERT` | `true` | Require client certificate for mTLS |
-
-#### Observability
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Logging level (`error`, `warn`, `info`, `debug`, `trace`) |
-| `FLOWPLANE_LOG_LEVEL` | `info` | Alternative logging level configuration |
-| `FLOWPLANE_ENABLE_METRICS` | `true` | Enable Prometheus metrics export |
-| `FLOWPLANE_ENABLE_TRACING` | `false` | Enable OpenTelemetry tracing |
-| `FLOWPLANE_SERVICE_NAME` | `flowplane` | Service name for tracing |
-| `FLOWPLANE_JAEGER_ENDPOINT` | - | Jaeger collector endpoint for traces |
-
-#### CLI Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLOWPLANE_TOKEN` | - | Personal access token for CLI authentication |
-| `FLOWPLANE_BASE_URL` | `http://127.0.0.1:8080` | Control plane API base URL for CLI |
-
-#### Legacy Development Variables
-
-These variables are for simple development mode only (not needed for production):
-
-| Variable | Description |
-|----------|-------------|
-| `FLOWPLANE_CLUSTER_NAME` | Demo cluster name (dev only) |
-| `FLOWPLANE_ROUTE_NAME` | Demo route name (dev only) |
-| `FLOWPLANE_LISTENER_NAME` | Demo listener name (dev only) |
-| `FLOWPLANE_BACKEND_ADDRESS` | Demo backend address (dev only) |
-| `FLOWPLANE_BACKEND_PORT` | Demo backend port (dev only) |
-| `FLOWPLANE_LISTENER_PORT` | Demo listener port (dev only) |
-
-### API Endpoints
-
-Flowplane exposes a comprehensive REST API for managing all control plane resources. All endpoints require bearer authentication except for Swagger UI.
-
-#### Interactive Documentation
-
-- **Swagger UI:** `http://127.0.0.1:8080/swagger-ui/`
-- **OpenAPI JSON:** `http://127.0.0.1:8080/api-docs/openapi.json`
-
-#### Authentication & Tokens
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| POST | `/api/v1/tokens` | Create new token | `tokens:write` |
-| GET | `/api/v1/tokens` | List all tokens | `tokens:read` |
-| GET | `/api/v1/tokens/{id}` | Get token details | `tokens:read` |
-| PATCH | `/api/v1/tokens/{id}` | Update token scopes/name | `tokens:write` |
-| DELETE | `/api/v1/tokens/{id}` | Revoke token | `tokens:write` |
-| POST | `/api/v1/tokens/{id}/rotate` | Rotate token secret | `tokens:write` |
-
-#### Clusters
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| POST | `/api/v1/clusters` | Create cluster | `clusters:write` |
-| GET | `/api/v1/clusters` | List clusters | `clusters:read` |
-| GET | `/api/v1/clusters/{name}` | Get cluster | `clusters:read` |
-| PUT | `/api/v1/clusters/{name}` | Update cluster | `clusters:write` |
-| DELETE | `/api/v1/clusters/{name}` | Delete cluster | `clusters:write` |
-
-#### Routes
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| POST | `/api/v1/routes` | Create route | `routes:write` |
-| GET | `/api/v1/routes` | List routes | `routes:read` |
-| GET | `/api/v1/routes/{name}` | Get route | `routes:read` |
-| PUT | `/api/v1/routes/{name}` | Update route | `routes:write` |
-| DELETE | `/api/v1/routes/{name}` | Delete route | `routes:write` |
-
-#### Listeners
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| POST | `/api/v1/listeners` | Create listener | `listeners:write` |
-| GET | `/api/v1/listeners` | List listeners | `listeners:read` |
-| GET | `/api/v1/listeners/{name}` | Get listener | `listeners:read` |
-| PUT | `/api/v1/listeners/{name}` | Update listener | `listeners:write` |
-| DELETE | `/api/v1/listeners/{name}` | Delete listener | `listeners:write` |
-
-#### API Definitions (BFF/Platform API)
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| POST | `/api/v1/api-definitions` | Create BFF API definition | `api-definitions:write` |
-| GET | `/api/v1/api-definitions` | List API definitions | `api-definitions:read` |
-| GET | `/api/v1/api-definitions/{id}` | Get API definition | `api-definitions:read` |
-| PATCH | `/api/v1/api-definitions/{id}` | Update API definition | `api-definitions:write` |
-| POST | `/api/v1/api-definitions/from-openapi` | Import OpenAPI spec | `api-definitions:write` |
-| POST | `/api/v1/api-definitions/{id}/routes` | Append route to API | `api-definitions:write` |
-| GET | `/api/v1/api-definitions/{id}/bootstrap` | Get Envoy bootstrap config | `api-definitions:read` |
-
-#### Reports & Analytics
-
-| Method | Endpoint | Description | Required Scope |
-|--------|----------|-------------|----------------|
-| GET | `/api/v1/reports/route-flows` | Get route flow analysis (listener → route → cluster → endpoints) | `reports:read` |
-
-Supports pagination via `limit` and `offset` query parameters. Team-scoped tokens see only their team's routes.
-
-#### Token Scopes
-
-Scopes control access to API groups:
-
-- `tokens:read`, `tokens:write` - Token management
-- `clusters:read`, `clusters:write` - Cluster resources
-- `routes:read`, `routes:write` - Route configuration resources
-- `listeners:read`, `listeners:write` - Listener resources
-- `api-definitions:read`, `api-definitions:write` - API definition (Platform API) resources
-- `reports:read` - Access to reporting and analytics endpoints
-- `admin:all` - Super admin scope granting full access across all resources and teams
-- `team:<team-name>:<resource>:<action>` - Team-scoped access pattern (e.g., `team:platform:routes:read`)
-
-### Documentation Map
-
-#### Core Documentation
-
-- [`docs/getting-started.md`](docs/getting-started.md) – From zero to envoy traffic: API walkthrough with clusters, routes, listeners, and verification steps.
-- [`docs/platform-api.md`](docs/platform-api.md) – **Platform API Reference** – Higher-level API for team-based multi-tenancy and OpenAPI-driven gateway creation. Complete endpoint documentation with request/response schemas, listener isolation modes, and workflow examples.
-- [`docs/cli-usage.md`](docs/cli-usage.md) – **CLI Usage Guide** – Comprehensive command-line interface documentation covering installation, configuration, and all commands (database, auth, config, api, cluster, listener, route) with practical examples and workflows.
-- [`docs/cluster-cookbook.md`](docs/cluster-cookbook.md) – Common cluster patterns (TLS, health checks, circuit breakers, DNS).
-- [`docs/routing-cookbook.md`](docs/routing-cookbook.md) – Route action recipes (forward, weighted, redirects), matcher combinations, and scoped filters.
-- [`docs/listener-cookbook.md`](docs/listener-cookbook.md) – Listener setups covering global filters, JWT auth, TLS termination, and TCP proxying.
-- [`docs/gateway-recipes.md`](docs/gateway-recipes.md) – End-to-end API gateway scenarios combining clusters, routes, and listeners.
-- [`docs/filters.md`](docs/filters.md) – HTTP filter registry, Local Rate Limit usage, JWT auth providers and scoped overrides, plus extension guidelines.
-- [`docs/config-model.md`](docs/config-model.md) – Listener, route, and cluster schema reference and how scoped configs attach to Envoy resources.
-- [`docs/testing.md`](docs/testing.md) – Test suite commands, smoke scripts, and manual validation tips.
-- [`docs/architecture.md`](docs/architecture.md) – Module layout and design principles.
-- [`docs/contributing.md`](docs/contributing.md) – Coding standards and PR expectations.
-
-#### OpenAPI & Examples
-
-- [`examples/README-x-flowplane-extensions.md`](examples/README-x-flowplane-extensions.md) – **Complete filter alias reference** showing how `x-flowplane-filters` and `x-flowplane-route-overrides` map to Envoy filters, with usage examples.
-- [`examples/SUPPORTED-OVERRIDES.md`](examples/SUPPORTED-OVERRIDES.md) – Detailed documentation for each supported route-level filter override.
-- [`examples/QUICK-REFERENCE.md`](examples/QUICK-REFERENCE.md) – Quick reference card for common x-flowplane patterns and troubleshooting.
-
-### Staying Productive
-
-#### Interactive API Testing
-
-The **`.http-examples/`** directory contains ready-to-use HTTP test files for the VSCode REST Client extension:
-
-- **Quick setup**: Install the REST Client extension, set `API_TOKEN` in `.env`, and click "Send Request" in any `.http` file
-- **Complete coverage**: Authentication, clusters, routes, listeners, API definitions, and reporting endpoints
-- **Workflow examples**: From token creation to full gateway deployment
-- **See [.http-examples/README.md](.http-examples/README.md) for detailed setup and usage**
-
-Alternative tools:
-
-- **Bruno workspace** (`bruno/`) - GUI-based HTTP client with git-friendly collections for cluster/route/listener management
-- **Swagger UI** (`http://127.0.0.1:8080/swagger-ui`) - Interactive API documentation with in-browser testing
-
-#### Other Productivity Tools
-
-- `GET /api/v1/clusters`, `GET /api/v1/routes`, `GET /api/v1/listeners` show what is currently stored
-- `scripts/smoke-listener.sh` provisions a demo stack against `httpbin.org`; use it as a reference or a sanity check after changes
-
-### Contributing & Roadmap
-
-We welcome issues and pull requests. Run `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` before submitting changes. See [`docs/contributing.md`](docs/contributing.md) for more details.
-
-Upcoming areas of exploration include extending the HTTP filter catalog, MCP protocol support, and richer observability hooks. Contributions that keep the configuration surface consistent and testable are especially appreciated.
+**Built with ❤️ using Rust, Axum, Envoy-Types and Envoy**

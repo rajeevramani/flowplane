@@ -57,12 +57,10 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
 use tracing::{debug, error, info, warn};
 
-use crate::xds::state::{ResourceDelta, XdsState};
-use envoy_types::pb::envoy::service::discovery::v3::Resource;
+use crate::xds::state::XdsState;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
-use uuid::Uuid;
 
 /// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
@@ -152,6 +150,10 @@ where
     let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let team_for_cleanup = team_for_stream.clone();
 
+    // Track the node metadata from the initial connection to preserve team context in push updates
+    let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
+        Arc::new(Mutex::new(None));
+
     tokio::spawn(async move {
         // Run the stream loop and ensure cleanup happens
         async {
@@ -179,6 +181,14 @@ where
                                         crate::observability::metrics::record_team_xds_connection(team, true).await;
                                         info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
                                     }
+                                }
+                            }
+
+                            // Store the node metadata for use in push updates to preserve team context
+                            {
+                                let mut node_guard = node_for_stream.lock().await;
+                                if node_guard.is_none() && discovery_request.node.is_some() {
+                                    *node_guard = discovery_request.node.clone();
                                 }
                             }
 
@@ -308,6 +318,12 @@ where
                             };
                             if interested.is_empty() { continue; }
 
+                            // Capture the node metadata for push updates to preserve team context
+                            let node_for_push = {
+                                let node_guard = node_for_stream.lock().await;
+                                node_guard.clone()
+                            };
+
                             for delta in &update.deltas {
                                 if !interested.contains(&delta.type_url) { continue; }
 
@@ -317,6 +333,7 @@ where
                                 let label_for_task = label.clone();
                                 let tracker_for_task = last_sent.clone();
                                 let type_url_for_task = delta.type_url.clone();
+                                let node_for_task = node_for_push.clone();
 
                                 tokio::spawn(async move {
                                     // Create a span for SOTW push updates
@@ -327,8 +344,14 @@ where
                                     );
                                     let _enter = span.enter();
 
-                                    // Build a minimal request for this type
-                                    let request = DiscoveryRequest { type_url: type_url_for_task.clone(), ..Default::default() };
+                                    // Build a request with node metadata to preserve team context for filtering
+                                    // This ensures push updates respect team isolation by including the original
+                                    // team metadata from the connection in scope_from_discovery()
+                                    let request = DiscoveryRequest {
+                                        type_url: type_url_for_task.clone(),
+                                        node: node_for_task,
+                                        ..Default::default()
+                                    };
                                     match responder_for_task(state_for_task, request).await {
                                         Ok(response) => {
                                             info!(
@@ -446,6 +469,10 @@ where
     let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let team_for_cleanup = team_for_stream.clone();
 
+    // Track the node metadata from the initial connection to preserve team context in push updates
+    let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
+        Arc::new(Mutex::new(None));
+
     tokio::spawn(async move {
         let mut pending_types: HashSet<String> = HashSet::new();
 
@@ -473,6 +500,14 @@ where
                                             crate::observability::metrics::record_team_xds_connection(team, true).await;
                                             info!(stream = %label, team = %team, "New Delta xDS stream established, incrementing connection gauge");
                                         }
+                                    }
+                                }
+
+                                // Store the node metadata for use in push updates to preserve team context
+                                {
+                                    let mut node_guard = node_for_stream.lock().await;
+                                    if node_guard.is_none() && delta_request.node.is_some() {
+                                        *node_guard = delta_request.node.clone();
                                     }
                                 }
 
@@ -562,6 +597,12 @@ where
                                 continue;
                             }
 
+                            // Capture the node metadata for push updates to preserve team context
+                            let node_for_push = {
+                                let node_guard = node_for_stream.lock().await;
+                                node_guard.clone()
+                            };
+
                             for delta in &update.deltas {
                                 if !pending_types.contains(&delta.type_url) {
                                     continue;
@@ -571,30 +612,59 @@ where
                                     continue;
                                 }
 
-                                let response = build_delta_response(update.version, delta);
+                                // Instead of using cached deltas directly (which contain ALL teams' resources),
+                                // call the responder with node metadata to get team-filtered resources.
+                                // This ensures Delta push updates respect team isolation.
+                                let state_for_task = state_clone.clone();
+                                let responder_for_task = responder.clone();
                                 let tx_for_task = tx.clone();
                                 let label_for_task = label.clone();
+                                let type_url_for_task = delta.type_url.clone();
+                                let node_for_task = node_for_push.clone();
 
                                 info!(
                                     type_url = %delta.type_url,
-                                    added = delta.added_or_updated.len(),
-                                    removed = delta.removed.len(),
+                                    cached_added = delta.added_or_updated.len(),
+                                    cached_removed = delta.removed.len(),
                                     version = update.version,
                                     stream = %label,
-                                    "Sending delta push update to client"
+                                    "Triggering team-filtered delta push update"
                                 );
 
                                 tokio::spawn(async move {
                                     // Create a span for delta push updates
                                     let span = tracing::info_span!(
                                         "xds_delta_push_update",
-                                        type_url = %response.type_url,
+                                        type_url = %type_url_for_task,
                                         stream = %label_for_task
                                     );
                                     let _enter = span.enter();
 
-                                    if tx_for_task.send(Ok(response)).await.is_err() {
-                                        error!(stream = %label_for_task, "Delta response receiver dropped");
+                                    // Build a request with node metadata to preserve team context
+                                    let request = DeltaDiscoveryRequest {
+                                        type_url: type_url_for_task.clone(),
+                                        node: node_for_task,
+                                        ..Default::default()
+                                    };
+
+                                    match responder_for_task(state_for_task, request).await {
+                                        Ok(response) => {
+                                            info!(
+                                                type_url = %response.type_url,
+                                                nonce = %response.nonce,
+                                                version = %response.system_version_info,
+                                                resource_count = response.resources.len(),
+                                                stream = %label_for_task,
+                                                "Sending team-filtered delta push update"
+                                            );
+
+                                            if tx_for_task.send(Ok(response)).await.is_err() {
+                                                error!(stream = %label_for_task, "Delta response receiver dropped");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(stream = %label_for_task, error = %e, "Failed to create delta push response");
+                                        }
                                     }
                                 });
                             }
@@ -633,41 +703,6 @@ where
     });
 
     ReceiverStream::new(rx)
-}
-
-/// Build a DeltaDiscoveryResponse from a ResourceDelta.
-///
-/// Converts internal ResourceDelta representation into the Envoy protobuf format
-/// with added/updated resources and removed resource names.
-///
-/// # Arguments
-///
-/// * `update_version` - Global version number for this update
-/// * `delta` - Resource changes (added, updated, removed)
-///
-/// # Returns
-///
-/// A `DeltaDiscoveryResponse` ready to send to Envoy
-fn build_delta_response(update_version: u64, delta: &ResourceDelta) -> DeltaDiscoveryResponse {
-    let resources: Vec<Resource> = delta
-        .added_or_updated
-        .iter()
-        .map(|cached| Resource {
-            name: cached.name.clone(),
-            version: cached.version.to_string(),
-            resource: Some(cached.body.clone()),
-            ..Default::default()
-        })
-        .collect();
-
-    DeltaDiscoveryResponse {
-        system_version_info: update_version.to_string(),
-        type_url: delta.type_url.clone(),
-        nonce: Uuid::new_v4().to_string(),
-        resources,
-        removed_resources: delta.removed.clone(),
-        ..Default::default()
-    }
 }
 
 #[cfg(test)]

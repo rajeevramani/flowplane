@@ -6,13 +6,14 @@
 //! - RDS (Route Discovery Service)
 //! - LDS (Listener Discovery Service)
 
+pub mod access_log;
 pub mod cluster;
 mod cluster_spec;
 pub mod filters;
 pub mod listener;
 pub(crate) mod resources;
 pub mod route;
-mod services;
+pub mod services;
 mod state;
 
 use crate::{config::SimpleXdsConfig, storage::DbPool, Result};
@@ -21,10 +22,15 @@ use std::sync::Arc;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tracing::info;
 
+use envoy_types::pb::envoy::service::accesslog::v3::access_log_service_server::AccessLogServiceServer;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 
 pub use cluster_spec::*;
-pub use services::{DatabaseAggregatedDiscoveryService, MinimalAggregatedDiscoveryService};
+pub use services::{
+    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService, FlowplaneExtProcService,
+    MinimalAggregatedDiscoveryService,
+};
 pub use state::XdsState;
 
 /// Start the minimal xDS gRPC server with configuration and graceful shutdown
@@ -50,15 +56,27 @@ where
     // Create ADS service implementation
     let ads_service = MinimalAggregatedDiscoveryService::new(state.clone());
 
-    // Build and start the gRPC server with ADS service only
+    // Create AccessLogService for receiving Envoy access logs
+    let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
+    // TODO: Spawn background task to process log_rx entries
+
+    // Create ExtProcService for body capture
+    let (ext_proc_service, _ext_proc_rx) = FlowplaneExtProcService::new();
+
+    // Build and start the gRPC server with ADS service, AccessLogService, and ExtProcService
     // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
+        .add_service(AccessLogServiceServer::new(access_log_service))
+        .add_service(ExternalProcessorServer::new(ext_proc_service))
         .serve_with_shutdown(addr, shutdown_signal);
 
-    info!("XDS server listening on {}", addr);
+    info!(
+        address = %addr,
+        "XDS server with AccessLogService and ExtProcService listening"
+    );
 
     // Start the server with graceful shutdown
     server
@@ -116,11 +134,38 @@ where
 
     let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
+    // Use the AccessLogService from state if available, otherwise create a new one
+    let access_log_service = if let Some(service) = &state.access_log_service {
+        Arc::clone(service)
+    } else {
+        let (service, _log_rx) = FlowplaneAccessLogService::new();
+        Arc::new(service)
+    };
+
+    // Use the ExtProcService from state if available, otherwise create a new one
+    let ext_proc_service = if let Some(service) = &state.ext_proc_service {
+        Arc::clone(service)
+    } else {
+        let (service, _ext_proc_rx) = FlowplaneExtProcService::new();
+        Arc::new(service)
+    };
+
     let server = server_builder
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
+        .add_service(AccessLogServiceServer::new(
+            // Clone the service (shares the inner Arc<RwLock<...>> with learning session service)
+            (*access_log_service).clone(),
+        ))
+        .add_service(ExternalProcessorServer::new(
+            // Clone the service (shares the inner Arc<RwLock<...>> for body capture state)
+            (*ext_proc_service).clone(),
+        ))
         .serve_with_shutdown(addr, shutdown_signal);
 
-    info!("Database-enabled XDS server listening on {}", addr);
+    info!(
+        address = %addr,
+        "Database-enabled XDS server with AccessLogService and ExtProcService listening"
+    );
 
     server
         .await
