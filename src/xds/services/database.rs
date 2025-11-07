@@ -655,23 +655,37 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
             warn!(%error, "Failed to prime Platform API resources at startup");
         }
 
-        let mut last_version: Option<i64> = None;
+        // Track listener state using count + last modification timestamp
+        // This avoids false positives from PRAGMA data_version which can change
+        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        let mut last_listener_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
-                .fetch_one(repository.pool())
-                .await;
+            // Query actual listener data: count and max updated_at timestamp
+            // This only changes when listeners are actually added/removed/modified
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM listeners",
+            )
+            .fetch_one(repository.pool())
+            .await;
 
             match poll_result {
-                Ok(version) => match last_version {
-                    Some(previous) if previous == version => {}
+                Ok(current_state) => match &last_listener_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual listener changes, skip update
+                    }
                     Some(_) => {
-                        last_version = Some(version);
+                        last_listener_state = Some(current_state.clone());
                         // Increment version to trigger xDS push notifications
                         // Each connected Envoy will then fetch listeners with team filtering
                         let new_version =
                             state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        info!(new_version, "Listener database changed, incremented xDS version to trigger team-scoped updates");
+                        info!(
+                            new_version,
+                            listener_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Listener data changed, incremented xDS version to trigger team-scoped updates"
+                        );
 
                         // Refresh Platform API resources (these are not team-isolated)
                         if let Err(error) = state.refresh_platform_api_resources().await {
@@ -679,11 +693,12 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                         }
                     }
                     None => {
-                        last_version = Some(version);
+                        // First poll, just record the state without triggering update
+                        last_listener_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll SQLite data_version for listener changes");
+                    warn!(error = %e, "Failed to poll listener state for change detection");
                 }
             }
 
