@@ -69,6 +69,7 @@ flowplane-debug.db-shm
 flowplane-debug.db-wal
 
 bruno/
+.http-examples/
 
 # Logs
 logs
