@@ -422,10 +422,13 @@ impl TokenService {
     ///
     /// This method validates a setup token by:
     /// 1. Fetching the setup token from the database
-    /// 2. Verifying it's marked as a setup token
-    /// 3. Checking it hasn't expired
-    /// 4. Verifying it hasn't exceeded max usage count
-    /// 5. Verifying the secret matches the stored hash
+    /// 2. Checking if the token is locked due to failed attempts
+    /// 3. Verifying the token status is active
+    /// 4. Verifying it's marked as a setup token
+    /// 5. Checking it hasn't expired
+    /// 6. Verifying it hasn't exceeded max usage count
+    /// 7. Verifying the secret matches the stored hash
+    /// 8. Recording failed attempts on validation failure
     ///
     /// # Arguments
     ///
@@ -439,6 +442,8 @@ impl TokenService {
     /// # Errors
     ///
     /// - Returns `Error::NotFound` if the token doesn't exist
+    /// - Returns `Error::Unauthorized` if the token is locked
+    /// - Returns `Error::Unauthorized` if the token is not active
     /// - Returns `Error::Unauthorized` if the token is not a setup token
     /// - Returns `Error::Unauthorized` if the token has expired
     /// - Returns `Error::Unauthorized` if the token has exceeded max usage count
@@ -446,14 +451,31 @@ impl TokenService {
     pub async fn verify_setup_token(&self, token_id: &str, secret: &str) -> Result<bool> {
         let token = self.repository.get_setup_token_for_validation(token_id).await?;
 
+        // Check if token is locked
+        if let Some(locked_until) = token.locked_until {
+            if locked_until > Utc::now() {
+                return Err(Error::validation(
+                    "Setup token is temporarily locked due to too many failed attempts. Please try again later."
+                ));
+            }
+        }
+
+        // Verify token status is active
+        if token.status != "active" {
+            self.repository.record_failed_setup_token_attempt(token_id).await?;
+            return Err(Error::validation("Setup token is not active"));
+        }
+
         // Verify it's a setup token
         if !token.is_setup_token {
+            self.repository.record_failed_setup_token_attempt(token_id).await?;
             return Err(Error::validation("Not a setup token"));
         }
 
         // Verify it hasn't expired
         if let Some(expires_at) = token.expires_at {
             if expires_at < Utc::now() {
+                self.repository.record_failed_setup_token_attempt(token_id).await?;
                 return Err(Error::validation("Setup token has expired"));
             }
         }
@@ -461,12 +483,21 @@ impl TokenService {
         // Verify it hasn't exceeded max usage count
         if let Some(max_usage) = token.max_usage_count {
             if token.usage_count >= max_usage {
+                self.repository.record_failed_setup_token_attempt(token_id).await?;
                 return Err(Error::validation("Setup token has exceeded maximum usage count"));
             }
         }
 
         // Verify the secret
-        self.verify_secret(&token.token_hash, secret)
+        let is_valid = self.verify_secret(&token.token_hash, secret)?;
+
+        if !is_valid {
+            // Record failed attempt on secret mismatch
+            self.repository.record_failed_setup_token_attempt(token_id).await?;
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     /// Increment setup token usage count
@@ -487,6 +518,26 @@ impl TokenService {
     pub async fn increment_setup_token_usage(&self, token_id: &str) -> Result<()> {
         self.repository.increment_setup_token_usage(token_id).await?;
         info!(setup_token_id = %token_id, "setup token usage incremented");
+        Ok(())
+    }
+
+    /// Revoke a setup token
+    ///
+    /// This method revokes a setup token, typically after successful bootstrap
+    /// initialization when the token should no longer be usable.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_id` - The setup token ID to revoke
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the token doesn't exist
+    /// - Returns an error if the database update fails
+    #[instrument(skip(self), fields(setup_token_id = token_id))]
+    pub async fn revoke_setup_token(&self, token_id: &str) -> Result<()> {
+        self.repository.revoke_setup_token(token_id).await?;
+        info!(setup_token_id = %token_id, "setup token revoked");
         Ok(())
     }
 
