@@ -26,6 +26,10 @@ async fn setup_pool() -> DbPool {
             created_by TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ,
+            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
+            max_usage_count INTEGER,
+            usage_count INTEGER NOT NULL DEFAULT 0
         );
         "#,
     )
@@ -65,6 +69,9 @@ fn sample_token(id: &str, index: usize) -> NewPersonalAccessToken {
             format!("scope:write:{}", index),
             format!("scope:delete:{}", index),
         ],
+        is_setup_token: false,
+        max_usage_count: None,
+        usage_count: 0,
     }
 }
 
