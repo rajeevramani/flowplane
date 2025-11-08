@@ -154,6 +154,10 @@ pub async fn bootstrap_initialize_handler(
     // Increment setup token usage count (marking it as used)
     service.increment_setup_token_usage(setup_token_id).await.map_err(convert_error)?;
 
+    // Auto-revoke setup token after successful use (security best practice)
+    // This ensures the setup token can only be used once, even if max_usage_count > 1
+    service.revoke_setup_token(setup_token_id).await.map_err(convert_error)?;
+
     // Log bootstrap event
     audit_repository
         .record_auth_event(AuditEvent {
@@ -163,6 +167,7 @@ pub async fn bootstrap_initialize_handler(
             metadata: serde_json::json!({
                 "setup_token_id": setup_token_id,
                 "admin_token_scopes": ["admin:all"],
+                "setup_token_revoked": true,
             }),
         })
         .await
@@ -172,7 +177,7 @@ pub async fn bootstrap_initialize_handler(
         StatusCode::CREATED,
         Json(BootstrapInitializeResponse {
             token: admin_token,
-            message: "Bootstrap initialization successful. Admin token created.".to_string(),
+            message: "Bootstrap initialization successful. Admin token created. Setup token has been revoked.".to_string(),
         }),
     ))
 }
