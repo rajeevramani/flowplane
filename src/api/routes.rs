@@ -17,11 +17,11 @@ use crate::xds::XdsState;
 use super::{
     docs,
     handlers::{
-        append_route_handler, compare_aggregated_schemas_handler, create_api_definition_handler,
-        create_cluster_handler, create_learning_session_handler, create_listener_handler,
-        create_route_handler, create_token_handler, delete_cluster_handler,
-        delete_learning_session_handler, delete_listener_handler, delete_route_handler,
-        export_aggregated_schema_handler, get_aggregated_schema_handler,
+        append_route_handler, bootstrap_initialize_handler, compare_aggregated_schemas_handler,
+        create_api_definition_handler, create_cluster_handler, create_learning_session_handler,
+        create_listener_handler, create_route_handler, create_token_handler,
+        delete_cluster_handler, delete_learning_session_handler, delete_listener_handler,
+        delete_route_handler, export_aggregated_schema_handler, get_aggregated_schema_handler,
         get_api_definition_handler, get_cluster_handler, get_learning_session_handler,
         get_listener_handler, get_route_handler, get_team_bootstrap_handler, get_token_handler,
         health_handler, import_openapi_handler, list_aggregated_schemas_handler,
@@ -112,7 +112,10 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .layer(auth_layer);
 
     // Public endpoints (no authentication required)
-    let public_api = Router::new().route("/health", get(health_handler)).with_state(api_state);
+    let public_api = Router::new()
+        .route("/health", get(health_handler))
+        .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
+        .with_state(api_state);
 
     secured_api.merge(public_api).merge(docs::docs_router())
 }

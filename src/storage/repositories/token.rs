@@ -33,6 +33,16 @@ struct TokenScopeRow {
     pub scope: String,
 }
 
+/// Setup token data for validation
+#[derive(Debug, Clone)]
+pub struct SetupTokenValidationData {
+    pub token_hash: String,
+    pub is_setup_token: bool,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub max_usage_count: Option<i64>,
+    pub usage_count: i64,
+}
+
 /// Combined row for batch fetching tokens with scopes via LEFT JOIN
 #[derive(Debug, Clone, FromRow)]
 struct TokenWithScopeRow {
@@ -73,6 +83,8 @@ pub trait TokenRepository: Send + Sync {
     ) -> Result<Option<(PersonalAccessToken, String)>>;
     async fn count_tokens(&self) -> Result<i64>;
     async fn count_active_tokens(&self) -> Result<i64>;
+    async fn get_setup_token_for_validation(&self, id: &str) -> Result<SetupTokenValidationData>;
+    async fn increment_setup_token_usage(&self, id: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -422,5 +434,62 @@ impl TokenRepository for SqlxTokenRepository {
             context: "Failed to count active personal access tokens".to_string(),
         })?;
         Ok(count)
+    }
+
+    async fn get_setup_token_for_validation(&self, id: &str) -> Result<SetupTokenValidationData> {
+        #[derive(Debug, Clone, FromRow)]
+        struct SetupTokenRow {
+            pub token_hash: String,
+            pub is_setup_token: bool,
+            pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+            pub max_usage_count: Option<i64>,
+            pub usage_count: i64,
+        }
+
+        let row: SetupTokenRow = sqlx::query_as(
+            "SELECT token_hash, is_setup_token, expires_at, max_usage_count, usage_count
+             FROM personal_access_tokens
+             WHERE id = $1 AND status = 'active'",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| match err {
+            sqlx::Error::RowNotFound => FlowplaneError::not_found("setup_token", id),
+            _ => FlowplaneError::Database {
+                source: err,
+                context: "Failed to fetch setup token for validation".to_string(),
+            },
+        })?;
+
+        Ok(SetupTokenValidationData {
+            token_hash: row.token_hash,
+            is_setup_token: row.is_setup_token,
+            expires_at: row.expires_at,
+            max_usage_count: row.max_usage_count,
+            usage_count: row.usage_count,
+        })
+    }
+
+    async fn increment_setup_token_usage(&self, id: &str) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE personal_access_tokens
+             SET usage_count = usage_count + 1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND is_setup_token = TRUE",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to increment setup token usage count".to_string(),
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found("setup_token", id));
+        }
+
+        Ok(())
     }
 }
