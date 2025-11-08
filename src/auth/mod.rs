@@ -10,6 +10,7 @@ mod hashing;
 pub mod jwt;
 pub mod middleware;
 pub mod models;
+pub mod setup_token;
 pub mod token_service;
 pub mod validation;
 
