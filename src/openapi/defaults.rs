@@ -1,11 +1,5 @@
-use std::sync::Arc;
-
-use crate::auth::token_service::TokenService;
 use crate::errors::Error;
-use crate::storage::{
-    repository::AuditLogRepository, CreateClusterRequest, CreateListenerRequest,
-    CreateRouteRepositoryRequest,
-};
+use crate::storage::{CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest};
 use crate::xds::XdsState;
 use crate::xds::{
     filters::http::{HttpFilterConfigEntry, HttpFilterKind},
@@ -22,7 +16,7 @@ fn serialize_value<T: serde::Serialize>(value: &T, context: &str) -> Result<Valu
     serde_json::to_value(value)
         .map_err(|err| Error::internal(format!("Failed to serialize {}: {}", context, err)))
 }
-use tracing::{info, warn};
+use tracing::info;
 
 pub const DEFAULT_GATEWAY_CLUSTER: &str = "default-gateway-cluster";
 pub const DEFAULT_GATEWAY_ROUTES: &str = "default-gateway-routes";
@@ -46,112 +40,8 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         None => return Ok(()),
     };
 
-    // Read BOOTSTRAP_TOKEN from environment - REQUIRED for startup
-    let bootstrap_token = std::env::var("BOOTSTRAP_TOKEN").map_err(|_| {
-        Error::internal(
-            "BOOTSTRAP_TOKEN environment variable is required but not set.\n\
-            \n\
-            Please add BOOTSTRAP_TOKEN to your .env file:\n\
-            \n\
-            1. Generate a secure token:\n\
-               openssl rand -base64 32\n\
-            \n\
-            2. Add to .env file:\n\
-               BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
-            \n\
-            SECURITY: Token must be at least 32 characters long.\n\
-            "
-            .to_string(),
-        )
-    })?;
-
-    // Validate minimum length (32 characters for security)
-    if bootstrap_token.len() < 32 {
-        return Err(Error::internal(format!(
-            "BOOTSTRAP_TOKEN must be at least 32 characters long (current: {} chars).\n\
-            \n\
-            Generate a secure token with:\n\
-            openssl rand -base64 32\n\
-            ",
-            bootstrap_token.len()
-        )));
-    }
-
-    // Prevent use of the example/default token
-    if bootstrap_token == "change-me-to-secure-token-min-32-characters-long" {
-        return Err(Error::internal(
-            "BOOTSTRAP_TOKEN is set to the example value.\n\
-            \n\
-            Please generate a secure token:\n\
-            openssl rand -base64 32\n\
-            \n\
-            Then update .env with:\n\
-            BOOTSTRAP_TOKEN=\"your-generated-token-here\"\n\
-            "
-            .to_string(),
-        ));
-    }
-
-    let audit_repository = Arc::new(AuditLogRepository::new(cluster_repo.pool().clone()));
-    let token_service = TokenService::with_sqlx(cluster_repo.pool().clone(), audit_repository);
-
-    // Environment-based secrets backend selection:
-    // - If VAULT_ADDR and VAULT_TOKEN are set → use Vault (production)
-    // - Otherwise → use environment variables only (development)
-    let vault_client =
-        if std::env::var("VAULT_ADDR").is_ok() && std::env::var("VAULT_TOKEN").is_ok() {
-            match crate::secrets::VaultSecretsClient::from_env().await {
-                Ok(client) => {
-                    info!("Using Vault secrets backend for bootstrap token storage and rotation");
-                    Some(client)
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        "Vault environment variables detected but failed to connect. \
-                         Falling back to environment variable only mode. \
-                         Bootstrap token rotation will not be available."
-                    );
-                    None
-                }
-            }
-        } else {
-            info!(
-                "No Vault configuration detected (VAULT_ADDR/VAULT_TOKEN not set). \
-             Using environment variable only mode for development. \
-             Bootstrap token rotation will not be available."
-            );
-            None
-        };
-
-    // Ensure bootstrap token exists (with optional Vault storage)
-    if let Some(token_value) =
-        token_service.ensure_bootstrap_token(&bootstrap_token, vault_client.as_ref()).await?
-    {
-        // Print prominent banner to ensure token is visible
-        eprintln!("\n{}", "=".repeat(80));
-        eprintln!("🔐 BOOTSTRAP ADMIN TOKEN CREATED");
-        eprintln!("{}", "=".repeat(80));
-        eprintln!();
-        eprintln!("  Token: {}", token_value);
-        eprintln!();
-        eprintln!("⚠️  IMPORTANT: Save this token securely!");
-        eprintln!("   - This token has full admin access (admin:all scope)");
-        eprintln!("   - It is created from your BOOTSTRAP_TOKEN environment variable");
-        eprintln!("   - Store it in a password manager or secure vault");
-        eprintln!();
-        eprintln!("To use with CLI:");
-        eprintln!("  export FLOWPLANE_TOKEN='{}'", token_value);
-        eprintln!();
-        eprintln!("{}", "=".repeat(80));
-        eprintln!();
-
-        // Also log it for structured logging systems
-        warn!(
-            token = %token_value,
-            "Seeded bootstrap admin personal access token from environment; store it securely"
-        );
-    }
+    // NOTE: Bootstrap token auto-generation is now handled in the startup module
+    // (See src/startup.rs and main.rs for the new auto-generation flow)
 
     if !cluster_repo.exists_by_name(DEFAULT_GATEWAY_CLUSTER).await? {
         let cluster_spec = ClusterSpec {
