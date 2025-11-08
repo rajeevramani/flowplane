@@ -34,6 +34,7 @@ pub mod platform_api;
 pub mod schema;
 pub mod secrets;
 pub mod services;
+pub mod startup;
 pub mod storage;
 pub mod utils;
 pub mod validation;

@@ -123,6 +123,9 @@ impl TokenService {
             scopes: vec![
                 "admin:all".into(), // Grant full admin access
             ],
+            is_setup_token: false,
+            max_usage_count: None,
+            usage_count: 0,
         };
 
         self.repository.create_token(new_token).await?;
@@ -175,6 +178,9 @@ impl TokenService {
             expires_at,
             created_by: payload.created_by.clone(),
             scopes: payload.scopes.clone(),
+            is_setup_token: false,
+            max_usage_count: None,
+            usage_count: 0,
         };
 
         self.repository.create_token(new_token).await?;

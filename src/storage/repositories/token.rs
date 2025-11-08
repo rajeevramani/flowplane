@@ -147,7 +147,8 @@ impl TokenRepository for SqlxTokenRepository {
         })?;
 
         sqlx::query(
-            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, created_at, updated_at)              VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
         .bind(&token.id)
         .bind(&token.name)
@@ -156,6 +157,9 @@ impl TokenRepository for SqlxTokenRepository {
         .bind(token.status.as_str())
         .bind(token.expires_at)
         .bind(token.created_by.as_ref())
+        .bind(token.is_setup_token)
+        .bind(token.max_usage_count)
+        .bind(token.usage_count)
         .execute(&mut *tx)
         .await
         .map_err(|err| FlowplaneError::Database {

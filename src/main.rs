@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
     info!(database = db_kind, "Creating database connection pool");
     let pool = create_pool(&db_config).await?;
 
+    // Handle first-time startup: auto-generate setup token if needed
+    flowplane::startup::handle_first_time_startup(pool.clone()).await?;
+
     // Create shutdown signal handler
     let simple_xds_config: SimpleXdsConfig = config.xds.clone();
     let api_config: ApiServerConfig = config.api.clone();
