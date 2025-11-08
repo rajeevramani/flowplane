@@ -186,6 +186,8 @@ pub async fn handle_first_time_startup(pool: DbPool) -> Result<()> {
         is_setup_token: true,
         max_usage_count: Some(max_usage),
         usage_count: 0,
+        failed_attempts: 0,
+        locked_until: None,
     };
 
     token_repo.create_token(new_token).await?;

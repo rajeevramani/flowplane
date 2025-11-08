@@ -41,6 +41,9 @@ pub struct SetupTokenValidationData {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub max_usage_count: Option<i64>,
     pub usage_count: i64,
+    pub failed_attempts: i64,
+    pub locked_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub status: String,
 }
 
 /// Combined row for batch fetching tokens with scopes via LEFT JOIN
@@ -85,6 +88,8 @@ pub trait TokenRepository: Send + Sync {
     async fn count_active_tokens(&self) -> Result<i64>;
     async fn get_setup_token_for_validation(&self, id: &str) -> Result<SetupTokenValidationData>;
     async fn increment_setup_token_usage(&self, id: &str) -> Result<()>;
+    async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()>;
+    async fn revoke_setup_token(&self, id: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -147,8 +152,8 @@ impl TokenRepository for SqlxTokenRepository {
         })?;
 
         sqlx::query(
-            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, failed_attempts, locked_until, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
         .bind(&token.id)
         .bind(&token.name)
@@ -160,6 +165,8 @@ impl TokenRepository for SqlxTokenRepository {
         .bind(token.is_setup_token)
         .bind(token.max_usage_count)
         .bind(token.usage_count)
+        .bind(token.failed_attempts)
+        .bind(token.locked_until)
         .execute(&mut *tx)
         .await
         .map_err(|err| FlowplaneError::Database {
@@ -448,12 +455,15 @@ impl TokenRepository for SqlxTokenRepository {
             pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
             pub max_usage_count: Option<i64>,
             pub usage_count: i64,
+            pub failed_attempts: i64,
+            pub locked_until: Option<chrono::DateTime<chrono::Utc>>,
+            pub status: String,
         }
 
         let row: SetupTokenRow = sqlx::query_as(
-            "SELECT token_hash, is_setup_token, expires_at, max_usage_count, usage_count
+            "SELECT token_hash, is_setup_token, expires_at, max_usage_count, usage_count, failed_attempts, locked_until, status
              FROM personal_access_tokens
-             WHERE id = $1 AND status = 'active'",
+             WHERE id = $1",
         )
         .bind(id)
         .fetch_one(&self.pool)
@@ -472,6 +482,9 @@ impl TokenRepository for SqlxTokenRepository {
             expires_at: row.expires_at,
             max_usage_count: row.max_usage_count,
             usage_count: row.usage_count,
+            failed_attempts: row.failed_attempts,
+            locked_until: row.locked_until,
+            status: row.status,
         })
     }
 
@@ -488,6 +501,56 @@ impl TokenRepository for SqlxTokenRepository {
         .map_err(|err| FlowplaneError::Database {
             source: err,
             context: "Failed to increment setup token usage count".to_string(),
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found("setup_token", id));
+        }
+
+        Ok(())
+    }
+
+    async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()> {
+        // Increment failed_attempts and lock token if failed_attempts >= 5
+        // Lock for 15 minutes
+        let result = sqlx::query(
+            "UPDATE personal_access_tokens
+             SET failed_attempts = failed_attempts + 1,
+                 locked_until = CASE
+                     WHEN failed_attempts + 1 >= 5 THEN datetime(CURRENT_TIMESTAMP, '+15 minutes')
+                     ELSE locked_until
+                 END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND is_setup_token = TRUE",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to record failed setup token attempt".to_string(),
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found("setup_token", id));
+        }
+
+        Ok(())
+    }
+
+    async fn revoke_setup_token(&self, id: &str) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE personal_access_tokens
+             SET status = 'revoked',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND is_setup_token = TRUE",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to revoke setup token".to_string(),
         })?;
 
         if result.rows_affected() == 0 {

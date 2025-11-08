@@ -126,6 +126,8 @@ impl TokenService {
             is_setup_token: false,
             max_usage_count: None,
             usage_count: 0,
+            failed_attempts: 0,
+            locked_until: None,
         };
 
         self.repository.create_token(new_token).await?;
@@ -181,6 +183,8 @@ impl TokenService {
             is_setup_token: false,
             max_usage_count: None,
             usage_count: 0,
+            failed_attempts: 0,
+            locked_until: None,
         };
 
         self.repository.create_token(new_token).await?;
