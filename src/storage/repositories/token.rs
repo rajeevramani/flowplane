@@ -429,7 +429,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn count_active_tokens(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM personal_access_tokens WHERE status = 'active'",
+            "SELECT COUNT(*) FROM personal_access_tokens WHERE status = 'active' AND is_setup_token = FALSE",
         )
         .fetch_one(&self.pool)
         .await
