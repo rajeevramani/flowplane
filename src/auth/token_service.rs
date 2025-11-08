@@ -26,7 +26,7 @@ use crate::storage::repository::{
     AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
 };
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenSecretResponse {
     pub id: String,
@@ -406,5 +406,84 @@ impl TokenService {
 
         // Return the new token value
         Ok(format!("fp_pat_{}.{}", bootstrap_token.id, new_secret))
+    }
+
+    /// Verify a setup token
+    ///
+    /// This method validates a setup token by:
+    /// 1. Fetching the setup token from the database
+    /// 2. Verifying it's marked as a setup token
+    /// 3. Checking it hasn't expired
+    /// 4. Verifying it hasn't exceeded max usage count
+    /// 5. Verifying the secret matches the stored hash
+    ///
+    /// # Arguments
+    ///
+    /// * `token_id` - The setup token ID
+    /// * `secret` - The plaintext secret to verify
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if the setup token is valid, `Ok(false)` if verification fails
+    ///
+    /// # Errors
+    ///
+    /// - Returns `Error::NotFound` if the token doesn't exist
+    /// - Returns `Error::Unauthorized` if the token is not a setup token
+    /// - Returns `Error::Unauthorized` if the token has expired
+    /// - Returns `Error::Unauthorized` if the token has exceeded max usage count
+    #[instrument(skip(self, secret), fields(setup_token_id = token_id))]
+    pub async fn verify_setup_token(&self, token_id: &str, secret: &str) -> Result<bool> {
+        let token = self.repository.get_setup_token_for_validation(token_id).await?;
+
+        // Verify it's a setup token
+        if !token.is_setup_token {
+            return Err(Error::validation("Not a setup token"));
+        }
+
+        // Verify it hasn't expired
+        if let Some(expires_at) = token.expires_at {
+            if expires_at < Utc::now() {
+                return Err(Error::validation("Setup token has expired"));
+            }
+        }
+
+        // Verify it hasn't exceeded max usage count
+        if let Some(max_usage) = token.max_usage_count {
+            if token.usage_count >= max_usage {
+                return Err(Error::validation("Setup token has exceeded maximum usage count"));
+            }
+        }
+
+        // Verify the secret
+        self.verify_secret(&token.token_hash, secret)
+    }
+
+    /// Increment setup token usage count
+    ///
+    /// This method atomically increments the usage count for a setup token.
+    /// This should be called after successfully using a setup token to create
+    /// an admin token.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_id` - The setup token ID
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the token doesn't exist
+    /// - Returns an error if the database update fails
+    #[instrument(skip(self), fields(setup_token_id = token_id))]
+    pub async fn increment_setup_token_usage(&self, token_id: &str) -> Result<()> {
+        self.repository.increment_setup_token_usage(token_id).await?;
+        info!(setup_token_id = %token_id, "setup token usage incremented");
+        Ok(())
+    }
+
+    /// Count active tokens (for bootstrap checks)
+    ///
+    /// This is a convenience method that delegates to the repository.
+    pub async fn count_active_tokens(&self) -> Result<i64> {
+        self.repository.count_active_tokens().await
     }
 }
