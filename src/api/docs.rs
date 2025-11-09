@@ -27,6 +27,7 @@ use crate::xds::{
 #[openapi(
     paths(
         crate::api::handlers::health::health_handler,
+        crate::api::handlers::bootstrap::bootstrap_initialize_handler,
         crate::api::handlers::auth::create_token_handler,
         crate::api::handlers::auth::list_tokens_handler,
         crate::api::handlers::auth::get_token_handler,
@@ -70,6 +71,8 @@ use crate::xds::{
     components(
         schemas(
             crate::api::handlers::health::HealthResponse,
+            crate::api::handlers::bootstrap::BootstrapInitializeRequest,
+            crate::api::handlers::bootstrap::BootstrapInitializeResponse,
             CreateClusterBody,
             EndpointRequest,
             HealthCheckRequest,
@@ -140,6 +143,7 @@ use crate::xds::{
         )
     ),
     tags(
+        (name = "bootstrap", description = "Bootstrap initialization for first-time setup"),
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
@@ -209,6 +213,12 @@ mod tests {
     fn openapi_includes_all_endpoints() {
         let openapi = ApiDoc::openapi();
         let paths = &openapi.paths.paths;
+
+        // Bootstrap endpoint (1)
+        assert!(
+            paths.contains_key("/api/v1/bootstrap/initialize"),
+            "Missing POST /api/v1/bootstrap/initialize"
+        );
 
         // Token endpoints (6)
         assert!(paths.contains_key("/api/v1/tokens"), "Missing GET/POST /api/v1/tokens");
@@ -305,6 +315,16 @@ mod tests {
     fn openapi_includes_required_schemas() {
         let openapi = ApiDoc::openapi();
         let schemas = &openapi.components.as_ref().expect("components").schemas;
+
+        // Bootstrap schemas
+        assert!(
+            schemas.contains_key("BootstrapInitializeRequest"),
+            "Missing BootstrapInitializeRequest schema"
+        );
+        assert!(
+            schemas.contains_key("BootstrapInitializeResponse"),
+            "Missing BootstrapInitializeResponse schema"
+        );
 
         // Cluster schemas
         assert!(schemas.contains_key("CreateClusterBody"), "Missing CreateClusterBody schema");
@@ -463,6 +483,7 @@ mod tests {
 
         let tag_names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
 
+        assert!(tag_names.contains(&"bootstrap"), "Missing 'bootstrap' tag");
         assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
         assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");

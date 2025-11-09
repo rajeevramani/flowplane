@@ -27,7 +27,7 @@ async fn setup_pool() -> DbPool {
             last_used_at DATETIME,
             created_by TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         );
         "#,
     )
@@ -68,6 +68,11 @@ async fn seed_tokens(repo: &SqlxTokenRepository, count: usize) {
                 format!("scope:write:{}", i),
                 format!("scope:delete:{}", i),
             ],
+            is_setup_token: false,
+            max_usage_count: None,
+            usage_count: 0,
+            failed_attempts: 0,
+            locked_until: None,
         };
         repo.create_token(token).await.unwrap();
     }
