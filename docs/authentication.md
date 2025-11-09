@@ -9,19 +9,71 @@ accepts two credential types:
   clients continue to work unchanged, but new automation should migrate to PATs to take advantage of
   scoped authorization and audit logging.
 
-## Bootstrapping
+## Bootstrapping with Setup Tokens
 
-When the control plane starts with an empty `personal_access_tokens` table it automatically seeds a
-bootstrap token named `bootstrap-admin`. The secret is printed once to the logs, emitted through the
-CLI if you are running in foreground mode, and recorded in the audit log as
-`auth.token.seeded`. Store the value immediately—Flowplane never displays the secret again.
+On first startup with an empty database, Flowplane automatically generates a **setup token** - a special one-time-use token designed solely for initial bootstrap. The setup token is displayed in a prominent banner and must be exchanged for an admin token via the `/api/v1/bootstrap/initialize` endpoint.
 
-```text
-WARN flowplane::openapi::defaults: Seeded bootstrap admin personal access token; store it securely
+### Setup Token Characteristics
+
+- **Single-use**: Automatically revoked after successful bootstrap
+- **Time-limited**: Expires after 24 hours by default
+- **Bootstrap-only**: Can only be used with the `/api/v1/bootstrap/initialize` endpoint
+- **Security features**: Failed attempt tracking, automatic lockout after 5 failures, auto-revocation on suspicious activity
+
+### Bootstrap Process
+
+#### Using the REST API
+
+```bash
+# Extract setup token from startup logs
+# Look for the banner with "fp_setup_..." token
+
+# Exchange for admin token
+curl -X POST http://127.0.0.1:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "setupToken": "fp_setup_YOUR_TOKEN_HERE",
+    "adminTokenName": "my-admin-token",
+    "adminTokenDescription": "Initial admin token"
+  }'
+
+# Response:
+# {
+#   "adminToken": "fp_pat_...",
+#   "message": "Bootstrap completed successfully"
+# }
 ```
 
-You can regenerate the bootstrap token at any time by invoking `TokenService::ensure_bootstrap_token`
-or by deleting every token record and restarting the server.
+#### Using the CLI
+
+```bash
+# Extract setup token from logs
+export SETUP_TOKEN="fp_setup_..."
+
+# Bootstrap using CLI (stores token in config file)
+flowplane auth bootstrap \
+  --setup-token "$SETUP_TOKEN" \
+  --admin-token-name "my-admin-token"
+
+# Or use API mode with existing control plane URL
+flowplane auth bootstrap \
+  --api-url "http://localhost:8080" \
+  --setup-token "$SETUP_TOKEN" \
+  --admin-token-name "my-admin-token"
+```
+
+See [`docs/cli-usage.md`](cli-usage.md) for complete CLI reference.
+
+### Setup Token Security
+
+Setup tokens include enhanced security features added in v0.0.6:
+
+- **Failed attempt tracking**: Each failed authentication attempt is logged
+- **Automatic lockout**: After 5 failed attempts, the token is permanently locked
+- **Auto-revocation**: On successful bootstrap or suspicious activity detection
+- **Audit logging**: All setup token operations logged to `audit_log` table
+
+**Security Note:** Setup tokens are more restrictive than regular PATs. They can only access the bootstrap endpoint and are automatically revoked after a single successful use or after reaching the failure limit.
 
 ## Personal Access Token Lifecycle
 

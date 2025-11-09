@@ -4,29 +4,57 @@ This walkthrough takes you from an empty database to a working Envoy listener th
 
 ## Authentication
 
-All API endpoints require bearer authentication. On first startup, Flowplane displays a bootstrap admin token in a **prominent banner**:
+All API endpoints require bearer authentication. On first startup with an empty database, Flowplane automatically generates a **setup token** displayed in a prominent banner. You must exchange this setup token for an admin token via the bootstrap endpoint.
+
+### Step 1: Extract Setup Token from Logs
 
 ```bash
-# Generate a secure bootstrap token first
-export BOOTSTRAP_TOKEN=$(openssl rand -base64 32)
-
-# Start the control plane and capture the token
+# Start the control plane
 DATABASE_URL=sqlite://./data/flowplane.db \
-BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
 FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
 cargo run --bin flowplane
 
-# Extract from Docker logs (if using Docker)
-docker-compose logs control-plane 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+'
+# View logs and find the setup token
+# You'll see output like:
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                  🚀 FLOWPLANE CONTROL PLANE - FIRST TIME SETUP               ║
+# ╠══════════════════════════════════════════════════════════════════════════════╣
+# ║                                                                              ║
+# ║  A setup token has been automatically generated for initial bootstrap.      ║
+# ║                                                                              ║
+# ║  Setup Token:                                                                ║
+# ║  fp_setup_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4... ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# Export the setup token
+export SETUP_TOKEN="fp_setup_YOUR_TOKEN_HERE"
 ```
 
-Export the token for use in the examples below:
+### Step 2: Exchange Setup Token for Admin Token
 
 ```bash
+# Bootstrap initialization
+curl -X POST http://127.0.0.1:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"setupToken\": \"$SETUP_TOKEN\",
+    \"adminTokenName\": \"my-admin-token\",
+    \"adminTokenDescription\": \"Initial admin token for getting started\"
+  }"
+
+# Response includes the admin token - save it immediately:
+# {
+#   "adminToken": "fp_pat_...",
+#   "message": "Bootstrap completed successfully"
+# }
+
+# Export the admin token for use in examples below
 export FLOWPLANE_TOKEN="fp_pat_..."
 ```
 
-See [authentication.md](authentication.md) for creating scoped tokens and managing access.
+**Important:** The setup token is automatically revoked after successful bootstrap. Store your admin token securely - it will not be displayed again.
+
+See [authentication.md](authentication.md) for creating scoped tokens, managing access, and the CLI-based authentication workflow using `flowplane auth bootstrap`.
 
 > **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/api-definitions/from-openapi?team=<team>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
 >

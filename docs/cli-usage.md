@@ -151,6 +151,46 @@ flowplane-cli database validate
 
 Manage personal access tokens (PATs) for API authentication.
 
+### Bootstrap Initial Setup
+
+On first startup, Flowplane generates a setup token that must be exchanged for an admin token. The CLI provides a convenient `auth bootstrap` command for this:
+
+```bash
+# Extract setup token from control plane logs
+# Look for the banner with "fp_setup_..." token
+
+# Bootstrap using CLI (stores admin token in config file automatically)
+flowplane auth bootstrap \
+  --setup-token "fp_setup_YOUR_TOKEN_HERE" \
+  --admin-token-name "my-admin-token" \
+  --admin-token-description "Initial admin token for CLI"
+
+# Or use API mode (requires --api-url)
+flowplane auth bootstrap \
+  --api-url "http://localhost:8080" \
+  --setup-token "fp_setup_YOUR_TOKEN_HERE" \
+  --admin-token-name "my-admin-token"
+
+# The command will:
+# 1. Call POST /api/v1/bootstrap/initialize
+# 2. Receive the admin token
+# 3. Save it to ~/.flowplane/config.toml automatically
+# 4. Display confirmation message
+```
+
+**Output:**
+```
+✅ Bootstrap completed successfully
+Admin token: fp_pat_...
+Token saved to config file: /Users/you/.flowplane/config.toml
+```
+
+**Security Notes:**
+- Setup tokens are single-use and automatically revoked after bootstrap
+- Setup tokens expire after 24 hours
+- Failed authentication attempts (>5) trigger automatic lockout
+- All bootstrap operations are logged to the audit log
+
 ### Create Tokens
 
 ```bash
@@ -595,23 +635,27 @@ flowplane-cli listener list --output table
 ### Initial System Setup
 
 ```bash
-# 1. Initialize database
-flowplane-cli database migrate
+# 1. Start Flowplane for the first time (generates setup token)
+# View logs to find the setup token (fp_setup_...)
 
 # 2. Initialize CLI configuration
 flowplane-cli config init
 
-# 3. Create bootstrap admin token using database
-flowplane-cli auth create-token \
-  --name "admin-bootstrap" \
-  --scope "tokens:*" \
-  --scope "clusters:*" \
-  --scope "routes:*" \
-  --scope "listeners:*" \
-  --scope "api-definitions:*"
+# 3. Bootstrap with setup token (automatically saves admin token)
+flowplane auth bootstrap \
+  --api-url "http://localhost:8080" \
+  --setup-token "fp_setup_YOUR_TOKEN_HERE" \
+  --admin-token-name "admin-token"
 
-# 4. Store token in config
-flowplane-cli config set token fp_pat_generated_token_here
+# 4. Verify authentication
+flowplane-cli cluster list
+
+# 5. (Optional) Create additional scoped tokens for team access
+flowplane-cli auth create-token \
+  --name "platform-team-token" \
+  --scope "team:platform:clusters:*" \
+  --scope "team:platform:routes:*" \
+  --scope "team:platform:listeners:*"
 ```
 
 ### OpenAPI Import Workflow
