@@ -1,48 +1,178 @@
 ### Variables
 @base_url = http://localhost:8080
-@token = {{$dotenv API_TOKEN}}
 
-### Create Token
-# @name generateToken
-POST {{base_url}}/api/v1/tokens
-Authorization: Bearer {{token}}
+# Setup token (shown in startup banner on first run)
+# Format: fp_setup_{uuid}.{secret}
+# Add to .env file: SETUP_TOKEN=fp_setup_...
+@setup_token = {{$dotenv SETUP_TOKEN}}
+
+# Admin token (obtained from bootstrap initialization)
+# Format: fp_pat_{uuid}.{secret}
+# Add to .env file: API_TOKEN=fp_pat_...
+@admin_token = {{$dotenv API_TOKEN}}
+
+### ============================================================================
+### BOOTSTRAP WORKFLOW (First-Time Setup)
+### ============================================================================
+
+### Step 1: Bootstrap - Exchange Setup Token for Admin Token
+# @name bootstrap
+# This endpoint is only available when no admin tokens exist yet.
+# After successful bootstrap:
+# - The setup token is automatically revoked (can't be reused)
+# - You receive an admin token with full access (admin:all scope)
+POST {{base_url}}/api/v1/bootstrap/initialize
 Content-Type: application/json
 
 {
-  "name": "test-token",
-  "description": "Test token for development",
-  "scopes": ["clusters:read", "clusters:write", "routes:read", "routes:write"]
+  "setupToken": "{{setup_token}}",
+  "tokenName": "admin",
+  "description": "Initial administrator token"
 }
 
-### Step 1.2: Extract API Definition ID from response
-@id = {{generateToken.response.body.id}}
+### Extract admin token from bootstrap response
+@admin_token_from_bootstrap = {{bootstrap.response.body.token}}
+
+### ============================================================================
+### TOKEN MANAGEMENT (Using Admin Token)
+### ============================================================================
+
+### Create Admin Token
+# Requires: admin:all scope
+# @name createAdminToken
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "second-admin",
+  "description": "Another admin token",
+  "scopes": ["admin:all"],
+  "createdBy": "admin@example.com"
+}
+
+### Create Resource-Level Token
+# Requires: admin:all scope
+# Scope format: {resource}:{action}
+# Resources: clusters, routes, listeners, api-definitions
+# Actions: read, write, delete
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "resource-token",
+  "description": "Token with resource-level access",
+  "scopes": [
+    "clusters:read",
+    "clusters:write",
+    "routes:read",
+    "routes:write"
+  ],
+  "createdBy": "admin@example.com"
+}
+
+### Create Team-Scoped Token
+# Requires: admin:all scope OR team:{name}:{resource}:{action} scope
+# Scope format: team:{team_name}:{resource}:{action}
+# @name createTeamToken
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "team-a-token",
+  "description": "Token scoped to team-a resources",
+  "scopes": [
+    "team:team-a:routes:read",
+    "team:team-a:routes:write",
+    "team:team-a:listeners:read",
+    "team:team-a:listeners:write"
+  ],
+  "createdBy": "admin@example.com",
+  "expiresAt": "2025-12-31T23:59:59Z"
+}
+
+### Create Multi-Team Token
+# A single token can have access to multiple teams
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "multi-team-token",
+  "description": "Token with access to multiple teams",
+  "scopes": [
+    "team:team-a:routes:read",
+    "team:team-a:routes:write",
+    "team:team-b:routes:read",
+    "team:team-b:routes:write",
+    "team:team-c:clusters:read"
+  ],
+  "createdBy": "admin@example.com"
+}
+
+### Extract token ID from response
+@token_id = {{createTeamToken.response.body.id}}
+
+### ============================================================================
+### TOKEN OPERATIONS
+### ============================================================================
 
 ### List Tokens
 GET {{base_url}}/api/v1/tokens
-Authorization: Bearer {{token}}
+Authorization: Bearer {{admin_token}}
 
-### Get Token
-# Replace {id} with actual token ID from create response
-GET {{base_url}}/api/v1/tokens/{{id}}
-Authorization: Bearer {{token}}
+### Get Token by ID
+GET {{base_url}}/api/v1/tokens/{{token_id}}
+Authorization: Bearer {{admin_token}}
 
 ### Update Token
-# Replace {id} with actual token ID
-PATCH {{base_url}}/api/v1/tokens/{{id}}
-Authorization: Bearer {{token}}
+# Can update: name, description, status, scopes
+PATCH {{base_url}}/api/v1/tokens/{{token_id}}
+Authorization: Bearer {{admin_token}}
 Content-Type: application/json
 
 {
-  "description": "Updated description",
-  "status": "active"
+  "description": "Updated description with new purpose",
+  "scopes": [
+    "team:team-a:routes:read",
+    "team:team-a:routes:write",
+    "team:team-a:clusters:read"
+  ]
 }
 
-### Rotate Token
-# Replace {id} with actual token ID
-POST {{base_url}}/api/v1/tokens/{{id}}/rotate
-Authorization: Bearer {{token}}
+### Rotate Token (Generate New Secret)
+# Returns new token with same ID but new secret
+# Old secret is immediately invalidated
+POST {{base_url}}/api/v1/tokens/{{token_id}}/rotate
+Authorization: Bearer {{admin_token}}
 
 ### Revoke Token
-# Replace {id} with actual token ID
-DELETE {{base_url}}/api/v1/tokens/{{id}}
-Authorization: Bearer {{token}}
+# Permanently invalidates the token
+DELETE {{base_url}}/api/v1/tokens/{{token_id}}
+Authorization: Bearer {{admin_token}}
+
+### ============================================================================
+### SCOPE HIERARCHY EXAMPLES
+### ============================================================================
+
+# admin:all - Full admin access, bypasses all permission checks
+# {resource}:{action} - Resource-level access (e.g., "routes:read")
+# team:{name}:{resource}:{action} - Team-scoped access (e.g., "team:team-a:routes:write")
+
+### Example: Token with mixed scope levels
+POST {{base_url}}/api/v1/tokens
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+
+{
+  "name": "mixed-scope-token",
+  "description": "Token demonstrating scope hierarchy",
+  "scopes": [
+    "clusters:read",                    // Can read ALL clusters
+    "team:team-a:routes:write",         // Can write only team-a routes
+    "team:team-b:listeners:read",       // Can read only team-b listeners
+    "team:team-c:api-definitions:read"  // Can read only team-c API definitions
+  ]
+}

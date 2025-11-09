@@ -14,6 +14,7 @@ Flowplane is a modern Envoy control plane that makes it simple to configure and 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Token Management and Scopes](#token-management-and-scopes)
 - [Import an OpenAPI Specification](#import-an-openapi-specification)
 - [Learning Gateway](#learning-gateway)
 - [Cookbook](#cookbook)
@@ -62,29 +63,76 @@ docker run -d \
   ghcr.io/rajeevramani/flowplane:latest
 ```
 
-### 2. Get Your Admin Token
+### 2. Bootstrap Initial Admin Token
 
-When Flowplane starts for the first time, it creates a bootstrap admin token. Extract it from the logs:
+When Flowplane starts for the first time with an empty database, it automatically generates a **setup token**. You must exchange this setup token for an admin token via the bootstrap endpoint.
+
+#### Step 2a: Extract Setup Token from Logs
 
 ```bash
-# View logs and find the token
-docker logs flowplane 2>&1 | grep "Token: fp_pat_"
+# View logs and find the setup token
+docker logs flowplane 2>&1 | grep "fp_setup_"
 
 # You'll see output like:
-# ================================================================================
-# 🎉 Bootstrap Admin Token Created
-# ================================================================================
-#
-#   Token: fp_pat_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=
-#
-# ⚠️  IMPORTANT: Save this token securely!
-# ================================================================================
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                  🚀 FLOWPLANE CONTROL PLANE - FIRST TIME SETUP               ║
+# ╠══════════════════════════════════════════════════════════════════════════════╣
+# ║                                                                              ║
+# ║  A setup token has been automatically generated for initial bootstrap.      ║
+# ║                                                                              ║
+# ║  Setup Token:                                                                ║
+# ║  fp_setup_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4... ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# Export the token for use in commands below
-export ADMIN_TOKEN="fp_pat_YOUR_TOKEN_HERE"
+# Export the setup token
+export SETUP_TOKEN="fp_setup_YOUR_TOKEN_HERE"
 ```
 
-**Security Note:** Store this token securely (password manager, secrets vault). You'll use it to create additional scoped tokens for automation.
+#### Step 2b: Exchange Setup Token for Admin Token
+
+Use the bootstrap endpoint to exchange your setup token for an admin token:
+
+```bash
+# Bootstrap initialization
+curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"setupToken\": \"$SETUP_TOKEN\",
+    \"tokenName\": \"admin\",
+    \"description\": \"Initial administrator token\"
+  }"
+
+# Response:
+# {
+#   "id": "...",
+#   "token": "fp_pat_...",
+#   "message": "Bootstrap initialization successful. Admin token created. Setup token has been revoked."
+# }
+
+# Export the admin token from the response
+export ADMIN_TOKEN="fp_pat_YOUR_ADMIN_TOKEN_HERE"
+```
+
+**Security Notes:**
+- The setup token is **automatically revoked** after successful bootstrap and cannot be reused
+- The setup token is **locked for 15 minutes** after 5 failed validation attempts
+- Store your admin token securely (password manager, secrets vault)
+- You can create additional scoped tokens using the admin token
+
+**Alternative: Using CLI for Bootstrap**
+
+If you have the Flowplane CLI installed:
+
+```bash
+flowplane-cli auth bootstrap \
+  --setup-token "$SETUP_TOKEN" \
+  --token-name "admin" \
+  --api-url "http://localhost:8080"
+
+# The admin token will be returned and automatically saved to your environment
+```
+
+See [docs/cli-usage.md](docs/cli-usage.md) for more CLI commands.
 
 ### 3. Create Resources Using Native API
 
@@ -221,6 +269,111 @@ curl http://localhost:10000/get -H "Host: httpbin.org"
 - Import an OpenAPI spec (see below) for faster setup
 - Configure JWT authentication, rate limiting, and more (see [Cookbook](#cookbook))
 - Explore the interactive API docs at http://localhost:8080/swagger-ui
+
+---
+
+## Token Management and Scopes
+
+Flowplane uses a hierarchical token system with three levels of scopes:
+
+### Token Scope Hierarchy
+
+1. **`admin:all`** - Full administrative access (bypasses all permission checks)
+   - Can manage all resources across all teams
+   - Can create and manage other tokens
+   - Required for bootstrap and initial setup
+
+2. **`{resource}:{action}`** - Resource-level permissions
+   - Examples: `clusters:read`, `routes:write`, `listeners:delete`
+   - Grants access to all resources of that type across all teams
+   - Resources: `clusters`, `routes`, `listeners`, `api-definitions`, `tokens`
+   - Actions: `read`, `write`, `delete`
+
+3. **`team:{team_name}:{resource}:{action}`** - Team-scoped permissions
+   - Examples: `team:demo:routes:read`, `team:acme:clusters:write`
+   - Grants access only to resources within the specified team
+   - Most granular and recommended for production use
+
+### Creating Additional Tokens
+
+After bootstrapping, you can create additional tokens with specific scopes:
+
+#### Admin Token (Full Access)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "second-admin",
+    "description": "Another admin token",
+    "scopes": ["admin:all"],
+    "createdBy": "admin@example.com"
+  }'
+```
+
+#### Team-Scoped Token (Recommended)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "team-demo-token",
+    "description": "Token for demo team resources",
+    "scopes": [
+      "team:demo:routes:read",
+      "team:demo:routes:write",
+      "team:demo:clusters:read",
+      "team:demo:clusters:write",
+      "team:demo:listeners:read",
+      "team:demo:listeners:write"
+    ],
+    "createdBy": "admin@example.com",
+    "expiresAt": "2025-12-31T23:59:59Z"
+  }'
+```
+
+#### Multi-Team Token
+
+A single token can have permissions across multiple teams:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "multi-team-token",
+    "scopes": [
+      "team:demo:routes:read",
+      "team:demo:routes:write",
+      "team:production:routes:read",
+      "team:staging:clusters:read"
+    ]
+  }'
+```
+
+### Token Operations
+
+**List all tokens:**
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/tokens
+```
+
+**Rotate a token (generate new secret):**
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/tokens/{token_id}/rotate
+```
+
+**Revoke a token:**
+```bash
+curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/tokens/{token_id}
+```
+
+For complete token management documentation, see [docs/token-management.md](docs/token-management.md).
 
 ---
 
@@ -1393,8 +1546,13 @@ docker-compose up -d
 # API
 curl http://localhost:8080/swagger-ui
 
-# Get admin token
-docker-compose logs control-plane 2>&1 | grep "Token: fp_pat_"
+# Get setup token from logs
+docker-compose logs control-plane 2>&1 | grep "fp_setup_"
+
+# Bootstrap to get admin token (see Quick Start section for full instructions)
+curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d '{"setupToken": "YOUR_SETUP_TOKEN", "tokenName": "admin"}'
 ```
 
 #### With Zipkin Tracing (docker-compose-zipkin.yml)

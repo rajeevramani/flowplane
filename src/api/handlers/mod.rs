@@ -3,6 +3,7 @@
 pub mod aggregated_schemas;
 pub mod api_definitions;
 pub mod auth;
+pub mod bootstrap;
 pub mod clusters;
 pub mod health;
 pub mod learning_sessions;
@@ -24,6 +25,7 @@ pub use auth::{
     create_token_handler, get_token_handler, list_tokens_handler, revoke_token_handler,
     rotate_token_handler, update_token_handler,
 };
+pub use bootstrap::bootstrap_initialize_handler;
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,

@@ -26,7 +26,13 @@ async fn setup_pool() -> DbPool {
             last_used_at DATETIME,
             created_by TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
+            max_usage_count INTEGER,
+            usage_count INTEGER NOT NULL DEFAULT 0,
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            locked_until DATETIME
         );
         "#,
     )
@@ -90,6 +96,11 @@ async fn run_once_marks_expired_tokens() {
         expires_at: Some(Utc::now() - Duration::hours(1)),
         created_by: Some("tests".into()),
         scopes: vec!["clusters:read".into()],
+        is_setup_token: false,
+        max_usage_count: None,
+        usage_count: 0,
+        failed_attempts: 0,
+        locked_until: None,
     };
     repo.create_token(token).await.unwrap();
 

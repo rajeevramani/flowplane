@@ -72,23 +72,39 @@ FLOWPLANE_JAEGER_ENDPOINT=http://jaeger:14268/api/traces
 
 **1. Token Management:**
 ```bash
-# On first deployment, extract bootstrap token
-BOOTSTRAP_TOKEN=$(docker logs flowplane-cp 2>&1 | grep -oP 'token: \Kfp_pat_[^\s]+')
+# On first deployment, extract setup token from logs
+SETUP_TOKEN=$(docker logs flowplane-cp 2>&1 | grep -oP 'fp_setup_[^\s]+')
+
+# Exchange setup token for admin token via bootstrap endpoint
+ADMIN_TOKEN=$(curl -sS -X POST http://flowplane:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"setupToken\": \"$SETUP_TOKEN\",
+    \"adminTokenName\": \"admin-token\",
+    \"adminTokenDescription\": \"Production admin token\"
+  }" | jq -r '.adminToken')
+
+# Store admin token securely (e.g., in secrets manager)
+echo "$ADMIN_TOKEN" | vault kv put secret/flowplane/admin-token value=-
 
 # Create service tokens with minimal scopes
 curl -X POST http://flowplane:8080/api/v1/tokens \
-  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "envoy-readonly",
-    "scopes": ["listeners:read", "routes:read", "clusters:read"],
+    "scopes": ["team:production:listeners:read", "team:production:routes:read", "team:production:clusters:read"],
     "expiresAt": "2026-01-01T00:00:00Z"
   }'
 
-# Revoke bootstrap token after creating service tokens
-curl -X DELETE http://flowplane:8080/api/v1/tokens/$BOOTSTRAP_TOKEN_ID \
-  -H "Authorization: Bearer $SERVICE_TOKEN"
+# Note: Setup token is automatically revoked after successful bootstrap
 ```
+
+**Setup Token Security Features (v0.0.6):**
+- **Single-use**: Automatically revoked after successful bootstrap
+- **Time-limited**: Expires after 24 hours
+- **Lockout protection**: Auto-locks after 5 failed attempts
+- **Audit logging**: All operations logged to audit_log table
 
 **2. TLS Certificates:**
 

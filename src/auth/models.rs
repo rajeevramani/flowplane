@@ -87,6 +87,11 @@ pub struct NewPersonalAccessToken {
     pub expires_at: Option<DateTime<Utc>>,
     pub created_by: Option<String>,
     pub scopes: Vec<String>,
+    pub is_setup_token: bool,
+    pub max_usage_count: Option<i64>,
+    pub usage_count: i64,
+    pub failed_attempts: i64,
+    pub locked_until: Option<DateTime<Utc>>,
 }
 
 /// Update payload for an existing token.

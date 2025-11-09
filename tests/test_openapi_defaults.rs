@@ -20,37 +20,41 @@ async fn setup_pool() -> DbPool {
 }
 
 #[tokio::test]
-async fn ensure_default_gateway_resources_seeds_bootstrap_token() {
-    // Set BOOTSTRAP_TOKEN for test
-    std::env::set_var(
-        "BOOTSTRAP_TOKEN",
-        "test-bootstrap-token-x8K9mP2nQ5rS7tU9vW1xY3zA4bC6dE8fG0hI2jK4L6m=",
-    );
-
+async fn ensure_default_gateway_resources_creates_default_resources() {
     let pool = setup_pool().await;
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 
     ensure_default_gateway_resources(&state).await.expect("default resources");
 
+    // Verify that default gateway resources were created (cluster, route, listener)
+    // Note: Bootstrap token creation is now handled in src/startup.rs, not here
+
+    let cluster_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE name = 'default-gateway-cluster'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(cluster_count, 1, "Expected default gateway cluster to be created");
+
+    let route_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM routes WHERE name = 'default-gateway-routes'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(route_count, 1, "Expected default gateway routes to be created");
+
+    let listener_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM listeners WHERE name = 'default-gateway-listener'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(listener_count, 1, "Expected default gateway listener to be created");
+
+    // Verify NO bootstrap tokens were created (that's now handled in startup module)
     let token_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(token_count, 1);
-
-    // Check all audit log entries to see what was created
-    let all_audit_entries: Vec<(String, String)> =
-        sqlx::query_as("SELECT action, resource_type FROM audit_log")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-
-    // The bootstrap token seeding should create an audit log entry
-    // But the exact action/resource_type might have changed, so let's just verify
-    // that at least one audit entry was created
-    assert!(
-        !all_audit_entries.is_empty(),
-        "Expected at least one audit log entry, found: {:?}",
-        all_audit_entries
-    );
+    assert_eq!(token_count, 0, "ensure_default_gateway_resources should NOT create tokens");
 }
