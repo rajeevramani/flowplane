@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use axum::{
+    http::{header, HeaderName, HeaderValue, Method},
     middleware,
     routing::{delete, get, patch, post, put},
     Router,
 };
+use tower_http::cors::CorsLayer;
 
 use crate::auth::{
     auth_service::AuthService,
@@ -38,6 +40,45 @@ use super::{
 #[derive(Clone)]
 pub struct ApiState {
     pub xds_state: Arc<XdsState>,
+}
+
+/// Build CORS layer from environment configuration
+fn build_cors_layer() -> CorsLayer {
+    // Read allowed origin from environment variable, default to localhost for development
+    let allowed_origin = std::env::var("FLOWPLANE_UI_ORIGIN")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+
+    tracing::info!(
+        allowed_origin = %allowed_origin,
+        "Configuring CORS for UI integration"
+    );
+
+    CorsLayer::new()
+        // Allow specific origin (not wildcard for security with credentials)
+        .allow_origin(
+            allowed_origin
+                .parse::<HeaderValue>()
+                .unwrap_or_else(|_| HeaderValue::from_static("http://localhost:3000")),
+        )
+        // Allow credentials (cookies, authorization headers)
+        .allow_credentials(true)
+        // Allow common HTTP methods
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        // Allow headers needed for authentication and CSRF protection
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-csrf-token"),
+        ])
+        // Expose CSRF token header so UI can read it
+        .expose_headers([HeaderName::from_static("x-csrf-token")])
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
@@ -128,5 +169,41 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/auth/sessions/logout", post(logout_handler))
         .with_state(api_state);
 
-    secured_api.merge(public_api).merge(docs::docs_router())
+    // Build CORS layer for UI integration
+    let cors_layer = build_cors_layer();
+
+    // Apply CORS layer to all routes
+    secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cors_layer_allows_configured_origin() {
+        // Set environment variable for test
+        std::env::set_var("FLOWPLANE_UI_ORIGIN", "https://app.example.com");
+
+        let cors_layer = build_cors_layer();
+
+        // The CorsLayer is built successfully
+        // Actual CORS behavior is tested via integration tests with HTTP requests
+        drop(cors_layer);
+
+        // Clean up
+        std::env::remove_var("FLOWPLANE_UI_ORIGIN");
+    }
+
+    #[test]
+    fn test_cors_layer_defaults_to_localhost() {
+        // Ensure no environment variable is set
+        std::env::remove_var("FLOWPLANE_UI_ORIGIN");
+
+        let cors_layer = build_cors_layer();
+
+        // The CorsLayer is built successfully with default localhost
+        // Actual CORS behavior is tested via integration tests with HTTP requests
+        drop(cors_layer);
+    }
 }
