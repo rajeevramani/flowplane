@@ -19,17 +19,17 @@ use super::{
     handlers::{
         append_route_handler, bootstrap_initialize_handler, compare_aggregated_schemas_handler,
         create_api_definition_handler, create_cluster_handler, create_learning_session_handler,
-        create_listener_handler, create_route_handler, create_token_handler,
-        delete_cluster_handler, delete_learning_session_handler, delete_listener_handler,
-        delete_route_handler, export_aggregated_schema_handler, get_aggregated_schema_handler,
-        get_api_definition_handler, get_cluster_handler, get_learning_session_handler,
-        get_listener_handler, get_route_handler, get_team_bootstrap_handler, get_token_handler,
-        health_handler, import_openapi_handler, list_aggregated_schemas_handler,
-        list_api_definitions_handler, list_clusters_handler, list_learning_sessions_handler,
-        list_listeners_handler, list_route_flows_handler, list_routes_handler, list_tokens_handler,
-        revoke_token_handler, rotate_token_handler, update_api_definition_handler,
-        update_cluster_handler, update_listener_handler, update_route_handler,
-        update_token_handler,
+        create_listener_handler, create_route_handler, create_session_handler,
+        create_token_handler, delete_cluster_handler, delete_learning_session_handler,
+        delete_listener_handler, delete_route_handler, export_aggregated_schema_handler,
+        get_aggregated_schema_handler, get_api_definition_handler, get_cluster_handler,
+        get_learning_session_handler, get_listener_handler, get_route_handler,
+        get_team_bootstrap_handler, get_token_handler, health_handler, import_openapi_handler,
+        list_aggregated_schemas_handler, list_api_definitions_handler, list_clusters_handler,
+        list_learning_sessions_handler, list_listeners_handler, list_route_flows_handler,
+        list_routes_handler, list_tokens_handler, revoke_token_handler, rotate_token_handler,
+        update_api_definition_handler, update_cluster_handler, update_listener_handler,
+        update_route_handler, update_token_handler,
     },
 };
 
@@ -115,6 +115,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     let public_api = Router::new()
         .route("/health", get(health_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
+        .route("/api/v1/auth/session/create", post(create_session_handler))
         .with_state(api_state);
 
     secured_api.merge(public_api).merge(docs::docs_router())
