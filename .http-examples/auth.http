@@ -34,6 +34,42 @@ Content-Type: application/json
 @admin_token_from_bootstrap = {{bootstrap.response.body.token}}
 
 ### ============================================================================
+### SESSION MANAGEMENT (Web Authentication)
+### ============================================================================
+
+### Step 1: Create Session - Exchange Setup Token for Session Token
+# @name createSession
+# This endpoint exchanges a setup token for a 24-hour session token.
+# After successful session creation:
+# - You receive a session cookie (fp_session) with HttpOnly, Secure, SameSite=Strict flags
+# - You receive a CSRF token for state-changing requests
+# - The setup token is consumed (usage count incremented)
+POST {{base_url}}/api/v1/auth/session/create
+Content-Type: application/json
+
+{
+  "setupToken": "{{setup_token}}"
+}
+
+### Extract session token and CSRF token from response
+@session_token = {{createSession.response.body.sessionId}}
+@csrf_token = {{createSession.response.body.csrfToken}}
+
+### Step 2: Get Session Info (Using Session Cookie)
+# @name getSessionInfo
+# This endpoint returns information about the current session.
+# Authentication can be via:
+# - Cookie: fp_session (set automatically by create session endpoint)
+# - OR Authorization: Bearer {session_token}
+GET {{base_url}}/api/v1/auth/session/me
+Cookie: fp_session={{createSession.response.body.sessionToken}}
+
+### Get Session Info (Using Bearer Token)
+# Alternative: Use Bearer token instead of cookie (useful for API clients)
+GET {{base_url}}/api/v1/auth/session/me
+Authorization: Bearer {{createSession.response.body.sessionToken}}
+
+### ============================================================================
 ### TOKEN MANAGEMENT (Using Admin Token)
 ### ============================================================================
 
