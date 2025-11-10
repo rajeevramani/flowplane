@@ -172,18 +172,12 @@ impl FlowplaneClient {
 
     // === Bootstrap API Methods ===
 
-    /// Exchange setup token for admin token via bootstrap initialization
+    /// Generate a setup token via bootstrap initialization
     pub async fn bootstrap_initialize(
         &self,
-        setup_token: &str,
-        token_name: Option<String>,
-        description: Option<String>,
+        admin_email: &str,
     ) -> Result<BootstrapInitializeResponse> {
-        let request = BootstrapInitializeRequest {
-            setup_token: setup_token.to_string(),
-            token_name,
-            description,
-        };
+        let request = BootstrapInitializeRequest { admin_email: admin_email.to_string() };
 
         self.post_json("/api/v1/bootstrap/initialize", &request).await
     }
@@ -220,18 +214,18 @@ impl FlowplaneClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapInitializeRequest {
-    pub setup_token: String,
-    pub token_name: Option<String>,
-    pub description: Option<String>,
+    pub admin_email: String,
 }
 
 /// Response from bootstrap initialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapInitializeResponse {
-    #[serde(flatten)]
-    pub token: TokenSecretResponse,
+    pub setup_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub max_usage_count: i64,
     pub message: String,
+    pub next_steps: Vec<String>,
 }
 
 /// Token with its secret value (only returned on creation)
@@ -296,44 +290,28 @@ mod tests {
 
     #[test]
     fn test_bootstrap_initialize_request_serialization() {
-        let request = BootstrapInitializeRequest {
-            setup_token: "fp_setup_123.abc".to_string(),
-            token_name: Some("admin".to_string()),
-            description: Some("Test admin token".to_string()),
-        };
+        let request = BootstrapInitializeRequest { admin_email: "admin@example.com".to_string() };
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("setupToken"));
-        assert!(json.contains("tokenName"));
-        assert!(json.contains("description"));
-        assert!(json.contains("fp_setup_123.abc"));
-    }
-
-    #[test]
-    fn test_bootstrap_initialize_request_serialization_minimal() {
-        let request = BootstrapInitializeRequest {
-            setup_token: "fp_setup_456.xyz".to_string(),
-            token_name: None,
-            description: None,
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("setupToken"));
-        assert!(json.contains("fp_setup_456.xyz"));
+        assert!(json.contains("adminEmail"));
+        assert!(json.contains("admin@example.com"));
     }
 
     #[test]
     fn test_bootstrap_initialize_response_deserialization() {
         let json = r#"{
-            "id": "token-123",
-            "token": "fp_pat_abc.xyz",
-            "message": "Bootstrap successful"
+            "setupToken": "fp_setup_abc.xyz123",
+            "expiresAt": "2025-01-17T00:00:00Z",
+            "maxUsageCount": 1,
+            "message": "Setup token generated",
+            "nextSteps": ["Step 1", "Step 2"]
         }"#;
 
         let response: BootstrapInitializeResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.token.id, "token-123");
-        assert_eq!(response.token.token, "fp_pat_abc.xyz");
-        assert_eq!(response.message, "Bootstrap successful");
+        assert_eq!(response.setup_token, "fp_setup_abc.xyz123");
+        assert_eq!(response.max_usage_count, 1);
+        assert_eq!(response.message, "Setup token generated");
+        assert_eq!(response.next_steps.len(), 2);
     }
 
     #[test]
@@ -428,18 +406,13 @@ mod tests {
 
     #[test]
     fn test_dto_round_trip_bootstrap_request() {
-        let original = BootstrapInitializeRequest {
-            setup_token: "fp_setup_round.trip".to_string(),
-            token_name: Some("roundtrip-admin".to_string()),
-            description: Some("Round trip test".to_string()),
-        };
+        let original =
+            BootstrapInitializeRequest { admin_email: "roundtrip@example.com".to_string() };
 
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: BootstrapInitializeRequest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.setup_token, original.setup_token);
-        assert_eq!(deserialized.token_name, original.token_name);
-        assert_eq!(deserialized.description, original.description);
+        assert_eq!(deserialized.admin_email, original.admin_email);
     }
 
     #[test]

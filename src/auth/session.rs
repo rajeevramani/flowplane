@@ -214,6 +214,11 @@ impl SessionService {
         // Generate CSRF token
         let csrf_token = self.generate_csrf_token()?;
 
+        // Store CSRF token in database
+        self.token_repository
+            .store_csrf_token(&TokenId::from_string(session_id.clone()), &csrf_token)
+            .await?;
+
         // Record audit event
         self.record_event(
             "auth.session.created",
@@ -345,6 +350,36 @@ impl SessionService {
             same_site: SameSitePolicy::Strict,
             path: "/".to_string(),
         }
+    }
+
+    /// Validate CSRF token for a session
+    ///
+    /// # Arguments
+    ///
+    /// * `token_id` - The session token ID
+    /// * `csrf_token` - The CSRF token to validate
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the CSRF token is valid, error otherwise
+    ///
+    /// # Errors
+    ///
+    /// - If the stored CSRF token is not found
+    /// - If the provided CSRF token doesn't match the stored one
+    #[instrument(skip(self, csrf_token))]
+    pub async fn validate_csrf_token(&self, token_id: &TokenId, csrf_token: &str) -> Result<()> {
+        let stored_csrf = self
+            .token_repository
+            .get_csrf_token(token_id)
+            .await?
+            .ok_or_else(|| Error::auth("CSRF token not found", AuthErrorType::InvalidToken))?;
+
+        if stored_csrf != csrf_token {
+            return Err(Error::auth("CSRF token mismatch", AuthErrorType::InvalidToken));
+        }
+
+        Ok(())
     }
 
     // Private helper methods

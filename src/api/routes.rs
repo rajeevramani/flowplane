@@ -9,6 +9,7 @@ use axum::{
 use crate::auth::{
     auth_service::AuthService,
     middleware::{authenticate, ensure_dynamic_scopes},
+    session::SessionService,
 };
 use crate::observability::trace_http_requests;
 use crate::storage::repository::AuditLogRepository;
@@ -49,8 +50,14 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     let auth_layer = {
         let pool = cluster_repo.pool().clone();
         let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
-        let auth_service = Arc::new(AuthService::with_sqlx(pool, audit_repository));
-        middleware::from_fn_with_state(auth_service, authenticate)
+        let auth_service = Arc::new(AuthService::with_sqlx(pool.clone(), audit_repository.clone()));
+        let token_repo =
+            Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
+        let session_service = Arc::new(SessionService::new(token_repo, audit_repository));
+
+        // Create a tuple state with both services
+        let auth_state = (auth_service, session_service);
+        middleware::from_fn_with_state(auth_state, authenticate)
     };
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
@@ -115,8 +122,8 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     let public_api = Router::new()
         .route("/health", get(health_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
-        .route("/api/v1/auth/session/create", post(create_session_handler))
-        .route("/api/v1/auth/session/me", get(get_session_info_handler))
+        .route("/api/v1/auth/sessions", post(create_session_handler))
+        .route("/api/v1/auth/sessions/me", get(get_session_info_handler))
         .with_state(api_state);
 
     secured_api.merge(public_api).merge(docs::docs_router())
