@@ -433,3 +433,86 @@ pub async fn get_session_info_handler(
 
     Ok(Json(response))
 }
+
+/// Response for logout endpoint with cookie clearing
+pub struct LogoutResponse {
+    cookie: Cookie<'static>,
+}
+
+impl IntoResponse for LogoutResponse {
+    fn into_response(self) -> Response {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+
+        // Set the session cookie with immediate expiration to clear it
+        if let Ok(cookie_value) = self.cookie.to_string().parse() {
+            response.headers_mut().insert(header::SET_COOKIE, cookie_value);
+        }
+
+        response
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions/logout",
+    responses(
+        (status = 204, description = "Session logged out successfully",
+         headers(
+             ("Set-Cookie" = String, description = "Cookie clearing directive")
+         )
+        ),
+        (status = 401, description = "Invalid or expired session token"),
+        (status = 503, description = "Session service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn logout_handler(
+    State(state): State<ApiState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<LogoutResponse, ApiError> {
+    // Try to extract session token from cookie first, then from Authorization header
+    let session_token = jar
+        .get(SESSION_COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .or_else(|| {
+            // Try Bearer token from Authorization header
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .filter(|s| s.starts_with("fp_session_"))
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("Session token required (via cookie or Authorization header)")
+        })?;
+
+    // Parse session token to get the ID (format: fp_session_{id}.{secret})
+    let token_id = session_token
+        .split('.')
+        .next()
+        .and_then(|prefix| prefix.strip_prefix("fp_session_"))
+        .ok_or_else(|| ApiError::unauthorized("Invalid session token format"))?;
+
+    // Create session service
+    let session_service = session_service_for_state(&state)?;
+
+    // Validate the session exists and is active before revoking
+    session_service.validate_session(&session_token).await.map_err(convert_error)?;
+
+    // Create token service and revoke the session token
+    let token_service = token_service_for_state(&state)?;
+    token_service.revoke_token(token_id).await.map_err(convert_error)?;
+
+    // Build cookie clearing directive (same name, empty value, immediate expiration)
+    let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .expires(time::OffsetDateTime::UNIX_EPOCH)
+        .into();
+
+    Ok(LogoutResponse { cookie: clear_cookie })
+}

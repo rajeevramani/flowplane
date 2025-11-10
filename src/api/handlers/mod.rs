@@ -23,7 +23,8 @@ pub use api_definitions::{
 };
 pub use auth::{
     create_session_handler, create_token_handler, get_session_info_handler, get_token_handler,
-    list_tokens_handler, revoke_token_handler, rotate_token_handler, update_token_handler,
+    list_tokens_handler, logout_handler, revoke_token_handler, rotate_token_handler,
+    update_token_handler,
 };
 pub use bootstrap::bootstrap_initialize_handler;
 pub use clusters::{
