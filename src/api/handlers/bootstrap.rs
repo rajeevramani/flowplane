@@ -1,47 +1,53 @@
-//! Bootstrap initialization endpoint for self-service admin token creation
+//! Bootstrap initialization endpoint for setup token generation
 //!
 //! This module provides the `/api/v1/bootstrap/initialize` endpoint that allows
-//! system administrators to exchange a setup token for an admin personal access token.
+//! system administrators to generate a one-time setup token for initial bootstrap.
 
 use axum::{extract::State, http::StatusCode, Json};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
-use crate::auth::token_service::{TokenSecretResponse, TokenService};
-use crate::auth::validation::CreateTokenRequest;
+use crate::auth::models::{NewPersonalAccessToken, TokenStatus};
+use crate::auth::setup_token::SetupToken;
+use crate::domain::TokenId;
 use crate::errors::Error;
-use crate::storage::repository::{AuditEvent, AuditLogRepository};
+use crate::storage::repository::{
+    AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
+};
 use std::sync::Arc;
 
 /// Request body for bootstrap initialization
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapInitializeRequest {
-    /// The setup token to exchange for an admin token
-    #[validate(length(min = 20))]
-    pub setup_token: String,
-
-    /// Optional name for the admin token (defaults to "admin")
-    #[validate(length(min = 3, max = 64))]
-    pub token_name: Option<String>,
-
-    /// Optional description for the admin token
-    pub description: Option<String>,
+    /// Email address for the system administrator
+    #[validate(email)]
+    pub admin_email: String,
 }
 
 /// Response from bootstrap initialization
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapInitializeResponse {
-    /// The admin token details
-    #[serde(flatten)]
-    pub token: TokenSecretResponse,
+    /// The generated setup token (single-use)
+    pub setup_token: String,
 
-    /// Message confirming bootstrap completion
+    /// When the setup token expires
+    #[schema(value_type = String, format = DateTime)]
+    pub expires_at: DateTime<Utc>,
+
+    /// Maximum number of times this token can be used (typically 1)
+    pub max_usage_count: i64,
+
+    /// Message with instructions
     pub message: String,
+
+    /// Next step instructions
+    pub next_steps: Vec<String>,
 }
 
 fn convert_error(err: Error) -> ApiError {
@@ -50,25 +56,29 @@ fn convert_error(err: Error) -> ApiError {
 
 /// Bootstrap initialization endpoint
 ///
-/// This endpoint allows system administrators to exchange a setup token for an
-/// admin personal access token. The setup token is validated and consumed during
-/// this process.
+/// This endpoint generates a one-time setup token for initial system bootstrap.
+/// The setup token can then be used with `/api/v1/auth/sessions` to create an
+/// authenticated session.
 ///
 /// # Security
 ///
-/// - Setup tokens must be active and not expired
-/// - Setup tokens must not exceed their max usage count
-/// - This operation is atomic (setup token is marked used immediately)
-/// - Audit log entries are created for all bootstrap attempts
+/// - This endpoint can ONLY be called when the system is uninitialized (no active tokens exist)
+/// - Setup tokens are single-use with a short TTL (7 days by default)
+/// - Setup tokens expire after first use or when TTL expires
+/// - All bootstrap attempts are logged to the audit log
+///
+/// # Environment Variables
+///
+/// - `FLOWPLANE_SETUP_TOKEN_TTL_DAYS`: TTL in days (default: 7)
+/// - `FLOWPLANE_SETUP_TOKEN_MAX_USAGE`: Max usage count (default: 1)
 #[utoipa::path(
     post,
     path = "/api/v1/bootstrap/initialize",
     request_body = BootstrapInitializeRequest,
     responses(
-        (status = 201, description = "Bootstrap successful", body = BootstrapInitializeResponse),
+        (status = 201, description = "Setup token generated successfully", body = BootstrapInitializeResponse),
         (status = 400, description = "Validation error"),
-        (status = 401, description = "Invalid or expired setup token"),
-        (status = 403, description = "Admin tokens already exist"),
+        (status = 403, description = "System already initialized - tokens exist"),
         (status = 503, description = "Service unavailable")
     ),
     tag = "bootstrap"
@@ -89,95 +99,99 @@ pub async fn bootstrap_initialize_handler(
         .ok_or_else(|| ApiError::service_unavailable("Token repository unavailable"))?;
     let pool = cluster_repo.pool().clone();
 
-    // Create token service
+    // Create repositories
+    let token_repo = SqlxTokenRepository::new(pool.clone());
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
-    let service = TokenService::with_sqlx(pool.clone(), audit_repository.clone());
 
-    // Check if admin tokens already exist
-    let active_count = service.count_active_tokens().await.map_err(convert_error)?;
+    // CRITICAL: Check if system is already initialized (has active tokens)
+    let active_count = token_repo.count_active_tokens().await.map_err(convert_error)?;
     if active_count > 0 {
         return Err(ApiError::forbidden(
-            "Admin tokens already exist. Bootstrap initialization is only allowed for initial setup."
+            "System already initialized. Bootstrap is only allowed for initial setup.",
         ));
     }
 
-    // Validate setup token format
-    let setup_token_value = &payload.setup_token;
-    if !setup_token_value.starts_with("fp_setup_") {
-        return Err(ApiError::unauthorized("Invalid setup token format"));
-    }
+    // Get configuration from environment
+    let ttl_days = std::env::var("FLOWPLANE_SETUP_TOKEN_TTL_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7);
 
-    // Parse setup token (format: fp_setup_{id}.{secret})
-    let parts: Vec<&str> = setup_token_value
+    let max_usage = std::env::var("FLOWPLANE_SETUP_TOKEN_MAX_USAGE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+
+    // Generate setup token
+    let setup_token_generator = SetupToken::new();
+    let (token_value, hashed_secret, expires_at) =
+        setup_token_generator.generate(Some(max_usage), Some(ttl_days)).map_err(convert_error)?;
+
+    // Extract token ID from token value (format: fp_setup_{id}.{secret})
+    let token_id = token_value
         .strip_prefix("fp_setup_")
-        .ok_or_else(|| ApiError::unauthorized("Invalid setup token format"))?
-        .splitn(2, '.')
-        .collect();
-
-    if parts.len() != 2 {
-        return Err(ApiError::unauthorized("Invalid setup token format"));
-    }
-
-    let setup_token_id = parts[0];
-    let setup_token_secret = parts[1];
-
-    // Validate setup token with token service
-    // This checks:
-    // - Token exists and is active
-    // - Token is a setup token (is_setup_token = true)
-    // - Token has not expired
-    // - Token has not exceeded max usage count
-    let setup_token_verified =
-        service.verify_setup_token(setup_token_id, setup_token_secret).await.map_err(|_e| {
-            // Don't leak information about why validation failed
-            ApiError::unauthorized("Setup token not found or invalid")
+        .and_then(|s| s.split('.').next())
+        .ok_or_else(|| {
+            convert_error(Error::internal("Failed to extract token ID from generated setup token"))
         })?;
 
-    if !setup_token_verified {
-        return Err(ApiError::unauthorized("Setup token validation failed"));
-    }
-
-    // Create admin token
-    let token_name = payload.token_name.unwrap_or_else(|| "admin".to_string());
-    let create_request = CreateTokenRequest {
-        name: token_name.clone(),
-        description: payload.description.or_else(|| {
-            Some("Administrator token created via bootstrap initialization".to_string())
-        }),
-        expires_at: None, // Admin tokens don't expire by default
-        scopes: vec!["admin:all".to_string()], // Full admin access
+    // Store setup token in database
+    let new_token = NewPersonalAccessToken {
+        id: TokenId::from_string(token_id.to_string()),
+        name: format!("bootstrap-setup-token-{}", &payload.admin_email),
+        description: Some(format!(
+            "Setup token for bootstrap initialization (admin: {}, expires in {} days)",
+            payload.admin_email, ttl_days
+        )),
+        hashed_secret,
+        status: TokenStatus::Active,
+        expires_at: Some(expires_at),
         created_by: Some("bootstrap".to_string()),
+        scopes: vec!["bootstrap:initialize".to_string()],
+        is_setup_token: true,
+        max_usage_count: Some(max_usage),
+        usage_count: 0,
+        failed_attempts: 0,
+        locked_until: None,
     };
 
-    let admin_token = service.create_token(create_request).await.map_err(convert_error)?;
+    token_repo.create_token(new_token).await.map_err(convert_error)?;
 
-    // Increment setup token usage count (marking it as used)
-    service.increment_setup_token_usage(setup_token_id).await.map_err(convert_error)?;
-
-    // Auto-revoke setup token after successful use (security best practice)
-    // This ensures the setup token can only be used once, even if max_usage_count > 1
-    service.revoke_setup_token(setup_token_id).await.map_err(convert_error)?;
-
-    // Log bootstrap event
+    // Log audit event
     audit_repository
         .record_auth_event(AuditEvent {
-            action: "bootstrap.initialize".to_string(),
-            resource_id: Some(admin_token.id.clone()),
-            resource_name: Some(token_name.clone()),
+            action: "bootstrap.setup_token_generated".to_string(),
+            resource_id: Some(token_id.to_string()),
+            resource_name: Some(format!("bootstrap-setup-token-{}", &payload.admin_email)),
             metadata: serde_json::json!({
-                "setup_token_id": setup_token_id,
-                "admin_token_scopes": ["admin:all"],
-                "setup_token_revoked": true,
+                "admin_email": payload.admin_email,
+                "ttl_days": ttl_days,
+                "max_usage": max_usage,
+                "expires_at": expires_at,
             }),
         })
         .await
         .map_err(convert_error)?;
 
+    // Build response with next steps
+    let next_steps = vec![
+        "Use this setup token to create a session by calling POST /api/v1/auth/sessions".to_string(),
+        format!("Example: curl -X POST http://localhost:8080/api/v1/auth/sessions -H 'Content-Type: application/json' -d '{{\"setupToken\": \"{}\"}}'", token_value),
+        "The session will include a session cookie and CSRF token for authenticated requests".to_string(),
+        "IMPORTANT: This setup token is single-use and will be revoked after creating a session".to_string(),
+    ];
+
     Ok((
         StatusCode::CREATED,
         Json(BootstrapInitializeResponse {
-            token: admin_token,
-            message: "Bootstrap initialization successful. Admin token created. Setup token has been revoked.".to_string(),
+            setup_token: token_value,
+            expires_at,
+            max_usage_count: max_usage,
+            message: format!(
+                "Setup token generated successfully for {}. Use this token to create your first session.",
+                payload.admin_email
+            ),
+            next_steps,
         }),
     ))
 }

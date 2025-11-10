@@ -321,7 +321,7 @@ impl IntoResponse for SessionCreatedResponse {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/auth/session/create",
+    path = "/api/v1/auth/sessions",
     request_body = CreateSessionBody,
     responses(
         (status = 201, description = "Session created successfully", body = CreateSessionResponseBody,
@@ -389,7 +389,7 @@ pub struct SessionInfoResponse {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/auth/session/me",
+    path = "/api/v1/auth/sessions/me",
     responses(
         (status = 200, description = "Current session information", body = SessionInfoResponse),
         (status = 401, description = "Invalid or expired session token"),

@@ -17,7 +17,7 @@ use crate::storage::{create_pool, repository::AuditLogRepository};
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
-    /// Bootstrap initialization - exchange setup token for admin token
+    /// Bootstrap initialization - generate setup token for first-time setup
     Bootstrap(BootstrapArgs),
     /// Create a new personal access token
     CreateToken(CreateTokenArgs),
@@ -31,17 +31,9 @@ pub enum AuthCommands {
 
 #[derive(Args, Debug)]
 pub struct BootstrapArgs {
-    /// Setup token for bootstrap initialization
+    /// Email address for the system administrator
     #[arg(long)]
-    pub setup_token: Option<String>,
-
-    /// Display name for the admin token
-    #[arg(long)]
-    pub token_name: Option<String>,
-
-    /// Optional description for the admin token
-    #[arg(long)]
-    pub description: Option<String>,
+    pub admin_email: Option<String>,
 
     /// API base URL (required for API mode)
     #[arg(long)]
@@ -152,12 +144,12 @@ async fn handle_bootstrap(args: BootstrapArgs) -> anyhow::Result<()> {
     let api_url = args.api_url.or_else(|| std::env::var("FLOWPLANE_BASE_URL").ok())
         .ok_or_else(|| anyhow!("API URL required for bootstrap. Provide via --api-url or FLOWPLANE_BASE_URL environment variable"))?;
 
-    // Resolve setup token from args or environment
-    let setup_token = args.setup_token
-        .or_else(|| std::env::var("FLOWPLANE_SETUP_TOKEN").ok())
-        .ok_or_else(|| anyhow!("Setup token required. Provide via --setup-token or FLOWPLANE_SETUP_TOKEN environment variable"))?;
+    // Resolve admin email from args or environment
+    let admin_email = args.admin_email
+        .or_else(|| std::env::var("FLOWPLANE_ADMIN_EMAIL").ok())
+        .ok_or_else(|| anyhow!("Admin email required. Provide via --admin-email or FLOWPLANE_ADMIN_EMAIL environment variable"))?;
 
-    // Create a temporary client with empty token (setup token will be sent in request body)
+    // Create a temporary client with empty token (no authentication needed for bootstrap)
     let config = crate::cli::client::ClientConfig {
         base_url: api_url,
         token: String::new(),
@@ -166,19 +158,25 @@ async fn handle_bootstrap(args: BootstrapArgs) -> anyhow::Result<()> {
     };
     let client = FlowplaneClient::new(config)?;
 
-    // Call bootstrap API
-    let response =
-        client.bootstrap_initialize(&setup_token, args.token_name, args.description).await?;
+    // Call bootstrap API to generate setup token
+    let response = client.bootstrap_initialize(&admin_email).await?;
 
-    println!("{}", "Bootstrap successful!".green());
-    println!("  Admin Token ID: {}", response.token.id);
-    println!("  Admin Token: {}", response.token.token.bright_yellow());
-    println!("  Message: {}", response.message);
+    println!("{}", "Setup token generated successfully!".green());
     println!();
-    println!("Save this token securely! You can use it for API authentication:");
-    println!("  export FLOWPLANE_TOKEN={}", response.token.token);
-    println!("  OR");
-    println!("  flowplane config set-token {}", response.token.token);
+    println!("  Setup Token: {}", response.setup_token.bright_yellow());
+    println!("  Expires At: {}", response.expires_at.to_rfc3339());
+    println!("  Max Usage: {}", response.max_usage_count);
+    println!();
+    println!("{}", response.message);
+    println!();
+    println!("{}", "Next Steps:".bright_blue().bold());
+    for (i, step) in response.next_steps.iter().enumerate() {
+        println!("  {}. {}", i + 1, step);
+    }
+    println!();
+    println!("{}", "IMPORTANT: Save this setup token securely!".bright_yellow().bold());
+    println!("You can also store it as an environment variable:");
+    println!("  export FLOWPLANE_SETUP_TOKEN={}", response.setup_token);
 
     Ok(())
 }
