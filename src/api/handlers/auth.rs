@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
-use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -376,4 +376,60 @@ pub async fn create_session_handler(
         cookie,
         csrf_token: session_response.csrf_token,
     })
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfoResponse {
+    pub session_id: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/session/me",
+    responses(
+        (status = 200, description = "Current session information", body = SessionInfoResponse),
+        (status = 401, description = "Invalid or expired session token"),
+        (status = 503, description = "Session service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn get_session_info_handler(
+    State(state): State<ApiState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<SessionInfoResponse>, ApiError> {
+    // Try to extract session token from cookie first, then from Authorization header
+    let session_token = jar
+        .get(SESSION_COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .or_else(|| {
+            // Try Bearer token from Authorization header
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("Session token required (via cookie or Authorization header)")
+        })?;
+
+    // Create session service
+    let service = session_service_for_state(&state)?;
+
+    // Validate session
+    let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
+
+    let response = SessionInfoResponse {
+        session_id: session_info.token.id.to_string(),
+        teams: session_info.teams,
+        scopes: session_info.token.scopes,
+        expires_at: session_info.token.expires_at,
+    };
+
+    Ok(Json(response))
 }
