@@ -90,6 +90,10 @@ pub trait TokenRepository: Send + Sync {
     async fn increment_setup_token_usage(&self, id: &str) -> Result<()>;
     async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()>;
     async fn revoke_setup_token(&self, id: &str) -> Result<()>;
+
+    // CSRF token operations
+    async fn store_csrf_token(&self, token_id: &TokenId, csrf_token: &str) -> Result<()>;
+    async fn get_csrf_token(&self, token_id: &TokenId) -> Result<Option<String>>;
 }
 
 #[derive(Debug, Clone)]
@@ -558,5 +562,42 @@ impl TokenRepository for SqlxTokenRepository {
         }
 
         Ok(())
+    }
+
+    async fn store_csrf_token(&self, token_id: &TokenId, csrf_token: &str) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE personal_access_tokens
+             SET csrf_token = $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(csrf_token)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to store CSRF token".to_string(),
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found("token", token_id.as_str()));
+        }
+
+        Ok(())
+    }
+
+    async fn get_csrf_token(&self, token_id: &TokenId) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT csrf_token FROM personal_access_tokens WHERE id = $1")
+                .bind(token_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|err| FlowplaneError::Database {
+                    source: err,
+                    context: "Failed to get CSRF token".to_string(),
+                })?;
+
+        Ok(row.and_then(|(csrf,)| csrf))
     }
 }

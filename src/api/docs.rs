@@ -34,6 +34,9 @@ use crate::xds::{
         crate::api::handlers::auth::update_token_handler,
         crate::api::handlers::auth::revoke_token_handler,
         crate::api::handlers::auth::rotate_token_handler,
+        crate::api::handlers::auth::create_session_handler,
+        crate::api::handlers::auth::get_session_info_handler,
+        crate::api::handlers::auth::logout_handler,
         crate::api::handlers::clusters::create_cluster_handler,
         crate::api::handlers::clusters::list_clusters_handler,
         crate::api::handlers::clusters::get_cluster_handler,
@@ -84,6 +87,9 @@ use crate::xds::{
             UpdateTokenBody,
             PersonalAccessToken,
             TokenSecretResponse,
+            crate::api::handlers::auth::CreateSessionBody,
+            crate::api::handlers::auth::CreateSessionResponseBody,
+            crate::api::handlers::auth::SessionInfoResponse,
             ClusterSpec,
             EndpointSpec,
             CircuitBreakersSpec,
@@ -143,6 +149,7 @@ use crate::xds::{
         )
     ),
     tags(
+        (name = "auth", description = "Authentication and session management"),
         (name = "bootstrap", description = "Bootstrap initialization for first-time setup"),
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
@@ -218,6 +225,17 @@ mod tests {
         assert!(
             paths.contains_key("/api/v1/bootstrap/initialize"),
             "Missing POST /api/v1/bootstrap/initialize"
+        );
+
+        // Auth/Session endpoints (3)
+        assert!(paths.contains_key("/api/v1/auth/sessions"), "Missing POST /api/v1/auth/sessions");
+        assert!(
+            paths.contains_key("/api/v1/auth/sessions/me"),
+            "Missing GET /api/v1/auth/sessions/me"
+        );
+        assert!(
+            paths.contains_key("/api/v1/auth/sessions/logout"),
+            "Missing POST /api/v1/auth/sessions/logout"
         );
 
         // Token endpoints (6)
@@ -364,6 +382,14 @@ mod tests {
         assert!(schemas.contains_key("PersonalAccessToken"), "Missing PersonalAccessToken schema");
         assert!(schemas.contains_key("TokenSecretResponse"), "Missing TokenSecretResponse schema");
 
+        // Session schemas
+        assert!(schemas.contains_key("CreateSessionBody"), "Missing CreateSessionBody schema");
+        assert!(
+            schemas.contains_key("CreateSessionResponseBody"),
+            "Missing CreateSessionResponseBody schema"
+        );
+        assert!(schemas.contains_key("SessionInfoResponse"), "Missing SessionInfoResponse schema");
+
         // Route schemas
         assert!(schemas.contains_key("RouteDefinition"), "Missing RouteDefinition schema");
         assert!(
@@ -483,6 +509,7 @@ mod tests {
 
         let tag_names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
 
+        assert!(tag_names.contains(&"auth"), "Missing 'auth' tag");
         assert!(tag_names.contains(&"bootstrap"), "Missing 'bootstrap' tag");
         assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");

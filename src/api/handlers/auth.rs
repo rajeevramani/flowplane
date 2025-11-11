@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Extension, Json,
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -15,6 +17,7 @@ use crate::api::routes::ApiState;
 use crate::auth::authorization::require_resource_access;
 use crate::auth::{
     models::{AuthContext, PersonalAccessToken},
+    session::{SessionService, SESSION_COOKIE_NAME},
     token_service::{TokenSecretResponse, TokenService},
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
@@ -31,6 +34,19 @@ fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
     let pool = cluster_repo.pool().clone();
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
     Ok(TokenService::with_sqlx(pool, audit_repository))
+}
+
+fn session_service_for_state(state: &ApiState) -> Result<SessionService, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Token repository unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+    let token_repo = Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
+    let audit_repository = Arc::new(AuditLogRepository::new(pool));
+    Ok(SessionService::new(token_repo, audit_repository))
 }
 
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
@@ -255,4 +271,248 @@ pub async fn rotate_token_handler(
     let service = token_service_for_state(&state)?;
     let secret = service.rotate_token(&id).await.map_err(convert_error)?;
     Ok(Json(secret))
+}
+
+// Session Management Endpoints
+
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionBody {
+    #[validate(length(min = 10, message = "Setup token must be at least 10 characters"))]
+    pub setup_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionResponseBody {
+    pub session_id: String,
+    pub csrf_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
+/// Response wrapper that includes both JSON body and Set-Cookie header
+pub struct SessionCreatedResponse {
+    body: CreateSessionResponseBody,
+    cookie: Cookie<'static>,
+    csrf_token: String,
+}
+
+impl IntoResponse for SessionCreatedResponse {
+    fn into_response(self) -> Response {
+        let mut response = (StatusCode::CREATED, Json(self.body)).into_response();
+
+        // Set the session cookie
+        if let Ok(cookie_value) = self.cookie.to_string().parse() {
+            response.headers_mut().insert(header::SET_COOKIE, cookie_value);
+        }
+
+        // Set the CSRF token header
+        if let Ok(csrf_value) = self.csrf_token.parse() {
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static("x-csrf-token"), csrf_value);
+        }
+
+        response
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions",
+    request_body = CreateSessionBody,
+    responses(
+        (status = 201, description = "Session created successfully", body = CreateSessionResponseBody,
+         headers(
+             ("Set-Cookie" = String, description = "Session cookie (fp_session)"),
+             ("X-CSRF-Token" = String, description = "CSRF token for state-changing requests")
+         )
+        ),
+        (status = 400, description = "Invalid setup token format"),
+        (status = 401, description = "Setup token invalid, expired, or exhausted"),
+        (status = 503, description = "Session service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn create_session_handler(
+    State(state): State<ApiState>,
+    Json(payload): Json<CreateSessionBody>,
+) -> Result<SessionCreatedResponse, ApiError> {
+    // Validate request
+    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Create session service
+    let service = session_service_for_state(&state)?;
+
+    // Exchange setup token for session
+    let session_response = service
+        .create_session_from_setup_token(&payload.setup_token)
+        .await
+        .map_err(convert_error)?;
+
+    // Build secure session cookie
+    let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true) // TODO: Make this configurable for development
+        .same_site(SameSite::Strict)
+        .expires(
+            time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
+        )
+        .into();
+
+    let response_body = CreateSessionResponseBody {
+        session_id: session_response.session_id,
+        csrf_token: session_response.csrf_token.clone(),
+        expires_at: session_response.expires_at,
+        teams: session_response.teams,
+        scopes: session_response.scopes,
+    };
+
+    Ok(SessionCreatedResponse {
+        body: response_body,
+        cookie,
+        csrf_token: session_response.csrf_token,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfoResponse {
+    pub session_id: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/sessions/me",
+    responses(
+        (status = 200, description = "Current session information", body = SessionInfoResponse),
+        (status = 401, description = "Invalid or expired session token"),
+        (status = 503, description = "Session service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn get_session_info_handler(
+    State(state): State<ApiState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<SessionInfoResponse>, ApiError> {
+    // Try to extract session token from cookie first, then from Authorization header
+    let session_token = jar
+        .get(SESSION_COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .or_else(|| {
+            // Try Bearer token from Authorization header
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("Session token required (via cookie or Authorization header)")
+        })?;
+
+    // Create session service
+    let service = session_service_for_state(&state)?;
+
+    // Validate session
+    let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
+
+    let response = SessionInfoResponse {
+        session_id: session_info.token.id.to_string(),
+        teams: session_info.teams,
+        scopes: session_info.token.scopes,
+        expires_at: session_info.token.expires_at,
+    };
+
+    Ok(Json(response))
+}
+
+/// Response for logout endpoint with cookie clearing
+pub struct LogoutResponse {
+    cookie: Cookie<'static>,
+}
+
+impl IntoResponse for LogoutResponse {
+    fn into_response(self) -> Response {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+
+        // Set the session cookie with immediate expiration to clear it
+        if let Ok(cookie_value) = self.cookie.to_string().parse() {
+            response.headers_mut().insert(header::SET_COOKIE, cookie_value);
+        }
+
+        response
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions/logout",
+    responses(
+        (status = 204, description = "Session logged out successfully",
+         headers(
+             ("Set-Cookie" = String, description = "Cookie clearing directive")
+         )
+        ),
+        (status = 401, description = "Invalid or expired session token"),
+        (status = 503, description = "Session service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn logout_handler(
+    State(state): State<ApiState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<LogoutResponse, ApiError> {
+    // Try to extract session token from cookie first, then from Authorization header
+    let session_token = jar
+        .get(SESSION_COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .or_else(|| {
+            // Try Bearer token from Authorization header
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .filter(|s| s.starts_with("fp_session_"))
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            ApiError::unauthorized("Session token required (via cookie or Authorization header)")
+        })?;
+
+    // Parse session token to get the ID (format: fp_session_{id}.{secret})
+    let token_id = session_token
+        .split('.')
+        .next()
+        .and_then(|prefix| prefix.strip_prefix("fp_session_"))
+        .ok_or_else(|| ApiError::unauthorized("Invalid session token format"))?;
+
+    // Create session service
+    let session_service = session_service_for_state(&state)?;
+
+    // Validate the session exists and is active before revoking
+    session_service.validate_session(&session_token).await.map_err(convert_error)?;
+
+    // Create token service and revoke the session token
+    let token_service = token_service_for_state(&state)?;
+    token_service.revoke_token(token_id).await.map_err(convert_error)?;
+
+    // Build cookie clearing directive (same name, empty value, immediate expiration)
+    let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .expires(time::OffsetDateTime::UNIX_EPOCH)
+        .into();
+
+    Ok(LogoutResponse { cookie: clear_cookie })
 }

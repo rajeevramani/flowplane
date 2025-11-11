@@ -63,50 +63,88 @@ docker run -d \
   ghcr.io/rajeevramani/flowplane:latest
 ```
 
-### 2. Bootstrap Initial Admin Token
+### 2. Bootstrap and Create Admin Token
 
-When Flowplane starts for the first time with an empty database, it automatically generates a **setup token**. You must exchange this setup token for an admin token via the bootstrap endpoint.
+Flowplane uses a secure three-step bootstrap process for initial setup:
 
-#### Step 2a: Extract Setup Token from Logs
+#### Step 2a: Generate Setup Token
+
+When the system has no active tokens, call the bootstrap endpoint to generate a one-time setup token:
 
 ```bash
-# View logs and find the setup token
-docker logs flowplane 2>&1 | grep "fp_setup_"
+# Bootstrap initialization - generate setup token
+curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "adminEmail": "admin@example.com"
+  }'
 
-# You'll see output like:
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                  🚀 FLOWPLANE CONTROL PLANE - FIRST TIME SETUP               ║
-# ╠══════════════════════════════════════════════════════════════════════════════╣
-# ║                                                                              ║
-# ║  A setup token has been automatically generated for initial bootstrap.      ║
-# ║                                                                              ║
-# ║  Setup Token:                                                                ║
-# ║  fp_setup_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4... ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
+# Response:
+# {
+#   "setupToken": "fp_setup_a1b2c3d4...",
+#   "expiresAt": "2025-01-24T12:00:00Z",
+#   "maxUsageCount": 1,
+#   "message": "Setup token generated successfully...",
+#   "nextSteps": [...]
+# }
 
 # Export the setup token
 export SETUP_TOKEN="fp_setup_YOUR_TOKEN_HERE"
 ```
 
-#### Step 2b: Exchange Setup Token for Admin Token
+**Note:** The bootstrap endpoint only works when the system is uninitialized (no active tokens exist).
 
-Use the bootstrap endpoint to exchange your setup token for an admin token:
+#### Step 2b: Create Session from Setup Token
+
+Exchange the setup token for an authenticated session:
 
 ```bash
-# Bootstrap initialization
-curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+# Create session
+curl -X POST http://localhost:8080/api/v1/auth/sessions \
   -H "Content-Type: application/json" \
   -d "{
-    \"setupToken\": \"$SETUP_TOKEN\",
-    \"tokenName\": \"admin\",
-    \"description\": \"Initial administrator token\"
+    \"setupToken\": \"$SETUP_TOKEN\"
   }"
+
+# Response includes session cookie and CSRF token:
+# {
+#   "sessionId": "...",
+#   "csrfToken": "csrf-token-here",
+#   "expiresAt": "2025-01-18T12:00:00Z",
+#   "teams": ["admin"],
+#   "scopes": ["admin:*"]
+# }
+# Headers: Set-Cookie: fp_session=fp_session_...; HttpOnly; Secure; SameSite=Strict
+
+# Save the session cookie and CSRF token
+export SESSION_COOKIE="fp_session_YOUR_SESSION_HERE"
+export CSRF_TOKEN="YOUR_CSRF_TOKEN_HERE"
+```
+
+#### Step 2c: Create Admin Token from Session
+
+Now use your session to create a Personal Access Token (PAT) for API automation:
+
+```bash
+# Create admin PAT
+curl -X POST http://localhost:8080/api/v1/tokens \
+  -H "Cookie: $SESSION_COOKIE" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "admin-token",
+    "description": "Initial administrator token",
+    "scopes": ["admin:*"],
+    "expiresAt": "2026-12-31T23:59:59Z"
+  }'
 
 # Response:
 # {
 #   "id": "...",
 #   "token": "fp_pat_...",
-#   "message": "Bootstrap initialization successful. Admin token created. Setup token has been revoked."
+#   "name": "admin-token",
+#   "scopes": ["admin:*"],
+#   ...
 # }
 
 # Export the admin token from the response
@@ -114,25 +152,39 @@ export ADMIN_TOKEN="fp_pat_YOUR_ADMIN_TOKEN_HERE"
 ```
 
 **Security Notes:**
-- The setup token is **automatically revoked** after successful bootstrap and cannot be reused
-- The setup token is **locked for 15 minutes** after 5 failed validation attempts
-- Store your admin token securely (password manager, secrets vault)
-- You can create additional scoped tokens using the admin token
+- Setup tokens are **single-use** and automatically revoked after creating a session
+- Sessions are **cookie-based** with CSRF protection for web applications
+- Personal Access Tokens (PATs) are for **API automation** and long-lived access
+- Store tokens securely (password manager, secrets vault)
 
-**Alternative: Using CLI for Bootstrap**
-
-If you have the Flowplane CLI installed:
+**Quick Setup Script:**
 
 ```bash
-flowplane-cli auth bootstrap \
-  --setup-token "$SETUP_TOKEN" \
-  --token-name "admin" \
-  --api-url "http://localhost:8080"
+# One-liner to bootstrap and get admin token
+SETUP_RESP=$(curl -s -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d '{"adminEmail":"admin@example.com"}')
 
-# The admin token will be returned and automatically saved to your environment
+SETUP_TOKEN=$(echo $SETUP_RESP | jq -r '.setupToken')
+
+SESSION_RESP=$(curl -s -X POST http://localhost:8080/api/v1/auth/sessions \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d "{\"setupToken\":\"$SETUP_TOKEN\"}")
+
+CSRF_TOKEN=$(echo $SESSION_RESP | jq -r '.csrfToken')
+
+TOKEN_RESP=$(curl -s -X POST http://localhost:8080/api/v1/tokens \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"admin","scopes":["admin:*"]}')
+
+export ADMIN_TOKEN=$(echo $TOKEN_RESP | jq -r '.token')
+echo "Admin token: $ADMIN_TOKEN"
 ```
 
-See [docs/cli-usage.md](docs/cli-usage.md) for more CLI commands.
+For complete session management documentation, see [docs/session-management.md](docs/session-management.md).
 
 ### 3. Create Resources Using Native API
 
@@ -1546,13 +1598,15 @@ docker-compose up -d
 # API
 curl http://localhost:8080/swagger-ui
 
-# Get setup token from logs
-docker-compose logs control-plane 2>&1 | grep "fp_setup_"
-
 # Bootstrap to get admin token (see Quick Start section for full instructions)
+# Step 1: Generate setup token
 curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
   -H "Content-Type: application/json" \
-  -d '{"setupToken": "YOUR_SETUP_TOKEN", "tokenName": "admin"}'
+  -d '{"adminEmail": "admin@example.com"}'
+
+# Step 2: Create session from setup token
+# Step 3: Create admin PAT from session
+# (See "Bootstrap and Create Admin Token" section above for complete flow)
 ```
 
 #### With Zipkin Tracing (docker-compose-zipkin.yml)
@@ -1786,8 +1840,14 @@ Comprehensive guides are available in the `docs/` directory:
 - **[Platform API](docs/platform-api.md)** - Team-based multi-tenancy and OpenAPI import
 - **[CLI Usage](docs/cli-usage.md)** - Command-line interface documentation
 - **[Filters](docs/filters.md)** - Complete HTTP filter reference and configuration
-- **[Authentication](docs/authentication.md)** - Token management and access control
-- **[Token Management](docs/token-management.md)** - Creating and managing API tokens
+
+### Authentication & Security
+
+- **[Session Management](docs/session-management.md)** - Cookie-based authentication, CSRF protection, and logout
+- **[Token Management](docs/token-management.md)** - Creating and managing Personal Access Tokens (PATs)
+- **[Authentication Overview](docs/authentication.md)** - Token types and access control concepts
+- **[Frontend Integration](docs/frontend-integration.md)** - Web application integration with React, Vue.js examples
+- **[Security Best Practices](docs/security-best-practices.md)** - Production security guidelines and compliance
 
 ### Cookbooks
 
