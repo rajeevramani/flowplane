@@ -17,7 +17,6 @@
 
 ### STEP 1: Bootstrap Initialization - First-Time Setup
 ### ----------------------------------------------------------------------------
-# @name bootstrap
 # This is the FIRST step when setting up a new Flowplane instance.
 # Exchange the setup token (from startup banner) for an admin token.
 #
@@ -26,17 +25,17 @@
 # - You receive an admin token with full access (admin:all scope)
 # - Save the returned token securely!
 ###
+# @name bootstrap
+
 POST {{base_url}}/api/v1/bootstrap/initialize
 Content-Type: application/json
 
 {
-  "setupToken": "{{setup_token}}",
-  "tokenName": "admin",
-  "description": "Initial administrator token"
+  "adminEmail": "admin@example.com"
 }
 
 ### Extract admin token from bootstrap response
-@admin_token_from_bootstrap = {{bootstrap.response.body.token}}
+@admin_token_from_bootstrap = {{bootstrap.response.body.setupToken}}
 
 ### ============================================================================
 ### SESSION MANAGEMENT WORKFLOW (Web-Based Authentication)
@@ -46,7 +45,7 @@ Content-Type: application/json
 
 ### STEP 2: Create Session Token
 ### ----------------------------------------------------------------------------
-# @name createSession
+
 # Exchange a setup token for a 24-hour session token.
 #
 # What you receive:
@@ -56,47 +55,49 @@ Content-Type: application/json
 #
 # The session cookie is automatically set by the server.
 ###
+# @name createSession
+
 POST {{base_url}}/api/v1/auth/sessions
 Content-Type: application/json
 
 {
-  "setupToken": "{{setup_token}}"
+  "setupToken": "{{admin_token_from_bootstrap}}"
 }
 
 ### Extract session details from response
-@session_token = {{createSession.response.body.sessionToken}}
+# Note: The session token is in the Set-Cookie header, not in the response body
+# Most HTTP clients automatically handle cookies, so you don't need to extract it manually
 @csrf_token = {{createSession.response.body.csrfToken}}
 @session_id = {{createSession.response.body.sessionId}}
 
 ### STEP 3: Get Session Info (Using Session Cookie)
 ### ----------------------------------------------------------------------------
-# @name getSessionInfo
+
 # Retrieve information about the current session.
 #
-# Authentication methods:
-# 1. Cookie-based (preferred for web apps) - shown below
-# 2. Bearer token - useful for API clients or testing
+# The fp_session cookie is automatically sent by the HTTP client
+# (it was set by the Set-Cookie header in the previous response)
 #
 # Returns: session ID, teams, scopes, expiration time
 ###
+# @name getSessionInfo
 GET {{base_url}}/api/v1/auth/sessions/me
-Cookie: fp_session={{session_token}}
 
-### Alternative: Get Session Info Using Bearer Token
-# Useful for API clients or when cookies aren't available
+### Alternative: Get Session Info with Explicit Cookie
+# If your HTTP client doesn't automatically handle cookies, specify it manually:
+# The cookie value is from the Set-Cookie header: fp_session=fp_session_{uuid}.{secret}
 GET {{base_url}}/api/v1/auth/sessions/me
-Authorization: Bearer {{session_token}}
+Cookie: fp_session={{$dotenv SESSION_TOKEN}}
 
 ### STEP 4: Make Authenticated Request with CSRF Protection
 ### ----------------------------------------------------------------------------
 # For state-changing requests (POST, PUT, PATCH, DELETE):
-# - Include the session cookie (automatic in browsers)
+# - Session cookie is sent automatically by the HTTP client
 # - MUST include X-CSRF-Token header
 #
 # Example: Create a cluster using session authentication
 ###
 POST {{base_url}}/api/v1/clusters
-Cookie: fp_session={{session_token}}
 X-CSRF-Token: {{csrf_token}}
 Content-Type: application/json
 
@@ -119,18 +120,17 @@ Content-Type: application/json
 # - Session token is marked as revoked in database
 # - Session cookie is cleared (expires immediately)
 # - Subsequent requests with the old cookie will return 401 Unauthorized
+#
+# The fp_session cookie is automatically sent by the HTTP client
 ###
 POST {{base_url}}/api/v1/auth/sessions/logout
-Cookie: fp_session={{session_token}}
-
-### Alternative: Logout Using Bearer Token
-POST {{base_url}}/api/v1/auth/sessions/logout
-Authorization: Bearer {{session_token}}
 
 ### STEP 6: Verify Logout - Should Return 401
+### ----------------------------------------------------------------------------
 # This request should fail with 401 Unauthorized
+# The cookie was cleared in the logout response, so this should be rejected
+###
 GET {{base_url}}/api/v1/auth/sessions/me
-Cookie: fp_session={{session_token}}
 
 ### ============================================================================
 ### TOKEN MANAGEMENT (Using Admin Token)
@@ -367,7 +367,7 @@ Access-Control-Request-Headers: Content-Type, X-CSRF-Token
 # // Create session
 # const response = await fetch('http://localhost:8080/api/v1/auth/sessions', {
 #   method: 'POST',
-#   credentials: 'include',  // Important: include cookies
+#   credentials: 'include',  // Important: include cookies (fp_session cookie)
 #   headers: {
 #     'Content-Type': 'application/json'
 #   },
@@ -377,12 +377,19 @@ Access-Control-Request-Headers: Content-Type, X-CSRF-Token
 # });
 #
 # const data = await response.json();
-# const csrfToken = response.headers.get('X-CSRF-Token');
+# // CSRF token is available in both the response header and body
+# const csrfToken = data.csrfToken;  // or response.headers.get('x-csrf-token')
+# const sessionId = data.sessionId;
+# const teams = data.teams;
+# const scopes = data.scopes;
 #
-# // Make authenticated request
+# // The fp_session cookie is now stored automatically by the browser
+# // and will be sent with all subsequent requests
+#
+# // Make authenticated request with CSRF token
 # await fetch('http://localhost:8080/api/v1/clusters', {
 #   method: 'POST',
-#   credentials: 'include',  // Include session cookie
+#   credentials: 'include',  // Include session cookie automatically
 #   headers: {
 #     'Content-Type': 'application/json',
 #     'X-CSRF-Token': csrfToken  // Required for state-changing requests
@@ -400,8 +407,8 @@ Access-Control-Request-Headers: Content-Type, X-CSRF-Token
 
 ### Scenario 1: "CSRF token required" Error
 # Solution: Include X-CSRF-Token header for POST/PUT/PATCH/DELETE requests
+# The session cookie is sent automatically
 POST {{base_url}}/api/v1/clusters
-Cookie: fp_session={{session_token}}
 X-CSRF-Token: {{csrf_token}}
 Content-Type: application/json
 
@@ -438,13 +445,22 @@ Content-Type: application/json
 #   -c cookies.txt \
 #   -v
 #
-# Extract CSRF token from response headers (X-CSRF-Token)
+# Response includes:
+# - Set-Cookie header with fp_session=fp_session_{uuid}.{secret}
+# - X-CSRF-Token header with CSRF token
+# - Response body with sessionId, csrfToken, teams, scopes, expiresAt
 #
-# Make authenticated request:
+# Extract CSRF token from response body:
+# CSRF_TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/sessions \
+#   -H "Content-Type: application/json" \
+#   -d '{"setupToken":"fp_setup_..."}' \
+#   -c cookies.txt | jq -r '.csrfToken')
+#
+# Make authenticated request with cookie and CSRF token:
 # curl -X POST http://localhost:8080/api/v1/clusters \
 #   -b cookies.txt \
 #   -H "Content-Type: application/json" \
-#   -H "X-CSRF-Token: <csrf-token>" \
+#   -H "X-CSRF-Token: $CSRF_TOKEN" \
 #   -d '{"name":"test","endpoints":[{"host":"localhost","port":8080}]}'
 
 ### ============================================================================
