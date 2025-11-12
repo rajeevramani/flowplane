@@ -95,6 +95,28 @@ pub enum SameSitePolicy {
     None,
 }
 
+/// Extract team names from a list of scopes
+///
+/// Scopes formatted as "team:{team_name}:*" or "team:{team_name}:resource:action"
+/// are parsed to extract the unique team names.
+pub fn extract_teams_from_scopes(scopes: &[String]) -> Vec<String> {
+    scopes
+        .iter()
+        .filter_map(|scope| {
+            // Extract team from scopes like "team:team_name:*" or "team:team_name:resource"
+            if scope.starts_with("team:") {
+                let parts: Vec<&str> = scope.split(':').collect();
+                if parts.len() >= 2 {
+                    return Some(parts[1].to_string());
+                }
+            }
+            None
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Session service for managing web-based authentication sessions
 #[derive(Clone)]
 pub struct SessionService {
@@ -247,6 +269,100 @@ impl SessionService {
             expires_at,
             teams,
             scopes: setup_token_obj.scopes,
+        })
+    }
+
+    /// Create a session token from user authentication
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user ID
+    /// * `user_email` - The user's email address
+    /// * `scopes` - The scopes to grant to the session
+    ///
+    /// # Returns
+    ///
+    /// A `SessionResponse` containing the session token, CSRF token, and metadata
+    ///
+    /// # Errors
+    ///
+    /// - If database operations fail
+    #[instrument(skip(self, user_email, scopes), fields(user_id = %user_id, correlation_id = field::Empty))]
+    pub async fn create_session_from_user(
+        &self,
+        user_id: &crate::domain::UserId,
+        user_email: &str,
+        scopes: Vec<String>,
+    ) -> Result<SessionResponse> {
+        tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
+
+        // Extract teams from scopes (format: "team:{team_name}:*")
+        let teams = extract_teams_from_scopes(&scopes);
+
+        // Generate session token (24-hour expiration)
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_secret = self.generate_session_secret()?;
+        let session_token_value = format!("fp_session_{}.{}", session_id, session_secret);
+        let hashed_session_secret = self.hash_secret(&session_secret)?;
+
+        let expires_at = Utc::now() + Duration::hours(DEFAULT_SESSION_EXPIRATION_HOURS);
+
+        // Create session token in database
+        let new_session_token = NewPersonalAccessToken {
+            id: TokenId::from_string(session_id.clone()),
+            name: format!("session-{}", user_id),
+            description: Some(format!("Session for user {}", user_email)),
+            hashed_secret: hashed_session_secret,
+            status: TokenStatus::Active,
+            expires_at: Some(expires_at),
+            created_by: Some(format!("user:{}", user_id)),
+            scopes: scopes.clone(),
+            is_setup_token: false,
+            max_usage_count: None,
+            usage_count: 0,
+            failed_attempts: 0,
+            locked_until: None,
+        };
+
+        self.token_repository.create_token(new_session_token).await?;
+
+        // Generate CSRF token
+        let csrf_token = self.generate_csrf_token()?;
+
+        // Store CSRF token in database
+        self.token_repository
+            .store_csrf_token(&TokenId::from_string(session_id.clone()), &csrf_token)
+            .await?;
+
+        // Record audit event
+        self.record_event(
+            "auth.session.created_from_login",
+            Some(&session_id),
+            Some(&format!("session-{}", user_id)),
+            json!({
+                "user_id": user_id.to_string(),
+                "user_email": user_email,
+                "teams": teams,
+                "expires_at": expires_at,
+            }),
+        )
+        .await?;
+
+        metrics::record_token_created(1).await;
+
+        info!(
+            session_id = %session_id,
+            user_id = %user_id,
+            "Session created from user login"
+        );
+
+        Ok(SessionResponse {
+            session_id,
+            session_token: session_token_value,
+            csrf_token,
+            expires_at,
+            teams,
+            scopes,
         })
     }
 
@@ -447,21 +563,7 @@ impl SessionService {
     }
 
     fn extract_teams_from_scopes(&self, scopes: &[String]) -> Vec<String> {
-        scopes
-            .iter()
-            .filter_map(|scope| {
-                // Extract team from scopes like "team:team_name:*" or "team:team_name:resource"
-                if scope.starts_with("team:") {
-                    let parts: Vec<&str> = scope.split(':').collect();
-                    if parts.len() >= 2 {
-                        return Some(parts[1].to_string());
-                    }
-                }
-                None
-            })
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect()
+        extract_teams_from_scopes(scopes)
     }
 
     async fn record_event(

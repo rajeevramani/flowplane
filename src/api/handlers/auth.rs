@@ -516,3 +516,132 @@ pub async fn logout_handler(
 
     Ok(LogoutResponse { cookie: clear_cookie })
 }
+
+// Email/Password Login Endpoint
+
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginBody {
+    #[validate(email)]
+    pub email: String,
+    #[validate(length(min = 1))]
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResponseBody {
+    pub session_id: String,
+    pub csrf_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub user_id: String,
+    pub user_email: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
+/// Response wrapper that includes both JSON body and Set-Cookie header
+pub struct LoginResponse {
+    body: LoginResponseBody,
+    cookie: Cookie<'static>,
+    csrf_token: String,
+}
+
+impl IntoResponse for LoginResponse {
+    fn into_response(self) -> Response {
+        let mut response = (StatusCode::OK, Json(self.body)).into_response();
+
+        // Set the session cookie
+        if let Ok(cookie_value) = self.cookie.to_string().parse() {
+            response.headers_mut().insert(header::SET_COOKIE, cookie_value);
+        }
+
+        // Set the CSRF token header
+        if let Ok(csrf_value) = self.csrf_token.parse() {
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static("x-csrf-token"), csrf_value);
+        }
+
+        response
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "Login successful", body = LoginResponseBody,
+         headers(
+             ("Set-Cookie" = String, description = "Session cookie (fp_session)"),
+             ("X-CSRF-Token" = String, description = "CSRF token for state-changing requests")
+         )
+        ),
+        (status = 400, description = "Invalid request format"),
+        (status = 401, description = "Invalid credentials or account not active"),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn login_handler(
+    State(state): State<ApiState>,
+    Json(payload): Json<LoginBody>,
+) -> Result<LoginResponse, ApiError> {
+    use crate::auth::login_service::LoginService;
+    use crate::auth::LoginRequest;
+
+    // Validate request
+    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Get database pool
+    let pool = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?
+        .pool()
+        .clone();
+
+    // Create login service
+    let login_service = LoginService::with_sqlx(pool.clone());
+
+    // Perform login
+    let login_request = LoginRequest { email: payload.email, password: payload.password };
+    let (user, scopes) = login_service.login(&login_request).await.map_err(convert_error)?;
+
+    // Create session service
+    let session_service = session_service_for_state(&state)?;
+
+    // Create session from user authentication
+    let session_response = session_service
+        .create_session_from_user(&user.id, &user.email, scopes.clone())
+        .await
+        .map_err(convert_error)?;
+
+    // Extract teams from scopes
+    let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
+
+    // Build secure session cookie
+    let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true) // TODO: Make this configurable for development
+        .same_site(SameSite::Strict)
+        .expires(
+            time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
+        )
+        .into();
+
+    let response_body = LoginResponseBody {
+        session_id: session_response.session_id,
+        csrf_token: session_response.csrf_token.clone(),
+        expires_at: session_response.expires_at,
+        user_id: user.id.to_string(),
+        user_email: user.email,
+        teams,
+        scopes,
+    };
+
+    Ok(LoginResponse { body: response_body, cookie, csrf_token: session_response.csrf_token })
+}
