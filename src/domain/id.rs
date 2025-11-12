@@ -148,6 +148,11 @@ domain_id!(
     ApiRouteId
 );
 
+domain_id!(
+    /// Unique identifier for a user
+    UserId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
