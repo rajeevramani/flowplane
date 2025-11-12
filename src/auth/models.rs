@@ -8,7 +8,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::domain::TokenId;
+use crate::domain::{TokenId, UserId};
 use crate::errors::Error;
 
 /// Lifecycle status for a personal access token.
@@ -114,17 +114,41 @@ impl Display for TokenScope {
     }
 }
 
-/// Request-scoped authentication context derived from a valid token.
+/// Request-scoped authentication context derived from a valid token or session.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub token_id: TokenId,
     pub token_name: String,
+    pub user_id: Option<UserId>,
+    pub user_email: Option<String>,
     scopes: HashSet<String>,
 }
 
 impl AuthContext {
     pub fn new(token_id: TokenId, token_name: String, scopes: Vec<String>) -> Self {
-        Self { token_id, token_name, scopes: scopes.into_iter().collect() }
+        Self {
+            token_id,
+            token_name,
+            user_id: None,
+            user_email: None,
+            scopes: scopes.into_iter().collect(),
+        }
+    }
+
+    pub fn with_user(
+        token_id: TokenId,
+        token_name: String,
+        user_id: UserId,
+        user_email: String,
+        scopes: Vec<String>,
+    ) -> Self {
+        Self {
+            token_id,
+            token_name,
+            user_id: Some(user_id),
+            user_email: Some(user_email),
+            scopes: scopes.into_iter().collect(),
+        }
     }
 
     pub fn has_scope(&self, scope: &str) -> bool {

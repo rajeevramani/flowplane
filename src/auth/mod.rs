@@ -8,6 +8,7 @@ pub mod authorization;
 pub mod cleanup_service;
 pub mod hashing;
 pub mod jwt;
+pub mod login_service;
 pub mod middleware;
 pub mod models;
 pub mod session;
