@@ -13,6 +13,13 @@ pub mod models;
 pub mod session;
 pub mod setup_token;
 pub mod token_service;
+pub mod user;
+pub mod user_validation;
 pub mod validation;
 
 pub use jwt::{AuthService as JwtAuthService, Claims, Role};
+pub use user::{
+    ChangePasswordRequest, CreateTeamMembershipRequest, CreateUserRequest, LoginRequest, NewUser,
+    NewUserTeamMembership, UpdateTeamMembershipRequest, UpdateUser, UpdateUserRequest, User,
+    UserResponse, UserStatus, UserTeamMembership, UserWithTeamsResponse,
+};
