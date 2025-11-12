@@ -13,6 +13,7 @@ pub mod listener;
 pub mod reporting;
 pub mod route;
 pub mod token;
+pub mod user;
 
 // Re-export all repository types and their associated request/response types
 pub use aggregated_schema::{
@@ -35,3 +36,6 @@ pub use listener::{
 pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
 pub use token::{SqlxTokenRepository, TokenRepository};
+pub use user::{
+    SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
+};
