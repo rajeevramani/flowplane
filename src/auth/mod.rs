@@ -6,7 +6,7 @@
 pub mod auth_service;
 pub mod authorization;
 pub mod cleanup_service;
-mod hashing;
+pub mod hashing;
 pub mod jwt;
 pub mod middleware;
 pub mod models;
@@ -17,6 +17,7 @@ pub mod user;
 pub mod user_validation;
 pub mod validation;
 
+pub use hashing::{hash_password, verify_password};
 pub use jwt::{AuthService as JwtAuthService, Claims, Role};
 pub use user::{
     ChangePasswordRequest, CreateTeamMembershipRequest, CreateUserRequest, LoginRequest, NewUser,
