@@ -21,7 +21,9 @@ use crate::auth::{
     token_service::{TokenSecretResponse, TokenService},
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
+use crate::domain::UserId;
 use crate::errors::Error;
+use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
 fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
@@ -382,6 +384,10 @@ pub async fn create_session_handler(
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfoResponse {
     pub session_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub email: String,
+    pub is_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -424,8 +430,80 @@ pub async fn get_session_info_handler(
     // Validate session
     let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
 
+    // Get user information - need to find the user associated with this session
+    let (user_id_str, name, email, is_admin) = match &session_info.token.created_by {
+        Some(created_by) if created_by.starts_with("user:") => {
+            // Session created from login - extract user ID
+            let user_id_str = created_by.strip_prefix("user:").unwrap();
+
+            let cluster_repo = state
+                .xds_state
+                .cluster_repository
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| ApiError::service_unavailable("User repository unavailable"))?;
+            let pool = cluster_repo.pool().clone();
+            let user_repo = SqlxUserRepository::new(pool);
+
+            let user_id = UserId::from_string(user_id_str.to_string());
+            let user = user_repo
+                .get_user(&user_id)
+                .await
+                .map_err(convert_error)?
+                .ok_or_else(|| {
+                    ApiError::Internal("User not found for session token".to_string())
+                })?;
+
+            (
+                user_id_str.to_string(),
+                user.name.clone(),
+                user.email.clone(),
+                user.is_admin,
+            )
+        }
+        Some(created_by) if created_by.starts_with("setup_token:") => {
+            // For bootstrap sessions, we need to find the admin user
+            let cluster_repo = state
+                .xds_state
+                .cluster_repository
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| ApiError::service_unavailable("User repository unavailable"))?;
+            let pool = cluster_repo.pool().clone();
+            let user_repo = SqlxUserRepository::new(pool);
+
+            // Get all users and find the admin (during bootstrap, there's only one user)
+            let users = user_repo.list_users(100, 0).await.map_err(convert_error)?;
+            let admin_user = users
+                .iter()
+                .find(|u| u.is_admin)
+                .ok_or_else(|| ApiError::Internal("No admin user found".to_string()))?;
+
+            (
+                admin_user.id.as_str().to_string(),
+                admin_user.name.clone(),
+                admin_user.email.clone(),
+                admin_user.is_admin,
+            )
+        }
+        Some(_) => {
+            return Err(ApiError::Internal(
+                "Unknown session token creator format".to_string(),
+            ))
+        }
+        None => {
+            return Err(ApiError::Internal(
+                "Session token has no associated user".to_string(),
+            ))
+        }
+    };
+
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
+        user_id: user_id_str,
+        name,
+        email,
+        is_admin,
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
