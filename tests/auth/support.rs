@@ -12,7 +12,7 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{repository::AuditLogRepository, DbPool},
+    storage::{self, repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
 use hyper::Response;
@@ -53,7 +53,8 @@ pub async fn setup_test_app() -> TestApp {
         .await
         .expect("create sqlite pool");
 
-    initialize_schema(&pool).await;
+    // Use the same migration system as production instead of manual table creation
+    storage::run_migrations(&pool).await.expect("run migrations for tests");
 
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 
@@ -61,70 +62,6 @@ pub async fn setup_test_app() -> TestApp {
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
 
     TestApp { state, pool, token_service }
-}
-
-async fn initialize_schema(pool: &DbPool) {
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
-            max_usage_count INTEGER,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME,
-            csrf_token TEXT
-        );
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("create personal_access_tokens table");
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("create token_scopes table");
-
-    sqlx::query(
-        r#"
-        CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            resource_type TEXT NOT NULL,
-            resource_id TEXT,
-            resource_name TEXT,
-            action TEXT NOT NULL,
-            old_configuration TEXT,
-            new_configuration TEXT,
-            user_id TEXT,
-            client_ip TEXT,
-            user_agent TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("create audit_log table");
 }
 
 pub async fn send_request(
