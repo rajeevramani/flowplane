@@ -34,6 +34,24 @@ export interface BootstrapInitializeResponse {
 	nextSteps: string[];
 }
 
+export interface SessionInfoResponse {
+	sessionId: string;
+	userId: string;
+	name: string;
+	email: string;
+	isAdmin: boolean;
+	teams: string[];
+	scopes: string[];
+	expiresAt: string | null;
+}
+
+export interface DashboardStats {
+	apiDefinitionsCount: number;
+	listenersCount: number;
+	routesCount: number;
+	clustersCount: number;
+}
+
 export interface ApiError {
 	message: string;
 	code?: string;

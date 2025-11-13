@@ -6,6 +6,8 @@ import type {
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
+	SessionInfoResponse,
+	DashboardStats,
 	ApiError
 } from './types';
 
@@ -104,14 +106,14 @@ class ApiClient {
 		}
 	}
 
-	async getSessionInfo(): Promise<any> {
+	async getSessionInfo(): Promise<SessionInfoResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/auth/sessions/me`, {
 			method: 'GET',
 			headers: this.getHeaders(),
 			credentials: 'include',
 		});
 
-		return this.handleResponse(response);
+		return this.handleResponse<SessionInfoResponse>(response);
 	}
 
 	clearAuth() {

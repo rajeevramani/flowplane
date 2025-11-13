@@ -292,19 +292,10 @@ pub async fn bootstrap_status_handler(
     let user_count = user_repo.count_users().await.map_err(convert_error)?;
 
     let (needs_initialization, message) = if user_count == 0 {
-        (
-            true,
-            "System requires initialization. Please create the first admin user.".to_string(),
-        )
+        (true, "System requires initialization. Please create the first admin user.".to_string())
     } else {
-        (
-            false,
-            "System is already initialized.".to_string(),
-        )
+        (false, "System is already initialized.".to_string())
     };
 
-    Ok(Json(BootstrapStatusResponse {
-        needs_initialization,
-        message,
-    }))
+    Ok(Json(BootstrapStatusResponse { needs_initialization, message }))
 }
