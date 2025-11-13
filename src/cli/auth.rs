@@ -33,7 +33,15 @@ pub enum AuthCommands {
 pub struct BootstrapArgs {
     /// Email address for the system administrator
     #[arg(long)]
-    pub admin_email: Option<String>,
+    pub email: Option<String>,
+
+    /// Password for the admin user account
+    #[arg(long)]
+    pub password: Option<String>,
+
+    /// Full name of the system administrator
+    #[arg(long)]
+    pub name: Option<String>,
 
     /// API base URL (required for API mode)
     #[arg(long)]
@@ -145,9 +153,19 @@ async fn handle_bootstrap(args: BootstrapArgs) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("API URL required for bootstrap. Provide via --api-url or FLOWPLANE_BASE_URL environment variable"))?;
 
     // Resolve admin email from args or environment
-    let admin_email = args.admin_email
+    let email = args.email
         .or_else(|| std::env::var("FLOWPLANE_ADMIN_EMAIL").ok())
-        .ok_or_else(|| anyhow!("Admin email required. Provide via --admin-email or FLOWPLANE_ADMIN_EMAIL environment variable"))?;
+        .ok_or_else(|| anyhow!("Admin email required. Provide via --email or FLOWPLANE_ADMIN_EMAIL environment variable"))?;
+
+    // Resolve password from args or environment
+    let password = args.password
+        .or_else(|| std::env::var("FLOWPLANE_ADMIN_PASSWORD").ok())
+        .ok_or_else(|| anyhow!("Admin password required. Provide via --password or FLOWPLANE_ADMIN_PASSWORD environment variable"))?;
+
+    // Resolve name from args or environment
+    let name = args.name
+        .or_else(|| std::env::var("FLOWPLANE_ADMIN_NAME").ok())
+        .ok_or_else(|| anyhow!("Admin name required. Provide via --name or FLOWPLANE_ADMIN_NAME environment variable"))?;
 
     // Create a temporary client with empty token (no authentication needed for bootstrap)
     let config = crate::cli::client::ClientConfig {
@@ -158,10 +176,10 @@ async fn handle_bootstrap(args: BootstrapArgs) -> anyhow::Result<()> {
     };
     let client = FlowplaneClient::new(config)?;
 
-    // Call bootstrap API to generate setup token
-    let response = client.bootstrap_initialize(&admin_email).await?;
+    // Call bootstrap API to create admin user and generate setup token
+    let response = client.bootstrap_initialize(&email, &password, &name).await?;
 
-    println!("{}", "Setup token generated successfully!".green());
+    println!("{}", "Bootstrap complete! Admin user created and setup token generated!".green());
     println!();
     println!("  Setup Token: {}", response.setup_token.bright_yellow());
     println!("  Expires At: {}", response.expires_at.to_rfc3339());
