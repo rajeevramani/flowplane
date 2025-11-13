@@ -578,6 +578,9 @@ impl SessionService {
             resource_id: token_id.map(|s| s.to_string()),
             resource_name: token_name.map(|s| s.to_string()),
             metadata,
+            user_id: None,
+            client_ip: None,
+            user_agent: None,
         };
 
         self.audit_repository.record_auth_event(event).await
