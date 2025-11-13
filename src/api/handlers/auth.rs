@@ -528,7 +528,7 @@ pub struct LoginBody {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginResponseBody {
     pub session_id: String,
