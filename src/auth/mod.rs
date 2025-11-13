@@ -15,6 +15,7 @@ pub mod session;
 pub mod setup_token;
 pub mod token_service;
 pub mod user;
+pub mod user_service;
 pub mod user_validation;
 pub mod validation;
 

@@ -11,6 +11,7 @@ pub mod listeners;
 pub mod reporting;
 pub mod routes;
 pub mod teams;
+pub mod users;
 
 // Re-export handler functions for backward compatibility
 pub use aggregated_schemas::{
@@ -46,6 +47,10 @@ pub use routes::{
     update_route_handler,
 };
 pub use teams::get_team_bootstrap_handler;
+pub use users::{
+    add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
+    remove_team_membership, update_user,
+};
 
 // Re-export DTOs for OpenAPI docs
 pub use aggregated_schemas::{
@@ -60,3 +65,4 @@ pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
 pub use teams::BootstrapQuery;
+pub use users::ListUsersResponse;
