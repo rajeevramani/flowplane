@@ -21,9 +21,10 @@ use super::{
     docs,
     handlers::{
         add_team_membership, append_route_handler, bootstrap_initialize_handler,
-        compare_aggregated_schemas_handler, create_api_definition_handler, create_cluster_handler,
-        create_learning_session_handler, create_listener_handler, create_route_handler,
-        create_session_handler, create_token_handler, create_user, delete_cluster_handler,
+        bootstrap_status_handler, compare_aggregated_schemas_handler,
+        create_api_definition_handler, create_cluster_handler, create_learning_session_handler,
+        create_listener_handler, create_route_handler, create_session_handler,
+        create_token_handler, create_user, delete_cluster_handler,
         delete_learning_session_handler, delete_listener_handler, delete_route_handler,
         delete_user, export_aggregated_schema_handler, get_aggregated_schema_handler,
         get_api_definition_handler, get_cluster_handler, get_learning_session_handler,
@@ -173,6 +174,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     // Public endpoints (no authentication required)
     let public_api = Router::new()
         .route("/health", get(health_handler))
+        .route("/api/v1/bootstrap/status", get(bootstrap_status_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
         .route("/api/v1/auth/login", post(login_handler))
         .route("/api/v1/auth/sessions", post(create_session_handler))

@@ -27,7 +27,7 @@ pub use auth::{
     list_tokens_handler, login_handler, logout_handler, revoke_token_handler, rotate_token_handler,
     update_token_handler,
 };
-pub use bootstrap::bootstrap_initialize_handler;
+pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,

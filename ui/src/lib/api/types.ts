@@ -15,6 +15,25 @@ export interface LoginResponse {
 	scopes: string[];
 }
 
+export interface BootstrapStatusResponse {
+	needsInitialization: boolean;
+	message: string;
+}
+
+export interface BootstrapInitializeRequest {
+	email: string;
+	password: string;
+	name: string;
+}
+
+export interface BootstrapInitializeResponse {
+	setupToken: string;
+	expiresAt: string;
+	maxUsageCount: number;
+	message: string;
+	nextSteps: string[];
+}
+
 export interface ApiError {
 	message: string;
 	code?: string;

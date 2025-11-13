@@ -5,12 +5,26 @@
 
 	onMount(async () => {
 		try {
-			// Try to get session info
-			await apiClient.getSessionInfo();
-			// If successful, user is logged in - redirect to dashboard
-			goto('/dashboard');
-		} catch {
-			// Not logged in - redirect to login
+			// First check if system needs bootstrap
+			const status = await apiClient.getBootstrapStatus();
+			if (status.needsInitialization) {
+				// System not initialized - redirect to bootstrap
+				goto('/bootstrap');
+				return;
+			}
+
+			// System is initialized, check if user is logged in
+			try {
+				await apiClient.getSessionInfo();
+				// If successful, user is logged in - redirect to dashboard
+				goto('/dashboard');
+			} catch {
+				// Not logged in - redirect to login
+				goto('/login');
+			}
+		} catch (error) {
+			// Failed to check bootstrap status, assume system is initialized
+			// Try to redirect to login
 			goto('/login');
 		}
 	});
