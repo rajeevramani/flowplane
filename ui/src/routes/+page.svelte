@@ -1,20 +1,24 @@
-<div class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-	<div class="max-w-2xl w-full space-y-8">
-		<div class="text-center">
-			<h1 class="text-4xl font-bold text-gray-900 mb-4">Flowplane UI</h1>
-			<p class="text-lg text-gray-600">
-				SvelteKit + Tailwind CSS + TypeScript setup complete
-			</p>
-		</div>
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { apiClient } from '$lib/api/client';
 
-		<div class="bg-white rounded-lg shadow-md p-6 space-y-4">
-			<h2 class="text-2xl font-semibold text-gray-800">Testing Tailwind</h2>
-			<p class="text-gray-600">
-				If you can see styled content with proper colors and spacing, Tailwind CSS is working!
-			</p>
-			<button class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
-				Test Button
-			</button>
-		</div>
+	onMount(async () => {
+		try {
+			// Try to get session info
+			await apiClient.getSessionInfo();
+			// If successful, user is logged in - redirect to dashboard
+			goto('/dashboard');
+		} catch {
+			// Not logged in - redirect to login
+			goto('/login');
+		}
+	});
+</script>
+
+<div class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+	<div class="text-center">
+		<div class="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+		<p class="text-gray-600">Loading...</p>
 	</div>
 </div>
