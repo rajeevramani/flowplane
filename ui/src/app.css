@@ -1,0 +1,6 @@
+/* Tailwind CSS v4 imports */
+@import "tailwindcss";
+
+/* Tailwind plugins */
+@plugin "@tailwindcss/forms";
+@plugin "@tailwindcss/typography";
