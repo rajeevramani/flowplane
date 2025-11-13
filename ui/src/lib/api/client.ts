@@ -1,6 +1,13 @@
 // API client with CSRF token handling
 import { goto } from '$app/navigation';
-import type { LoginRequest, LoginResponse, ApiError } from './types';
+import type {
+	LoginRequest,
+	LoginResponse,
+	BootstrapStatusResponse,
+	BootstrapInitializeRequest,
+	BootstrapInitializeResponse,
+	ApiError
+} from './types';
 
 const API_BASE = 'http://localhost:8080';
 
@@ -155,6 +162,28 @@ class ApiClient {
 		});
 
 		return this.handleResponse<T>(response);
+	}
+
+	// Bootstrap methods
+	async getBootstrapStatus(): Promise<BootstrapStatusResponse> {
+		const response = await fetch(`${API_BASE}/api/v1/bootstrap/status`, {
+			method: 'GET',
+			headers: this.getHeaders(),
+		});
+
+		return this.handleResponse<BootstrapStatusResponse>(response);
+	}
+
+	async bootstrapInitialize(
+		data: BootstrapInitializeRequest
+	): Promise<BootstrapInitializeResponse> {
+		const response = await fetch(`${API_BASE}/api/v1/bootstrap/initialize`, {
+			method: 'POST',
+			headers: this.getHeaders(),
+			body: JSON.stringify(data),
+		});
+
+		return this.handleResponse<BootstrapInitializeResponse>(response);
 	}
 }
 

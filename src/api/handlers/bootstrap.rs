@@ -61,6 +61,17 @@ pub struct BootstrapInitializeResponse {
     pub next_steps: Vec<String>,
 }
 
+/// Response from bootstrap status check
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapStatusResponse {
+    /// Whether the system needs initialization (true = needs bootstrap, false = already initialized)
+    pub needs_initialization: bool,
+
+    /// Optional message describing current state
+    pub message: String,
+}
+
 fn convert_error(err: Error) -> ApiError {
     ApiError::from(err)
 }
@@ -241,4 +252,59 @@ pub async fn bootstrap_initialize_handler(
             next_steps,
         }),
     ))
+}
+
+/// Bootstrap status endpoint
+///
+/// This endpoint checks whether the system needs initialization.
+/// Returns `needs_initialization: true` if no users exist in the system.
+///
+/// # Security
+///
+/// - This endpoint is public (no authentication required)
+/// - Only reveals whether the system has users, not any sensitive data
+/// - Safe to expose as it's needed before authentication is possible
+#[utoipa::path(
+    get,
+    path = "/api/v1/bootstrap/status",
+    responses(
+        (status = 200, description = "Bootstrap status retrieved successfully", body = BootstrapStatusResponse),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "bootstrap"
+)]
+pub async fn bootstrap_status_handler(
+    State(state): State<ApiState>,
+) -> Result<Json<BootstrapStatusResponse>, ApiError> {
+    // Get database pool
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Repository unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+
+    // Create user repository
+    let user_repo = SqlxUserRepository::new(pool.clone());
+
+    // Check if any users exist
+    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+
+    let (needs_initialization, message) = if user_count == 0 {
+        (
+            true,
+            "System requires initialization. Please create the first admin user.".to_string(),
+        )
+    } else {
+        (
+            false,
+            "System is already initialized.".to_string(),
+        )
+    };
+
+    Ok(Json(BootstrapStatusResponse {
+        needs_initialization,
+        message,
+    }))
 }
