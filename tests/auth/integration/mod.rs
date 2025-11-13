@@ -1,4 +1,5 @@
 mod test_audit_logging;
+mod test_audit_user_context;
 mod test_auth_middleware;
 mod test_authorization;
 mod test_concurrent_auth;

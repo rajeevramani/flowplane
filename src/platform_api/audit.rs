@@ -18,6 +18,9 @@ pub async fn record_create_event(
                 "team": team,
                 "domain": domain,
             }),
+            user_id: None,
+            client_ip: None,
+            user_agent: None,
         })
         .await
 }
@@ -38,6 +41,9 @@ pub async fn record_route_appended_event(
                 "match_type": match_type,
                 "match_value": match_value,
             }),
+            user_id: None,
+            client_ip: None,
+            user_agent: None,
         })
         .await
 }

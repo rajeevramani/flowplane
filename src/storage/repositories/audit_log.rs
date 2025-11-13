@@ -13,6 +13,9 @@ pub struct AuditEvent {
     pub resource_id: Option<String>,
     pub resource_name: Option<String>,
     pub metadata: serde_json::Value,
+    pub user_id: Option<String>,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 impl AuditEvent {
@@ -27,6 +30,9 @@ impl AuditEvent {
             resource_id: resource_id.map(|value| value.to_string()),
             resource_name: resource_name.map(|value| value.to_string()),
             metadata,
+            user_id: None,
+            client_ip: None,
+            user_agent: None,
         }
     }
 
@@ -47,7 +53,26 @@ impl AuditEvent {
             resource_id: Some(secret_key.to_string()),
             resource_name: Some(secret_key.to_string()),
             metadata,
+            user_id: None,
+            client_ip: None,
+            user_agent: None,
         }
+    }
+
+    /// Set user context for this audit event.
+    ///
+    /// This is typically called after creating the event via a factory method
+    /// to add authentication and request context.
+    pub fn with_user_context(
+        mut self,
+        user_id: Option<String>,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Self {
+        self.user_id = user_id;
+        self.client_ip = client_ip;
+        self.user_agent = user_agent;
+        self
     }
 }
 
@@ -71,13 +96,16 @@ impl AuditLogRepository {
 
         sqlx::query(
             "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, old_configuration, new_configuration, user_id, client_ip, user_agent, created_at) \
-             VALUES ($1, $2, $3, $4, NULL, $5, NULL, NULL, NULL, $6)"
+             VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9)"
         )
         .bind(resource_type)
         .bind(event.resource_id.as_deref())
         .bind(&resource_name)
         .bind(event.action.as_str())
         .bind(metadata_json)
+        .bind(event.user_id.as_deref())
+        .bind(event.client_ip.as_deref())
+        .bind(event.user_agent.as_deref())
         .bind(now)
         .execute(&self.pool)
         .await
