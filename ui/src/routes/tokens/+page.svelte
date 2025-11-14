@@ -124,10 +124,19 @@
 			isCreating = true;
 			createError = null;
 
+			// Convert datetime-local to ISO 8601 format with UTC timezone
+			let expiresAt: string | null = null;
+			if (createForm.expiresAt) {
+				// datetime-local returns: "2025-11-15T12:40"
+				// We need to convert to ISO 8601 with UTC: "2025-11-15T12:40:00Z"
+				const localDate = new Date(createForm.expiresAt);
+				expiresAt = localDate.toISOString();
+			}
+
 			const response = await apiClient.createToken({
 				name: createForm.name,
 				description: createForm.description || undefined,
-				expiresAt: createForm.expiresAt || null,
+				expiresAt,
 				scopes: createForm.scopes
 			});
 
