@@ -26,7 +26,10 @@ import type {
 	UpdateUserRequest,
 	ListUsersResponse,
 	UserTeamMembership,
-	CreateTeamMembershipRequest
+	CreateTeamMembershipRequest,
+	AuditLogEntry,
+	ListAuditLogsQuery,
+	ListAuditLogsResponse
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -409,6 +412,21 @@ class ApiClient {
 
 	async removeTeamMembership(userId: string, team: string): Promise<void> {
 		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
+	}
+
+	// Audit Log methods (admin only)
+	async listAuditLogs(query: ListAuditLogsQuery = {}): Promise<ListAuditLogsResponse> {
+		const params = new URLSearchParams();
+
+		if (query.resource_type) params.append('resource_type', query.resource_type);
+		if (query.action) params.append('action', query.action);
+		if (query.user_id) params.append('user_id', query.user_id);
+		if (query.start_date) params.append('start_date', query.start_date);
+		if (query.end_date) params.append('end_date', query.end_date);
+		if (query.limit !== undefined) params.append('limit', query.limit.toString());
+		if (query.offset !== undefined) params.append('offset', query.offset.toString());
+
+		return this.get<ListAuditLogsResponse>(`/api/v1/audit-logs?${params.toString()}`);
 	}
 }
 

@@ -219,3 +219,35 @@ export interface ListUsersResponse {
 	limit: number;
 	offset: number;
 }
+
+// Audit Log Types
+export interface AuditLogEntry {
+	id: number;
+	resource_type: string;
+	resource_id: string | null;
+	resource_name: string | null;
+	action: string;
+	old_configuration: string | null;
+	new_configuration: string | null;
+	user_id: string | null;
+	client_ip: string | null;
+	user_agent: string | null;
+	created_at: string;
+}
+
+export interface ListAuditLogsQuery {
+	resource_type?: string;
+	action?: string;
+	user_id?: string;
+	start_date?: string;
+	end_date?: string;
+	limit?: number;
+	offset?: number;
+}
+
+export interface ListAuditLogsResponse {
+	entries: AuditLogEntry[];
+	total: number;
+	limit: number;
+	offset: number;
+}
