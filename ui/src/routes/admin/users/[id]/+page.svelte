@@ -16,7 +16,18 @@
 	// Team membership state
 	let showAddTeamModal = $state(false);
 	let newTeam = $state({ team: '', scopes: [] as string[] });
-	let availableScopes = $state(['api:read', 'api:write', 'token:create', 'token:revoke']);
+	let availableScopes = $state([
+		'tokens:read',
+		'tokens:write',
+		'clusters:read',
+		'clusters:write',
+		'routes:read',
+		'routes:write',
+		'listeners:read',
+		'listeners:write',
+		'api_definitions:read',
+		'api_definitions:write'
+	]);
 
 	// Suspend modal
 	let showSuspendModal = $state(false);

@@ -48,12 +48,6 @@
 		}
 	}
 
-	$effect(() => {
-		// Reload users when pagination changes
-		if (!isLoading) {
-			loadUsers();
-		}
-	});
 
 	let filteredUsers = $derived.by(() => {
 		let filtered = users;
@@ -107,12 +101,14 @@
 	function handleNextPage() {
 		if (currentPage < totalPages) {
 			currentPage++;
+			loadUsers();
 		}
 	}
 
 	function handlePreviousPage() {
 		if (currentPage > 1) {
 			currentPage--;
+			loadUsers();
 		}
 	}
 
