@@ -305,16 +305,25 @@
 									</p>
 									<p><span class="font-medium">Created:</span> {formatDate(apiDef.createdAt)}</p>
 								</div>
-								{#if apiDef.bootstrapUri}
-									<div class="mt-4">
+<div class="mt-4 flex gap-2">
+									<a
+										href={`/api-definitions/${apiDef.id}`}
+										class="flex-1 px-3 py-2 text-center text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
+									>
+										View Details
+									</a>
+									{#if apiDef.bootstrapUri}
 										<a
 											href={apiDef.bootstrapUri}
-											class="text-blue-600 hover:text-blue-800 text-sm font-medium"
+											target="_blank"
+											rel="noopener noreferrer"
+											class="px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
+											title="View Bootstrap Config"
 										>
-											View Bootstrap →
+											Bootstrap
 										</a>
-									</div>
-								{/if}
+									{/if}
+								</div>
 							</div>
 						{/each}
 					</div>
