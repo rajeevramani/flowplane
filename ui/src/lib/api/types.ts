@@ -160,3 +160,62 @@ export interface BootstrapConfigRequest {
 	format?: 'yaml' | 'json';
 	includeDefault?: boolean;
 }
+
+// User Management types
+export type UserStatus = 'Active' | 'Inactive' | 'Suspended';
+
+export interface UserResponse {
+	id: string;
+	email: string;
+	name: string;
+	status: UserStatus;
+	isAdmin: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface UserTeamMembership {
+	id: string;
+	userId: string;
+	team: string;
+	scopes: string[];
+	createdAt: string;
+}
+
+export interface UserWithTeamsResponse {
+	id: string;
+	email: string;
+	name: string;
+	status: UserStatus;
+	isAdmin: boolean;
+	createdAt: string;
+	updatedAt: string;
+	teams: UserTeamMembership[];
+}
+
+export interface CreateUserRequest {
+	email: string;
+	password: string;
+	name: string;
+	isAdmin?: boolean;
+}
+
+export interface UpdateUserRequest {
+	email?: string;
+	name?: string;
+	status?: UserStatus;
+	isAdmin?: boolean;
+}
+
+export interface CreateTeamMembershipRequest {
+	userId: string;
+	team: string;
+	scopes: string[];
+}
+
+export interface ListUsersResponse {
+	users: UserResponse[];
+	total: number;
+	limit: number;
+	offset: number;
+}
