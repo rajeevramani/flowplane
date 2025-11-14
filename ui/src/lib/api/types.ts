@@ -153,3 +153,10 @@ export interface ClusterResponse {
 	serviceName: string;
 	config: any; // Full cluster config
 }
+
+// Bootstrap configuration types
+export interface BootstrapConfigRequest {
+	team: string;
+	format?: 'yaml' | 'json';
+	includeDefault?: boolean;
+}

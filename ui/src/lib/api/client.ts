@@ -18,7 +18,8 @@ import type {
 	ApiDefinitionSummary,
 	ListenerResponse,
 	RouteResponse,
-	ClusterResponse
+	ClusterResponse,
+	BootstrapConfigRequest
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -339,6 +340,31 @@ class ApiClient {
 
 	async deleteCluster(name: string): Promise<void> {
 		return this.delete<void>(`/api/v1/clusters/${name}`);
+	}
+
+	// Bootstrap configuration methods
+	async getBootstrapConfig(request: BootstrapConfigRequest): Promise<string> {
+		const params = new URLSearchParams();
+		if (request.format) params.append('format', request.format);
+		if (request.includeDefault !== undefined) {
+			params.append('include_default', request.includeDefault.toString());
+		}
+
+		const path = `/api/v1/teams/${request.team}/bootstrap${params.toString() ? `?${params.toString()}` : ''}`;
+
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'GET',
+			headers: this.getHeaders(),
+			credentials: 'include'
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(errorText || `HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		// Return the raw text (YAML or JSON)
+		return response.text();
 	}
 }
 
