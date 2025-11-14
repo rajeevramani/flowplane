@@ -19,7 +19,14 @@ import type {
 	ListenerResponse,
 	RouteResponse,
 	ClusterResponse,
-	BootstrapConfigRequest
+	BootstrapConfigRequest,
+	UserResponse,
+	UserWithTeamsResponse,
+	CreateUserRequest,
+	UpdateUserRequest,
+	ListUsersResponse,
+	UserTeamMembership,
+	CreateTeamMembershipRequest
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -365,6 +372,43 @@ class ApiClient {
 
 		// Return the raw text (YAML or JSON)
 		return response.text();
+	}
+
+	// User Management methods (admin only)
+	async listUsers(limit: number = 50, offset: number = 0): Promise<ListUsersResponse> {
+		const params = new URLSearchParams();
+		params.append('limit', limit.toString());
+		params.append('offset', offset.toString());
+
+		return this.get<ListUsersResponse>(`/api/v1/users?${params.toString()}`);
+	}
+
+	async getUser(id: string): Promise<UserWithTeamsResponse> {
+		return this.get<UserWithTeamsResponse>(`/api/v1/users/${id}`);
+	}
+
+	async createUser(request: CreateUserRequest): Promise<UserResponse> {
+		return this.post<UserResponse>('/api/v1/users', request);
+	}
+
+	async updateUser(id: string, request: UpdateUserRequest): Promise<UserResponse> {
+		return this.put<UserResponse>(`/api/v1/users/${id}`, request);
+	}
+
+	async deleteUser(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/users/${id}`);
+	}
+
+	async listUserTeams(userId: string): Promise<UserTeamMembership[]> {
+		return this.get<UserTeamMembership[]>(`/api/v1/users/${userId}/teams`);
+	}
+
+	async addTeamMembership(userId: string, request: CreateTeamMembershipRequest): Promise<UserTeamMembership> {
+		return this.post<UserTeamMembership>(`/api/v1/users/${userId}/teams`, request);
+	}
+
+	async removeTeamMembership(userId: string, team: string): Promise<void> {
+		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
 	}
 }
 
