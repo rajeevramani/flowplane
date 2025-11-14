@@ -12,7 +12,9 @@ import type {
 	PersonalAccessToken,
 	CreateTokenRequest,
 	TokenSecretResponse,
-	UpdateTokenRequest
+	UpdateTokenRequest,
+	ImportOpenApiRequest,
+	CreateApiDefinitionResponse
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -221,6 +223,34 @@ class ApiClient {
 
 	async rotateToken(id: string): Promise<TokenSecretResponse> {
 		return this.post<TokenSecretResponse>(`/api/v1/tokens/${id}/rotate`, {});
+	}
+
+	// OpenAPI import
+	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<CreateApiDefinitionResponse> {
+		const params = new URLSearchParams();
+		if (request.team) params.append('team', request.team);
+		if (request.listenerIsolation !== undefined) {
+			params.append('listenerIsolation', request.listenerIsolation.toString());
+		}
+		if (request.port) params.append('port', request.port.toString());
+
+		const path = `/api/v1/api-definitions/from-openapi${params.toString() ? `?${params.toString()}` : ''}`;
+
+		// Determine content type based on spec format
+		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
+		const contentType = isYaml ? 'application/yaml' : 'application/json';
+
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'POST',
+			headers: {
+				...this.getHeaders(true), // Include CSRF
+				'Content-Type': contentType
+			},
+			body: request.spec,
+			credentials: 'include'
+		});
+
+		return this.handleResponse<CreateApiDefinitionResponse>(response);
 	}
 }
 
