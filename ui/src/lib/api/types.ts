@@ -56,3 +56,35 @@ export interface ApiError {
 	message: string;
 	code?: string;
 }
+
+export type TokenStatus = 'Active' | 'Revoked' | 'Expired';
+
+export interface PersonalAccessToken {
+	id: string;
+	name: string;
+	description: string | null;
+	status: TokenStatus;
+	expiresAt: string | null;
+	lastUsedAt: string | null;
+	createdBy: string | null;
+	createdAt: string;
+	updatedAt: string;
+	scopes: string[];
+}
+
+export interface CreateTokenRequest {
+	name: string;
+	description?: string;
+	expiresAt?: string | null;
+	scopes: string[];
+}
+
+export interface TokenSecretResponse {
+	id: string;
+	token: string;
+}
+
+export interface UpdateTokenRequest {
+	name?: string;
+	description?: string;
+}

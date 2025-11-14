@@ -8,7 +8,11 @@ import type {
 	BootstrapInitializeResponse,
 	SessionInfoResponse,
 	DashboardStats,
-	ApiError
+	ApiError,
+	PersonalAccessToken,
+	CreateTokenRequest,
+	TokenSecretResponse,
+	UpdateTokenRequest
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -186,6 +190,37 @@ class ApiClient {
 		});
 
 		return this.handleResponse<BootstrapInitializeResponse>(response);
+	}
+
+	// Token management methods
+	async listTokens(limit?: number, offset?: number): Promise<PersonalAccessToken[]> {
+		let path = '/api/v1/tokens';
+		const params = new URLSearchParams();
+		if (limit) params.append('limit', limit.toString());
+		if (offset) params.append('offset', offset.toString());
+		if (params.toString()) path += `?${params.toString()}`;
+
+		return this.get<PersonalAccessToken[]>(path);
+	}
+
+	async getToken(id: string): Promise<PersonalAccessToken> {
+		return this.get<PersonalAccessToken>(`/api/v1/tokens/${id}`);
+	}
+
+	async createToken(request: CreateTokenRequest): Promise<TokenSecretResponse> {
+		return this.post<TokenSecretResponse>('/api/v1/tokens', request);
+	}
+
+	async updateToken(id: string, request: UpdateTokenRequest): Promise<PersonalAccessToken> {
+		return this.put<PersonalAccessToken>(`/api/v1/tokens/${id}`, request);
+	}
+
+	async revokeToken(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/tokens/${id}`);
+	}
+
+	async rotateToken(id: string): Promise<TokenSecretResponse> {
+		return this.post<TokenSecretResponse>(`/api/v1/tokens/${id}/rotate`, {});
 	}
 }
 
