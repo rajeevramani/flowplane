@@ -54,6 +54,15 @@ pub fn openapi_to_api_definition_spec(
     // Parse global x-flowplane-filters from OpenAPI extensions
     let global_filters = crate::openapi::parse_global_filters(&openapi)?;
 
+    // Create upstream target configuration ONCE from the OpenAPI servers array
+    // All routes within this API definition will share the same upstream cluster
+    let upstream_targets = json!({
+        "targets": [{
+            "name": format!("{}-upstream", domain),
+            "endpoint": format!("{}:{}", domain, url_port),
+        }]
+    });
+
     // Convert OpenAPI paths and operations to RouteSpec (one route per operation)
     let mut routes = Vec::new();
 
@@ -70,14 +79,6 @@ pub fn openapi_to_api_definition_spec(
         // Determine match type: use "template" for paths with parameters, otherwise "prefix"
         let match_type =
             if path_template.contains('{') { "template".to_string() } else { "prefix".to_string() };
-
-        // Create upstream target configuration
-        let upstream_targets = json!({
-            "targets": [{
-                "name": format!("{}-upstream", domain),
-                "endpoint": format!("{}:{}", domain, url_port),
-            }]
-        });
 
         // Parse route-level x-flowplane-route-overrides from path item operations
         // Store the raw JSON value in override_config for typed_per_filter_config processing
