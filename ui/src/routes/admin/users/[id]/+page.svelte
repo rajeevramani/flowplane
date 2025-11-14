@@ -25,8 +25,8 @@
 		'routes:write',
 		'listeners:read',
 		'listeners:write',
-		'api_definitions:read',
-		'api_definitions:write'
+		'api-definitions:read',
+		'api-definitions:write'
 	]);
 
 	// Suspend modal
