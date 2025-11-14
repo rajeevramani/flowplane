@@ -907,60 +907,130 @@ impl PlatformApiMaterializer {
         let mut generated_cluster_ids = Vec::new();
         let mut generated_route_ids = Vec::new();
 
-        // Create clusters for each API route's upstream targets
-        for api_route in api_routes {
-            let cluster_name = build_cluster_name(definition.id.as_str(), api_route.id.as_str());
+        // Step 1: Deduplicate upstream targets across all routes
+        // Extract unique upstream configurations (keyed by endpoint)
+        use std::collections::HashMap;
+        let mut unique_upstreams: HashMap<String, (serde_json::Value, Option<i64>)> =
+            HashMap::new();
 
-            // Convert upstream_targets to endpoints format for ClusterSpec compatibility
-            let endpoints = if let Some(targets) =
+        for api_route in api_routes {
+            // Extract endpoint string as deduplication key
+            if let Some(targets) =
+                api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
+            {
+                for target in targets {
+                    if let Some(endpoint_str) = target.get("endpoint").and_then(|e| e.as_str()) {
+                        // Store the full upstream config and timeout for this endpoint
+                        unique_upstreams
+                            .entry(endpoint_str.to_string())
+                            .or_insert((target.clone(), api_route.timeout_seconds));
+                    }
+                }
+            }
+        }
+
+        // Step 2: Create ONE cluster per unique upstream endpoint
+        let mut endpoint_to_cluster: HashMap<String, (String, String)> = HashMap::new();
+
+        for (endpoint_str, (_target_config, timeout)) in unique_upstreams {
+            // Parse "host:port" format for cluster configuration
+            let parts: Vec<&str> = endpoint_str.split(':').collect();
+            if parts.len() != 2 {
+                continue; // Skip invalid endpoint formats
+            }
+
+            let port = match parts[1].parse::<u16>() {
+                Ok(p) => p,
+                Err(_) => continue, // Skip invalid ports
+            };
+
+            let endpoints = vec![serde_json::json!({
+                "host": parts[0],
+                "port": port
+            })];
+
+            // Build cluster name based on upstream endpoint instead of route ID
+            // This ensures cluster name is deterministic and tied to the upstream
+            let cluster_name = format!(
+                "platform-{}-{}",
+                short_id(definition.id.as_str()),
+                endpoint_str.replace(":", "-").replace(".", "-")
+            );
+
+            // Build cluster configuration
+            let cluster_config = serde_json::json!({
+                "endpoints": endpoints,
+                "connect_timeout_seconds": timeout
+            });
+
+            // Check if cluster already exists (for append_route operations)
+            let cluster =
+                if let Ok(existing_cluster) = cluster_repo.get_by_name(&cluster_name).await {
+                    // Reuse existing cluster
+                    info!(
+                        endpoint = %endpoint_str,
+                        cluster_name = %cluster_name,
+                        cluster_id = %existing_cluster.id,
+                        "Reusing existing cluster for upstream endpoint"
+                    );
+                    existing_cluster
+                } else {
+                    // Create new cluster
+                    let new_cluster = cluster_repo
+                        .create(CreateClusterRequest {
+                            name: cluster_name.clone(),
+                            service_name: cluster_name.clone(),
+                            configuration: cluster_config,
+                            team: Some(definition.team.clone()),
+                        })
+                        .await?;
+
+                    // Tag with source='platform_api'
+                    sqlx::query("UPDATE clusters SET source = 'platform_api' WHERE id = $1")
+                        .bind(&new_cluster.id)
+                        .execute(cluster_repo.pool())
+                        .await
+                        .map_err(|e| {
+                            Error::internal(format!("Failed to tag cluster with source: {}", e))
+                        })?;
+
+                    info!(
+                        endpoint = %endpoint_str,
+                        cluster_name = %new_cluster.name,
+                        cluster_id = %new_cluster.id,
+                        "Created new cluster for upstream endpoint"
+                    );
+                    new_cluster
+                };
+
+            // Store mapping: endpoint -> (cluster_name, cluster_id)
+            endpoint_to_cluster
+                .insert(endpoint_str.clone(), (cluster_name, cluster.id.to_string()));
+        }
+
+        // Step 3: Create routes that reference the appropriate shared cluster
+        for api_route in api_routes {
+            // Find the cluster for this route's upstream target
+            let cluster_info = if let Some(targets) =
                 api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
             {
                 targets
                     .iter()
-                    .filter_map(|target| {
+                    .find_map(|target| {
                         let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
-                        // Parse "host:port" format
-                        let parts: Vec<&str> = endpoint_str.split(':').collect();
-                        if parts.len() == 2 {
-                            let port = parts[1].parse::<u16>().ok()?;
-                            Some(serde_json::json!({
-                                "host": parts[0],
-                                "port": port
-                            }))
-                        } else {
-                            None
-                        }
+                        endpoint_to_cluster.get(endpoint_str)
                     })
-                    .collect::<Vec<_>>()
+                    .cloned()
             } else {
-                vec![]
+                None
             };
 
-            // Build cluster configuration in ClusterSpec format
-            let cluster_config = serde_json::json!({
-                "endpoints": endpoints,
-                "connect_timeout_seconds": api_route.timeout_seconds
-            });
+            let (cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
+                Error::internal(format!("No cluster found for route {}", api_route.id))
+            })?;
 
-            let cluster = cluster_repo
-                .create(CreateClusterRequest {
-                    name: cluster_name.clone(),
-                    service_name: cluster_name.clone(),
-                    configuration: cluster_config,
-                    team: Some(definition.team.clone()),
-                })
-                .await?;
-
-            // Tag with source='platform_api'
-            sqlx::query("UPDATE clusters SET source = 'platform_api' WHERE id = $1")
-                .bind(&cluster.id)
-                .execute(cluster_repo.pool())
-                .await
-                .map_err(|e| {
-                    Error::internal(format!("Failed to tag cluster with source: {}", e))
-                })?;
-
-            generated_cluster_ids.push(cluster.id.to_string());
+            // Track the cluster ID for this route (for FK relationship)
+            generated_cluster_ids.push(cluster_id.clone());
 
             // Create native route that references the cluster
             let route_name = format!("platform-api-{}", short_id(api_route.id.as_str()));
@@ -995,7 +1065,7 @@ impl PlatformApiMaterializer {
                 .create(CreateRouteRequest {
                     name: route_name,
                     path_prefix: api_route.match_value.clone(),
-                    cluster_name,
+                    cluster_name: cluster_name.clone(),
                     configuration: route_config,
                     team: Some(definition.team.clone()),
                 })
@@ -1013,17 +1083,20 @@ impl PlatformApiMaterializer {
             info!(
                 api_route_id = %api_route.id,
                 native_route_id = %route.id,
-                native_cluster_id = %cluster.id,
+                native_cluster_id = %cluster_id,
+                cluster_name = %cluster_name,
                 match_type = %api_route.match_type,
                 match_value = %api_route.match_value,
-                "Materialized BFF route to native resources"
+                "Materialized Platform API route to native resources (shared cluster)"
             );
         }
 
+        let unique_clusters = endpoint_to_cluster.len();
         info!(
             total_routes = generated_route_ids.len(),
-            total_clusters = generated_cluster_ids.len(),
-            "Completed native resource materialization"
+            unique_clusters = unique_clusters,
+            total_cluster_references = generated_cluster_ids.len(),
+            "Completed native resource materialization with cluster deduplication"
         );
 
         // Listener ID will be retrieved after listener creation in create_definition
