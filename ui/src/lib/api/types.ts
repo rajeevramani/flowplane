@@ -116,3 +116,40 @@ export interface OpenApiSpec {
 	}>;
 	paths: Record<string, any>;
 }
+
+// API Definition types
+export interface ApiDefinitionSummary {
+	id: string;
+	team: string;
+	domain: string;
+	listenerIsolation: boolean;
+	bootstrapUri: string | null;
+	version: number;
+	createdAt: string;
+	updatedAt: string;
+}
+
+// Listener types
+export interface ListenerResponse {
+	name: string;
+	address: string;
+	port: number | null;
+	protocol: string;
+	version: number;
+	config: any; // Full listener config
+}
+
+// Route types
+export interface RouteResponse {
+	name: string;
+	pathPrefix: string;
+	clusterTargets: string;
+	config: any; // Full route config
+}
+
+// Cluster types
+export interface ClusterResponse {
+	name: string;
+	serviceName: string;
+	config: any; // Full cluster config
+}

@@ -14,7 +14,11 @@ import type {
 	TokenSecretResponse,
 	UpdateTokenRequest,
 	ImportOpenApiRequest,
-	CreateApiDefinitionResponse
+	CreateApiDefinitionResponse,
+	ApiDefinitionSummary,
+	ListenerResponse,
+	RouteResponse,
+	ClusterResponse
 } from './types';
 
 const API_BASE = 'http://localhost:8080';
@@ -251,6 +255,90 @@ class ApiClient {
 		});
 
 		return this.handleResponse<CreateApiDefinitionResponse>(response);
+	}
+
+	// API Definition methods
+	async listApiDefinitions(params?: {
+		team?: string;
+		domain?: string;
+		limit?: number;
+		offset?: number;
+	}): Promise<ApiDefinitionSummary[]> {
+		let path = '/api/v1/api-definitions';
+		const searchParams = new URLSearchParams();
+		if (params?.team) searchParams.append('team', params.team);
+		if (params?.domain) searchParams.append('domain', params.domain);
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<ApiDefinitionSummary[]>(path);
+	}
+
+	async getApiDefinition(id: string): Promise<ApiDefinitionSummary> {
+		return this.get<ApiDefinitionSummary>(`/api/v1/api-definitions/${id}`);
+	}
+
+	async deleteApiDefinition(id: string): Promise<void> {
+		// Note: DELETE endpoint not yet implemented in backend
+		return this.delete<void>(`/api/v1/api-definitions/${id}`);
+	}
+
+	// Listener methods
+	async listListeners(params?: { limit?: number; offset?: number }): Promise<ListenerResponse[]> {
+		let path = '/api/v1/listeners';
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<ListenerResponse[]>(path);
+	}
+
+	async getListener(name: string): Promise<ListenerResponse> {
+		return this.get<ListenerResponse>(`/api/v1/listeners/${name}`);
+	}
+
+	async deleteListener(name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/listeners/${name}`);
+	}
+
+	// Route methods
+	async listRoutes(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
+		let path = '/api/v1/routes';
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<RouteResponse[]>(path);
+	}
+
+	async getRoute(name: string): Promise<RouteResponse> {
+		return this.get<RouteResponse>(`/api/v1/routes/${name}`);
+	}
+
+	async deleteRoute(name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/routes/${name}`);
+	}
+
+	// Cluster methods
+	async listClusters(params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
+		let path = '/api/v1/clusters';
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<ClusterResponse[]>(path);
+	}
+
+	async getCluster(name: string): Promise<ClusterResponse> {
+		return this.get<ClusterResponse>(`/api/v1/clusters/${name}`);
+	}
+
+	async deleteCluster(name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/clusters/${name}`);
 	}
 }
 
