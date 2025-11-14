@@ -2,6 +2,7 @@
 
 pub mod aggregated_schemas;
 pub mod api_definitions;
+pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
@@ -22,6 +23,7 @@ pub use api_definitions::{
     append_route_handler, create_api_definition_handler, get_api_definition_handler,
     import_openapi_handler, list_api_definitions_handler, update_api_definition_handler,
 };
+pub use audit_log::list_audit_logs;
 pub use auth::{
     create_session_handler, create_token_handler, get_session_info_handler, get_token_handler,
     list_tokens_handler, login_handler, logout_handler, revoke_token_handler, rotate_token_handler,

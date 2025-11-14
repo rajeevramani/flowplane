@@ -23,7 +23,7 @@ pub use api_definition::{
     ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, CreateApiDefinitionRequest,
     CreateApiRouteRequest, UpdateBootstrapMetadataRequest,
 };
-pub use audit_log::{AuditEvent, AuditLogRepository};
+pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
 pub use inferred_schema::{InferredSchemaData, InferredSchemaRepository};
 pub use learning_session::{
