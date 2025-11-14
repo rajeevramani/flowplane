@@ -88,3 +88,31 @@ export interface UpdateTokenRequest {
 	name?: string;
 	description?: string;
 }
+
+export interface ImportOpenApiRequest {
+	spec: string; // YAML or JSON string
+	team?: string;
+	listenerIsolation?: boolean;
+	port?: number;
+}
+
+export interface CreateApiDefinitionResponse {
+	id: string;
+	bootstrapUri: string;
+	routes: string[];
+}
+
+export interface OpenApiSpec {
+	openapi?: string;
+	swagger?: string;
+	info: {
+		title: string;
+		version: string;
+		description?: string;
+	};
+	servers?: Array<{
+		url: string;
+		description?: string;
+	}>;
+	paths: Record<string, any>;
+}
