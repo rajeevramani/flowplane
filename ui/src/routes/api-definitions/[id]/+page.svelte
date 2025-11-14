@@ -15,10 +15,18 @@
 	const apiDefinitionId = $derived($page.params.id);
 
 	onMount(async () => {
-		await loadApiDefinition();
+		// Check authentication
+		try {
+			await apiClient.getSessionInfo();
+			await loadApiDefinition();
+		} catch (err) {
+			goto('/login');
+		}
 	});
 
 	async function loadApiDefinition() {
+		if (!apiDefinitionId) return;
+
 		isLoading = true;
 		error = null;
 
@@ -134,13 +142,15 @@
 					<div class="text-right">
 						<p class="text-sm text-gray-600">
 							<span class="font-medium">ID:</span>
-							<button
-								onclick={() => copyToClipboard(apiDefinition.id)}
-								class="ml-1 text-blue-600 hover:text-blue-800 font-mono"
-								title="Click to copy"
-							>
-								{apiDefinition.id}
-							</button>
+							{#if apiDefinition}
+								<button
+									onclick={() => copyToClipboard(apiDefinition?.id || '')}
+									class="ml-1 text-blue-600 hover:text-blue-800 font-mono"
+									title="Click to copy"
+								>
+									{apiDefinition.id}
+								</button>
+							{/if}
 						</p>
 					</div>
 				</div>
@@ -207,32 +217,32 @@
 				</div>
 			</div>
 
-			<!-- Bootstrap Configuration -->
+			<!-- Envoy Configuration -->
 			{#if apiDefinition.bootstrapUri}
 				<div class="bg-white rounded-lg shadow-md p-6 mb-6">
-					<h3 class="text-lg font-semibold text-gray-900 mb-4">Bootstrap Configuration</h3>
+					<h3 class="text-lg font-semibold text-gray-900 mb-4">Envoy Configuration</h3>
 					<div class="space-y-4">
 						<div>
-							<dt class="text-sm font-medium text-gray-500 mb-2">Bootstrap URI</dt>
+							<dt class="text-sm font-medium text-gray-500 mb-2">Envoy Bootstrap URI</dt>
 							<dd class="flex items-center gap-2">
-								<code class="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm font-mono text-gray-900">
-									{apiDefinition.bootstrapUri}
-								</code>
-								<button
-									onclick={() => copyToClipboard(apiDefinition.bootstrapUri || '')}
-									class="px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
-									title="Copy to clipboard"
-								>
-									Copy
-								</button>
-								<a
-									href={apiDefinition.bootstrapUri}
-									target="_blank"
-									rel="noopener noreferrer"
-									class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
-								>
-									View
-								</a>
+								{#if apiDefinition.bootstrapUri}
+									<code class="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm font-mono text-gray-900">
+										{apiDefinition.bootstrapUri}
+									</code>
+									<button
+										onclick={() => copyToClipboard(apiDefinition?.bootstrapUri || '')}
+										class="px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
+										title="Copy to clipboard"
+									>
+										Copy
+									</button>
+									<a
+										href="/generate-envoy-config"
+										class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
+									>
+										Generate
+									</a>
+								{/if}
 							</dd>
 						</div>
 						<div class="bg-blue-50 border-l-4 border-blue-500 p-4">

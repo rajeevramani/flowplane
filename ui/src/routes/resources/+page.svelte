@@ -312,17 +312,13 @@
 									>
 										View Details
 									</a>
-									{#if apiDef.bootstrapUri}
 										<a
-											href={apiDef.bootstrapUri}
-											target="_blank"
-											rel="noopener noreferrer"
+											href="/generate-envoy-config"
 											class="px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
-											title="View Bootstrap Config"
+											title="Generate Envoy Config"
 										>
-											Bootstrap
+											Envoy Config
 										</a>
-									{/if}
 								</div>
 							</div>
 						{/each}
