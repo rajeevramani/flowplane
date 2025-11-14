@@ -131,12 +131,13 @@
 				port: config.listenerIsolation ? config.port : undefined
 			});
 
-			showToast('OpenAPI spec imported successfully!', 'success');
+			showToast(`OpenAPI spec imported successfully! API Definition ID: ${response.id}`, 'success');
 
-			// Redirect to API definition detail page after a short delay
+			// Redirect to dashboard after a short delay
+			// TODO: Redirect to API definition detail page when that page is implemented
 			setTimeout(() => {
-				goto(`/api-definitions/${response.id}`);
-			}, 1500);
+				goto('/dashboard');
+			}, 2000);
 
 		} catch (e: any) {
 			const errorMsg = e.message || 'Failed to import OpenAPI spec';
