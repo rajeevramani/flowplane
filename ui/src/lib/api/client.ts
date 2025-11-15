@@ -20,6 +20,7 @@ import type {
 	RouteResponse,
 	ClusterResponse,
 	BootstrapConfigRequest,
+	ListTeamsResponse,
 	UserResponse,
 	UserWithTeamsResponse,
 	CreateUserRequest,
@@ -375,6 +376,11 @@ class ApiClient {
 
 		// Return the raw text (YAML or JSON)
 		return response.text();
+	}
+
+	// Team methods
+	async listTeams(): Promise<ListTeamsResponse> {
+		return this.get<ListTeamsResponse>('/api/v1/teams');
 	}
 
 	// User Management methods (admin only)
