@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import type { UserWithTeamsResponse, UserTeamMembership, UpdateUserRequest, CreateTeamMembershipRequest } from '$lib/api/types';
+	import ScopeSelector from '$lib/components/ScopeSelector.svelte';
 
 	let user = $state<UserWithTeamsResponse | null>(null);
 	let isLoading = $state(true);
@@ -16,18 +17,6 @@
 	// Team membership state
 	let showAddTeamModal = $state(false);
 	let newTeam = $state({ team: '', scopes: [] as string[] });
-	let availableScopes = $state([
-		'tokens:read',
-		'tokens:write',
-		'clusters:read',
-		'clusters:write',
-		'routes:read',
-		'routes:write',
-		'listeners:read',
-		'listeners:write',
-		'api-definitions:read',
-		'api-definitions:write'
-	]);
 
 	// Suspend modal
 	let showSuspendModal = $state(false);
@@ -504,22 +493,11 @@
 				</div>
 
 				<!-- Scopes -->
-				<div>
-					<label class="block text-sm font-medium text-gray-700 mb-2">Scopes</label>
-					<div class="space-y-2">
-						{#each availableScopes as scope}
-							<label class="flex items-center">
-								<input
-									type="checkbox"
-									checked={newTeam.scopes.includes(scope)}
-									onchange={() => toggleScope(scope)}
-									class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-								/>
-								<span class="ml-2 text-sm text-gray-700">{scope}</span>
-							</label>
-						{/each}
-					</div>
-				</div>
+				<ScopeSelector
+					bind:selectedScopes={newTeam.scopes}
+					onScopeToggle={toggleScope}
+					required={false}
+				/>
 			</div>
 
 			<div class="mt-6 flex justify-end gap-3">

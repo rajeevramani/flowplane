@@ -93,7 +93,7 @@ async fn performance_list_tokens_100() {
     seed_tokens(&repo, 100).await;
 
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100, "Should fetch all 100 tokens");
@@ -113,7 +113,7 @@ async fn performance_list_tokens_1000() {
     seed_tokens(&repo, 1000).await;
 
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100, "Should fetch first 100 tokens");
@@ -133,9 +133,9 @@ async fn performance_list_tokens_pagination() {
     seed_tokens(&repo, 500).await;
 
     let start = Instant::now();
-    let page1 = repo.list_tokens(50, 0).await.unwrap();
-    let page2 = repo.list_tokens(50, 50).await.unwrap();
-    let page3 = repo.list_tokens(50, 100).await.unwrap();
+    let page1 = repo.list_tokens(50, 0, None).await.unwrap();
+    let page2 = repo.list_tokens(50, 50, None).await.unwrap();
+    let page3 = repo.list_tokens(50, 100, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(page1.len(), 50);
@@ -178,7 +178,7 @@ async fn performance_get_single_token() {
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
-    let tokens = repo.list_tokens(1, 0).await.unwrap();
+    let tokens = repo.list_tokens(1, 0, None).await.unwrap();
     let token_id = &tokens[0].id;
 
     let start = Instant::now();
@@ -211,7 +211,7 @@ async fn performance_comparison_theoretical() {
 
     // Test the optimized version
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let optimized_duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100);

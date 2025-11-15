@@ -142,7 +142,7 @@ async fn list_and_count_tokens() {
         repo.create_token(sample_token(&Uuid::new_v4().to_string())).await.unwrap();
     }
 
-    let tokens = repo.list_tokens(10, 0).await.unwrap();
+    let tokens = repo.list_tokens(10, 0, None).await.unwrap();
     assert_eq!(tokens.len(), 3);
 
     let count = repo.count_tokens().await.unwrap();
