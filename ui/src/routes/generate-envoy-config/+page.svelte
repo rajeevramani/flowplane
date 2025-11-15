@@ -27,9 +27,15 @@
 		// Check authentication and get user info
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
+		} catch (err) {
+			// Authentication failed, redirect to login
+			goto('/login');
+			return;
+		}
 
-			// Fetch teams based on user role
-			// Admin users get all teams, non-admin users get only their teams
+		// Fetch teams based on user role
+		// Admin users get all teams, non-admin users get only their teams
+		try {
 			const teamsResponse = await apiClient.listTeams();
 			teams = teamsResponse.teams;
 
@@ -38,8 +44,9 @@
 				selectedTeam = teams[0];
 				await loadBootstrapConfig();
 			}
-		} catch (err) {
-			goto('/login');
+		} catch (err: any) {
+			// Show error but don't redirect to login
+			error = err.message || 'Failed to load teams';
 		}
 	});
 

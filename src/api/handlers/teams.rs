@@ -205,13 +205,14 @@ pub async fn list_teams_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
 ) -> Result<Json<ListTeamsResponse>, ApiError> {
-    let pool = state
+    // Get database pool
+    let cluster_repo = state
         .xds_state
         .cluster_repository
         .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?
-        .pool()
-        .clone();
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
+    let pool = cluster_repo.pool().clone();
 
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
