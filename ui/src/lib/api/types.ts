@@ -45,6 +45,10 @@ export interface SessionInfoResponse {
 	expiresAt: string | null;
 }
 
+export interface ListTeamsResponse {
+	teams: string[];
+}
+
 export interface DashboardStats {
 	apiDefinitionsCount: number;
 	listenersCount: number;

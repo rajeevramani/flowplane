@@ -86,6 +86,9 @@ pub trait TeamMembershipRepository: Send + Sync {
     /// Get all users in a team
     async fn list_team_members(&self, team: &str) -> Result<Vec<UserTeamMembership>>;
 
+    /// Get all distinct teams across all memberships
+    async fn list_all_teams(&self) -> Result<Vec<String>>;
+
     /// Get a specific membership by ID
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>>;
 
@@ -415,6 +418,25 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         })?;
 
         rows.into_iter().map(|r| self.row_to_membership(r)).collect()
+    }
+
+    async fn list_all_teams(&self) -> Result<Vec<String>> {
+        #[derive(FromRow)]
+        struct TeamRow {
+            team: String,
+        }
+
+        let rows = sqlx::query_as::<_, TeamRow>(
+            "SELECT DISTINCT team FROM user_team_memberships ORDER BY team",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to list all teams".to_string(),
+        })?;
+
+        Ok(rows.into_iter().map(|r| r.team).collect())
     }
 
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>> {

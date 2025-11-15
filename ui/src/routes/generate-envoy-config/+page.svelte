@@ -13,6 +13,7 @@
 	hljs.registerLanguage('json', json);
 
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let teams = $state<string[]>([]);
 	let selectedTeam = $state('');
 	let format = $state<'yaml' | 'json'>('yaml');
 	let includeDefault = $state(false);
@@ -26,9 +27,15 @@
 		// Check authentication and get user info
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
+
+			// Fetch teams based on user role
+			// Admin users get all teams, non-admin users get only their teams
+			const teamsResponse = await apiClient.listTeams();
+			teams = teamsResponse.teams;
+
 			// Set first team as default
-			if (sessionInfo.teams.length > 0) {
-				selectedTeam = sessionInfo.teams[0];
+			if (teams.length > 0) {
+				selectedTeam = teams[0];
 				await loadBootstrapConfig();
 			}
 		} catch (err) {
@@ -143,11 +150,9 @@
 								onchange={handleTeamChange}
 								class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 							>
-								{#if sessionInfo}
-									{#each sessionInfo.teams as team}
-										<option value={team}>{team}</option>
-									{/each}
-								{/if}
+								{#each teams as team}
+									<option value={team}>{team}</option>
+								{/each}
 							</select>
 						</div>
 

@@ -3,15 +3,17 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, Response},
-    Extension,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
+    auth::authorization::{has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
+    errors::Error,
+    storage::repositories::{SqlxTeamMembershipRepository, TeamMembershipRepository},
 };
 
 /// Query parameters for bootstrap endpoint
@@ -176,4 +178,59 @@ pub async fn get_team_bootstrap_handler(
     };
 
     Ok(response)
+}
+
+/// Response for list teams endpoint
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ListTeamsResponse {
+    pub teams: Vec<String>,
+}
+
+/// List teams accessible to the current user
+///
+/// Returns:
+/// - All teams (from team_memberships) if user is admin
+/// - Only user's teams if user is not admin
+#[utoipa::path(
+    get,
+    path = "/api/v1/teams",
+    responses(
+        (status = 200, description = "List of teams", body = ListTeamsResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "teams"
+)]
+pub async fn list_teams_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+) -> Result<Json<ListTeamsResponse>, ApiError> {
+    let pool = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?
+        .pool()
+        .clone();
+
+    let membership_repo = SqlxTeamMembershipRepository::new(pool);
+
+    let teams = if has_admin_bypass(&context) {
+        // Admin users see all teams
+        membership_repo.list_all_teams().await.map_err(|err| ApiError::from(Error::from(err)))?
+    } else {
+        // Non-admin users see only their teams
+        if let Some(user_id) = &context.user_id {
+            let memberships = membership_repo
+                .list_user_memberships(user_id)
+                .await
+                .map_err(|err| ApiError::from(Error::from(err)))?;
+            memberships.into_iter().map(|m| m.team).collect()
+        } else {
+            // If no user_id (shouldn't happen for authenticated users), return empty
+            Vec::new()
+        }
+    };
+
+    Ok(Json(ListTeamsResponse { teams }))
 }

@@ -48,7 +48,7 @@ pub use routes::{
     create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
     update_route_handler,
 };
-pub use teams::get_team_bootstrap_handler;
+pub use teams::{get_team_bootstrap_handler, list_teams_handler};
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
     remove_team_membership, update_user,
@@ -66,5 +66,5 @@ pub use clusters::{
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
-pub use teams::BootstrapQuery;
+pub use teams::{BootstrapQuery, ListTeamsResponse};
 pub use users::ListUsersResponse;

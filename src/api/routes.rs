@@ -32,11 +32,11 @@ use super::{
         get_team_bootstrap_handler, get_token_handler, get_user, health_handler,
         import_openapi_handler, list_aggregated_schemas_handler, list_api_definitions_handler,
         list_audit_logs, list_clusters_handler, list_learning_sessions_handler,
-        list_listeners_handler, list_route_flows_handler, list_routes_handler, list_tokens_handler,
-        list_user_teams, list_users, login_handler, logout_handler, remove_team_membership,
-        revoke_token_handler, rotate_token_handler, update_api_definition_handler,
-        update_cluster_handler, update_listener_handler, update_route_handler,
-        update_token_handler, update_user,
+        list_listeners_handler, list_route_flows_handler, list_routes_handler, list_teams_handler,
+        list_tokens_handler, list_user_teams, list_users, login_handler, logout_handler,
+        remove_team_membership, revoke_token_handler, rotate_token_handler,
+        update_api_definition_handler, update_cluster_handler, update_listener_handler,
+        update_route_handler, update_token_handler, update_user,
     },
 };
 
@@ -139,6 +139,7 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/api-definitions/{id}", patch(update_api_definition_handler))
         .route("/api/v1/api-definitions/{id}/routes", post(append_route_handler))
         // Team endpoints
+        .route("/api/v1/teams", get(list_teams_handler))
         .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
