@@ -35,7 +35,7 @@ impl CleanupService {
 
     /// Scan for expired tokens and transition them to `expired` status.
     pub async fn run_once(&self) -> Result<()> {
-        let tokens = self.repository.list_tokens(1000, 0).await?;
+        let tokens = self.repository.list_tokens(1000, 0, None).await?;
         let now = Utc::now();
 
         for token in tokens {

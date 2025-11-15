@@ -205,13 +205,21 @@ impl TokenService {
 
     #[instrument(
         skip(self),
-        fields(limit = field::Empty, offset = field::Empty, correlation_id = field::Empty)
+        fields(limit = field::Empty, offset = field::Empty, created_by = field::Empty, correlation_id = field::Empty)
     )]
-    pub async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>> {
+    pub async fn list_tokens(
+        &self,
+        limit: i64,
+        offset: i64,
+        created_by: Option<&str>,
+    ) -> Result<Vec<PersonalAccessToken>> {
         tracing::Span::current().record("limit", field::display(&limit));
         tracing::Span::current().record("offset", field::display(&offset));
+        if let Some(creator) = created_by {
+            tracing::Span::current().record("created_by", field::display(creator));
+        }
         tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
-        self.repository.list_tokens(limit, offset).await
+        self.repository.list_tokens(limit, offset, created_by).await
     }
 
     #[instrument(skip(self), fields(token_id = field::Empty, correlation_id = field::Empty))]
@@ -381,7 +389,7 @@ impl TokenService {
         tracing::Span::current().record("correlation_id", field::display(&correlation_id));
 
         // Find the bootstrap token
-        let tokens = self.repository.list_tokens(1000, 0).await?;
+        let tokens = self.repository.list_tokens(1000, 0, None).await?;
         let bootstrap_token = tokens
             .iter()
             .find(|t| t.name == "bootstrap-admin")

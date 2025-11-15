@@ -245,7 +245,7 @@ async fn handle_list_tokens_db(
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
     let service = TokenService::with_sqlx(pool, audit_repository);
 
-    let tokens = service.list_tokens(args.limit.clamp(1, 1000), args.offset.max(0)).await?;
+    let tokens = service.list_tokens(args.limit.clamp(1, 1000), args.offset.max(0), None).await?;
 
     if tokens.is_empty() {
         println!("No tokens found.");

@@ -65,12 +65,19 @@ pub struct CreateTokenBody {
 
 impl CreateTokenBody {
     fn into_request(self, created_by: &AuthContext) -> CreateTokenRequest {
+        // Use user_id if available (for user sessions), otherwise fall back to token_id (for setup tokens)
+        let creator = if let Some(user_id) = &created_by.user_id {
+            format!("user:{}", user_id)
+        } else {
+            created_by.token_id.to_string()
+        };
+
         CreateTokenRequest {
             name: self.name,
             description: self.description,
             expires_at: self.expires_at,
             scopes: self.scopes,
-            created_by: Some(created_by.token_id.to_string()),
+            created_by: Some(creator),
         }
     }
 }
@@ -162,8 +169,14 @@ pub async fn list_tokens_handler(
     let limit = params.limit.unwrap_or(50).clamp(1, 1000);
     let offset = params.offset.unwrap_or(0).max(0);
 
+    // Filter tokens by current user - only show tokens created by this user
+    let created_by_filter = context.user_id.as_ref().map(|user_id| format!("user:{}", user_id));
+
     let service = token_service_for_state(&state)?;
-    let tokens = service.list_tokens(limit, offset).await.map_err(convert_error)?;
+    let tokens = service
+        .list_tokens(limit, offset, created_by_filter.as_deref())
+        .await
+        .map_err(convert_error)?;
 
     Ok(Json(tokens))
 }

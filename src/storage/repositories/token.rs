@@ -67,7 +67,12 @@ struct TokenWithScopeRow {
 #[async_trait]
 pub trait TokenRepository: Send + Sync {
     async fn create_token(&self, token: NewPersonalAccessToken) -> Result<PersonalAccessToken>;
-    async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>>;
+    async fn list_tokens(
+        &self,
+        limit: i64,
+        offset: i64,
+        created_by: Option<&str>,
+    ) -> Result<Vec<PersonalAccessToken>>;
     async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken>;
     async fn update_metadata(
         &self,
@@ -201,35 +206,74 @@ impl TokenRepository for SqlxTokenRepository {
         self.get_token(&token.id).await
     }
 
-    async fn list_tokens(&self, limit: i64, offset: i64) -> Result<Vec<PersonalAccessToken>> {
+    async fn list_tokens(
+        &self,
+        limit: i64,
+        offset: i64,
+        created_by: Option<&str>,
+    ) -> Result<Vec<PersonalAccessToken>> {
         let limit = limit.clamp(1, 1000);
 
         // Optimized query using subquery + LEFT JOIN to fetch tokens and scopes in a single query
         // The subquery ensures we LIMIT distinct tokens first, then join with scopes
         // This eliminates the N+1 pattern where we previously made 1 + 2N queries
-        let rows: Vec<TokenWithScopeRow> = sqlx::query_as(
-            r#"
-            SELECT
-                t.id, t.name, t.description, t.token_hash, t.status,
-                t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
-                s.scope
-            FROM (
-                SELECT * FROM personal_access_tokens
-                ORDER BY created_at DESC
-                LIMIT $1 OFFSET $2
-            ) t
-            LEFT JOIN token_scopes s ON t.id = s.token_id
-            ORDER BY t.created_at DESC, s.scope ASC
-            "#,
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|err| FlowplaneError::Database {
-            source: err,
-            context: "Failed to list personal access tokens with scopes".to_string(),
-        })?;
+
+        // Build query with optional created_by filter
+        let rows: Vec<TokenWithScopeRow> = if let Some(creator) = created_by {
+            let sql = r#"
+                SELECT
+                    t.id, t.name, t.description, t.token_hash, t.status,
+                    t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                    s.scope
+                FROM (
+                    SELECT * FROM personal_access_tokens
+                    WHERE created_by = $3
+                    ORDER BY created_at DESC
+                    LIMIT $1 OFFSET $2
+                ) t
+                LEFT JOIN token_scopes s ON t.id = s.token_id
+                ORDER BY t.created_at DESC, s.scope ASC
+            "#
+            .to_string();
+
+            let result = sqlx::query_as(&sql)
+                .bind(limit)
+                .bind(offset)
+                .bind(creator)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|err| FlowplaneError::Database {
+                    source: err,
+                    context: "Failed to list personal access tokens with scopes".to_string(),
+                })?;
+
+            result
+        } else {
+            let sql = r#"
+                SELECT
+                    t.id, t.name, t.description, t.token_hash, t.status,
+                    t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                    s.scope
+                FROM (
+                    SELECT * FROM personal_access_tokens
+                    ORDER BY created_at DESC
+                    LIMIT $1 OFFSET $2
+                ) t
+                LEFT JOIN token_scopes s ON t.id = s.token_id
+                ORDER BY t.created_at DESC, s.scope ASC
+            "#
+            .to_string();
+
+            let result =
+                sqlx::query_as(&sql).bind(limit).bind(offset).fetch_all(&self.pool).await.map_err(
+                    |err| FlowplaneError::Database {
+                        source: err,
+                        context: "Failed to list personal access tokens with scopes".to_string(),
+                    },
+                )?;
+
+            result
+        };
 
         // Group rows by token ID and aggregate scopes in memory
         use std::collections::HashMap;
