@@ -14,6 +14,10 @@
 	let parsedSpec = $state<OpenApiSpec | null>(null);
 	let parseError = $state<string | null>(null);
 
+	// User session state
+	let userTeams = $state<string[]>([]);
+	let isAdmin = $state(false);
+
 	// Configuration
 	let config = $state({
 		team: '',
@@ -27,9 +31,16 @@
 	let toast = $state<{ message: string; type: 'success' | 'error' } | null>(null);
 
 	onMount(async () => {
-		// Check authentication
+		// Check authentication and load user session
 		try {
-			await apiClient.getSessionInfo();
+			const session = await apiClient.getSessionInfo();
+			userTeams = session.teams || [];
+			isAdmin = session.isAdmin || false;
+
+			// Auto-populate team for non-admin single-team users
+			if (!isAdmin && userTeams.length === 1) {
+				config.team = userTeams[0];
+			}
 		} catch (error) {
 			goto('/login');
 		}
@@ -120,13 +131,18 @@
 			return;
 		}
 
+		if (!config.team || config.team.trim() === '') {
+			submitError = 'Team is required. Please select or enter a team name.';
+			return;
+		}
+
 		try {
 			isSubmitting = true;
 			submitError = null;
 
 			const response = await apiClient.importOpenApiSpec({
 				spec: specContent,
-				team: config.team || undefined,
+				team: config.team,
 				listenerIsolation: config.listenerIsolation,
 				port: config.listenerIsolation ? config.port : undefined
 			});
@@ -347,18 +363,62 @@
 						<!-- Team -->
 						<div>
 							<label for="team" class="block text-sm font-medium text-gray-700 mb-2">
-								Team (Optional)
+								Team <span class="text-red-500">*</span>
 							</label>
-							<input
-								id="team"
-								type="text"
-								bind:value={config.team}
-								class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-								placeholder="Leave empty for auto-detection"
-							/>
-							<p class="mt-1 text-xs text-gray-500">
-								If not specified, team will be extracted from the first server URL domain
-							</p>
+
+							{#if userTeams.length > 1 || isAdmin}
+								<!-- Dropdown for multi-team or admin users -->
+								<select
+									id="team"
+									bind:value={config.team}
+									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+									required
+								>
+									<option value="">Select a team...</option>
+									{#each userTeams as team}
+										<option value={team}>{team}</option>
+									{/each}
+									{#if isAdmin && userTeams.length === 0}
+										<option disabled>Enter team name below</option>
+									{/if}
+								</select>
+								{#if isAdmin}
+									<p class="mt-1 text-xs text-gray-500">
+										Or enter a custom team name:
+									</p>
+									<input
+										type="text"
+										bind:value={config.team}
+										class="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+										placeholder="Enter team name"
+									/>
+								{/if}
+							{:else if userTeams.length === 1}
+								<!-- Read-only for single-team users -->
+								<input
+									id="team"
+									type="text"
+									bind:value={config.team}
+									readonly
+									class="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-100 focus:outline-none"
+								/>
+								<p class="mt-1 text-xs text-gray-500">
+									API definition will be created in your team
+								</p>
+							{:else}
+								<!-- Text input for users with no teams (edge case) -->
+								<input
+									id="team"
+									type="text"
+									bind:value={config.team}
+									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+									placeholder="Enter team name"
+									required
+								/>
+								<p class="mt-1 text-xs text-gray-500">
+									You don't belong to any teams. Please enter a team name.
+								</p>
+							{/if}
 						</div>
 
 						<!-- Listener Isolation -->
