@@ -361,6 +361,19 @@ mod tests {
         (service, pool)
     }
 
+    /// Helper to create a test team in the database
+    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) {
+        sqlx::query(
+            "INSERT INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')",
+        )
+        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(name)
+        .bind(display_name)
+        .execute(pool)
+        .await
+        .expect("create test team");
+    }
+
     #[tokio::test]
     async fn test_create_user() {
         let (service, _pool) = setup_test_service().await;
@@ -513,7 +526,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create the team first
+        create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -543,7 +559,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_team_membership() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create the team first
+        create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -572,7 +591,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_user_teams() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create teams first
+        for (name, display) in
+            [("team-alpha", "Team Alpha"), ("team-beta", "Team Beta"), ("team-gamma", "Team Gamma")]
+        {
+            create_test_team(&pool, name, display).await;
+        }
 
         let user = service
             .create_user(
