@@ -606,9 +606,16 @@ pub async fn import_openapi_handler(
 
     let listener_isolation = params.listener_isolation.unwrap_or(false);
 
+    // Team is REQUIRED for proper multi-tenancy and xDS filtering
+    // Team-scoped users: automatically use their team
+    // Admin users: must explicitly specify team in query param
+    let team_param = extracted_team.ok_or_else(|| {
+        ApiError::BadRequest(
+            "team parameter is required. Specify ?team=<team-name> in the request URL".to_string(),
+        )
+    })?;
+
     // Convert OpenAPI to Platform API definition spec
-    // Use provided team or empty string (adapter will extract from domain as fallback)
-    let team_param = extracted_team.unwrap_or_default();
     let spec = openapi_adapter::openapi_to_api_definition_spec(
         document,
         team_param,

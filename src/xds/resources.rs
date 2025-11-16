@@ -188,15 +188,56 @@ pub fn resources_from_api_definitions(
             typed_per_filter_config: HashMap::new(),
         };
 
+        // Step 1: Deduplicate upstream targets across all routes (same as materializer.rs)
+        // Extract unique upstream endpoints to create ONE cluster per unique endpoint
+        let mut unique_upstreams: HashMap<String, Vec<ParsedTarget>> = HashMap::new();
+
+        for route in &definition_routes {
+            let targets = parse_upstream_targets(route)?;
+            if targets.is_empty() {
+                continue;
+            }
+
+            // Create endpoint key from first target (assuming single endpoint per route for now)
+            if let Some(first_target) = targets.first() {
+                let endpoint_key = format!("{}:{}", first_target.host, first_target.port);
+                unique_upstreams.entry(endpoint_key).or_default().extend(targets);
+            }
+        }
+
+        // Step 2: Create ONE cluster per unique endpoint
+        let mut endpoint_to_cluster: HashMap<String, String> = HashMap::new();
+
+        for (endpoint_key, targets) in unique_upstreams {
+            // Build cluster name based on endpoint (matches materializer.rs logic)
+            let cluster_name = format!(
+                "platform-{}-{}",
+                short_id(definition.id.as_str()),
+                endpoint_key.replace(":", "-").replace(".", "-")
+            );
+
+            let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
+            cluster_resources.push(cluster_resource);
+
+            endpoint_to_cluster.insert(endpoint_key, cluster_name);
+        }
+
+        // Step 3: Build routes referencing the deduplicated clusters
         for route in definition_routes {
             let targets = parse_upstream_targets(&route)?;
             if targets.is_empty() {
                 continue;
             }
 
-            let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
-            let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
-            cluster_resources.push(cluster_resource);
+            // Find the cluster for this route's upstream target
+            let cluster_name = if let Some(first_target) = targets.first() {
+                let endpoint_key = format!("{}:{}", first_target.host, first_target.port);
+                endpoint_to_cluster.get(&endpoint_key).cloned().ok_or_else(|| {
+                    Error::internal(format!("No cluster found for endpoint {}", endpoint_key))
+                })?
+            } else {
+                continue;
+            };
 
             let action = crate::xds::route::RouteActionConfig::Cluster {
                 name: cluster_name.clone(),

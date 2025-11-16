@@ -68,6 +68,8 @@ pub struct PersonalAccessToken {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub scopes: Vec<String>,
+    pub user_id: Option<crate::domain::UserId>,
+    pub user_email: Option<String>,
 }
 
 impl PersonalAccessToken {
@@ -92,6 +94,8 @@ pub struct NewPersonalAccessToken {
     pub usage_count: i64,
     pub failed_attempts: i64,
     pub locked_until: Option<DateTime<Utc>>,
+    pub user_id: Option<crate::domain::UserId>,
+    pub user_email: Option<String>,
 }
 
 /// Update payload for an existing token.
@@ -225,6 +229,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             scopes: vec!["listeners:read".into(), "listeners:write".into()],
+            user_id: None,
+            user_email: None,
         };
 
         assert!(token.has_scope("listeners:write"));

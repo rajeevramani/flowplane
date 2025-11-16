@@ -128,6 +128,8 @@ impl TokenService {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
+            user_id: None, // Bootstrap tokens are not user-specific
+            user_email: None,
         };
 
         self.repository.create_token(new_token).await?;
@@ -185,6 +187,8 @@ impl TokenService {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
+            user_id: None, // PATs created via API are not tied to specific users
+            user_email: None,
         };
 
         self.repository.create_token(new_token).await?;

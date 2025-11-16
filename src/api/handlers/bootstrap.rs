@@ -207,6 +207,8 @@ pub async fn bootstrap_initialize_handler(
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: Some(admin_user.id.clone()), // Setup token is for this admin user
+        user_email: Some(payload.email.clone()),
     };
 
     token_repo.create_token(new_token).await.map_err(convert_error)?;

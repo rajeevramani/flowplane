@@ -95,8 +95,8 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "team": "{{api_team_2}}",
-  "domain": "{{api_domain_2}}",
+  "team": "{{api_team_1}}",
+  "domain": "{{api_domain_1}}",
   "listenerIsolation": false,
   "targetListeners": ["default-gateway-listener"],
   "routes": [

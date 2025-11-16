@@ -73,6 +73,8 @@ async fn seed_tokens(repo: &SqlxTokenRepository, count: usize) {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
+            user_id: None,
+            user_email: None,
         };
         repo.create_token(token).await.unwrap();
     }
@@ -93,7 +95,7 @@ fn bench_list_tokens(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("list_tokens", count), count, |b, &_count| {
             b.to_async(&rt).iter(|| async {
-                let tokens = repo.list_tokens(black_box(100), black_box(0)).await.unwrap();
+                let tokens = repo.list_tokens(black_box(100), black_box(0), None).await.unwrap();
                 black_box(tokens)
             });
         });
@@ -121,7 +123,7 @@ fn bench_list_tokens_pagination(c: &mut Criterion) {
             page_size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
-                    let tokens = repo.list_tokens(black_box(size), black_box(0)).await.unwrap();
+                    let tokens = repo.list_tokens(black_box(size), black_box(0), None).await.unwrap();
                     black_box(tokens)
                 });
             },
@@ -142,7 +144,7 @@ fn bench_get_single_token(c: &mut Criterion) {
     rt.block_on(seed_tokens(&repo, 100));
 
     // Get the first token ID for benchmarking
-    let tokens = rt.block_on(repo.list_tokens(1, 0)).unwrap();
+    let tokens = rt.block_on(repo.list_tokens(1, 0, None)).unwrap();
     let token_id = &tokens[0].id;
 
     group.bench_function("get_token", |b| {

@@ -882,6 +882,13 @@ impl PlatformApiMaterializer {
 
     /// Materialize native resources (listeners, routes, clusters) from Platform API definition
     /// Tags all resources with source='platform_api' and stores FK relationships
+    ///
+    /// # Route Creation Strategy
+    ///
+    /// - **Isolated listeners** (listenerIsolation=true): Creates only clusters, NO native routes.
+    ///   Route configurations are built dynamically by `resources_from_api_definitions` in xds/resources.rs
+    /// - **Shared listeners** (listenerIsolation=false): Creates both clusters and native routes.
+    ///   Native routes are merged into shared listener route configs via `materialize_shared_listener_routes`
     async fn materialize_native_resources(
         &self,
         definition: &ApiDefinitionData,
@@ -1008,91 +1015,129 @@ impl PlatformApiMaterializer {
                 .insert(endpoint_str.clone(), (cluster_name, cluster.id.to_string()));
         }
 
-        // Step 3: Create routes that reference the appropriate shared cluster
-        for api_route in api_routes {
-            // Find the cluster for this route's upstream target
-            let cluster_info = if let Some(targets) =
-                api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
-            {
-                targets
-                    .iter()
-                    .find_map(|target| {
-                        let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
-                        endpoint_to_cluster.get(endpoint_str)
-                    })
-                    .cloned()
-            } else {
-                None
-            };
+        // Step 3: Create native routes that reference the appropriate shared cluster
+        // IMPORTANT: For isolated listeners, skip route creation - routes are built dynamically
+        // by resources_from_api_definitions() in xds/resources.rs and sent via refresh_platform_api_resources()
+        if !definition.listener_isolation {
+            for api_route in api_routes {
+                // Find the cluster for this route's upstream target
+                let cluster_info = if let Some(targets) =
+                    api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
+                {
+                    targets
+                        .iter()
+                        .find_map(|target| {
+                            let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
+                            endpoint_to_cluster.get(endpoint_str)
+                        })
+                        .cloned()
+                } else {
+                    None
+                };
 
-            let (cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
-                Error::internal(format!("No cluster found for route {}", api_route.id))
-            })?;
+                let (cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
+                    Error::internal(format!("No cluster found for route {}", api_route.id))
+                })?;
 
-            // Track the cluster ID for this route (for FK relationship)
-            generated_cluster_ids.push(cluster_id.clone());
+                // Track the cluster ID for this route (for FK relationship)
+                generated_cluster_ids.push(cluster_id.clone());
 
-            // Create native route that references the cluster
-            let route_name = format!("platform-api-{}", short_id(api_route.id.as_str()));
+                // Create native route that references the cluster
+                let route_name = format!("platform-api-{}", short_id(api_route.id.as_str()));
 
-            // Build virtual host configuration
-            let path_match = if api_route.match_type == "exact" {
-                serde_json::json!({"Exact": &api_route.match_value})
-            } else {
-                serde_json::json!({"Prefix": &api_route.match_value})
-            };
+                // Build virtual host configuration
+                let path_match = if api_route.match_type == "exact" {
+                    serde_json::json!({"Exact": &api_route.match_value})
+                } else {
+                    serde_json::json!({"Prefix": &api_route.match_value})
+                };
 
-            let route_config = serde_json::json!({
-                "name": route_name,
-                "virtual_hosts": [{
-                    "name": format!("{}-vhost", route_name),
-                    "domains": [&definition.domain],
-                    "routes": [{
-                        "match": {
-                            "path": path_match
-                        },
-                        "action": {
-                            "Cluster": {
-                                "name": &cluster_name,
-                                "timeout": api_route.timeout_seconds
+                let route_config = serde_json::json!({
+                    "name": route_name,
+                    "virtual_hosts": [{
+                        "name": format!("{}-vhost", route_name),
+                        "domains": [&definition.domain],
+                        "routes": [{
+                            "match": {
+                                "path": path_match
+                            },
+                            "action": {
+                                "Cluster": {
+                                    "name": &cluster_name,
+                                    "timeout": api_route.timeout_seconds
+                                }
                             }
-                        }
+                        }]
                     }]
-                }]
-            });
+                });
 
-            let route = route_repo
-                .create(CreateRouteRequest {
-                    name: route_name,
-                    path_prefix: api_route.match_value.clone(),
-                    cluster_name: cluster_name.clone(),
-                    configuration: route_config,
-                    team: Some(definition.team.clone()),
-                })
-                .await?;
+                let route = route_repo
+                    .create(CreateRouteRequest {
+                        name: route_name,
+                        path_prefix: api_route.match_value.clone(),
+                        cluster_name: cluster_name.clone(),
+                        configuration: route_config,
+                        team: Some(definition.team.clone()),
+                    })
+                    .await?;
 
-            // Tag with source='platform_api'
-            sqlx::query("UPDATE routes SET source = 'platform_api' WHERE id = $1")
-                .bind(&route.id)
-                .execute(route_repo.pool())
-                .await
-                .map_err(|e| Error::internal(format!("Failed to tag route with source: {}", e)))?;
+                // Tag with source='platform_api'
+                sqlx::query("UPDATE routes SET source = 'platform_api' WHERE id = $1")
+                    .bind(&route.id)
+                    .execute(route_repo.pool())
+                    .await
+                    .map_err(|e| {
+                        Error::internal(format!("Failed to tag route with source: {}", e))
+                    })?;
 
-            generated_route_ids.push(route.id.to_string());
+                generated_route_ids.push(route.id.to_string());
 
-            info!(
-                api_route_id = %api_route.id,
-                native_route_id = %route.id,
-                native_cluster_id = %cluster_id,
-                cluster_name = %cluster_name,
-                match_type = %api_route.match_type,
-                match_value = %api_route.match_value,
-                "Materialized Platform API route to native resources (shared cluster)"
-            );
+                info!(
+                    api_route_id = %api_route.id,
+                    native_route_id = %route.id,
+                    native_cluster_id = %cluster_id,
+                    cluster_name = %cluster_name,
+                    match_type = %api_route.match_type,
+                    match_value = %api_route.match_value,
+                    "Materialized Platform API route to native resources (shared cluster)"
+                );
+            }
+        } else {
+            // For isolated listeners, populate cluster IDs for FK relationships
+            // but don't create native routes (routes are built dynamically)
+            for api_route in api_routes {
+                let cluster_info = if let Some(targets) =
+                    api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
+                {
+                    targets
+                        .iter()
+                        .find_map(|target| {
+                            let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
+                            endpoint_to_cluster.get(endpoint_str)
+                        })
+                        .cloned()
+                } else {
+                    None
+                };
+
+                let (_cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
+                    Error::internal(format!("No cluster found for route {}", api_route.id))
+                })?;
+
+                // Track cluster ID for FK relationship (no route ID for isolated listeners)
+                generated_cluster_ids.push(cluster_id.clone());
+
+                info!(
+                    api_route_id = %api_route.id,
+                    native_cluster_id = %cluster_id,
+                    "Isolated listener: cluster created, native route skipped (route config via xDS)"
+                );
+            }
         }
 
         let unique_clusters = endpoint_to_cluster.len();
         info!(
+            listener_isolation = definition.listener_isolation,
             total_routes = generated_route_ids.len(),
             unique_clusters = unique_clusters,
             total_cluster_references = generated_cluster_ids.len(),

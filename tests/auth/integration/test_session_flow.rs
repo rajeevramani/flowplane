@@ -175,6 +175,8 @@ async fn session_creation_fails_with_expired_setup_token() {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     };
 
     let token_repo = SqlxTokenRepository::new(app.pool.clone());

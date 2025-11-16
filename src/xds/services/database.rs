@@ -252,88 +252,88 @@ impl DatabaseAggregatedDiscoveryService {
                     }
                 }
 
-                if let Some(idx) = default_index {
-                    let mut default_rc = {
-                        let any = &built[idx].resource;
-                        RouteConfiguration::decode(any.value.as_slice()).map_err(|e| {
+                // Build a domain allowlist from non-isolated API definitions
+                let allowed_domains: std::collections::HashSet<String> = definitions
+                    .iter()
+                    .filter(|d| !d.listener_isolation)
+                    .map(|d| d.domain.clone())
+                    .collect();
+
+                let platform_resources = resources::resources_from_api_definitions(
+                    definitions.clone(),
+                    platform_routes,
+                )?;
+
+                let mut isolated_route_configs = Vec::new();
+
+                for res in platform_resources.into_iter() {
+                    if res.type_url() != resources::ROUTE_TYPE_URL {
+                        continue;
+                    }
+                    let mut rc = RouteConfiguration::decode(res.resource.value.as_slice())
+                        .map_err(|e| {
                             crate::Error::internal(format!(
-                                "Failed to decode default gateway RouteConfiguration: {}",
+                                "Failed to decode Platform API RouteConfiguration: {}",
                                 e
                             ))
-                        })?
-                    };
+                        })?;
 
-                    // Build a domain allowlist from non-isolated API definitions
-                    let allowed_domains: std::collections::HashSet<String> = definitions
-                        .iter()
-                        .filter(|d| !d.listener_isolation)
-                        .map(|d| d.domain.clone())
-                        .collect();
+                    // Check if this route config belongs to an isolated listener
+                    let is_isolated = definitions.iter().any(|d| {
+                        d.listener_isolation
+                            && rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
+                    });
 
-                    let platform_resources = resources::resources_from_api_definitions(
-                        definitions.clone(),
-                        platform_routes,
-                    )?;
-
-                    let mut isolated_route_configs = Vec::new();
-
-                    for res in platform_resources.into_iter() {
-                        if res.type_url() != resources::ROUTE_TYPE_URL {
-                            continue;
-                        }
-                        let mut rc = RouteConfiguration::decode(res.resource.value.as_slice())
-                            .map_err(|e| {
-                                crate::Error::internal(format!(
-                                    "Failed to decode Platform API RouteConfiguration: {}",
-                                    e
-                                ))
-                            })?;
-
-                        // Check if this route config belongs to an isolated listener
-                        let is_isolated = definitions.iter().any(|d| {
-                            d.listener_isolation
-                                && rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
+                    if is_isolated {
+                        // Keep isolated route configs separate - they'll be added to built list
+                        let isolated_any = envoy_types::pb::google::protobuf::Any {
+                            type_url: resources::ROUTE_TYPE_URL.to_string(),
+                            value: rc.encode_to_vec(),
+                        };
+                        isolated_route_configs.push(resources::BuiltResource {
+                            name: rc.name.clone(),
+                            resource: isolated_any,
                         });
-
-                        if is_isolated {
-                            // Keep isolated route configs separate - they'll be added to built list
-                            let isolated_any = envoy_types::pb::google::protobuf::Any {
-                                type_url: resources::ROUTE_TYPE_URL.to_string(),
-                                value: rc.encode_to_vec(),
+                    } else if let Some(idx) = default_index {
+                        // Merge non-isolated routes into default gateway (only if it exists)
+                        rc.virtual_hosts
+                            .retain(|vh| vh.domains.iter().any(|d| allowed_domains.contains(d)));
+                        if !rc.virtual_hosts.is_empty() {
+                            let mut default_rc = {
+                                let any = &built[idx].resource;
+                                RouteConfiguration::decode(any.value.as_slice()).map_err(|e| {
+                                    crate::Error::internal(format!(
+                                        "Failed to decode default gateway RouteConfiguration: {}",
+                                        e
+                                    ))
+                                })?
                             };
-                            isolated_route_configs.push(resources::BuiltResource {
-                                name: rc.name.clone(),
-                                resource: isolated_any,
-                            });
-                        } else {
-                            // Merge non-isolated routes into default gateway
-                            rc.virtual_hosts.retain(|vh| {
-                                vh.domains.iter().any(|d| allowed_domains.contains(d))
-                            });
-                            if !rc.virtual_hosts.is_empty() {
-                                default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
-                            }
+                            default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
+
+                            // Re-encode merged default gateway route config
+                            let merged_any = envoy_types::pb::google::protobuf::Any {
+                                type_url: resources::ROUTE_TYPE_URL.to_string(),
+                                value: default_rc.encode_to_vec(),
+                            };
+
+                            built[idx] = resources::BuiltResource {
+                                name: crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES.to_string(),
+                                resource: merged_any,
+                            };
                         }
+                    } else {
+                        // DEFAULT_GATEWAY_ROUTES not found but we have non-isolated routes
+                        // This shouldn't happen in production, but log it
+                        warn!(
+                            domain = ?rc.virtual_hosts.iter().flat_map(|vh| &vh.domains).collect::<Vec<_>>(),
+                            "DEFAULT_GATEWAY_ROUTES not found; non-isolated Platform API routes will not be merged"
+                        );
                     }
-
-                    // Add isolated route configs to the built list
-                    built.extend(isolated_route_configs);
-
-                    // Re-encode merged default gateway route config
-                    let merged_any = envoy_types::pb::google::protobuf::Any {
-                        type_url: resources::ROUTE_TYPE_URL.to_string(),
-                        value: default_rc.encode_to_vec(),
-                    };
-
-                    built[idx] = resources::BuiltResource {
-                        name: crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES.to_string(),
-                        resource: merged_any,
-                    };
-                } else {
-                    warn!(
-                        "DEFAULT_GATEWAY_ROUTES not found in repository-built routes; skipping Platform API merge"
-                    );
                 }
+
+                // Add isolated route configs to the built list
+                // This happens regardless of whether DEFAULT_GATEWAY_ROUTES exists
+                built.extend(isolated_route_configs);
             }
         }
 

@@ -229,6 +229,8 @@ impl SessionService {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
+            user_id: None, // Setup token sessions don't have user info yet
+            user_email: None,
         };
 
         self.token_repository.create_token(new_session_token).await?;
@@ -322,6 +324,8 @@ impl SessionService {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
+            user_id: Some(user_id.clone()),
+            user_email: Some(user_email.to_string()),
         };
 
         self.token_repository.create_token(new_session_token).await?;

@@ -26,6 +26,8 @@ struct PersonalAccessTokenRow {
     pub created_by: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub user_id: Option<String>,
+    pub user_email: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -60,6 +62,8 @@ struct TokenWithScopeRow {
     pub created_by: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub user_id: Option<String>,
+    pub user_email: Option<String>,
     // Scope field (nullable because of LEFT JOIN)
     pub scope: Option<String>,
 }
@@ -134,6 +138,8 @@ impl SqlxTokenRepository {
             created_at: row.created_at,
             updated_at: row.updated_at,
             scopes,
+            user_id: row.user_id.map(crate::domain::UserId::from_string),
+            user_email: row.user_email,
         })
     }
 
@@ -161,8 +167,8 @@ impl TokenRepository for SqlxTokenRepository {
         })?;
 
         sqlx::query(
-            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, failed_attempts, locked_until, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, failed_attempts, locked_until, user_id, user_email, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
         .bind(&token.id)
         .bind(&token.name)
@@ -176,6 +182,8 @@ impl TokenRepository for SqlxTokenRepository {
         .bind(token.usage_count)
         .bind(token.failed_attempts)
         .bind(token.locked_until)
+        .bind(token.user_id.as_ref().map(|id| id.to_string()))
+        .bind(token.user_email.as_ref())
         .execute(&mut *tx)
         .await
         .map_err(|err| FlowplaneError::Database {
@@ -224,6 +232,7 @@ impl TokenRepository for SqlxTokenRepository {
                 SELECT
                     t.id, t.name, t.description, t.token_hash, t.status,
                     t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                    t.user_id, t.user_email,
                     s.scope
                 FROM (
                     SELECT * FROM personal_access_tokens
@@ -253,6 +262,7 @@ impl TokenRepository for SqlxTokenRepository {
                 SELECT
                     t.id, t.name, t.description, t.token_hash, t.status,
                     t.expires_at, t.last_used_at, t.created_by, t.created_at, t.updated_at,
+                    t.user_id, t.user_email,
                     s.scope
                 FROM (
                     SELECT * FROM personal_access_tokens
@@ -291,6 +301,8 @@ impl TokenRepository for SqlxTokenRepository {
                 created_by: row.created_by,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
+                user_id: row.user_id,
+                user_email: row.user_email,
             };
 
             let entry = token_map.entry(row.id).or_insert((token_row, Vec::new()));
@@ -313,7 +325,7 @@ impl TokenRepository for SqlxTokenRepository {
 
     async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken> {
         let row: PersonalAccessTokenRow = sqlx::query_as(
-            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
+            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at, user_id, user_email FROM personal_access_tokens WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -339,7 +351,7 @@ impl TokenRepository for SqlxTokenRepository {
         })?;
 
         let existing: PersonalAccessTokenRow = sqlx::query_as(
-            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
+            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at, user_id, user_email FROM personal_access_tokens WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -450,7 +462,7 @@ impl TokenRepository for SqlxTokenRepository {
         id: &TokenId,
     ) -> Result<Option<(PersonalAccessToken, String)>> {
         let row: Option<PersonalAccessTokenRow> = sqlx::query_as(
-            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at              FROM personal_access_tokens WHERE id = $1"
+            "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at, user_id, user_email FROM personal_access_tokens WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)

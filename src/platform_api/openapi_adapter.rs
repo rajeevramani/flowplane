@@ -20,19 +20,18 @@ pub fn openapi_to_api_definition_spec(
     listener_isolation: bool,
     port: Option<u32>,
 ) -> Result<ApiDefinitionSpec, GatewayError> {
-    // Extract domain from first server URL
-    let servers = if openapi.servers.is_empty() {
+    // Validate servers array is not empty
+    if openapi.servers.is_empty() {
         return Err(GatewayError::MissingServers);
-    } else {
-        &openapi.servers
-    };
+    }
 
-    let primary_server = &servers[0];
-    let url = url::Url::parse(&primary_server.url).map_err(|err| {
+    // Extract domain from first server URL (used as the primary domain for routing)
+    let primary_server = &openapi.servers[0];
+    let primary_url = url::Url::parse(&primary_server.url).map_err(|err| {
         GatewayError::UnsupportedServer(format!("{} ({})", primary_server.url, err))
     })?;
 
-    let domain = url
+    let domain = primary_url
         .host_str()
         .ok_or_else(|| {
             GatewayError::UnsupportedServer(format!(
@@ -42,25 +41,69 @@ pub fn openapi_to_api_definition_spec(
         })?
         .to_string();
 
-    let url_port = url.port_or_known_default().ok_or_else(|| {
-        GatewayError::UnsupportedServer(format!(
-            "Server URL '{}' does not include a usable port",
-            primary_server.url
-        ))
-    })?;
-
-    let use_tls = matches!(url.scheme(), "https" | "grpcs");
+    let primary_scheme = primary_url.scheme();
+    let use_tls = matches!(primary_scheme, "https" | "grpcs");
 
     // Parse global x-flowplane-filters from OpenAPI extensions
     let global_filters = crate::openapi::parse_global_filters(&openapi)?;
 
-    // Create upstream target configuration ONCE from the OpenAPI servers array
-    // All routes within this API definition will share the same upstream cluster
+    // Parse all servers into upstream targets for load balancing
+    // Multiple servers will be load-balanced across using Envoy's default round-robin policy
+    let mut targets = Vec::new();
+
+    for (idx, server) in openapi.servers.iter().enumerate() {
+        let server_url = url::Url::parse(&server.url)
+            .map_err(|err| GatewayError::UnsupportedServer(format!("{} ({})", server.url, err)))?;
+
+        // Validate all servers use the same scheme (http vs https)
+        if server_url.scheme() != primary_scheme {
+            return Err(GatewayError::UnsupportedServer(format!(
+                "All servers must use the same scheme. Primary server uses '{}' but server {} uses '{}'",
+                primary_scheme, idx, server_url.scheme()
+            )));
+        }
+
+        let host = server_url
+            .host_str()
+            .ok_or_else(|| {
+                GatewayError::UnsupportedServer(format!(
+                    "Server URL '{}' does not contain a host",
+                    server.url
+                ))
+            })?
+            .to_string();
+
+        let port = server_url.port_or_known_default().ok_or_else(|| {
+            GatewayError::UnsupportedServer(format!(
+                "Server URL '{}' does not include a usable port",
+                server.url
+            ))
+        })?;
+
+        // Extract optional weight from server variables (x-flowplane-weight)
+        // If not specified, Envoy will use equal weights for round-robin
+        let weight = server
+            .variables
+            .as_ref()
+            .and_then(|vars| vars.get("x-flowplane-weight"))
+            .and_then(|var| var.default.parse::<u32>().ok());
+
+        let mut target = json!({
+            "name": format!("{}-upstream-{}", host, idx),
+            "endpoint": format!("{}:{}", host, port),
+        });
+
+        // Add weight if specified
+        if let Some(w) = weight {
+            target.as_object_mut().unwrap().insert("weight".to_string(), json!(w));
+        }
+
+        targets.push(target);
+    }
+
+    // Create upstream target configuration with all servers for load balancing
     let upstream_targets = json!({
-        "targets": [{
-            "name": format!("{}-upstream", domain),
-            "endpoint": format!("{}:{}", domain, url_port),
-        }]
+        "targets": targets
     });
 
     // Convert OpenAPI paths and operations to RouteSpec (one route per operation)
@@ -606,5 +649,137 @@ mod tests {
         assert_eq!(spec.routes.len(), 1);
         let route = &spec.routes[0];
         assert!(route.override_config.is_some());
+    }
+
+    #[test]
+    fn converts_openapi_with_multiple_servers_for_load_balancing() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Multi-Server Example", "version": "1.0.0"},
+                "servers": [
+                    {"url": "https://api-1.example.com:443"},
+                    {"url": "https://api-2.example.com:443"},
+                    {"url": "https://api-3.example.com:443"}
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "lb-team".to_string(), true, None)
+            .expect("convert spec");
+
+        assert_eq!(spec.team, "lb-team");
+        assert_eq!(spec.domain, "api-1.example.com");
+        assert_eq!(spec.routes.len(), 1);
+
+        // Verify upstream targets include all 3 servers
+        let route = &spec.routes[0];
+        let targets = route.upstream_targets.get("targets").unwrap().as_array().unwrap();
+        assert_eq!(targets.len(), 3);
+
+        // Verify each target has correct endpoint
+        assert_eq!(targets[0]["endpoint"], "api-1.example.com:443");
+        assert_eq!(targets[1]["endpoint"], "api-2.example.com:443");
+        assert_eq!(targets[2]["endpoint"], "api-3.example.com:443");
+
+        // Verify names are unique
+        assert_eq!(targets[0]["name"], "api-1.example.com-upstream-0");
+        assert_eq!(targets[1]["name"], "api-2.example.com-upstream-1");
+        assert_eq!(targets[2]["name"], "api-3.example.com-upstream-2");
+    }
+
+    #[test]
+    fn rejects_openapi_with_mixed_http_and_https_servers() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Mixed Scheme Example", "version": "1.0.0"},
+                "servers": [
+                    {"url": "https://api-1.example.com:443"},
+                    {"url": "http://api-2.example.com:80"}
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None);
+
+        assert!(result.is_err());
+        match result {
+            Err(GatewayError::UnsupportedServer(msg)) => {
+                assert!(msg.contains("same scheme"));
+                assert!(msg.contains("https"));
+                assert!(msg.contains("http"));
+            }
+            _ => panic!("Expected UnsupportedServer error for mixed schemes"),
+        }
+    }
+
+    #[test]
+    fn supports_server_variables_for_load_balancing_weights() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Weighted LB Example", "version": "1.0.0"},
+                "servers": [
+                    {
+                        "url": "https://api-1.example.com:443",
+                        "variables": {
+                            "x-flowplane-weight": {
+                                "default": "100"
+                            }
+                        }
+                    },
+                    {
+                        "url": "https://api-2.example.com:443",
+                        "variables": {
+                            "x-flowplane-weight": {
+                                "default": "50"
+                            }
+                        }
+                    }
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "weighted-team".to_string(), true, None)
+            .expect("convert spec");
+
+        let route = &spec.routes[0];
+        let targets = route.upstream_targets.get("targets").unwrap().as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+
+        // Verify weights are set
+        assert_eq!(targets[0]["weight"], 100);
+        assert_eq!(targets[1]["weight"], 50);
     }
 }

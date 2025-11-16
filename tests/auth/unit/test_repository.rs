@@ -72,6 +72,8 @@ fn sample_token(id: &str) -> NewPersonalAccessToken {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     }
 }
 

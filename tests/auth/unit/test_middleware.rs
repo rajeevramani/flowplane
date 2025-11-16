@@ -243,6 +243,8 @@ async fn create_test_session(
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     };
 
     token_repo.create_token(new_session).await.unwrap();
