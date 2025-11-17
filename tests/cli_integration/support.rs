@@ -70,13 +70,13 @@ impl TestServer {
     /// Issue a test token with specified scopes
     pub async fn issue_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
         self.token_service
-            .create_token(CreateTokenRequest {
-                name: name.to_string(),
-                description: None,
-                expires_at: None,
-                scopes: scopes.iter().map(|s| s.to_string()).collect(),
-                created_by: Some("cli-integration-tests".into()),
-            })
+            .create_token(CreateTokenRequest::without_user(
+                name.to_string(),
+                None,
+                None,
+                scopes.iter().map(|s| s.to_string()).collect(),
+                Some("cli-integration-tests".into()),
+            ))
             .await
             .expect("create token")
     }

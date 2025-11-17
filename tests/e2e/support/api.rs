@@ -17,13 +17,13 @@ pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
         std::sync::Arc::new(flowplane::storage::repository::AuditLogRepository::new(pool.clone()));
     let svc = TokenService::with_sqlx(pool, audit);
     let short = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
-    let req = CreateTokenRequest {
-        name: format!("e2e-token-{}", short),
-        description: Some("e2e token".into()),
-        expires_at: None,
-        scopes: scopes.into_iter().map(|s| s.to_string()).collect(),
-        created_by: Some("e2e".into()),
-    };
+    let req = CreateTokenRequest::without_user(
+        format!("e2e-token-{}", short),
+        Some("e2e token".into()),
+        None,
+        scopes.into_iter().map(|s| s.to_string()).collect(),
+        Some("e2e".into()),
+    );
     let secret = svc.create_token(req).await?.token;
     Ok(secret)
 }

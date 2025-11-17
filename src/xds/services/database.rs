@@ -236,6 +236,8 @@ impl DatabaseAggregatedDiscoveryService {
         };
 
         // Merge Platform API virtual hosts into the default gateway routes for non-isolated APIs only
+        // NOTE: We build route configs from database routes (not from API definitions) to ensure
+        // cluster names match what's actually in the database/cluster resources
         if let Some(api_repo) = &self.state.api_definition_repository {
             use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
             use prost::Message;
@@ -259,10 +261,32 @@ impl DatabaseAggregatedDiscoveryService {
                     .map(|d| d.domain.clone())
                     .collect();
 
-                let platform_resources = resources::resources_from_api_definitions(
-                    definitions.clone(),
-                    platform_routes,
-                )?;
+                // Build Platform API route configs from database route entries (filtered by teams)
+                // This ensures cluster names match what's in the database clusters
+                let (platform_teams, _) = match scope {
+                    Scope::All => (vec![], true),
+                    Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
+                    Scope::Allowlist { .. } => (vec![], false),
+                };
+
+                let platform_db_routes = if let Some(route_repo) = &self.state.route_repository {
+                    // Get routes filtered by teams, only including platform_api routes
+                    let all_team_routes =
+                        route_repo.list_by_teams(&platform_teams, true, Some(1000), None).await?;
+                    all_team_routes
+                        .into_iter()
+                        .filter(|r| r.source == "platform_api")
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+
+                let platform_resources = if !platform_db_routes.is_empty() {
+                    resources::routes_from_database_entries(platform_db_routes, "platform_merge")?
+                } else {
+                    // Fallback to generating from API definitions if no database routes
+                    resources::resources_from_api_definitions(definitions.clone(), platform_routes)?
+                };
 
                 let mut isolated_route_configs = Vec::new();
 

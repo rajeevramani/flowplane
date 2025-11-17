@@ -34,13 +34,13 @@ impl PlatformApiApp {
 
     pub async fn issue_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
         self.token_service
-            .create_token(CreateTokenRequest {
-                name: name.to_string(),
-                description: None,
-                expires_at: None,
-                scopes: scopes.iter().map(|scope| scope.to_string()).collect(),
-                created_by: Some("platform-api-tests".into()),
-            })
+            .create_token(CreateTokenRequest::without_user(
+                name.to_string(),
+                None,
+                None,
+                scopes.iter().map(|scope| scope.to_string()).collect(),
+                Some("platform-api-tests".into()),
+            ))
             .await
             .expect("create token")
     }
