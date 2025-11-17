@@ -49,8 +49,9 @@
 	async function loadTeams() {
 		isLoadingTeams = true;
 		try {
-			const response = await apiClient.listTeams();
-			availableTeams = response.teams;
+			// Admin users should see all teams from the admin endpoint
+			const response = await apiClient.adminListTeams(100, 0);
+			availableTeams = response.teams.map(t => t.name);
 		} catch (err: any) {
 			console.error('Failed to load teams:', err);
 			// Non-fatal error
