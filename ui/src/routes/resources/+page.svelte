@@ -16,6 +16,7 @@
 	let error = $state<string | null>(null);
 	let searchQuery = $state('');
 	let teamFilter = $state('');
+	let availableTeams = $state<string[]>([]);
 
 	// Data for each resource type
 	let apiDefinitions = $state<ApiDefinitionSummary[]>([]);
@@ -35,6 +36,9 @@
 		// Check authentication
 		try {
 			await apiClient.getSessionInfo();
+			// Load available teams
+			const teamsResponse = await apiClient.listTeams();
+			availableTeams = teamsResponse.teams;
 			await loadResources();
 		} catch (err) {
 			goto('/login');
@@ -211,14 +215,17 @@
 					class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 				/>
 			</div>
-			<div>
-				<input
-					type="text"
+			<div class="w-64">
+				<select
 					bind:value={teamFilter}
 					onchange={() => loadResources()}
-					placeholder="Filter by team..."
-					class="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-				/>
+					class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+				>
+					<option value="">All Teams</option>
+					{#each availableTeams as team}
+						<option value={team}>{team}</option>
+					{/each}
+				</select>
 			</div>
 		</div>
 
