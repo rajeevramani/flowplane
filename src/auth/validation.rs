@@ -29,6 +29,23 @@ pub struct CreateTokenRequest {
     #[validate(length(min = 1), custom(function = "validate_scopes_list"))]
     pub scopes: Vec<String>,
     pub created_by: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<crate::domain::UserId>,
+    #[serde(default)]
+    pub user_email: Option<String>,
+}
+
+impl CreateTokenRequest {
+    /// Create a test request without user context (for CLI and tests)
+    pub fn without_user(
+        name: String,
+        description: Option<String>,
+        expires_at: Option<DateTime<Utc>>,
+        scopes: Vec<String>,
+        created_by: Option<String>,
+    ) -> Self {
+        Self { name, description, expires_at, scopes, created_by, user_id: None, user_email: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

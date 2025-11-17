@@ -19,6 +19,13 @@ pub static VALID_NAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::n
         .expect("VALID_NAME_REGEX should be a valid regex pattern")
 });
 
+/// Regex for validating team names
+/// Team names must be lowercase, alphanumeric with hyphens (e.g., "my-team", "platform", "team-123")
+pub static TEAM_NAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+        .expect("TEAM_NAME_REGEX should be a valid regex pattern")
+});
+
 /// Generate a new UUID v4 as a string
 pub fn generate_id() -> String {
     Uuid::new_v4().to_string()

@@ -78,6 +78,8 @@ impl CreateTokenBody {
             expires_at: self.expires_at,
             scopes: self.scopes,
             created_by: Some(creator),
+            user_id: created_by.user_id.clone(),
+            user_email: created_by.user_email.clone(),
         }
     }
 }

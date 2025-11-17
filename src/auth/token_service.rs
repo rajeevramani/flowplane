@@ -187,8 +187,8 @@ impl TokenService {
             usage_count: 0,
             failed_attempts: 0,
             locked_until: None,
-            user_id: None, // PATs created via API are not tied to specific users
-            user_email: None,
+            user_id: payload.user_id.clone(),
+            user_email: payload.user_email.clone(),
         };
 
         self.repository.create_token(new_token).await?;

@@ -17,6 +17,8 @@ async fn contract_post_tokens_rotate_creates_new_secret() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

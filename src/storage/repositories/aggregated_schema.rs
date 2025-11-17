@@ -471,9 +471,23 @@ mod tests {
         pool
     }
 
+    /// Helper to create a test team in the database (idempotent)
+    async fn create_test_team(pool: &DbPool, name: &str) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')"
+        )
+        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(name)
+        .bind(format!("Test {}", name))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn test_create_and_get_aggregated_schema() {
         let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let request = CreateAggregatedSchemaRequest {
@@ -509,6 +523,7 @@ mod tests {
     #[tokio::test]
     async fn test_version_increment() {
         let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -554,6 +569,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_latest() {
         let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -586,6 +602,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_latest_by_team() {
         let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();

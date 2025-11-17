@@ -96,6 +96,8 @@ fn sample_create_request() -> CreateTokenRequest {
         expires_at: None,
         scopes: vec!["clusters:read".into()],
         created_by: Some("unit".into()),
+        user_id: None,
+        user_email: None,
     }
 }
 
@@ -122,6 +124,8 @@ async fn create_token_without_expiry_defaults_to_30_days() {
         expires_at: None, // Explicitly no expiry provided
         scopes: vec!["clusters:read".into()],
         created_by: Some("unit".into()),
+        user_id: None,
+        user_email: None,
     };
 
     let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();

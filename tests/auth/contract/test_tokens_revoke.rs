@@ -17,6 +17,8 @@ async fn contract_delete_tokens_revokes_token() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

@@ -224,6 +224,8 @@ async fn handle_create_token_db(
         expires_at,
         scopes: args.scopes,
         created_by: args.created_by,
+        user_id: None,
+        user_email: None,
     };
 
     if let Err(err) = request.validate() {

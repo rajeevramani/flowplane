@@ -123,7 +123,8 @@ fn bench_list_tokens_pagination(c: &mut Criterion) {
             page_size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
-                    let tokens = repo.list_tokens(black_box(size), black_box(0), None).await.unwrap();
+                    let tokens =
+                        repo.list_tokens(black_box(size), black_box(0), None).await.unwrap();
                     black_box(tokens)
                 });
             },

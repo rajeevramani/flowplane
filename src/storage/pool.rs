@@ -40,7 +40,8 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
             })?
             .create_if_missing(true)
             .busy_timeout(SQLITE_BUSY_TIMEOUT)
-            .journal_mode(SqliteJournalMode::Wal);
+            .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true); // Enable foreign key constraints
 
         pool_options.connect_with(connect_options).await.map_err(|e| {
             tracing::error!(

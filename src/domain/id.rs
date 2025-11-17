@@ -153,6 +153,11 @@ domain_id!(
     UserId
 );
 
+domain_id!(
+    /// Unique identifier for a team
+    TeamId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

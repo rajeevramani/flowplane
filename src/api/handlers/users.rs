@@ -40,9 +40,11 @@ fn user_service_for_state(state: &ApiState) -> Result<UserService, ApiError> {
 
     let user_repo = Arc::new(SqlxUserRepository::new(pool.clone()));
     let membership_repo = Arc::new(SqlxTeamMembershipRepository::new(pool.clone()));
+    let team_repo =
+        Arc::new(crate::storage::repositories::team::SqlxTeamRepository::new(pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool));
 
-    Ok(UserService::new(user_repo, membership_repo, audit_repo))
+    Ok(UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo))
 }
 
 /// Check if the current context has admin privileges.

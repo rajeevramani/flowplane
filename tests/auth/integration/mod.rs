@@ -1,3 +1,4 @@
+mod test_admin_team_management;
 mod test_audit_logging;
 mod test_audit_user_context;
 mod test_auth_middleware;

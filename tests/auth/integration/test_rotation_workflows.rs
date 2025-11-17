@@ -258,6 +258,8 @@ async fn test_token_rotation_no_downtime() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("test".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -317,6 +319,8 @@ async fn test_audit_logging_completeness() {
             expires_at: None,
             scopes: vec!["clusters:read".into()],
             created_by: Some("test-user".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -433,6 +437,8 @@ async fn test_multiple_rotation_cycles() {
             expires_at: None,
             scopes: vec!["listeners:read".into()],
             created_by: Some("test".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

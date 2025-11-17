@@ -11,6 +11,7 @@ use crate::auth::user::{
 };
 use crate::domain::UserId;
 use crate::errors::{Error, Result};
+use crate::storage::repositories::team::TeamRepository;
 use crate::storage::repositories::user::{TeamMembershipRepository, UserRepository};
 use crate::storage::repositories::{AuditEvent, AuditLogRepository};
 
@@ -19,6 +20,7 @@ use crate::storage::repositories::{AuditEvent, AuditLogRepository};
 pub struct UserService {
     user_repository: Arc<dyn UserRepository>,
     membership_repository: Arc<dyn TeamMembershipRepository>,
+    team_repository: Option<Arc<dyn TeamRepository>>,
     audit_repository: Arc<AuditLogRepository>,
 }
 
@@ -29,7 +31,22 @@ impl UserService {
         membership_repository: Arc<dyn TeamMembershipRepository>,
         audit_repository: Arc<AuditLogRepository>,
     ) -> Self {
-        Self { user_repository, membership_repository, audit_repository }
+        Self { user_repository, membership_repository, team_repository: None, audit_repository }
+    }
+
+    /// Create a new UserService with team validation enabled.
+    pub fn with_team_validation(
+        user_repository: Arc<dyn UserRepository>,
+        membership_repository: Arc<dyn TeamMembershipRepository>,
+        team_repository: Arc<dyn TeamRepository>,
+        audit_repository: Arc<AuditLogRepository>,
+    ) -> Self {
+        Self {
+            user_repository,
+            membership_repository,
+            team_repository: Some(team_repository),
+            audit_repository,
+        }
     }
 
     /// Create a new user account.
@@ -241,6 +258,16 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
+        // Validate team exists (if team repository is available)
+        if let Some(ref team_repo) = self.team_repository {
+            if team_repo.get_team_by_name(&team).await?.is_none() {
+                return Err(Error::validation(format!(
+                    "Team '{}' does not exist. Please create the team first.",
+                    team
+                )));
+            }
+        }
+
         // Check if membership already exists
         if let Some(_existing) =
             self.membership_repository.get_user_team_membership(user_id, &team).await?
@@ -354,11 +381,27 @@ mod tests {
 
         let user_repo = Arc::new(SqlxUserRepository::new(pool.clone()));
         let membership_repo = Arc::new(SqlxTeamMembershipRepository::new(pool.clone()));
+        let team_repo =
+            Arc::new(crate::storage::repositories::team::SqlxTeamRepository::new(pool.clone()));
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
 
-        let service = UserService::new(user_repo, membership_repo, audit_repo);
+        let service =
+            UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo);
 
         (service, pool)
+    }
+
+    /// Helper to create a test team in the database
+    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) {
+        sqlx::query(
+            "INSERT INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')",
+        )
+        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(name)
+        .bind(display_name)
+        .execute(pool)
+        .await
+        .expect("create test team");
     }
 
     #[tokio::test]
@@ -513,7 +556,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create the team first
+        create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -543,7 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_team_membership() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create the team first
+        create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -572,7 +621,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_user_teams() {
-        let (service, _pool) = setup_test_service().await;
+        let (service, pool) = setup_test_service().await;
+
+        // Create teams first
+        for (name, display) in
+            [("team-alpha", "Team Alpha"), ("team-beta", "Team Beta"), ("team-gamma", "Team Gamma")]
+        {
+            create_test_team(&pool, name, display).await;
+        }
 
         let user = service
             .create_user(
@@ -595,5 +651,39 @@ mod tests {
 
         let teams = service.list_user_teams(&user.id).await.expect("list user teams");
         assert_eq!(teams.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_add_team_membership_validates_team_exists() {
+        let (service, _pool) = setup_test_service().await;
+
+        let user = service
+            .create_user(
+                "test@example.com".to_string(),
+                "Password123".to_string(),
+                "Test User".to_string(),
+                false,
+                None,
+            )
+            .await
+            .expect("create user");
+
+        // Try to add membership to non-existent team
+        let result = service
+            .add_team_membership(
+                &user.id,
+                "nonexistent-team".to_string(),
+                vec!["read".to_string()],
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("does not exist"),
+            "Error message should mention team doesn't exist: {}",
+            err_msg
+        );
     }
 }
