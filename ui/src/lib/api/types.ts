@@ -49,6 +49,43 @@ export interface ListTeamsResponse {
 	teams: string[];
 }
 
+export type TeamStatus = 'active' | 'suspended' | 'archived';
+
+export interface TeamResponse {
+	id: string;
+	name: string;
+	displayName: string;
+	description: string | null;
+	ownerUserId: string | null;
+	settings: any | null;
+	status: TeamStatus;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CreateTeamRequest {
+	name: string;
+	displayName: string;
+	description?: string | null;
+	ownerUserId?: string | null;
+	settings?: any | null;
+}
+
+export interface UpdateTeamRequest {
+	displayName?: string;
+	description?: string | null;
+	ownerUserId?: string | null;
+	settings?: any | null;
+	status?: TeamStatus;
+}
+
+export interface AdminListTeamsResponse {
+	teams: TeamResponse[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
 export interface DashboardStats {
 	apiDefinitionsCount: number;
 	listenersCount: number;

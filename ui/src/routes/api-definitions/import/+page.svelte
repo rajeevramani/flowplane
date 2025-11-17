@@ -34,8 +34,11 @@
 		// Check authentication and load user session
 		try {
 			const session = await apiClient.getSessionInfo();
-			userTeams = session.teams || [];
 			isAdmin = session.isAdmin || false;
+
+			// Load teams from API (all teams for admin, user's teams for non-admin)
+			const teamsResponse = await apiClient.listTeams();
+			userTeams = teamsResponse.teams || [];
 
 			// Auto-populate team for non-admin single-team users
 			if (!isAdmin && userTeams.length === 1) {

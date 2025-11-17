@@ -7,7 +7,9 @@
 	import ScopeSelector from '$lib/components/ScopeSelector.svelte';
 
 	let user = $state<UserWithTeamsResponse | null>(null);
+	let availableTeams = $state<string[]>([]);
 	let isLoading = $state(true);
+	let isLoadingTeams = $state(false);
 	let error = $state<string | null>(null);
 
 	// Edit state
@@ -38,11 +40,24 @@
 				goto('/dashboard');
 				return;
 			}
-			await loadUser();
+			await Promise.all([loadUser(), loadTeams()]);
 		} catch (err) {
 			goto('/login');
 		}
 	});
+
+	async function loadTeams() {
+		isLoadingTeams = true;
+		try {
+			const response = await apiClient.listTeams();
+			availableTeams = response.teams;
+		} catch (err: any) {
+			console.error('Failed to load teams:', err);
+			// Non-fatal error
+		} finally {
+			isLoadingTeams = false;
+		}
+	}
 
 	async function loadUser() {
 		if (!userId) return;
@@ -478,18 +493,32 @@
 			<h2 class="text-lg font-semibold text-gray-900 mb-4">Add Team Membership</h2>
 
 			<div class="space-y-4">
-				<!-- Team Name -->
+				<!-- Team Selection -->
 				<div>
 					<label for="teamName" class="block text-sm font-medium text-gray-700 mb-2">
-						Team Name
+						Team <span class="text-red-500">*</span>
 					</label>
-					<input
-						id="teamName"
-						type="text"
-						bind:value={newTeam.team}
-						placeholder="Enter team name"
-						class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-					/>
+					{#if isLoadingTeams}
+						<div class="text-sm text-gray-500">Loading teams...</div>
+					{:else if availableTeams.length === 0}
+						<div class="text-sm text-gray-500">No teams available</div>
+					{:else}
+						<select
+							id="teamName"
+							bind:value={newTeam.team}
+							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+						>
+							<option value="">Select a team</option>
+							{#each availableTeams as team}
+								{#if !user?.teams.some(m => m.team === team)}
+									<option value={team}>{team}</option>
+								{/if}
+							{/each}
+						</select>
+					{/if}
+					<p class="mt-1 text-xs text-gray-500">
+						Only showing teams the user is not already a member of
+					</p>
 				</div>
 
 				<!-- Scopes -->

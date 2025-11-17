@@ -21,6 +21,10 @@ import type {
 	ClusterResponse,
 	BootstrapConfigRequest,
 	ListTeamsResponse,
+	TeamResponse,
+	CreateTeamRequest,
+	UpdateTeamRequest,
+	AdminListTeamsResponse,
 	UserResponse,
 	UserWithTeamsResponse,
 	CreateUserRequest,
@@ -381,6 +385,31 @@ class ApiClient {
 	// Team methods
 	async listTeams(): Promise<ListTeamsResponse> {
 		return this.get<ListTeamsResponse>('/api/v1/teams');
+	}
+
+	// Admin Team Management methods
+	async adminListTeams(limit: number = 50, offset: number = 0): Promise<AdminListTeamsResponse> {
+		const params = new URLSearchParams();
+		params.append('limit', limit.toString());
+		params.append('offset', offset.toString());
+
+		return this.get<AdminListTeamsResponse>(`/api/v1/admin/teams?${params.toString()}`);
+	}
+
+	async adminGetTeam(id: string): Promise<TeamResponse> {
+		return this.get<TeamResponse>(`/api/v1/admin/teams/${id}`);
+	}
+
+	async adminCreateTeam(request: CreateTeamRequest): Promise<TeamResponse> {
+		return this.post<TeamResponse>('/api/v1/admin/teams', request);
+	}
+
+	async adminUpdateTeam(id: string, request: UpdateTeamRequest): Promise<TeamResponse> {
+		return this.put<TeamResponse>(`/api/v1/admin/teams/${id}`, request);
+	}
+
+	async adminDeleteTeam(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/admin/teams/${id}`);
 	}
 
 	// User Management methods (admin only)

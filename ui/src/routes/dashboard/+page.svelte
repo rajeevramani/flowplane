@@ -7,10 +7,26 @@
 	let isLoading = $state(true);
 	let isFirstAdmin = $state(false);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let selectedTeam = $state<string>('');
+	let availableTeams = $state<string[]>([]);
 
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
+
+			// Load available teams
+			const teamsResponse = await apiClient.listTeams();
+			availableTeams = teamsResponse.teams;
+
+			// Set selected team from session storage or first team
+			const storedTeam = sessionStorage.getItem('selected_team');
+			if (storedTeam && availableTeams.includes(storedTeam)) {
+				selectedTeam = storedTeam;
+			} else if (availableTeams.length > 0) {
+				selectedTeam = availableTeams[0];
+				sessionStorage.setItem('selected_team', selectedTeam);
+			}
+
 			isLoading = false;
 
 			// Check if this is the first admin (check if sessionStorage has bootstrap flag)
@@ -36,6 +52,12 @@
 			goto('/login');
 		}
 	}
+
+	function handleTeamChange() {
+		// Persist selected team in session storage
+		sessionStorage.setItem('selected_team', selectedTeam);
+		// Optionally trigger a page reload or refetch data
+	}
 </script>
 
 {#if isLoading}
@@ -52,6 +74,23 @@
 						<span class="text-sm text-gray-500">API Gateway Platform</span>
 					</div>
 					<div class="flex items-center gap-4">
+						<!-- Team Switcher (only for non-admin with multiple teams) -->
+						{#if !sessionInfo.isAdmin && availableTeams.length > 1}
+							<div class="flex items-center gap-2">
+								<label for="teamSelect" class="text-sm text-gray-600">Team:</label>
+								<select
+									id="teamSelect"
+									bind:value={selectedTeam}
+									onchange={handleTeamChange}
+									class="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+								>
+									{#each availableTeams as team}
+										<option value={team}>{team}</option>
+									{/each}
+								</select>
+							</div>
+						{/if}
+
 						<!-- User info -->
 						<div class="flex items-center gap-2">
 							<div class="text-right">
