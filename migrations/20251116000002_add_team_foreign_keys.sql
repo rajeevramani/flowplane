@@ -56,6 +56,8 @@ CREATE TABLE api_definitions_new (
     metadata TEXT,
     bootstrap_uri TEXT,
     bootstrap_revision INTEGER NOT NULL DEFAULT 0,
+    generated_listener_id TEXT,
+    target_listeners TEXT,
     version INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -65,7 +67,8 @@ CREATE TABLE api_definitions_new (
 
 INSERT INTO api_definitions_new
 SELECT id, team, domain, listener_isolation, tls_config, metadata,
-       bootstrap_uri, bootstrap_revision, version, created_at, updated_at
+       bootstrap_uri, bootstrap_revision, generated_listener_id, target_listeners,
+       version, created_at, updated_at
 FROM api_definitions;
 
 DROP TABLE api_definitions;
@@ -74,6 +77,8 @@ ALTER TABLE api_definitions_new RENAME TO api_definitions;
 CREATE INDEX IF NOT EXISTS idx_api_definitions_team ON api_definitions(team);
 CREATE INDEX IF NOT EXISTS idx_api_definitions_domain ON api_definitions(domain);
 CREATE INDEX IF NOT EXISTS idx_api_definitions_updated_at ON api_definitions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_api_definitions_listener ON api_definitions(generated_listener_id);
+CREATE INDEX IF NOT EXISTS idx_api_definitions_target_listeners ON api_definitions(target_listeners) WHERE target_listeners IS NOT NULL;
 
 -- ============================================================================
 -- 3. clusters - RESTRICT delete (core resource, conditional FK for NULL teams)

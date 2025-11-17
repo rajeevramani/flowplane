@@ -17,6 +17,8 @@ async fn contract_get_tokens_id_returns_token() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

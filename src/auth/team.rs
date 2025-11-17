@@ -6,6 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
+use validator::Validate;
 
 use crate::domain::{TeamId, UserId};
 
@@ -95,14 +96,17 @@ impl Team {
 }
 
 /// Request to create a new team.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTeamRequest {
     /// Unique, immutable team name (lowercase, alphanumeric with hyphens)
+    #[validate(length(min = 1, max = 255), regex(path = "crate::utils::TEAM_NAME_REGEX"))]
     pub name: String,
     /// Human-friendly display name
+    #[validate(length(min = 1, max = 255))]
     pub display_name: String,
     /// Optional description
+    #[validate(length(max = 1000))]
     pub description: Option<String>,
     /// Optional owner user ID
     pub owner_user_id: Option<UserId>,
@@ -111,12 +115,14 @@ pub struct CreateTeamRequest {
 }
 
 /// Request to update an existing team.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTeamRequest {
     /// Updated display name (name is immutable)
+    #[validate(length(min = 1, max = 255))]
     pub display_name: Option<String>,
     /// Updated description
+    #[validate(length(max = 1000))]
     pub description: Option<String>,
     /// Updated owner user ID
     pub owner_user_id: Option<UserId>,

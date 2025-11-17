@@ -97,6 +97,8 @@ fn sample_request() -> CreateTokenRequest {
         expires_at: None,
         scopes: vec!["clusters:read".into()],
         created_by: Some("tests".into()),
+        user_id: None,
+        user_email: None,
     }
 }
 

@@ -1,19 +1,28 @@
 //! Team-scoped endpoints for bootstrap configuration and team management
 
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, Query, State},
-    http::{header, Response},
+    http::{header, Response, StatusCode},
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+use validator::Validate;
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{has_admin_bypass, require_resource_access},
-    auth::models::AuthContext,
+    auth::{
+        authorization::{has_admin_bypass, require_resource_access},
+        models::AuthContext,
+        team::{CreateTeamRequest, Team, UpdateTeamRequest},
+    },
+    domain::TeamId,
     errors::Error,
-    storage::repositories::{SqlxTeamMembershipRepository, TeamMembershipRepository},
+    storage::repositories::{
+        SqlxTeamMembershipRepository, SqlxTeamRepository, TeamMembershipRepository, TeamRepository,
+    },
 };
 
 /// Query parameters for bootstrap endpoint
@@ -234,4 +243,249 @@ pub async fn list_teams_handler(
     };
 
     Ok(Json(ListTeamsResponse { teams }))
+}
+
+// ===== Admin-Only Team Management Endpoints =====
+
+/// Helper to create TeamRepository from ApiState.
+fn team_repository_for_state(state: &ApiState) -> Result<Arc<dyn TeamRepository>, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+
+    Ok(Arc::new(SqlxTeamRepository::new(pool)))
+}
+
+/// Check if the current context has admin privileges.
+fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
+    if !has_admin_bypass(context) {
+        return Err(ApiError::forbidden("Admin privileges required"));
+    }
+    Ok(())
+}
+
+/// Query parameters for admin list_teams endpoint.
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminListTeamsQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+/// Response for admin list_teams endpoint.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminListTeamsResponse {
+    pub teams: Vec<Team>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Create a new team (admin only).
+///
+/// Creates a new team with the specified details. The team name is immutable
+/// after creation and must be unique across all teams.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/teams",
+    request_body = CreateTeamRequest,
+    responses(
+        (status = 201, description = "Team created successfully", body = Team),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Admin privileges required"),
+        (status = 409, description = "Team with name already exists")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "admin"
+)]
+pub async fn admin_create_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Json(mut payload): Json<CreateTeamRequest>,
+) -> Result<(StatusCode, Json<Team>), ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // Validate request
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Set owner to current user if not specified
+    if payload.owner_user_id.is_none() {
+        payload.owner_user_id = context.user_id.clone();
+    }
+
+    // Check if name is available
+    let repo = team_repository_for_state(&state)?;
+    let is_available = repo.is_name_available(&payload.name).await.map_err(convert_error)?;
+
+    if !is_available {
+        return Err(ApiError::Conflict(format!(
+            "Team with name '{}' already exists",
+            payload.name
+        )));
+    }
+
+    // Create team
+    let team = repo.create_team(payload).await.map_err(convert_error)?;
+
+    Ok((StatusCode::CREATED, Json(team)))
+}
+
+/// Get a team by ID (admin only).
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/teams/{id}",
+    params(
+        ("id" = String, Path, description = "Team ID")
+    ),
+    responses(
+        (status = 200, description = "Team found", body = Team),
+        (status = 403, description = "Admin privileges required"),
+        (status = 404, description = "Team not found")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "admin"
+)]
+pub async fn admin_get_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Team>, ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // Parse team ID
+    let team_id = TeamId::from_string(id);
+
+    // Get team
+    let repo = team_repository_for_state(&state)?;
+    let team = repo
+        .get_team_by_id(&team_id)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
+
+    Ok(Json(team))
+}
+
+/// List all teams with pagination (admin only).
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/teams",
+    params(AdminListTeamsQuery),
+    responses(
+        (status = 200, description = "Teams listed successfully", body = AdminListTeamsResponse),
+        (status = 403, description = "Admin privileges required")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "admin"
+)]
+pub async fn admin_list_teams(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Query(query): Query<AdminListTeamsQuery>,
+) -> Result<Json<AdminListTeamsResponse>, ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // List teams
+    let repo = team_repository_for_state(&state)?;
+    let teams = repo.list_teams(query.limit, query.offset).await.map_err(convert_error)?;
+    let total = repo.count_teams().await.map_err(convert_error)?;
+
+    Ok(Json(AdminListTeamsResponse { teams, total, limit: query.limit, offset: query.offset }))
+}
+
+/// Update a team (admin only).
+///
+/// Updates team details. Note that the team name is immutable and cannot be changed.
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/teams/{id}",
+    params(
+        ("id" = String, Path, description = "Team ID")
+    ),
+    request_body = UpdateTeamRequest,
+    responses(
+        (status = 200, description = "Team updated successfully", body = Team),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Admin privileges required"),
+        (status = 404, description = "Team not found")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "admin"
+)]
+pub async fn admin_update_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateTeamRequest>,
+) -> Result<Json<Team>, ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // Validate request
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Parse team ID
+    let team_id = TeamId::from_string(id);
+
+    // Update team
+    let repo = team_repository_for_state(&state)?;
+    let team = repo.update_team(&team_id, payload).await.map_err(convert_error)?;
+
+    Ok(Json(team))
+}
+
+/// Delete a team (admin only).
+///
+/// Deletes a team. This operation will fail if there are resources (listeners, routes,
+/// clusters, etc.) referencing this team due to foreign key constraints.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/teams/{id}",
+    params(
+        ("id" = String, Path, description = "Team ID")
+    ),
+    responses(
+        (status = 204, description = "Team deleted successfully"),
+        (status = 403, description = "Admin privileges required"),
+        (status = 404, description = "Team not found"),
+        (status = 409, description = "Team has resources - cannot delete")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "admin"
+)]
+pub async fn admin_delete_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // Parse team ID
+    let team_id = TeamId::from_string(id);
+
+    // Delete team
+    let repo = team_repository_for_state(&state)?;
+    repo.delete_team(&team_id).await.map_err(convert_error)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Convert domain errors to API errors.
+fn convert_error(error: Error) -> ApiError {
+    ApiError::from(error)
 }

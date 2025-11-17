@@ -10,6 +10,8 @@ fn create_request_validates_required_fields() {
         expires_at: None,
         scopes: vec!["clusters:read".into()],
         created_by: None,
+        user_id: None,
+        user_email: None,
     };
     assert!(request.validate().is_ok());
 

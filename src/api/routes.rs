@@ -20,7 +20,8 @@ use crate::xds::XdsState;
 use super::{
     docs,
     handlers::{
-        add_team_membership, append_route_handler, bootstrap_initialize_handler,
+        add_team_membership, admin_create_team, admin_delete_team, admin_get_team,
+        admin_list_teams, admin_update_team, append_route_handler, bootstrap_initialize_handler,
         bootstrap_status_handler, compare_aggregated_schemas_handler,
         create_api_definition_handler, create_cluster_handler, create_learning_session_handler,
         create_listener_handler, create_route_handler, create_session_handler,
@@ -168,6 +169,12 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/users/{id}/teams", get(list_user_teams))
         .route("/api/v1/users/{id}/teams", post(add_team_membership))
         .route("/api/v1/users/{id}/teams/{team}", delete(remove_team_membership))
+        // Admin team management endpoints (admin only)
+        .route("/api/v1/admin/teams", get(admin_list_teams))
+        .route("/api/v1/admin/teams", post(admin_create_team))
+        .route("/api/v1/admin/teams/{id}", get(admin_get_team))
+        .route("/api/v1/admin/teams/{id}", put(admin_update_team))
+        .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
         .with_state(api_state.clone())

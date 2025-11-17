@@ -87,6 +87,8 @@ async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
             expires_at: None,
             scopes: vec!["tokens:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

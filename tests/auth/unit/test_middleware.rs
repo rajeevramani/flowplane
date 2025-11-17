@@ -142,6 +142,8 @@ async fn insufficient_scope_returns_forbidden() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -172,6 +174,8 @@ async fn valid_token_allows_request() {
             expires_at: None,
             scopes: vec!["clusters:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -409,6 +413,8 @@ async fn pat_tokens_bypass_csrf_validation() {
             expires_at: None,
             scopes: vec!["clusters:write".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

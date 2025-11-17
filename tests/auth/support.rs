@@ -40,6 +40,8 @@ impl TestApp {
                 expires_at: None,
                 scopes: scopes.iter().map(|s| s.to_string()).collect(),
                 created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
             })
             .await
             .expect("create token")

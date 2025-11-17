@@ -18,6 +18,8 @@ async fn contract_patch_tokens_updates_metadata() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

@@ -114,7 +114,7 @@ impl TeamRepository for SqlxTeamRepository {
         let settings_json = request
             .settings
             .as_ref()
-            .map(|s| serde_json::to_string(s))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| FlowplaneError::validation(format!("Invalid settings JSON: {}", e)))?;
 
@@ -234,7 +234,7 @@ impl TeamRepository for SqlxTeamRepository {
 
         let settings_json = settings
             .as_ref()
-            .map(|s| serde_json::to_string(s))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| FlowplaneError::validation(format!("Invalid settings JSON: {}", e)))?;
 
