@@ -44,15 +44,7 @@ impl CreateTokenRequest {
         scopes: Vec<String>,
         created_by: Option<String>,
     ) -> Self {
-        Self {
-            name,
-            description,
-            expires_at,
-            scopes,
-            created_by,
-            user_id: None,
-            user_email: None,
-        }
+        Self { name, description, expires_at, scopes, created_by, user_id: None, user_email: None }
     }
 }
 
