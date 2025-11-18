@@ -114,8 +114,6 @@ pub struct ApiDefinitionSummary {
     team: String,
     #[schema(example = "payments.example.com")]
     domain: String,
-    #[schema(example = false)]
-    listener_isolation: bool,
     #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: Option<String>,
     #[schema(example = 1)]
@@ -132,7 +130,6 @@ impl From<ApiDefinitionData> for ApiDefinitionSummary {
             id: row.id.to_string(),
             team: row.team,
             domain: row.domain,
-            listener_isolation: row.listener_isolation,
             bootstrap_uri: row.bootstrap_uri,
             version: row.version,
             created_at: row.created_at.to_rfc3339(),
@@ -376,7 +373,6 @@ pub async fn update_api_definition_handler(
     let update_request = UpdateApiDefinitionRequest {
         domain: payload.domain,
         tls_config: payload.tls,
-        target_listeners: payload.target_listeners,
     };
 
     // Update the definition
@@ -440,13 +436,11 @@ pub async fn update_api_definition_handler(
         ApiError::from(err)
     })?;
 
-    // Refresh listeners if using listener isolation mode
-    if updated.listener_isolation {
-        state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
-            tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
-            ApiError::from(err)
-        })?;
-    }
+    // Refresh listeners
+    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
+        ApiError::from(err)
+    })?;
 
     tracing::info!(
         api_definition_id = %api_definition_id,
@@ -525,10 +519,7 @@ pub struct ImportOpenApiQuery {
     /// Team name for the API definition (only used for admin/resource-level users, ignored for team-scoped users)
     #[serde(default)]
     pub team: Option<String>,
-    /// Enable dedicated listener for this API (default: false, uses shared listener)
-    #[serde(default)]
-    pub listener_isolation: Option<bool>,
-    /// Port for the isolated listener (only used when listenerIsolation=true)
+    /// Port for the API listener
     #[serde(default)]
     pub port: Option<u32>,
 }
@@ -604,8 +595,6 @@ pub async fn import_openapi_handler(
 
     let document = parse_openapi_document(&bytes, content_type.as_ref())?;
 
-    let listener_isolation = params.listener_isolation.unwrap_or(false);
-
     // Team is REQUIRED for proper multi-tenancy and xDS filtering
     // Team-scoped users: automatically use their team
     // Admin users: must explicitly specify team in query param
@@ -619,7 +608,6 @@ pub async fn import_openapi_handler(
     let spec = openapi_adapter::openapi_to_api_definition_spec(
         document,
         team_param,
-        listener_isolation,
         params.port,
     )
     .map_err(|err| ApiError::BadRequest(err.to_string()))?;

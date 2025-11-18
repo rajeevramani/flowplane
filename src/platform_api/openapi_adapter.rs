@@ -14,10 +14,11 @@ use super::materializer::{ApiDefinitionSpec, ListenerInput, RouteSpec};
 /// - Source tagging (source='platform_api')
 /// - Bootstrap config generation
 /// - Unified data model
+///
+/// Each API definition gets its own dedicated listener.
 pub fn openapi_to_api_definition_spec(
     openapi: OpenAPI,
     team: String,
-    listener_isolation: bool,
     port: Option<u32>,
 ) -> Result<ApiDefinitionSpec, GatewayError> {
     // Validate servers array is not empty
@@ -186,43 +187,36 @@ pub fn openapi_to_api_definition_spec(
         None
     };
 
-    // Configure listener isolation if requested
-    let isolation_listener = if listener_isolation {
-        // Use provided port if available, otherwise generate deterministic port
-        let listener_port = if let Some(p) = port {
-            p
-        } else {
-            // Use a deterministic port based on the domain to avoid conflicts
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            domain.hash(&mut hasher);
-            // Port range 20000-29999 for isolated listeners
-            20000 + (hasher.finish() % 10000) as u32
-        };
-
-        Some(ListenerInput {
-            name: None,
-            bind_address: "0.0.0.0".to_string(),
-            port: listener_port,
-            protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
-            tls_config: tls_config.clone(),
-            http_filters: if global_filters.is_empty() {
-                None
-            } else {
-                Some(global_filters.clone())
-            },
-        })
+    // Configure listener - use provided port if available, otherwise generate deterministic port
+    let listener_port = if let Some(p) = port {
+        p
     } else {
-        None
+        // Use a deterministic port based on the domain to avoid conflicts
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        domain.hash(&mut hasher);
+        // Port range 20000-29999 for API listeners
+        20000 + (hasher.finish() % 10000) as u32
+    };
+
+    let listener = ListenerInput {
+        name: None,
+        bind_address: "0.0.0.0".to_string(),
+        port: listener_port,
+        protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
+        tls_config: tls_config.clone(),
+        http_filters: if global_filters.is_empty() {
+            None
+        } else {
+            Some(global_filters.clone())
+        },
     };
 
     Ok(ApiDefinitionSpec {
         team,
         domain,
-        listener_isolation,
-        isolation_listener,
-        target_listeners: None,
+        listener,
         tls_config,
         routes,
     })

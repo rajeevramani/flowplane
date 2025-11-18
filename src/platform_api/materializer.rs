@@ -5,7 +5,7 @@ use tracing::info;
 
 use super::{
     audit, bootstrap,
-    validation::{ensure_domain_available, ensure_route_available, ensure_target_listeners_exist},
+    validation::{ensure_domain_available, ensure_route_available},
 };
 use crate::domain::api_definition::{
     ApiDefinitionSpec as DomainApiDefinitionSpec, AppendRouteOutcome as DomainAppendRouteOutcome,
@@ -90,57 +90,39 @@ impl PlatformApiMaterializer {
         let mut span = create_operation_span("platform_api.create_definition", SpanKind::Internal);
         span.set_attribute(KeyValue::new("team", spec.team.clone()));
         span.set_attribute(KeyValue::new("domain", spec.domain.clone()));
-        span.set_attribute(KeyValue::new("listener_isolation", spec.listener_isolation));
 
         let cx = opentelemetry::Context::current().with_span(span);
 
         async move {
             ensure_domain_available(&self.repository, &spec.team, &spec.domain).await?;
 
-            // Validate target_listeners if provided
-            if let Some(ref target_listeners) = spec.target_listeners {
-                let listener_repo = self
-                    .state
-                    .listener_repository
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
+            // Pre-check listener conflicts to fail fast
+            let listener_repo = self
+                .state
+                .listener_repository
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
 
-                ensure_target_listeners_exist(&listener_repo, target_listeners).await?;
-            }
-
-            // Pre-check isolation conflicts to fail fast
-            if spec.listener_isolation {
-                let listener_repo = self
-                    .state
-                    .listener_repository
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
-                let params = spec.isolation_listener.as_ref().ok_or_else(|| {
-                    Error::validation("listener parameters are required for isolation mode")
-                })?;
-
-                if let Some(name) = &params.name {
-                    if let Ok(existing) = listener_repo.get_by_name(name).await {
-                        if existing.address != params.bind_address
-                            || existing.port.unwrap_or_default() as u32 != params.port
-                        {
-                            return Err(Error::validation(
-                                "listener.name reuse must match bindAddress and port",
-                            ));
-                        }
-                    }
-                } else {
-                    let current = listener_repo.list(Some(1000), None).await?;
-                    if current.iter().any(|l| {
-                        l.address == params.bind_address
-                            && l.port.unwrap_or_default() as u32 == params.port
-                    }) {
+            if let Some(name) = &spec.listener.name {
+                if let Ok(existing) = listener_repo.get_by_name(name).await {
+                    if existing.address != spec.listener.bind_address
+                        || existing.port.unwrap_or_default() as u32 != spec.listener.port
+                    {
                         return Err(Error::validation(
-                            "Requested listener address:port is already in use",
+                            "listener.name reuse must match bindAddress and port",
                         ));
                     }
+                }
+            } else {
+                let current = listener_repo.list(Some(1000), None).await?;
+                if current.iter().any(|l| {
+                    l.address == spec.listener.bind_address
+                        && l.port.unwrap_or_default() as u32 == spec.listener.port
+                }) {
+                    return Err(Error::validation(
+                        "Requested listener address:port is already in use",
+                    ));
                 }
             }
 
@@ -153,8 +135,6 @@ impl PlatformApiMaterializer {
                 .create_definition(CreateApiDefinitionRequest {
                     team: spec.team.clone(),
                     domain: spec.domain.clone(),
-                    listener_isolation: spec.listener_isolation,
-                    target_listeners: spec.target_listeners.clone(),
                     tls_config: spec.tls_config.clone(),
                     metadata: None,
                 })
@@ -202,11 +182,11 @@ impl PlatformApiMaterializer {
 
             // IMPORTANT: Create clusters BEFORE listeners (clusters must exist for listener validation)
             // Materialize native resources (routes, clusters) with source='platform_api'
-            let (mut generated_listener_id, generated_route_ids, generated_cluster_ids) = self
+            let (_, generated_route_ids, generated_cluster_ids) = self
                 .materialize_native_resources(
                     &definition,
                     &created_routes,
-                    spec.isolation_listener.as_ref(),
+                    Some(&spec.listener),
                 )
                 .await?;
 
@@ -217,49 +197,34 @@ impl PlatformApiMaterializer {
             drop(xds_span);
 
             // Now create the isolated listener after clusters exist, or merge routes into shared listeners
-            if spec.listener_isolation {
-                if let Err(err) = self
-                    .materialize_isolated_listener(
-                        &definition,
-                        &created_routes,
-                        spec.isolation_listener.as_ref(),
-                    )
-                    .await
-                {
-                    // Compensating delete to avoid partial writes
-                    let _ = self.repository.delete_definition(&definition.id).await;
-                    return Err(err);
-                }
-
-                // Retrieve the generated listener ID
-                if let Some(listener_input) = spec.isolation_listener.as_ref() {
-                    let listener_repo =
-                        self.state.listener_repository.as_ref().cloned().ok_or_else(|| {
-                            Error::internal("Listener repository is not configured")
-                        })?;
-
-                    let listener_name = listener_input.name.clone().unwrap_or_else(|| {
-                        format!("platform-{}-listener", short_id(definition.id.as_str()))
-                    });
-
-                    let listener = listener_repo.get_by_name(&listener_name).await?;
-                    generated_listener_id = Some(listener.id.to_string());
-                }
-            } else {
-                // listenerIsolation=false: merge routes into existing listeners
-                if let Err(err) = self
-                    .materialize_shared_listener_routes(
-                        &definition,
-                        &created_routes,
-                        &spec.target_listeners,
-                    )
-                    .await
-                {
-                    // Compensating delete to avoid partial writes
-                    let _ = self.repository.delete_definition(&definition.id).await;
-                    return Err(err);
-                }
+            // Materialize the listener for this API definition
+            if let Err(err) = self
+                .materialize_isolated_listener(
+                    &definition,
+                    &created_routes,
+                    Some(&spec.listener),
+                )
+                .await
+            {
+                // Compensating delete to avoid partial writes
+                let _ = self.repository.delete_definition(&definition.id).await;
+                return Err(err);
             }
+
+            // Retrieve the generated listener ID
+            let listener_repo = self
+                .state
+                .listener_repository
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
+
+            let listener_name = spec.listener.name.clone().unwrap_or_else(|| {
+                format!("platform-{}-listener", short_id(definition.id.as_str()))
+            });
+
+            let listener = listener_repo.get_by_name(&listener_name).await?;
+            let generated_listener_id = Some(listener.id.to_string());
 
             // Store FK relationships in the database
             if let Some(listener_id) = &generated_listener_id {
@@ -414,20 +379,7 @@ impl PlatformApiMaterializer {
 
         // Update listener virtual host configurations with new domain/routes
         // This is critical - without this, domain changes won't propagate to Envoy!
-        if definition.listener_isolation {
-            // For isolated listeners, update the listener's route config
-            // Note: In isolated mode, the listener itself doesn't change, but we need to ensure
-            // the route config referenced by the listener gets updated via xDS refresh
-            tracing::info!("Isolated listener mode: route config will be updated via xDS refresh");
-        } else {
-            // For shared listeners, merge the updated routes (with new domain) into listener route configs
-            self.materialize_shared_listener_routes(
-                &definition,
-                &created_routes,
-                &definition.target_listeners,
-            )
-            .await?;
-        }
+        tracing::info!("Route config will be updated via xDS refresh");
 
         // Trigger xDS snapshot updates for updated native resources
         // Order matters: clusters -> routes -> listeners (to avoid NACK errors)
@@ -439,25 +391,15 @@ impl PlatformApiMaterializer {
         self.state.refresh_routes_from_repository().await?;
         drop(xds_span);
 
-        // For isolated listeners: refresh platform API resources and listeners
-        // For shared listeners: refresh listeners to trigger RDS update
-        if definition.listener_isolation {
-            let xds_span =
-                create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
-            self.state.refresh_platform_api_resources().await?;
-            drop(xds_span);
+        // Refresh platform API resources and listeners
+        let xds_span =
+            create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
+        self.state.refresh_platform_api_resources().await?;
+        drop(xds_span);
 
-            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
-            self.state.refresh_listeners_from_repository().await?;
-            drop(xds_span);
-        } else {
-            // For shared listeners, refresh_routes_from_repository() already picked up
-            // the updated route config from materialize_shared_listener_routes()
-            // We need to refresh listeners to trigger RDS update in Envoy
-            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
-            self.state.refresh_listeners_from_repository().await?;
-            drop(xds_span);
-        }
+        let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+        self.state.refresh_listeners_from_repository().await?;
+        drop(xds_span);
 
         Ok(CreateDefinitionOutcome {
             definition,
@@ -534,16 +476,6 @@ impl PlatformApiMaterializer {
                 .await?;
         }
 
-        // If using shared listener mode, merge the new route into shared listeners
-        if !definition.listener_isolation {
-            self.materialize_shared_listener_routes(
-                &definition,
-                &all_routes,
-                &definition.target_listeners,
-            )
-            .await?;
-        }
-
         // Trigger xDS snapshot updates for newly created native resources
         let xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
         self.state.refresh_clusters_from_repository().await?;
@@ -553,13 +485,11 @@ impl PlatformApiMaterializer {
         self.state.refresh_routes_from_repository().await?;
         drop(xds_span);
 
-        // For shared listener mode, refresh listeners to trigger RDS update in Envoy
+        // Refresh listeners to trigger RDS update in Envoy
         // Routes are only sent to Envoy when referenced by a listener
-        if !definition.listener_isolation {
-            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
-            self.state.refresh_listeners_from_repository().await?;
-            drop(xds_span);
-        }
+        let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+        self.state.refresh_listeners_from_repository().await?;
+        drop(xds_span);
 
         let xds_span =
             create_operation_span("xds.refresh_platform_api_resources", SpanKind::Internal);
@@ -713,172 +643,6 @@ impl PlatformApiMaterializer {
         Ok(())
     }
 
-    /// Merge Platform API routes into existing shared listeners (listenerIsolation=false mode)
-    async fn materialize_shared_listener_routes(
-        &self,
-        definition: &ApiDefinitionData,
-        routes: &[ApiRouteData],
-        target_listeners: &Option<Vec<String>>,
-    ) -> Result<()> {
-        use crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER;
-        use crate::platform_api::filter_overrides::typed_per_filter_config;
-        use crate::storage::repository::UpdateRouteRequest;
-        use crate::xds::route::{
-            PathMatch, RouteActionConfig, RouteMatchConfig, RouteRule, VirtualHostConfig,
-        };
-
-        let listener_repo = self
-            .state
-            .listener_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Listener repository is not configured"))?;
-
-        let route_repo = self
-            .state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Route repository is not configured"))?;
-
-        // Default to default-gateway-listener if no target_listeners specified
-        let target_listener_names = target_listeners
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| vec![DEFAULT_GATEWAY_LISTENER.to_string()]);
-
-        for listener_name in target_listener_names {
-            // Get the listener to find its route config name
-            let listener = match listener_repo.get_by_name(&listener_name).await {
-                Ok(l) => l,
-                Err(_) => {
-                    tracing::warn!(
-                        listener_name = %listener_name,
-                        definition_id = %definition.id,
-                        "Skipping route merge: target listener does not exist"
-                    );
-                    continue;
-                }
-            };
-
-            // Parse listener configuration to get route config name
-            let listener_config: crate::xds::listener::ListenerConfig =
-                serde_json::from_str(&listener.configuration).map_err(|e| {
-                    Error::internal(format!("Failed to parse listener configuration: {}", e))
-                })?;
-
-            // Extract route config name from the listener's HTTP connection manager filter
-            let route_config_name = listener_config
-                .filter_chains
-                .first()
-                .and_then(|fc| fc.filters.first())
-                .and_then(|f| match &f.filter_type {
-                    crate::xds::listener::FilterType::HttpConnectionManager {
-                        route_config_name,
-                        ..
-                    } => route_config_name.clone(),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    Error::internal(format!(
-                        "Listener '{}' does not have an HTTP connection manager with RDS",
-                        listener_name
-                    ))
-                })?;
-
-            tracing::info!(
-                listener_name = %listener_name,
-                route_config_name = %route_config_name,
-                definition_id = %definition.id,
-                "Merging Platform API routes into shared listener route config"
-            );
-
-            // Get the existing route configuration
-            let existing_route = route_repo.get_by_name(&route_config_name).await?;
-            let mut route_config: crate::xds::route::RouteConfig =
-                serde_json::from_str(&existing_route.configuration).map_err(|e| {
-                    Error::internal(format!("Failed to parse route configuration: {}", e))
-                })?;
-
-            // Build a new virtual host for this Platform API definition
-            let mut vhost = VirtualHostConfig {
-                name: format!("platform-api-{}-vhost", short_id(definition.id.as_str())),
-                domains: vec![definition.domain.clone()],
-                routes: Vec::with_capacity(routes.len()),
-                typed_per_filter_config: Default::default(),
-            };
-
-            for route in routes {
-                let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
-                let action = RouteActionConfig::Cluster {
-                    name: cluster_name,
-                    timeout: route.timeout_seconds.map(|v| v as u64),
-                    prefix_rewrite: route.rewrite_prefix.clone(),
-                    path_template_rewrite: route.rewrite_regex.clone(),
-                };
-
-                let path = match route.match_type.to_lowercase().as_str() {
-                    "prefix" => PathMatch::Prefix(route.match_value.clone()),
-                    "path" | "exact" => PathMatch::Exact(route.match_value.clone()),
-                    "template" => PathMatch::Template(route.match_value.clone()),
-                    other => {
-                        return Err(Error::validation(format!(
-                            "Unsupported route match type '{}' for shared listener",
-                            other
-                        )));
-                    }
-                };
-
-                // Deserialize headers from JSON storage to HeaderMatchConfig
-                let headers =
-                    route.headers.as_ref().and_then(|h| serde_json::from_value(h.clone()).ok());
-
-                vhost.routes.push(RouteRule {
-                    name: Some(format!("platform-api-{}", short_id(route.id.as_str()))),
-                    r#match: RouteMatchConfig { path, headers, query_parameters: None },
-                    action,
-                    typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
-                });
-            }
-
-            // Remove any existing virtual host for this Platform API definition
-            // (This handles the case where append_route is called on an existing definition)
-            let vhost_name_pattern =
-                format!("platform-api-{}-vhost", short_id(definition.id.as_str()));
-            route_config.virtual_hosts.retain(|vh| vh.name != vhost_name_pattern);
-
-            // Add the new virtual host to the route configuration
-            route_config.virtual_hosts.push(vhost);
-
-            // Sort virtual hosts for deterministic ordering (prevents config flapping)
-            route_config.virtual_hosts.sort_by(|a, b| a.name.cmp(&b.name));
-
-            // Update the route configuration in the database
-            let updated_config = serde_json::to_value(&route_config).map_err(|e| {
-                Error::internal(format!("Failed to serialize updated route configuration: {}", e))
-            })?;
-
-            route_repo
-                .update(
-                    &existing_route.id,
-                    UpdateRouteRequest {
-                        path_prefix: None,
-                        cluster_name: None,
-                        configuration: Some(updated_config),
-                        team: None, // Don't modify team on route config update
-                    },
-                )
-                .await?;
-
-            tracing::info!(
-                route_config_name = %route_config_name,
-                num_virtual_hosts = route_config.virtual_hosts.len(),
-                "Updated route config with Platform API virtual host"
-            );
-        }
-
-        Ok(())
-    }
 
     /// Materialize native resources (listeners, routes, clusters) from Platform API definition
     /// Tags all resources with source='platform_api' and stores FK relationships
@@ -1015,129 +779,40 @@ impl PlatformApiMaterializer {
                 .insert(endpoint_str.clone(), (cluster_name, cluster.id.to_string()));
         }
 
-        // Step 3: Create native routes that reference the appropriate shared cluster
-        // IMPORTANT: For isolated listeners, skip route creation - routes are built dynamically
+        // Step 3: Populate cluster IDs for FK relationships
+        // Note: Native routes are not created here - they are built dynamically
         // by resources_from_api_definitions() in xds/resources.rs and sent via refresh_platform_api_resources()
-        if !definition.listener_isolation {
-            for api_route in api_routes {
-                // Find the cluster for this route's upstream target
-                let cluster_info = if let Some(targets) =
-                    api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
-                {
-                    targets
-                        .iter()
-                        .find_map(|target| {
-                            let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
-                            endpoint_to_cluster.get(endpoint_str)
-                        })
-                        .cloned()
-                } else {
-                    None
-                };
-
-                let (cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
-                    Error::internal(format!("No cluster found for route {}", api_route.id))
-                })?;
-
-                // Track the cluster ID for this route (for FK relationship)
-                generated_cluster_ids.push(cluster_id.clone());
-
-                // Create native route that references the cluster
-                let route_name = format!("platform-api-{}", short_id(api_route.id.as_str()));
-
-                // Build virtual host configuration
-                let path_match = if api_route.match_type == "exact" {
-                    serde_json::json!({"Exact": &api_route.match_value})
-                } else {
-                    serde_json::json!({"Prefix": &api_route.match_value})
-                };
-
-                let route_config = serde_json::json!({
-                    "name": route_name,
-                    "virtual_hosts": [{
-                        "name": format!("{}-vhost", route_name),
-                        "domains": [&definition.domain],
-                        "routes": [{
-                            "match": {
-                                "path": path_match
-                            },
-                            "action": {
-                                "Cluster": {
-                                    "name": &cluster_name,
-                                    "timeout": api_route.timeout_seconds
-                                }
-                            }
-                        }]
-                    }]
-                });
-
-                let route = route_repo
-                    .create(CreateRouteRequest {
-                        name: route_name,
-                        path_prefix: api_route.match_value.clone(),
-                        cluster_name: cluster_name.clone(),
-                        configuration: route_config,
-                        team: Some(definition.team.clone()),
+        for api_route in api_routes {
+            let cluster_info = if let Some(targets) =
+                api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
+            {
+                targets
+                    .iter()
+                    .find_map(|target| {
+                        let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
+                        endpoint_to_cluster.get(endpoint_str)
                     })
-                    .await?;
+                    .cloned()
+            } else {
+                None
+            };
 
-                // Tag with source='platform_api'
-                sqlx::query("UPDATE routes SET source = 'platform_api' WHERE id = $1")
-                    .bind(&route.id)
-                    .execute(route_repo.pool())
-                    .await
-                    .map_err(|e| {
-                        Error::internal(format!("Failed to tag route with source: {}", e))
-                    })?;
+            let (_cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
+                Error::internal(format!("No cluster found for route {}", api_route.id))
+            })?;
 
-                generated_route_ids.push(route.id.to_string());
+            // Track cluster ID for FK relationship (no route ID since routes are dynamic)
+            generated_cluster_ids.push(cluster_id.clone());
 
-                info!(
-                    api_route_id = %api_route.id,
-                    native_route_id = %route.id,
-                    native_cluster_id = %cluster_id,
-                    cluster_name = %cluster_name,
-                    match_type = %api_route.match_type,
-                    match_value = %api_route.match_value,
-                    "Materialized Platform API route to native resources (shared cluster)"
-                );
-            }
-        } else {
-            // For isolated listeners, populate cluster IDs for FK relationships
-            // but don't create native routes (routes are built dynamically)
-            for api_route in api_routes {
-                let cluster_info = if let Some(targets) =
-                    api_route.upstream_targets.get("targets").and_then(|t| t.as_array())
-                {
-                    targets
-                        .iter()
-                        .find_map(|target| {
-                            let endpoint_str = target.get("endpoint").and_then(|e| e.as_str())?;
-                            endpoint_to_cluster.get(endpoint_str)
-                        })
-                        .cloned()
-                } else {
-                    None
-                };
-
-                let (_cluster_name, cluster_id) = cluster_info.ok_or_else(|| {
-                    Error::internal(format!("No cluster found for route {}", api_route.id))
-                })?;
-
-                // Track cluster ID for FK relationship (no route ID for isolated listeners)
-                generated_cluster_ids.push(cluster_id.clone());
-
-                info!(
-                    api_route_id = %api_route.id,
-                    native_cluster_id = %cluster_id,
-                    "Isolated listener: cluster created, native route skipped (route config via xDS)"
-                );
-            }
+            info!(
+                api_route_id = %api_route.id,
+                native_cluster_id = %cluster_id,
+                "Cluster created, native route skipped (route config via xDS)"
+            );
         }
 
         let unique_clusters = endpoint_to_cluster.len();
         info!(
-            listener_isolation = definition.listener_isolation,
             total_routes = generated_route_ids.len(),
             unique_clusters = unique_clusters,
             total_cluster_references = generated_cluster_ids.len(),
@@ -1177,107 +852,6 @@ impl PlatformApiMaterializer {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::internal("Route repository not configured"))?;
-
-        // If using shared listeners, remove Platform API virtual hosts from route configs
-        if !definition.listener_isolation {
-            let listener_repo = self
-                .state
-                .listener_repository
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| Error::internal("Listener repository not configured"))?;
-
-            let target_listener_names = definition
-                .target_listeners
-                .clone()
-                .unwrap_or_else(|| vec![DEFAULT_GATEWAY_LISTENER.to_string()]);
-
-            for listener_name in target_listener_names {
-                // Get the listener to find its route config name
-                let listener = match listener_repo.get_by_name(&listener_name).await {
-                    Ok(l) => l,
-                    Err(_) => {
-                        tracing::warn!(
-                            listener_name = %listener_name,
-                            definition_id = %definition_id,
-                            "Skipping route removal: target listener does not exist"
-                        );
-                        continue;
-                    }
-                };
-
-                // Parse listener configuration to get route config name
-                let listener_config: crate::xds::listener::ListenerConfig =
-                    serde_json::from_str(&listener.configuration).map_err(|e| {
-                        Error::internal(format!("Failed to parse listener configuration: {}", e))
-                    })?;
-
-                // Extract route config name from the listener's HTTP connection manager filter
-                let route_config_name = listener_config
-                    .filter_chains
-                    .first()
-                    .and_then(|fc| fc.filters.first())
-                    .and_then(|f| match &f.filter_type {
-                        crate::xds::listener::FilterType::HttpConnectionManager {
-                            route_config_name,
-                            ..
-                        } => route_config_name.clone(),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        Error::internal(format!(
-                            "Listener '{}' does not have an HTTP connection manager with RDS",
-                            listener_name
-                        ))
-                    })?;
-
-                tracing::info!(
-                    listener_name = %listener_name,
-                    route_config_name = %route_config_name,
-                    definition_id = %definition_id,
-                    "Removing Platform API virtual host from shared listener route config"
-                );
-
-                // Get the existing route configuration
-                let existing_route = route_repo.get_by_name(&route_config_name).await?;
-                let mut route_config: crate::xds::route::RouteConfig =
-                    serde_json::from_str(&existing_route.configuration).map_err(|e| {
-                        Error::internal(format!("Failed to parse route configuration: {}", e))
-                    })?;
-
-                // Remove the Platform API virtual host for this definition
-                let vhost_name_to_remove =
-                    format!("platform-api-{}-vhost", short_id(definition.id.as_str()));
-                route_config.virtual_hosts.retain(|vh| vh.name != vhost_name_to_remove);
-
-                tracing::info!(
-                    route_config_name = %route_config_name,
-                    vhost_removed = %vhost_name_to_remove,
-                    num_virtual_hosts_remaining = route_config.virtual_hosts.len(),
-                    "Removed Platform API virtual host from route config"
-                );
-
-                // Update the route configuration in the database
-                let updated_config = serde_json::to_value(&route_config).map_err(|e| {
-                    Error::internal(format!(
-                        "Failed to serialize updated route configuration: {}",
-                        e
-                    ))
-                })?;
-
-                route_repo
-                    .update(
-                        &existing_route.id,
-                        UpdateRouteRequest {
-                            path_prefix: None,
-                            cluster_name: None,
-                            configuration: Some(updated_config),
-                            team: None, // Don't modify team on route config update
-                        },
-                    )
-                    .await?;
-            }
-        }
 
         // Delete generated native resources (clusters and routes)
         for route in &routes {
@@ -1347,11 +921,9 @@ impl PlatformApiMaterializer {
         self.state.refresh_platform_api_resources().await?;
         drop(xds_span);
 
-        if definition.listener_isolation {
-            let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
-            self.state.refresh_listeners_from_repository().await?;
-            drop(xds_span);
-        }
+        let xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+        self.state.refresh_listeners_from_repository().await?;
+        drop(xds_span);
 
         info!(
             definition_id = %definition_id,

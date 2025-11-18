@@ -165,22 +165,7 @@ pub fn resources_from_api_definitions(
             continue;
         }
 
-        // Skip route config generation for listenerIsolation=false (routes are merged into shared listeners)
-        if !definition.listener_isolation {
-            // Still need to generate clusters for these routes
-            for route in definition_routes {
-                let targets = parse_upstream_targets(&route)?;
-                if targets.is_empty() {
-                    continue;
-                }
-
-                let cluster_name = build_cluster_name(definition.id.as_str(), route.id.as_str());
-                let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
-                cluster_resources.push(cluster_resource);
-            }
-            continue;
-        }
-
+        // Generate route configs for all API definitions (all listeners are now isolated)
         let mut virtual_host = crate::xds::route::VirtualHostConfig {
             name: format!("{}-vhost", short_id(definition.id.as_str())),
             domains: vec![definition.domain.clone()],
@@ -370,10 +355,6 @@ fn split_host_port(endpoint: &str) -> Result<(String, u16)> {
         Error::internal(format!("Invalid upstream endpoint '{}': port must be numeric", endpoint))
     })?;
     Ok((host.to_string(), port))
-}
-
-fn build_cluster_name(definition_id: &str, route_id: &str) -> String {
-    format!("platform-{}-{}", short_id(definition_id), short_id(route_id))
 }
 
 fn short_id(id: &str) -> String {

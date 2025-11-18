@@ -48,14 +48,7 @@ pub struct CreateApiDefinitionBody {
     pub team: String,
     #[schema(example = "payments.example.com")]
     pub domain: String,
-    #[serde(default)]
-    #[schema(example = false)]
-    pub listener_isolation: bool,
-    #[serde(default)]
-    pub listener: Option<IsolationListenerBody>,
-    #[serde(default)]
-    #[schema(example = json!(["listener-1", "listener-2"]))]
-    pub target_listeners: Option<Vec<String>>,
+    pub listener: IsolationListenerBody,
     #[serde(default)]
     pub tls: Option<Value>,
     pub routes: Vec<RouteBody>,
@@ -203,35 +196,8 @@ impl CreateApiDefinitionBody {
             route.validate_payload()?;
         }
 
-        // Isolation mode requires explicit listener fields
-        if self.listener_isolation {
-            let listener = self.listener.as_ref().ok_or_else(|| {
-                Error::validation("listener is required when listenerIsolation is true")
-            })?;
-            listener.validate()?;
-        }
-
-        // target_listeners validation
-        if let Some(ref target_listeners) = self.target_listeners {
-            // Mutually exclusive with listener_isolation
-            if self.listener_isolation {
-                return Err(Error::validation(
-                    "targetListeners cannot be specified when listenerIsolation is true",
-                ));
-            }
-
-            // Cannot be empty array
-            if target_listeners.is_empty() {
-                return Err(Error::validation(
-                    "targetListeners must contain at least one listener name, or be omitted",
-                ));
-            }
-
-            // Validate each listener name
-            for listener_name in target_listeners {
-                ensure_non_empty(listener_name, "targetListeners entry", 100)?;
-            }
-        }
+        // Validate listener (now always required)
+        self.listener.validate()?;
 
         Ok(())
     }
@@ -242,9 +208,7 @@ impl CreateApiDefinitionBody {
         let CreateApiDefinitionBody {
             team,
             domain,
-            listener_isolation,
             listener,
-            target_listeners,
             tls,
             routes,
         } = self;
@@ -254,14 +218,10 @@ impl CreateApiDefinitionBody {
             specs.push(route.into_route_spec(Some(idx as i64), None)?);
         }
 
-        let listener_spec = listener.map(|l| l.into_spec());
-
         Ok(ApiDefinitionSpec {
             team,
             domain,
-            listener_isolation,
-            isolation_listener: listener_spec,
-            target_listeners,
+            listener: listener.into_spec(),
             tls_config: tls,
             routes: specs,
         })
