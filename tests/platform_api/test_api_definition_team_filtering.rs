@@ -12,7 +12,6 @@ async fn team_scoped_user_creates_api_definition_for_their_team() {
     let payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -57,7 +56,6 @@ async fn team_scoped_user_cannot_create_definition_for_other_team() {
     let payload = json!({
         "team": "billing",  // Trying to create for different team
         "domain": "billing.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -91,7 +89,6 @@ async fn admin_user_creates_definition_for_any_team() {
     let payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -135,7 +132,6 @@ async fn team_scoped_user_lists_only_their_definitions() {
     let payments_payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -151,7 +147,6 @@ async fn team_scoped_user_lists_only_their_definitions() {
     let billing_payload = json!({
         "team": "billing",
         "domain": "billing.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -211,7 +206,6 @@ async fn team_scoped_user_cannot_get_other_team_definition() {
     let payload = json!({
         "team": "billing",
         "domain": "billing.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -261,7 +255,6 @@ async fn admin_user_gets_any_team_definition() {
     let payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -310,7 +303,6 @@ async fn team_scoped_user_cannot_update_other_team_definition() {
     let payload = json!({
         "team": "billing",
         "domain": "billing.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },
@@ -364,7 +356,6 @@ async fn team_scoped_user_cannot_append_route_to_other_team_definition() {
     let payload = json!({
         "team": "billing",
         "domain": "billing.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },

@@ -17,7 +17,6 @@ async fn create_isolated_api_creates_dedicated_listener() {
     let payload = json!({
         "team": "payments",
         "domain": "iso.flowplane.dev",
-        "listenerIsolation": true,
         "listener": {
             "name": "iso-listener-1",
             "bindAddress": "0.0.0.0",
@@ -83,7 +82,6 @@ async fn isolated_port_conflict_rolls_back_definition() {
     let payload = json!({
         "team": "payments",
         "domain": "conflict.flowplane.dev",
-        "listenerIsolation": true,
         "listener": { "bindAddress": "0.0.0.0", "port": 10012, "protocol": "HTTP" },
         "routes": [ { "match": {"prefix":"/"}, "cluster": {"name":"b","endpoint":"b:8080"} } ]
     });

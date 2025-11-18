@@ -11,7 +11,6 @@ async fn create_api_definition_persists_record_and_returns_bootstrap() {
     let payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },

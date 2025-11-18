@@ -8,11 +8,17 @@ use axum::{
 };
 use flowplane::{
     auth::{
+        team::CreateTeamRequest,
         token_service::{TokenSecretResponse, TokenService},
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{
+        self,
+        repositories::team::{SqlxTeamRepository, TeamRepository},
+        repository::AuditLogRepository,
+        DbPool,
+    },
     xds::XdsState,
 };
 use hyper::Response;
@@ -55,6 +61,13 @@ pub async fn setup_platform_api_app() -> PlatformApiApp {
 
     storage::run_migrations(&pool).await.expect("run migrations for tests");
 
+    // Create common teams used across tests
+    let team_names =
+        vec!["billing", "payments", "platform-team", "team-a", "team-b", "test", "test-team"];
+    for team_name in team_names {
+        create_team(&pool, team_name).await;
+    }
+
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
@@ -91,4 +104,17 @@ pub async fn read_json<T: DeserializeOwned>(response: Response<Body>) -> T {
     let bytes =
         to_bytes(response.into_body(), usize::MAX).await.expect("read response body as bytes");
     serde_json::from_slice(&bytes).expect("parse json response")
+}
+
+pub async fn create_team(pool: &DbPool, name: &str) {
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let _ = team_repo
+        .create_team(CreateTeamRequest {
+            name: name.to_string(),
+            display_name: format!("Test Team {}", name),
+            description: Some("Team for platform API tests".to_string()),
+            owner_user_id: None,
+            settings: None,
+        })
+        .await;
 }

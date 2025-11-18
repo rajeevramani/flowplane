@@ -11,7 +11,6 @@ async fn platform_api_create_append_and_persist_routes() {
     let create_payload = json!({
         "team": "payments",
         "domain": "docs.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },

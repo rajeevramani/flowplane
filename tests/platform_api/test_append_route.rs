@@ -11,7 +11,6 @@ async fn append_route_to_existing_definition() {
     let create_payload = json!({
         "team": "payments",
         "domain": "payments.flowplane.dev",
-        "listenerIsolation": false,
         "routes": [
             {
                 "match": { "prefix": "/v1/" },

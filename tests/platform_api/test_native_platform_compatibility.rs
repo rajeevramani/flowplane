@@ -2,7 +2,7 @@
 //! without conflicts. Tests backward compatibility and stability.
 
 use flowplane::{
-    domain::api_definition::{ApiDefinitionSpec, RouteConfig as RouteSpec},
+    domain::api_definition::{ApiDefinitionSpec, ListenerConfig, RouteConfig as RouteSpec},
     platform_api::materializer::PlatformApiMaterializer,
     storage::repository::{ClusterRepository, CreateClusterRequest, RouteRepository},
     xds::{
@@ -144,9 +144,14 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
     let platform_spec = ApiDefinitionSpec {
         team: "platform-team".to_string(),
         domain: "platform.test.local".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None, // Uses default-gateway-listener
+        listener: ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8080,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -210,9 +215,14 @@ async fn test_native_api_update_preserves_platform_api_routes() {
     let platform_spec = ApiDefinitionSpec {
         team: "platform-team".to_string(),
         domain: "platform.test.local".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8081,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -333,9 +343,14 @@ async fn test_platform_api_delete_preserves_native_api_routes() {
     let platform_spec = ApiDefinitionSpec {
         team: "platform-team".to_string(),
         domain: "platform.test.local".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8082,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -413,9 +428,14 @@ async fn test_route_ordering_is_deterministic() {
     let spec1 = ApiDefinitionSpec {
         team: "team-a".to_string(),
         domain: "a.test.local".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8083,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -436,9 +456,14 @@ async fn test_route_ordering_is_deterministic() {
     let spec2 = ApiDefinitionSpec {
         team: "team-b".to_string(),
         domain: "b.test.local".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8084,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
