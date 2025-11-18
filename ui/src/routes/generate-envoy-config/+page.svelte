@@ -16,7 +16,6 @@
 	let teams = $state<string[]>([]);
 	let selectedTeam = $state('');
 	let format = $state<'yaml' | 'json'>('yaml');
-	let includeDefault = $state(false);
 	let bootstrapConfig = $state('');
 	let highlightedCode = $state('');
 	let isLoading = $state(false);
@@ -59,8 +58,7 @@
 		try {
 			bootstrapConfig = await apiClient.getBootstrapConfig({
 				team: selectedTeam,
-				format,
-				includeDefault
+				format
 			});
 
 			// Highlight the code
@@ -78,10 +76,6 @@
 	}
 
 	function handleFormatChange() {
-		loadBootstrapConfig();
-	}
-
-	function handleIncludeDefaultChange() {
 		loadBootstrapConfig();
 	}
 
@@ -188,22 +182,6 @@
 									<span class="ml-2 text-sm text-gray-700">JSON</span>
 								</label>
 							</div>
-						</div>
-
-						<!-- Include Defaults -->
-						<div>
-							<label class="flex items-center">
-								<input
-									type="checkbox"
-									bind:checked={includeDefault}
-									onchange={handleIncludeDefaultChange}
-									class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-								/>
-								<span class="ml-2 text-sm text-gray-700">Include default configurations</span>
-							</label>
-							<p class="mt-1 text-xs text-gray-500 ml-6">
-								Apply global defaults and shared configurations
-							</p>
 						</div>
 
 						<!-- Actions -->

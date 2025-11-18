@@ -370,10 +370,8 @@ pub async fn update_api_definition_handler(
     verify_api_definition_access(existing_definition, &team_scopes).await?;
 
     // Convert to repository request
-    let update_request = UpdateApiDefinitionRequest {
-        domain: payload.domain,
-        tls_config: payload.tls,
-    };
+    let update_request =
+        UpdateApiDefinitionRequest { domain: payload.domain, tls_config: payload.tls };
 
     // Update the definition
     let updated = repo
@@ -605,12 +603,8 @@ pub async fn import_openapi_handler(
     })?;
 
     // Convert OpenAPI to Platform API definition spec
-    let spec = openapi_adapter::openapi_to_api_definition_spec(
-        document,
-        team_param,
-        params.port,
-    )
-    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let spec = openapi_adapter::openapi_to_api_definition_spec(document, team_param, params.port)
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     // Use Platform API materializer (benefits: FK tracking, source tagging, bootstrap gen)
     let materializer =

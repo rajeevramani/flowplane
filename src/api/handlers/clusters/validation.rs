@@ -17,6 +17,7 @@ pub(super) struct ClusterConfigParts {
 /// Convert create cluster request body to cluster config parts
 pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
     let CreateClusterBody {
+        team: _,
         name,
         service_name,
         endpoints,
@@ -109,5 +110,10 @@ pub(super) fn cluster_response_from_data(
     data: ClusterData,
 ) -> Result<super::types::ClusterResponse, ApiError> {
     let config = service.parse_config(&data).map_err(ApiError::from)?;
-    Ok(super::types::ClusterResponse { name: data.name, service_name: data.service_name, config })
+    Ok(super::types::ClusterResponse {
+        name: data.name,
+        team: data.team.unwrap_or_else(|| "unknown".to_string()),
+        service_name: data.service_name,
+        config,
+    })
 }

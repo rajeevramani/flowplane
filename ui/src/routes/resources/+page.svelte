@@ -344,6 +344,9 @@
 										Name
 									</th>
 									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+										Team
+									</th>
+									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 										Address
 									</th>
 									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -365,6 +368,11 @@
 									<tr class="hover:bg-gray-50">
 										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
 											{listener.name}
+										</td>
+										<td class="px-6 py-4 whitespace-nowrap">
+											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+												{listener.team}
+											</span>
 										</td>
 										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 											{listener.address}
@@ -405,6 +413,9 @@
 										Name
 									</th>
 									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+										Team
+									</th>
+									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 										Path Prefix
 									</th>
 									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -420,6 +431,11 @@
 									<tr class="hover:bg-gray-50">
 										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
 											{route.name}
+										</td>
+										<td class="px-6 py-4 whitespace-nowrap">
+											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+												{route.team}
+											</span>
 										</td>
 										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 											{route.pathPrefix}
@@ -454,6 +470,9 @@
 										Name
 									</th>
 									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+										Team
+									</th>
+									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 										Service Name
 									</th>
 									<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -466,6 +485,11 @@
 									<tr class="hover:bg-gray-50">
 										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
 											{cluster.name}
+										</td>
+										<td class="px-6 py-4 whitespace-nowrap">
+											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+												{cluster.team}
+											</span>
 										</td>
 										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 											{cluster.serviceName}

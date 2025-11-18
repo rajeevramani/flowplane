@@ -39,20 +39,18 @@ async fn port_conflict_isolated_vs_shared() {
     assert_eq!(native_listener.port, Some(8080));
     assert_eq!(native_listener.address, "0.0.0.0");
 
-    // Platform API: Attempt to create isolated listener on same port
+    // Platform API: Attempt to create listener on same port
     let platform_spec = ApiDefinitionSpec {
         team: "team-platform".to_string(),
         domain: "platform.test.local".to_string(),
-        listener_isolation: true, // Isolated mode
-        isolation_listener: Some(flowplane::domain::ListenerConfig {
-            name: Some("isolated-listener-8080".to_string()),
+        listener: flowplane::domain::ListenerConfig {
+            name: Some("listener-8080".to_string()),
             bind_address: "0.0.0.0".to_string(),
             port: 8080, // Conflict!
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
-        }),
-        target_listeners: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -108,9 +106,14 @@ async fn domain_conflict_overlapping_route_paths() {
     let spec1 = ApiDefinitionSpec {
         team: "team-a".to_string(),
         domain: "api.example.com".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None, // Uses default-gateway-listener
+        listener: flowplane::domain::ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8080,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        }, // Uses default-gateway-listener
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -141,9 +144,14 @@ async fn domain_conflict_overlapping_route_paths() {
     let spec2 = ApiDefinitionSpec {
         team: "team-b".to_string(),            // Different team
         domain: "api.example.com".to_string(), // Same domain - should conflict
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: flowplane::domain::ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8080,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -211,9 +219,14 @@ async fn cross_team_resource_isolation() {
     let team_b_spec = ApiDefinitionSpec {
         team: "team-b".to_string(),
         domain: "team-b.example.com".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: Some(vec!["team-a-listener".to_string()]), // Try to use Team A's listener
+        listener: flowplane::domain::ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8080,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -291,20 +304,18 @@ async fn listener_name_collision_different_configs() {
     assert_eq!(native_listener.address, "127.0.0.1");
     assert_eq!(native_listener.port, Some(8080));
 
-    // Platform API: Attempt to create isolated listener with same name but different config
+    // Platform API: Attempt to create listener with same name but different config
     let platform_spec = ApiDefinitionSpec {
         team: "team-platform".to_string(),
         domain: "platform.example.com".to_string(),
-        listener_isolation: true,
-        isolation_listener: Some(flowplane::domain::ListenerConfig {
+        listener: flowplane::domain::ListenerConfig {
             name: Some("api-listener".to_string()), // Same name
             bind_address: "0.0.0.0".to_string(),    // Different bind address
             port: 8080,                             // Same port but different address
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
-        }),
-        target_listeners: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),

@@ -183,11 +183,7 @@ impl PlatformApiMaterializer {
             // IMPORTANT: Create clusters BEFORE listeners (clusters must exist for listener validation)
             // Materialize native resources (routes, clusters) with source='platform_api'
             let (_, generated_route_ids, generated_cluster_ids) = self
-                .materialize_native_resources(
-                    &definition,
-                    &created_routes,
-                    Some(&spec.listener),
-                )
+                .materialize_native_resources(&definition, &created_routes, Some(&spec.listener))
                 .await?;
 
             // Trigger xDS updates for clusters first
@@ -199,11 +195,7 @@ impl PlatformApiMaterializer {
             // Now create the isolated listener after clusters exist, or merge routes into shared listeners
             // Materialize the listener for this API definition
             if let Err(err) = self
-                .materialize_isolated_listener(
-                    &definition,
-                    &created_routes,
-                    Some(&spec.listener),
-                )
+                .materialize_isolated_listener(&definition, &created_routes, Some(&spec.listener))
                 .await
             {
                 // Compensating delete to avoid partial writes
@@ -643,7 +635,6 @@ impl PlatformApiMaterializer {
         Ok(())
     }
 
-
     /// Materialize native resources (listeners, routes, clusters) from Platform API definition
     /// Tags all resources with source='platform_api' and stores FK relationships
     ///
@@ -659,7 +650,7 @@ impl PlatformApiMaterializer {
         api_routes: &[ApiRouteData],
         _listener_spec: Option<&ListenerInput>,
     ) -> Result<(Option<String>, Vec<String>, Vec<String>)> {
-        use crate::storage::repository::{CreateClusterRequest, CreateRouteRequest};
+        use crate::storage::repository::CreateClusterRequest;
 
         let cluster_repo = self
             .state
@@ -668,7 +659,7 @@ impl PlatformApiMaterializer {
             .cloned()
             .ok_or_else(|| Error::internal("Cluster repository is not configured"))?;
 
-        let route_repo = self
+        let _route_repo = self
             .state
             .route_repository
             .as_ref()
@@ -676,7 +667,7 @@ impl PlatformApiMaterializer {
             .ok_or_else(|| Error::internal("Route repository is not configured"))?;
 
         let mut generated_cluster_ids = Vec::new();
-        let mut generated_route_ids = Vec::new();
+        let generated_route_ids = Vec::new();
 
         // Step 1: Deduplicate upstream targets across all routes
         // Extract unique upstream configurations (keyed by endpoint)
@@ -826,9 +817,6 @@ impl PlatformApiMaterializer {
 
     /// Delete a Platform API definition and clean up all associated resources
     pub async fn delete_definition(&self, definition_id: &str) -> Result<()> {
-        use crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER;
-        use crate::storage::repository::UpdateRouteRequest;
-
         // Get the definition to determine its configuration
         let definition = self
             .repository

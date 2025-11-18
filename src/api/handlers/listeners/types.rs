@@ -10,6 +10,7 @@ use crate::xds::{filters::http::HttpFilterConfigEntry, listener::ListenerConfig}
 #[serde(rename_all = "camelCase")]
 pub struct ListenerResponse {
     pub name: String,
+    pub team: String,
     pub address: String,
     pub port: Option<u16>,
     pub protocol: String,
@@ -27,6 +28,7 @@ pub struct ListListenersQuery {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateListenerBody {
+    pub team: String,
     pub name: String,
     pub address: String,
     pub port: u16,

@@ -173,6 +173,7 @@ export interface ApiDefinitionSummary {
 // Listener types
 export interface ListenerResponse {
 	name: string;
+	team: string;
 	address: string;
 	port: number | null;
 	protocol: string;
@@ -183,6 +184,7 @@ export interface ListenerResponse {
 // Route types
 export interface RouteResponse {
 	name: string;
+	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
 	config: any; // Full route config
@@ -191,6 +193,7 @@ export interface RouteResponse {
 // Cluster types
 export interface ClusterResponse {
 	name: string;
+	team: string;
 	serviceName: string;
 	config: any; // Full cluster config
 }
@@ -199,7 +202,6 @@ export interface ClusterResponse {
 export interface BootstrapConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
-	includeDefault?: boolean;
 }
 
 // User Management types

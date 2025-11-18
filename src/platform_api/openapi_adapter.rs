@@ -206,20 +206,10 @@ pub fn openapi_to_api_definition_spec(
         port: listener_port,
         protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
         tls_config: tls_config.clone(),
-        http_filters: if global_filters.is_empty() {
-            None
-        } else {
-            Some(global_filters.clone())
-        },
+        http_filters: if global_filters.is_empty() { None } else { Some(global_filters.clone()) },
     };
 
-    Ok(ApiDefinitionSpec {
-        team,
-        domain,
-        listener,
-        tls_config,
-        routes,
-    })
+    Ok(ApiDefinitionSpec { team, domain, listener, tls_config, routes })
 }
 
 /// Parse route-level x-flowplane-route-overrides from path item operations.
@@ -323,13 +313,11 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.team, "platform-team");
         assert_eq!(spec.domain, "api.example.com");
-        assert!(!spec.listener_isolation);
-        assert!(spec.isolation_listener.is_none());
         assert!(spec.tls_config.is_some());
         assert_eq!(spec.routes.len(), 2);
 
@@ -340,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_openapi_with_listener_isolation() {
+    fn converts_openapi_with_custom_port() {
         let doc: OpenAPI = serde_json::from_str(
             r#"{
                 "openapi": "3.0.0",
@@ -359,21 +347,14 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "isolated-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), Some(9090))
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        assert!(spec.isolation_listener.is_some());
         assert!(spec.tls_config.is_none()); // HTTP not HTTPS
-
-        let listener = spec.isolation_listener.unwrap();
-        assert!(
-            listener.port >= 20000 && listener.port < 30000,
-            "Port should be in 20000-29999 range"
-        );
-        assert_eq!(listener.bind_address, "0.0.0.0");
-        assert_eq!(listener.protocol, "HTTP");
-        assert!(listener.tls_config.is_none());
+        assert_eq!(spec.listener.port, 9090);
+        assert_eq!(spec.listener.bind_address, "0.0.0.0");
+        assert_eq!(spec.listener.protocol, "HTTP");
+        assert!(spec.listener.tls_config.is_none());
     }
 
     #[test]
@@ -396,7 +377,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), GatewayError::MissingServers));
     }
@@ -424,7 +405,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -439,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_global_xflowplane_filters_with_listener_isolation() {
+    fn extracts_global_xflowplane_filters() {
         let doc: OpenAPI = serde_json::from_str(
             r#"{
                 "openapi": "3.0.0",
@@ -469,16 +450,13 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        assert!(spec.isolation_listener.is_some());
-
-        let listener = spec.isolation_listener.unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_some());
 
-        let filters = listener.http_filters.unwrap();
+        let filters = listener.http_filters.as_ref().unwrap();
         assert_eq!(filters.len(), 1);
     }
 
@@ -502,11 +480,10 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        let listener = spec.isolation_listener.unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_none());
     }
 
@@ -530,7 +507,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -559,7 +536,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, GatewayError::InvalidFilters(_)));
@@ -588,7 +565,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -630,11 +607,11 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         // Verify global filters
-        let listener = spec.isolation_listener.as_ref().unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_some());
         let global_filters = listener.http_filters.as_ref().unwrap();
         assert_eq!(global_filters.len(), 1);
@@ -669,8 +646,8 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "lb-team".to_string(), true, None)
-            .expect("convert spec");
+        let spec =
+            openapi_to_api_definition_spec(doc, "lb-team".to_string(), None).expect("convert spec");
 
         assert_eq!(spec.team, "lb-team");
         assert_eq!(spec.domain, "api-1.example.com");
@@ -715,7 +692,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
 
         assert!(result.is_err());
         match result {
@@ -765,7 +742,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "weighted-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "weighted-team".to_string(), None)
             .expect("convert spec");
 
         let route = &spec.routes[0];

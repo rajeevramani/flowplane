@@ -2,9 +2,7 @@
 
 pub mod api_definition;
 
-pub use api_definition::{
-    enforce_listener_isolation_transition, validate_domain_availability, validate_route_uniqueness,
-};
+pub use api_definition::{validate_domain_availability, validate_route_uniqueness};
 
 #[cfg(test)]
 mod tests {
@@ -14,6 +12,5 @@ mod tests {
     fn smoke_reexports() {
         let _ = validate_domain_availability(None, "team", "example.com");
         let _ = validate_route_uniqueness(&[], "prefix", "/", None);
-        let _ = enforce_listener_isolation_transition(Some(false), true);
     }
 }

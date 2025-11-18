@@ -641,8 +641,7 @@ impl ApiDefinitionRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ApiDefinitionData>> {
-        let base_query =
-            "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
+        let base_query = "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
                     bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions";
 

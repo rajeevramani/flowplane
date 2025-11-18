@@ -31,8 +31,6 @@ async fn test_deserialize_optional_handles_invalid_json() {
     let request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: Some(vec!["listener1".to_string(), "listener2".to_string()]),
         tls_config: Some(serde_json::json!({
             "server_name": "test.example.com",
             "verify_certificate": true
@@ -46,10 +44,6 @@ async fn test_deserialize_optional_handles_invalid_json() {
     let definition = repo.create_definition(request).await.expect("create definition");
 
     // Verify data was stored and deserialized correctly
-    assert_eq!(
-        definition.target_listeners,
-        Some(vec!["listener1".to_string(), "listener2".to_string()])
-    );
     assert!(definition.tls_config.is_some());
     assert!(definition.metadata.is_some());
 
@@ -78,8 +72,6 @@ async fn test_deserialize_required_uses_fallback() {
     let def_request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: None,
         tls_config: None,
         metadata: None,
     };
@@ -136,8 +128,6 @@ async fn test_multiple_corrupted_json_fields() {
     let request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: Some(vec!["listener1".to_string()]),
         tls_config: Some(serde_json::json!({"server_name": "test.example.com"})),
         metadata: Some(serde_json::json!({"key": "value"})),
     };
@@ -148,8 +138,7 @@ async fn test_multiple_corrupted_json_fields() {
     sqlx::query(
         "UPDATE api_definitions SET
          tls_config = 'bad{json',
-         metadata = '}invalid{',
-         target_listeners = '[not,valid]'
+         metadata = '}invalid{'
          WHERE id = $1",
     )
     .bind(definition.id.as_str())
@@ -163,7 +152,6 @@ async fn test_multiple_corrupted_json_fields() {
     // All JSON fields should gracefully degrade to None
     assert!(fetched.tls_config.is_none());
     assert!(fetched.metadata.is_none());
-    assert!(fetched.target_listeners.is_none());
 
     // Non-JSON fields should still be correct
     assert_eq!(fetched.domain, "test.example.com");
@@ -179,8 +167,6 @@ async fn test_list_routes_with_mixed_valid_invalid_json() {
     let def_request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: None,
         tls_config: None,
         metadata: None,
     };
@@ -244,12 +230,10 @@ async fn test_empty_json_arrays_and_objects() {
     let pool = create_test_pool().await;
     let repo = ApiDefinitionRepository::new(pool.clone());
 
-    // Create definition with empty arrays/objects
+    // Create definition with empty objects
     let request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: Some(vec![]),          // Empty array
         tls_config: Some(serde_json::json!({})), // Empty object
         metadata: Some(serde_json::json!({})),
     };
@@ -257,13 +241,8 @@ async fn test_empty_json_arrays_and_objects() {
     let definition = repo.create_definition(request).await.expect("create with empty JSON");
 
     // Verify empty structures are preserved
-    assert_eq!(definition.target_listeners, Some(vec![]));
     assert_eq!(definition.tls_config, Some(serde_json::json!({})));
     assert_eq!(definition.metadata, Some(serde_json::json!({})));
-
-    // Fetch and verify persistence
-    let fetched = repo.get_definition(&definition.id).await.expect("fetch");
-    assert_eq!(fetched.target_listeners, Some(vec![]));
 }
 
 #[tokio::test]
@@ -275,8 +254,6 @@ async fn test_null_vs_missing_json_fields() {
     let request = CreateApiDefinitionRequest {
         team: "test-team".to_string(),
         domain: "test.example.com".to_string(),
-        listener_isolation: false,
-        target_listeners: None,
         tls_config: None,
         metadata: None,
     };
@@ -284,7 +261,6 @@ async fn test_null_vs_missing_json_fields() {
     let definition = repo.create_definition(request).await.expect("create with None");
 
     // All optional JSON fields should be None
-    assert!(definition.target_listeners.is_none());
     assert!(definition.tls_config.is_none());
     assert!(definition.metadata.is_none());
 }

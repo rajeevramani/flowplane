@@ -61,20 +61,6 @@ pub fn validate_route_uniqueness(
     Ok(())
 }
 
-/// Prevent downgrading listener isolation once it has been enabled.
-pub fn enforce_listener_isolation_transition(
-    current_isolation: Option<bool>,
-    requested_isolation: bool,
-) -> Result<()> {
-    if current_isolation.unwrap_or(false) && !requested_isolation {
-        return Err(FlowplaneError::validation(
-            "Listener isolation cannot be disabled once enabled for an API definition",
-        ));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,8 +95,6 @@ mod tests {
             id: crate::domain::ApiDefinitionId::from_str_unchecked("def"),
             team: "payments".into(),
             domain: "api.example.com".into(),
-            listener_isolation: false,
-            target_listeners: None,
             tls_config: None,
             metadata: None,
             bootstrap_uri: None,
@@ -130,17 +114,5 @@ mod tests {
         let routes = vec![sample_route("prefix", "/v1/")];
         let result = validate_route_uniqueness(&routes, "prefix", "/v1/", None);
         assert!(result.is_err(), "matching route should be rejected");
-    }
-
-    #[test]
-    fn prevents_isolation_downgrade() {
-        let result = enforce_listener_isolation_transition(Some(true), false);
-        assert!(result.is_err(), "downgrading isolation should be blocked");
-    }
-
-    #[test]
-    fn allows_isolation_upgrade() {
-        enforce_listener_isolation_transition(Some(false), true).expect("upgrade allowed");
-        enforce_listener_isolation_transition(None, false).expect("default shared allowed");
     }
 }

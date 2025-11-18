@@ -127,7 +127,6 @@ pub struct ApiDefinitionSummary {
     pub id: String,
     pub team: String,
     pub domain: String,
-    pub listener_isolation: bool,
     pub bootstrap_uri: Option<String>,
     pub version: i64,
     pub created_at: String,
@@ -327,16 +326,15 @@ fn print_definitions_table(definitions: &[ApiDefinitionSummary]) {
     }
 
     println!();
-    println!("{:<40} {:<15} {:<30} {:<10} {:<8}", "ID", "Team", "Domain", "Isolation", "Version");
-    println!("{}", "-".repeat(110));
+    println!("{:<40} {:<15} {:<30} {:<8}", "ID", "Team", "Domain", "Version");
+    println!("{}", "-".repeat(100));
 
     for def in definitions {
         println!(
-            "{:<40} {:<15} {:<30} {:<10} {:<8}",
+            "{:<40} {:<15} {:<30} {:<8}",
             truncate(&def.id, 38),
             truncate(&def.team, 13),
             truncate(&def.domain, 28),
-            def.listener_isolation,
             def.version
         );
     }

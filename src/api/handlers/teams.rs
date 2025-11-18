@@ -31,9 +31,6 @@ pub struct BootstrapQuery {
     #[serde(default)]
     #[param(required = false)]
     pub format: Option<String>, // yaml|json (default yaml)
-    #[serde(default)]
-    #[param(required = false)]
-    pub include_default: Option<bool>, // default false
 }
 
 /// Get Envoy bootstrap configuration for a team
@@ -85,7 +82,6 @@ pub async fn get_team_bootstrap_handler(
     require_resource_access(&context, "api-definitions", "read", None)?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
-    let include_default = q.include_default.unwrap_or(false);
 
     // Build ADS bootstrap with node metadata for team-based filtering
     let xds_addr = state.xds_state.config.bind_address.clone();
@@ -95,9 +91,9 @@ pub async fn get_team_bootstrap_handler(
 
     // Build node metadata with team information
     // The xDS server will use this to filter resources
+    // Note: Default resources (team IS NULL) are always included
     let metadata = serde_json::json!({
         "team": team,
-        "include_default": include_default,
     });
 
     // Generate Envoy bootstrap configuration

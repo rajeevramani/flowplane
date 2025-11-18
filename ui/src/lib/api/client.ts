@@ -361,9 +361,6 @@ class ApiClient {
 	async getBootstrapConfig(request: BootstrapConfigRequest): Promise<string> {
 		const params = new URLSearchParams();
 		if (request.format) params.append('format', request.format);
-		if (request.includeDefault !== undefined) {
-			params.append('include_default', request.includeDefault.toString());
-		}
 
 		const path = `/api/v1/teams/${request.team}/bootstrap${params.toString() ? `?${params.toString()}` : ''}`;
 
