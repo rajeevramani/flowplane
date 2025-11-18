@@ -62,8 +62,17 @@ pub async fn setup_platform_api_app() -> PlatformApiApp {
     storage::run_migrations(&pool).await.expect("run migrations for tests");
 
     // Create common teams used across tests
-    let team_names =
-        vec!["billing", "payments", "platform-team", "team-a", "team-b", "test", "test-team"];
+    let team_names = vec![
+        "billing",
+        "identity",
+        "payments",
+        "platform-team",
+        "team-a",
+        "team-b",
+        "test",
+        "test-team",
+        "versioned",
+    ];
     for team_name in team_names {
         create_team(&pool, team_name).await;
     }
@@ -117,4 +126,47 @@ pub async fn create_team(pool: &DbPool, name: &str) {
             settings: None,
         })
         .await;
+}
+
+/// Helper to create an API definition via import-openapi endpoint
+pub async fn create_api_definition_via_openapi(
+    app: &PlatformApiApp,
+    token: &str,
+    team: &str,
+    domain: &str,
+    port: Option<u32>,
+) -> Response<Body> {
+    let openapi_spec = format!(
+        r#"
+openapi: 3.0.0
+info:
+  title: Test API
+  version: 1.0.0
+servers:
+  - url: https://{}
+paths:
+  /api/v1/test:
+    get:
+      summary: Test endpoint
+      responses:
+        '200':
+          description: Success
+"#,
+        domain
+    );
+
+    let mut uri = format!("/api/v1/api-definitions/from-openapi?team={}", team);
+    if let Some(p) = port {
+        uri.push_str(&format!("&port={}", p));
+    }
+
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(&uri)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("content-type", "application/x-yaml");
+
+    let request = builder.body(Body::from(openapi_spec)).expect("build request");
+
+    app.router().oneshot(request).await.expect("request")
 }

@@ -510,6 +510,56 @@ pub async fn append_route_handler(
     ))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/api-definitions/{id}",
+    params(
+        ("id" = String, Path, description = "API definition ID")
+    ),
+    responses(
+        (status = 204, description = "API definition successfully deleted, including all routes, generated listeners, routes, and clusters"),
+        (status = 403, description = "Forbidden: user does not have access to this team's API definition"),
+        (status = 404, description = "API definition not found or user does not have access"),
+        (status = 500, description = "Internal server error during deletion"),
+        (status = 503, description = "API definition repository not configured")
+    ),
+    tag = "platform-api"
+)]
+pub async fn delete_api_definition_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(api_definition_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    // Authorization: require api-definitions:write scope (delete is a write operation)
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
+    // Verify team access to the API definition before deleting
+    let repo = state
+        .xds_state
+        .api_definition_repository
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::service_unavailable("API definition repository is not configured")
+        })?
+        .clone();
+
+    let existing_definition = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&api_definition_id))
+        .await
+        .map_err(ApiError::from)?;
+
+    let team_scopes = extract_team_scopes(&context);
+    verify_api_definition_access(existing_definition, &team_scopes).await?;
+
+    // Use materializer to properly clean up all associated resources
+    let materializer =
+        PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
+
+    materializer.delete_definition(&api_definition_id).await.map_err(ApiError::from)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Debug, serde::Deserialize, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]

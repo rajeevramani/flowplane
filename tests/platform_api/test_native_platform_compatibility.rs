@@ -2,8 +2,10 @@
 //! without conflicts. Tests backward compatibility and stability.
 
 use flowplane::{
+    auth::team::CreateTeamRequest,
     domain::api_definition::{ApiDefinitionSpec, ListenerConfig, RouteConfig as RouteSpec},
     platform_api::materializer::PlatformApiMaterializer,
+    storage::repositories::team::{SqlxTeamRepository, TeamRepository},
     storage::repository::{ClusterRepository, CreateClusterRequest, RouteRepository},
     xds::{
         route::{
@@ -35,6 +37,20 @@ async fn create_test_context() -> TestContext {
         .expect("create sqlite pool");
 
     flowplane::storage::run_migrations(&pool).await.expect("run migrations");
+
+    // Create test teams to satisfy FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    for team_name in &["test", "test-team", "platform-team", "team-a", "team-b", "native-test"] {
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for native platform compatibility tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
 
     let state = Arc::new(XdsState::with_database(
         flowplane::config::SimpleXdsConfig::default(),

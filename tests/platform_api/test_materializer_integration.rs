@@ -1,10 +1,12 @@
 //! Integration tests for Platform API materializer with native resource generation and FK tracking
 
+use flowplane::auth::team::CreateTeamRequest;
 use flowplane::config::SimpleXdsConfig;
 use flowplane::domain::api_definition::{
     ApiDefinitionSpec, ListenerConfig, RouteConfig as RouteSpec,
 };
 use flowplane::platform_api::materializer::PlatformApiMaterializer;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::repository::{ApiDefinitionRepository, ClusterRepository, RouteRepository};
 use flowplane::storage::{self, DbPool};
 use flowplane::xds::XdsState;
@@ -31,6 +33,18 @@ async fn create_test_context() -> TestContext {
         .expect("create sqlite pool");
 
     storage::run_migrations(&pool).await.expect("run migrations for tests");
+
+    // Create test team to satisfy FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let _ = team_repo
+        .create_team(CreateTeamRequest {
+            name: "test-team".to_string(),
+            display_name: "Test Team".to_string(),
+            description: Some("Team for materializer integration tests".to_string()),
+            owner_user_id: None,
+            settings: None,
+        })
+        .await;
 
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 

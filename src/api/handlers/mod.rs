@@ -20,7 +20,7 @@ pub use aggregated_schemas::{
     get_aggregated_schema_handler, list_aggregated_schemas_handler,
 };
 pub use api_definitions::{
-    append_route_handler, create_api_definition_handler, get_api_definition_handler,
+    append_route_handler, delete_api_definition_handler, get_api_definition_handler,
     import_openapi_handler, list_api_definitions_handler, update_api_definition_handler,
 };
 pub use audit_log::list_audit_logs;
