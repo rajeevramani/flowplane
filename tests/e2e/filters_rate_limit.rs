@@ -70,12 +70,10 @@ async fn filters_local_rate_limit_override_present() {
     let client: hyper_util::client::legacy::Client<_, _> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
-    let uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team=e2e",
-        api_addr
-    )
-    .parse()
-    .unwrap();
+    let uri: hyper::http::Uri =
+        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
+            .parse()
+            .unwrap();
     let body = serde_json::json!({
         "openapi": "3.0.0",
         "info": {
