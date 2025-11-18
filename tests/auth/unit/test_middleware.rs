@@ -42,7 +42,9 @@ async fn setup_pool() -> flowplane::storage::DbPool {
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
             locked_until DATETIME,
-            csrf_token TEXT
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )

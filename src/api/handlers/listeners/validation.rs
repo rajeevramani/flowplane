@@ -47,6 +47,7 @@ pub(super) fn listener_response_from_data(
 
     Ok(ListenerResponse {
         name: data.name,
+        team: data.team.unwrap_or_else(|| "unknown".to_string()),
         address: data.address,
         port: port_from_i64(data.port)?,
         protocol: data.protocol,
@@ -192,6 +193,9 @@ fn convert_tracing_config(value: &Value) -> Result<HashMap<String, String>, ApiE
 
 /// Validate create listener request
 pub(super) fn validate_create_listener_body(body: &CreateListenerBody) -> Result<(), ApiError> {
+    if body.team.trim().is_empty() {
+        return Err(ApiError::from(Error::validation("Listener team cannot be empty")));
+    }
     if body.name.trim().is_empty() {
         return Err(ApiError::from(Error::validation("Listener name cannot be empty")));
     }

@@ -42,7 +42,7 @@ async fn import_openapi_json_creates_api_definition() {
 
     let request = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/api-definitions/from-openapi?team=payments&listenerIsolation=false")
+        .uri("/api/v1/api-definitions/from-openapi?team=payments")
         .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(openapi_spec))
@@ -125,7 +125,7 @@ paths:
 
     let request = Request::builder()
         .method(Method::POST)
-        .uri("/api/v1/api-definitions/from-openapi?team=identity&listenerIsolation=true")
+        .uri("/api/v1/api-definitions/from-openapi?team=identity")
         .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
         .header(header::CONTENT_TYPE, "application/yaml")
         .body(Body::from(openapi_spec))
@@ -139,23 +139,6 @@ paths:
     assert!(body.get("id").is_some());
     let routes = body.get("routes").and_then(|v| v.as_array()).expect("routes array");
     assert_eq!(routes.len(), 2);
-
-    // Verify listener isolation was enabled
-    let listener_isolation: bool = sqlx::query_scalar(
-        "SELECT listener_isolation FROM api_definitions WHERE team = 'identity'",
-    )
-    .fetch_one(&app.pool)
-    .await
-    .expect("fetch listener_isolation");
-    assert!(listener_isolation, "listener_isolation should be true");
-
-    // Verify listener was created (name would be auto-generated as "platform-{short_id}-listener")
-    let listener_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM listeners WHERE name LIKE 'platform-%'")
-            .fetch_one(&app.pool)
-            .await
-            .expect("count listeners");
-    assert!(listener_count >= 1, "isolated listener should be created");
 }
 
 #[tokio::test]

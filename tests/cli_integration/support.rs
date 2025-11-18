@@ -85,6 +85,25 @@ impl TestServer {
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
     }
+
+    /// Create a team via direct database access (for test setup)
+    pub async fn create_team(&self, team_name: &str) {
+        use flowplane::auth::CreateTeamRequest;
+        use flowplane::storage::repositories::{SqlxTeamRepository, TeamRepository};
+
+        let team_repo = SqlxTeamRepository::new(self.pool.clone());
+
+        // Ignore errors if team already exists
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for CLI integration tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
 }
 
 /// Get the CLI binary path (already built by cargo test)

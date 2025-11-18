@@ -87,10 +87,10 @@ pub async fn create_route_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<RouteDefinition>,
 ) -> Result<(StatusCode, Json<RouteResponse>), ApiError> {
-    // Authorization: require routes:write scope
-    require_resource_access(&context, "routes", "write", None)?;
-
     validate_route_payload(&payload)?;
+
+    // Verify user has write access to the specified team
+    require_resource_access(&context, "routes", "write", Some(&payload.team))?;
 
     let route_repository = require_route_repository(&state)?;
 
@@ -101,10 +101,8 @@ pub async fn create_route_handler(
         ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
 
-    // Extract team from auth context
-    // - Team-scoped users create resources for their team
-    // - Admin/resource-level users create global resources (team = None)
-    let team = extract_team_scopes(&context).into_iter().next();
+    // Use explicit team from request
+    let team = Some(payload.team.clone());
 
     let request = CreateRouteRepositoryRequest {
         name: payload.name.clone(),
@@ -125,6 +123,7 @@ pub async fn create_route_handler(
 
     let response = RouteResponse {
         name: created.name,
+        team: created.team.unwrap_or_default(),
         path_prefix: created.path_prefix,
         cluster_targets: created.cluster_name,
         config: payload,
@@ -266,6 +265,7 @@ pub async fn update_route_handler(
 
     let response = RouteResponse {
         name: updated.name,
+        team: updated.team.unwrap_or_default(),
         path_prefix,
         cluster_targets: cluster_summary,
         config: payload,
@@ -436,6 +436,7 @@ mod tests {
 
     fn sample_route_definition() -> RouteDefinition {
         RouteDefinition {
+            team: "test-team".into(),
             name: "primary-routes".into(),
             virtual_hosts: vec![VirtualHostDefinition {
                 name: "default".into(),

@@ -24,6 +24,7 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
+    "team": "payments",
     "name": "primary-routes",
     "virtualHosts": [
         {
@@ -40,6 +41,9 @@ use crate::{
     ]
 }))]
 pub struct RouteDefinition {
+    #[validate(length(min = 1, max = 100))]
+    pub team: String,
+
     #[validate(length(min = 1, max = 100))]
     pub name: String,
 
@@ -185,6 +189,7 @@ pub struct WeightedClusterDefinition {
 #[serde(rename_all = "camelCase")]
 pub struct RouteResponse {
     pub name: String,
+    pub team: String,
     pub path_prefix: String,
     pub cluster_targets: String,
     pub config: RouteDefinition,
@@ -209,8 +214,9 @@ impl RouteDefinition {
         Ok(XdsRouteConfig { name: self.name.clone(), virtual_hosts })
     }
 
-    pub(super) fn from_xds_config(config: &XdsRouteConfig) -> Self {
+    pub(super) fn from_xds_config(config: &XdsRouteConfig, team: String) -> Self {
         RouteDefinition {
+            team,
             name: config.name.clone(),
             virtual_hosts: config
                 .virtual_hosts

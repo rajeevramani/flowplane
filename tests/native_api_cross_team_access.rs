@@ -59,6 +59,28 @@ pub async fn setup_native_api_app() -> NativeApiApp {
 
     storage::run_migrations(&pool).await.expect("run migrations for tests");
 
+    // Create teams required for cross-team tests
+    let team_id_a = uuid::Uuid::new_v4().to_string();
+    let team_id_b = uuid::Uuid::new_v4().to_string();
+
+    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
+        .bind(&team_id_a)
+        .bind("team-a")
+        .bind("Team A")
+        .bind("active")
+        .execute(&pool)
+        .await
+        .expect("create team-a");
+
+    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
+        .bind(&team_id_b)
+        .bind("team-b")
+        .bind("Team B")
+        .bind("active")
+        .execute(&pool)
+        .await
+        .expect("create team-b");
+
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
@@ -113,6 +135,7 @@ async fn team_a_cannot_list_team_b_clusters() {
 
     // Team B creates a cluster
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-backend",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -152,6 +175,7 @@ async fn team_a_cannot_get_team_b_cluster() {
 
     // Team B creates a cluster
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-private",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -195,6 +219,7 @@ async fn team_a_cannot_update_team_b_cluster() {
 
     // Team B creates a cluster
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-cluster",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -212,6 +237,7 @@ async fn team_a_cannot_update_team_b_cluster() {
 
     // Team A tries to update Team B's cluster
     let update_payload = json!({
+        "team": "team-a",
         "name": "team-b-cluster",
         "serviceName": "malicious-service",
         "endpoints": [{"host": "attacker.com", "port": 9999}],
@@ -242,6 +268,7 @@ async fn team_a_cannot_delete_team_b_cluster() {
 
     // Team B creates a cluster
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-important",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -303,6 +330,7 @@ async fn team_a_cannot_list_team_b_routes() {
 
     // Team B creates a cluster first (FK requirement)
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-backend",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -319,6 +347,7 @@ async fn team_a_cannot_list_team_b_routes() {
 
     // Team B creates a route
     let team_b_route = json!({
+        "team": "team-b",
         "name": "team-b-route",
         "virtualHosts": [{
             "name": "default",
@@ -364,6 +393,7 @@ async fn team_a_cannot_get_team_b_route() {
 
     // Team B creates cluster and route
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-svc",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -379,6 +409,7 @@ async fn team_a_cannot_get_team_b_route() {
     .await;
 
     let team_b_route = json!({
+        "team": "team-b",
         "name": "team-b-private-route",
         "virtualHosts": [{
             "name": "default",
@@ -425,6 +456,7 @@ async fn team_a_cannot_delete_team_b_route() {
 
     // Team B creates cluster and route
     let team_b_cluster = json!({
+        "team": "team-b",
         "name": "team-b-backend",
         "serviceName": "team-b-service",
         "endpoints": [{"host": "team-b.local", "port": 8080}],
@@ -440,6 +472,7 @@ async fn team_a_cannot_delete_team_b_route() {
     .await;
 
     let team_b_route = json!({
+        "team": "team-b",
         "name": "team-b-route",
         "virtualHosts": [{
             "name": "default",
@@ -488,6 +521,7 @@ async fn team_a_cannot_list_team_b_listeners() {
 
     // Team B creates a listener
     let team_b_listener = json!({
+        "team": "team-b",
         "name": "team-b-listener",
         "address": "0.0.0.0",
         "port": 9090,
@@ -531,6 +565,7 @@ async fn team_a_cannot_get_team_b_listener() {
 
     // Team B creates a listener
     let team_b_listener = json!({
+        "team": "team-b",
         "name": "team-b-private-listener",
         "address": "127.0.0.1",
         "port": 8888,
@@ -575,6 +610,7 @@ async fn team_a_cannot_delete_team_b_listener() {
 
     // Team B creates a listener
     let team_b_listener = json!({
+        "team": "team-b",
         "name": "team-b-critical-listener",
         "address": "0.0.0.0",
         "port": 7777,
@@ -610,58 +646,7 @@ async fn team_a_cannot_delete_team_b_listener() {
     assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
 }
 
-// === Global Resource Accessibility Tests ===
-
-#[tokio::test]
-async fn team_users_can_access_global_clusters() {
-    let app = setup_native_api_app().await;
-
-    // Admin creates a global cluster (no team)
-    let admin_token = app.issue_token("admin", &["admin:all"]).await;
-
-    let global_cluster = json!({
-        "name": "global-shared-cluster",
-        "serviceName": "shared-service",
-        "endpoints": [{"host": "shared.local", "port": 8080}],
-        "connectTimeoutSeconds": 5
-    });
-
-    let create_response = send_request(
-        &app,
-        Method::POST,
-        "/api/v1/clusters",
-        Some(&admin_token.token),
-        Some(global_cluster),
-    )
-    .await;
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-
-    // Team A should be able to see and access the global cluster
-    let team_a_token = app.issue_token("team-a-user", &["team:team-a:clusters:read"]).await;
-
-    let list_response =
-        send_request(&app, Method::GET, "/api/v1/clusters", Some(&team_a_token.token), None).await;
-    assert_eq!(list_response.status(), StatusCode::OK);
-
-    let clusters: Vec<Value> = read_json(list_response).await;
-    assert!(
-        clusters.iter().any(|c| c["name"] == "global-shared-cluster"),
-        "Team A should see global cluster in list"
-    );
-
-    // Team B should also be able to see and access the global cluster
-    let team_b_token = app.issue_token("team-b-user", &["team:team-b:clusters:read"]).await;
-
-    let get_response = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/clusters/global-shared-cluster",
-        Some(&team_b_token.token),
-        None,
-    )
-    .await;
-    assert_eq!(get_response.status(), StatusCode::OK);
-}
+// === Admin Resource Accessibility Tests ===
 
 #[tokio::test]
 async fn admin_users_can_access_all_team_resources() {
@@ -677,6 +662,7 @@ async fn admin_users_can_access_all_team_resources() {
         "/api/v1/clusters",
         Some(&team_a_token.token),
         Some(json!({
+            "team": "team-a",
             "name": "team-a-cluster",
             "serviceName": "team-a-service",
             "endpoints": [{"host": "team-a.local", "port": 8080}],
@@ -691,6 +677,7 @@ async fn admin_users_can_access_all_team_resources() {
         "/api/v1/clusters",
         Some(&team_b_token.token),
         Some(json!({
+            "team": "team-b",
             "name": "team-b-cluster",
             "serviceName": "team-b-service",
             "endpoints": [{"host": "team-b.local", "port": 8080}],

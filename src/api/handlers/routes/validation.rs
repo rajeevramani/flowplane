@@ -45,10 +45,13 @@ pub(super) fn route_response_from_data(data: RouteData) -> Result<RouteResponse,
         )))
     })?;
 
-    let config = RouteDefinition::from_xds_config(&xds_config);
+    // Use team from database, or empty string if None (should not happen with explicit team requirement)
+    let team = data.team.clone().unwrap_or_default();
+    let config = RouteDefinition::from_xds_config(&xds_config, team.clone());
 
     Ok(RouteResponse {
         name: data.name,
+        team,
         path_prefix: data.path_prefix,
         cluster_targets: data.cluster_name,
         config,

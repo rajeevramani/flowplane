@@ -16,13 +16,11 @@ struct ApiDefinitionRow {
     pub id: String,
     pub team: String,
     pub domain: String,
-    pub listener_isolation: i64,
     pub tls_config: Option<String>,
     pub metadata: Option<String>,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
     pub generated_listener_id: Option<String>,
-    pub target_listeners: Option<String>,
     pub version: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -34,13 +32,11 @@ pub struct ApiDefinitionData {
     pub id: ApiDefinitionId,
     pub team: String,
     pub domain: String,
-    pub listener_isolation: bool,
     pub tls_config: Option<serde_json::Value>,
     pub metadata: Option<serde_json::Value>,
     pub bootstrap_uri: Option<String>,
     pub bootstrap_revision: i64,
     pub generated_listener_id: Option<String>,
-    pub target_listeners: Option<Vec<String>>,
     pub version: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -53,7 +49,6 @@ impl From<ApiDefinitionRow> for ApiDefinitionData {
             id: ApiDefinitionId::from_string(row.id),
             team: row.team.clone(),
             domain: row.domain,
-            listener_isolation: row.listener_isolation != 0,
             tls_config: ApiDefinitionRepository::deserialize_optional(
                 row.tls_config,
                 "tls_config",
@@ -67,11 +62,6 @@ impl From<ApiDefinitionRow> for ApiDefinitionData {
             bootstrap_uri: row.bootstrap_uri,
             bootstrap_revision: row.bootstrap_revision,
             generated_listener_id: row.generated_listener_id,
-            target_listeners: ApiDefinitionRepository::deserialize_optional(
-                row.target_listeners,
-                "target_listeners",
-                &context,
-            ),
             version: row.version,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -175,8 +165,6 @@ impl From<ApiRouteRow> for ApiRouteData {
 pub struct CreateApiDefinitionRequest {
     pub team: String,
     pub domain: String,
-    pub listener_isolation: bool,
-    pub target_listeners: Option<Vec<String>>,
     pub tls_config: Option<serde_json::Value>,
     pub metadata: Option<serde_json::Value>,
 }
@@ -212,7 +200,6 @@ pub struct UpdateBootstrapMetadataRequest {
 pub struct UpdateApiDefinitionRequest {
     pub domain: Option<String>,
     pub tls_config: Option<serde_json::Value>,
-    pub target_listeners: Option<Vec<String>>,
 }
 
 /// Repository encapsulating persistence for API definitions and routes
@@ -290,32 +277,18 @@ impl ApiDefinitionRepository {
         let id = Uuid::new_v4().to_string();
         let tls_config = Self::serialize_optional(&request.tls_config)?;
         let metadata = Self::serialize_optional(&request.metadata)?;
-        let target_listeners = Self::serialize_optional(
-            &request
-                .target_listeners
-                .as_ref()
-                .map(|v| {
-                    serde_json::to_value(v).map_err(|e| {
-                        FlowplaneError::serialization(e, "Failed to serialize target_listeners")
-                    })
-                })
-                .transpose()?,
-        )?;
-        let listener_isolation: i64 = if request.listener_isolation { 1 } else { 0 };
 
         let now = chrono::Utc::now();
 
         sqlx::query::<Sqlite>(
             "INSERT INTO api_definitions (
-                id, team, domain, listener_isolation, target_listeners, tls_config, metadata, bootstrap_uri,
+                id, team, domain, tls_config, metadata, bootstrap_uri,
                 bootstrap_revision, version, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&id)
         .bind(&request.team)
         .bind(&request.domain)
-        .bind(listener_isolation)
-        .bind(target_listeners)
         .bind(tls_config)
         .bind(metadata)
         .bind(Option::<String>::None)
@@ -363,8 +336,8 @@ impl ApiDefinitionRepository {
     /// Fetch an API definition by identifier
     pub async fn get_definition(&self, id: &ApiDefinitionId) -> Result<ApiDefinitionData> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
-            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
+            "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions WHERE id = $1",
         )
         .bind(id)
@@ -387,8 +360,8 @@ impl ApiDefinitionRepository {
         domain: &str,
     ) -> Result<Option<ApiDefinitionData>> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
-            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
+            "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions WHERE team = $1 AND domain = $2 LIMIT 1",
         )
         .bind(team)
@@ -406,8 +379,8 @@ impl ApiDefinitionRepository {
     /// Fetch an API definition by domain regardless of owning team
     pub async fn find_by_domain(&self, domain: &str) -> Result<Option<ApiDefinitionData>> {
         let row = sqlx::query_as::<Sqlite, ApiDefinitionRow>(
-            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
+            "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions WHERE domain = $1 LIMIT 1",
         )
         .bind(domain)
@@ -640,39 +613,17 @@ impl ApiDefinitionRepository {
                 .transpose()?
         };
 
-        let target_listeners_json =
-            if let Some(listeners) = &request.target_listeners {
-                Some(serde_json::to_string(listeners).map_err(|e| {
-                    FlowplaneError::serialization(e, "Invalid target_listeners JSON")
-                })?)
-            } else {
-                current
-                    .target_listeners
-                    .as_ref()
-                    .map(|v| {
-                        serde_json::to_string(v).map_err(|e| {
-                            FlowplaneError::serialization(
-                                e,
-                                "Failed to serialize existing target_listeners",
-                            )
-                        })
-                    })
-                    .transpose()?
-            };
-
         sqlx::query(
             "UPDATE api_definitions
              SET domain = $2,
                  tls_config = $3,
-                 target_listeners = $4,
                  version = version + 1,
-                 updated_at = $5
+                 updated_at = $4
              WHERE id = $1",
         )
         .bind(definition_id)
         .bind(domain)
         .bind(tls_json.as_deref())
-        .bind(target_listeners_json.as_deref())
         .bind(now)
         .execute(&self.pool)
         .await
@@ -690,9 +641,8 @@ impl ApiDefinitionRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ApiDefinitionData>> {
-        let base_query =
-            "SELECT id, team, domain, listener_isolation, tls_config, metadata, bootstrap_uri,
-                    bootstrap_revision, generated_listener_id, target_listeners, version, created_at, updated_at
+        let base_query = "SELECT id, team, domain, tls_config, metadata, bootstrap_uri,
+                    bootstrap_revision, generated_listener_id, version, created_at, updated_at
              FROM api_definitions";
 
         let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(base_query);

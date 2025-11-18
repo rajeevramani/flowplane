@@ -1,10 +1,15 @@
 use std::sync::Arc;
 
 use flowplane::{
-    auth::token_service::TokenService,
+    auth::{token_service::TokenService, CreateTeamRequest},
     config::SimpleXdsConfig,
     platform_api::materializer::PlatformApiMaterializer,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{
+        self,
+        repositories::{SqlxTeamRepository, TeamRepository},
+        repository::AuditLogRepository,
+        DbPool,
+    },
     xds::XdsState,
 };
 use sqlx::sqlite::SqlitePoolOptions;
@@ -31,6 +36,20 @@ pub async fn setup_multi_api_app() -> MultiApiApp {
         .expect("create sqlite pool");
 
     storage::run_migrations(&pool).await.expect("run migrations for tests");
+
+    // Create teams required by FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    for team_name in &["team-a", "team-b", "team-c", "team-native", "team-platform", "test-team"] {
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for multi-API tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
 
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 

@@ -320,14 +320,9 @@ async fn team_isolation_listener_filtering() {
     let domain_x = namer.domain();
     let route_path = namer.path("test");
 
-    let listener_x = format!("listener-x-{}", namer.test_id());
-    let listener_y = format!("listener-y-{}", namer.test_id());
-
     let mut ports = PortAllocator::new();
     let admin_x = ports.reserve_labeled("envoy-admin-x");
     let admin_y = ports.reserve_labeled("envoy-admin-y");
-    let listener_port_x = ports.reserve_labeled("listener-x-port");
-    let listener_port_y = ports.reserve_labeled("listener-y-port");
     let echo_upstream = ports.reserve_labeled("echo-upstream");
 
     let db_dir = tempdir().expect("db dir");
@@ -366,13 +361,6 @@ async fn team_isolation_listener_filtering() {
     let body_x = serde_json::json!({
         "team": team_x,
         "domain": domain_x,
-        "listenerIsolation": true,
-        "listener": {
-            "name": listener_x,
-            "bindAddress": "127.0.0.1",
-            "port": listener_port_x,
-            "protocol": "HTTP"
-        },
         "routes": [{
             "match": {"prefix": route_path},
             "cluster": {
@@ -393,17 +381,10 @@ async fn team_isolation_listener_filtering() {
     let res_x = client.request(req_x).await.unwrap();
     assert!(res_x.status().is_success(), "create listener X failed");
 
-    // Create isolated listener for Team Y
+    // Create listener for Team Y
     let body_y = serde_json::json!({
         "team": team_y,
         "domain": domain_x,
-        "listenerIsolation": true,
-        "listener": {
-            "name": listener_y,
-            "bindAddress": "127.0.0.1",
-            "port": listener_port_y,
-            "protocol": "HTTP"
-        },
         "routes": [{
             "match": {"prefix": route_path},
             "cluster": {
@@ -424,7 +405,7 @@ async fn team_isolation_listener_filtering() {
     let res_y = client.request(req_y).await.unwrap();
     assert!(res_y.status().is_success(), "create listener Y failed");
 
-    // Team X Envoy should see only listener X
+    // Team X Envoy should see only their resources
     let envoy_x = EnvoyHandle::start_with_metadata(
         admin_x,
         xds_addr.port(),
@@ -434,10 +415,16 @@ async fn team_isolation_listener_filtering() {
     envoy_x.wait_admin_ready().await;
 
     let dump_x = envoy_x.get_config_dump().await.expect("dump x");
-    assert!(dump_x.contains(&listener_x), "Team X should see listener X");
-    assert!(!dump_x.contains(&listener_y), "Team X should NOT see listener Y");
+    assert!(
+        dump_x.contains(&format!("cluster-x-{}", namer.test_id())),
+        "Team X should see their cluster"
+    );
+    assert!(
+        !dump_x.contains(&format!("cluster-y-{}", namer.test_id())),
+        "Team X should NOT see Team Y cluster"
+    );
 
-    // Team Y Envoy should see only listener Y
+    // Team Y Envoy should see only their resources
     let envoy_y = EnvoyHandle::start_with_metadata(
         admin_y,
         xds_addr.port(),
@@ -447,8 +434,14 @@ async fn team_isolation_listener_filtering() {
     envoy_y.wait_admin_ready().await;
 
     let dump_y = envoy_y.get_config_dump().await.expect("dump y");
-    assert!(dump_y.contains(&listener_y), "Team Y should see listener Y");
-    assert!(!dump_y.contains(&listener_x), "Team Y should NOT see listener X");
+    assert!(
+        dump_y.contains(&format!("cluster-y-{}", namer.test_id())),
+        "Team Y should see their cluster"
+    );
+    assert!(
+        !dump_y.contains(&format!("cluster-x-{}", namer.test_id())),
+        "Team Y should NOT see Team X cluster"
+    );
 
     echo.stop().await;
     guard.finish(true);

@@ -8,11 +8,17 @@ use axum::{
 };
 use flowplane::{
     auth::{
+        team::CreateTeamRequest,
         token_service::{TokenSecretResponse, TokenService},
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{
+        self,
+        repositories::team::{SqlxTeamRepository, TeamRepository},
+        repository::AuditLogRepository,
+        DbPool,
+    },
     xds::XdsState,
 };
 use hyper::Response;
@@ -55,6 +61,22 @@ pub async fn setup_platform_api_app() -> PlatformApiApp {
 
     storage::run_migrations(&pool).await.expect("run migrations for tests");
 
+    // Create common teams used across tests
+    let team_names = vec![
+        "billing",
+        "identity",
+        "payments",
+        "platform-team",
+        "team-a",
+        "team-b",
+        "test",
+        "test-team",
+        "versioned",
+    ];
+    for team_name in team_names {
+        create_team(&pool, team_name).await;
+    }
+
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
@@ -91,4 +113,61 @@ pub async fn read_json<T: DeserializeOwned>(response: Response<Body>) -> T {
     let bytes =
         to_bytes(response.into_body(), usize::MAX).await.expect("read response body as bytes");
     serde_json::from_slice(&bytes).expect("parse json response")
+}
+
+pub async fn create_team(pool: &DbPool, name: &str) {
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let _ = team_repo
+        .create_team(CreateTeamRequest {
+            name: name.to_string(),
+            display_name: format!("Test Team {}", name),
+            description: Some("Team for platform API tests".to_string()),
+            owner_user_id: None,
+            settings: None,
+        })
+        .await;
+}
+
+/// Helper to create an API definition via import-openapi endpoint
+#[allow(dead_code)]
+pub async fn create_api_definition_via_openapi(
+    app: &PlatformApiApp,
+    token: &str,
+    team: &str,
+    domain: &str,
+    port: Option<u32>,
+) -> Response<Body> {
+    let openapi_spec = format!(
+        r#"
+openapi: 3.0.0
+info:
+  title: Test API
+  version: 1.0.0
+servers:
+  - url: https://{}
+paths:
+  /api/v1/test:
+    get:
+      summary: Test endpoint
+      responses:
+        '200':
+          description: Success
+"#,
+        domain
+    );
+
+    let mut uri = format!("/api/v1/api-definitions/from-openapi?team={}", team);
+    if let Some(p) = port {
+        uri.push_str(&format!("&port={}", p));
+    }
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(&uri)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("content-type", "application/x-yaml")
+        .body(Body::from(openapi_spec))
+        .expect("build request");
+
+    app.router().oneshot(request).await.expect("request")
 }

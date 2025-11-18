@@ -114,8 +114,6 @@ pub struct ApiDefinitionSummary {
     team: String,
     #[schema(example = "payments.example.com")]
     domain: String,
-    #[schema(example = false)]
-    listener_isolation: bool,
     #[schema(example = "/api/v1/api-definitions/api-def-abc123/bootstrap")]
     bootstrap_uri: Option<String>,
     #[schema(example = 1)]
@@ -132,7 +130,6 @@ impl From<ApiDefinitionData> for ApiDefinitionSummary {
             id: row.id.to_string(),
             team: row.team,
             domain: row.domain,
-            listener_isolation: row.listener_isolation,
             bootstrap_uri: row.bootstrap_uri,
             version: row.version,
             created_at: row.created_at.to_rfc3339(),
@@ -373,11 +370,8 @@ pub async fn update_api_definition_handler(
     verify_api_definition_access(existing_definition, &team_scopes).await?;
 
     // Convert to repository request
-    let update_request = UpdateApiDefinitionRequest {
-        domain: payload.domain,
-        tls_config: payload.tls,
-        target_listeners: payload.target_listeners,
-    };
+    let update_request =
+        UpdateApiDefinitionRequest { domain: payload.domain, tls_config: payload.tls };
 
     // Update the definition
     let updated = repo
@@ -440,13 +434,11 @@ pub async fn update_api_definition_handler(
         ApiError::from(err)
     })?;
 
-    // Refresh listeners if using listener isolation mode
-    if updated.listener_isolation {
-        state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
-            tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
-            ApiError::from(err)
-        })?;
-    }
+    // Refresh listeners
+    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+        tracing::error!(error = %err, "Failed to refresh xDS caches after API definition update (listeners)");
+        ApiError::from(err)
+    })?;
 
     tracing::info!(
         api_definition_id = %api_definition_id,
@@ -518,6 +510,56 @@ pub async fn append_route_handler(
     ))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/api-definitions/{id}",
+    params(
+        ("id" = String, Path, description = "API definition ID")
+    ),
+    responses(
+        (status = 204, description = "API definition successfully deleted, including all routes, generated listeners, routes, and clusters"),
+        (status = 403, description = "Forbidden: user does not have access to this team's API definition"),
+        (status = 404, description = "API definition not found or user does not have access"),
+        (status = 500, description = "Internal server error during deletion"),
+        (status = 503, description = "API definition repository not configured")
+    ),
+    tag = "platform-api"
+)]
+pub async fn delete_api_definition_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(api_definition_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    // Authorization: require api-definitions:write scope (delete is a write operation)
+    require_resource_access(&context, "api-definitions", "write", None)?;
+
+    // Verify team access to the API definition before deleting
+    let repo = state
+        .xds_state
+        .api_definition_repository
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::service_unavailable("API definition repository is not configured")
+        })?
+        .clone();
+
+    let existing_definition = repo
+        .get_definition(&crate::domain::ApiDefinitionId::from_str_unchecked(&api_definition_id))
+        .await
+        .map_err(ApiError::from)?;
+
+    let team_scopes = extract_team_scopes(&context);
+    verify_api_definition_access(existing_definition, &team_scopes).await?;
+
+    // Use materializer to properly clean up all associated resources
+    let materializer =
+        PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
+
+    materializer.delete_definition(&api_definition_id).await.map_err(ApiError::from)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Debug, serde::Deserialize, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
@@ -525,10 +567,7 @@ pub struct ImportOpenApiQuery {
     /// Team name for the API definition (only used for admin/resource-level users, ignored for team-scoped users)
     #[serde(default)]
     pub team: Option<String>,
-    /// Enable dedicated listener for this API (default: false, uses shared listener)
-    #[serde(default)]
-    pub listener_isolation: Option<bool>,
-    /// Port for the isolated listener (only used when listenerIsolation=true)
+    /// Port for the API listener
     #[serde(default)]
     pub port: Option<u32>,
 }
@@ -604,8 +643,6 @@ pub async fn import_openapi_handler(
 
     let document = parse_openapi_document(&bytes, content_type.as_ref())?;
 
-    let listener_isolation = params.listener_isolation.unwrap_or(false);
-
     // Team is REQUIRED for proper multi-tenancy and xDS filtering
     // Team-scoped users: automatically use their team
     // Admin users: must explicitly specify team in query param
@@ -616,13 +653,8 @@ pub async fn import_openapi_handler(
     })?;
 
     // Convert OpenAPI to Platform API definition spec
-    let spec = openapi_adapter::openapi_to_api_definition_spec(
-        document,
-        team_param,
-        listener_isolation,
-        params.port,
-    )
-    .map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let spec = openapi_adapter::openapi_to_api_definition_spec(document, team_param, params.port)
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
 
     // Use Platform API materializer (benefits: FK tracking, source tagging, bootstrap gen)
     let materializer =
