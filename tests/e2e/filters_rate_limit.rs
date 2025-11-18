@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -53,6 +53,9 @@ async fn filters_local_rate_limit_override_present() {
 
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
+
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
 
     let token = create_pat(vec![
         "api-definitions:write",

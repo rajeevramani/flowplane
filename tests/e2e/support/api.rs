@@ -6,9 +6,34 @@ use hyper_util::rt::TokioExecutor;
 use serde_json::json;
 use std::net::SocketAddr;
 
+use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{create_pool, DatabaseConfig};
+
+#[allow(dead_code)]
+pub async fn ensure_team_exists(team_name: &str) -> anyhow::Result<()> {
+    let pool = create_pool(&DatabaseConfig::from_env()).await?;
+    let repo = SqlxTeamRepository::new(pool);
+
+    // Check if team exists
+    if repo.get_team_by_name(team_name).await?.is_some() {
+        return Ok(());
+    }
+
+    // Create team if it doesn't exist
+    let request = CreateTeamRequest {
+        name: team_name.to_string(),
+        display_name: format!("E2E Test Team {}", team_name),
+        description: Some("Auto-created for E2E tests".to_string()),
+        owner_user_id: None,
+        settings: None,
+    };
+
+    repo.create_team(request).await?;
+    Ok(())
+}
 
 #[allow(dead_code)]
 pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {

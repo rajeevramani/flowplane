@@ -4,7 +4,7 @@ use http_body_util::BodyExt;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::env::ControlPlaneHandle;
 use support::ports::PortAllocator;
 
@@ -26,6 +26,9 @@ async fn negative_invalid_payload_rejected() {
     let _cp =
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
+
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
 
     let token =
         create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
