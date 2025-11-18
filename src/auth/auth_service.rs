@@ -117,6 +117,18 @@ impl AuthService {
         metrics::record_authentication("success").await;
         info!(token_id = %token.id, "personal access token authenticated");
 
-        Ok(AuthContext::new(token.id.clone(), token.name, token.scopes))
+        // Use with_user if the token has user information (for proper user-scoped filtering)
+        // Otherwise use new (for system tokens or tokens without user association)
+        Ok(if let (Some(user_id), Some(user_email)) = (&token.user_id, &token.user_email) {
+            AuthContext::with_user(
+                token.id.clone(),
+                token.name,
+                user_id.clone(),
+                user_email.clone(),
+                token.scopes,
+            )
+        } else {
+            AuthContext::new(token.id.clone(), token.name, token.scopes)
+        })
     }
 }

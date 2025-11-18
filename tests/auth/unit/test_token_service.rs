@@ -33,7 +33,10 @@ async fn setup_pool() -> DbPool {
             max_usage_count INTEGER,
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME
+            locked_until DATETIME,
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -96,6 +99,8 @@ fn sample_create_request() -> CreateTokenRequest {
         expires_at: None,
         scopes: vec!["clusters:read".into()],
         created_by: Some("unit".into()),
+        user_id: None,
+        user_email: None,
     }
 }
 
@@ -122,6 +127,8 @@ async fn create_token_without_expiry_defaults_to_30_days() {
         expires_at: None, // Explicitly no expiry provided
         scopes: vec!["clusters:read".into()],
         created_by: Some("unit".into()),
+        user_id: None,
+        user_email: None,
     };
 
     let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();

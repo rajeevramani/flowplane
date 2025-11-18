@@ -83,18 +83,17 @@ pub async fn create_cluster_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
-    // Authorization: require clusters:write scope
-    require_resource_access(&context, "clusters", "write", None)?;
-
     use validator::Validate;
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
-    let ClusterConfigParts { name, service_name, config } = cluster_parts_from_body(payload);
+    // Verify user has write access to the specified team
+    require_resource_access(&context, "clusters", "write", Some(&payload.team))?;
 
-    // Extract team from auth context
-    // - Team-scoped users create resources for their team
-    // - Admin/resource-level users create global resources (team = None)
-    let team = extract_team_scopes(&context).into_iter().next();
+    let ClusterConfigParts { name, service_name, config } =
+        cluster_parts_from_body(payload.clone());
+
+    // Use explicit team from request
+    let team = Some(payload.team.clone());
 
     let service = ClusterService::new(state.xds_state.clone());
     let created = service
@@ -106,6 +105,7 @@ pub async fn create_cluster_handler(
         StatusCode::CREATED,
         Json(types::ClusterResponse {
             name: created.name.clone(),
+            team: created.team.unwrap_or_else(|| "unknown".to_string()),
             service_name: created.service_name,
             config,
         }),
@@ -340,6 +340,7 @@ mod tests {
 
     fn sample_request() -> CreateClusterBody {
         CreateClusterBody {
+            team: "test-team".into(),
             name: "api-cluster".into(),
             service_name: None,
             endpoints: vec![EndpointRequest { host: "10.0.0.1".into(), port: 8080 }],
@@ -786,7 +787,8 @@ mod tests {
     #[tokio::test]
     async fn team_scoped_user_creates_team_scoped_cluster() {
         let state = setup_state().await;
-        let body = sample_request();
+        let mut body = sample_request();
+        body.team = "team-a".to_string(); // Explicitly set team to match user's scope
 
         // Team-scoped user creates a cluster
         let team_a_context = team_context("team-a", "clusters", &["write"]);
@@ -812,29 +814,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_user_creates_global_cluster() {
+    async fn admin_user_creates_team_owned_cluster() {
         let state = setup_state().await;
-        let body = sample_request();
+        let mut body = sample_request();
+        body.team = "platform".to_string(); // Admin explicitly specifies team
 
-        // Admin creates a cluster
+        // Admin creates a cluster for a specific team
         let (_status, Json(created)) =
             create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
                 .await
                 .expect("create cluster");
 
-        // Verify the cluster is global (no team)
+        // Verify the cluster is owned by the platform team
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
-        assert_eq!(stored.team, None);
+        assert_eq!(stored.team, Some("platform".to_string()));
 
-        // Verify that team users can access global clusters
-        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        // Verify that team users with platform team scope can access it
+        let platform_team_context = team_context("platform", "clusters", &["read"]);
         let result = get_cluster_handler(
+            State(state.clone()),
+            Extension(platform_team_context),
+            Path(created.name.clone()),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        // Verify that team-a users cannot access platform team cluster
+        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let result_team_a = get_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
             Path(created.name.clone()),
         )
         .await;
-        assert!(result.is_ok());
+        assert!(result_team_a.is_err());
     }
 }

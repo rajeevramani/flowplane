@@ -105,13 +105,14 @@ flowplane-cli cluster list --token-file ~/.flowplane/token
 
 ## Core Commands
 
-The CLI is organized into seven main command groups:
+The CLI is organized into eight main command groups:
 
 | Command | Description |
 |---------|-------------|
 | `database` | Database migration and schema management |
 | `auth` | Personal access token (PAT) administration |
 | `config` | CLI configuration management |
+| `team` | Team management and multi-tenancy administration |
 | `api` | API definition and OpenAPI import management |
 | `cluster` | Cluster (upstream service) management |
 | `listener` | Listener (network socket) management |
@@ -249,6 +250,87 @@ flowplane-cli auth revoke-token pat_abc123xyz
 # Generate new secret for existing token
 flowplane-cli auth rotate-token pat_abc123xyz
 ```
+
+## Team Management
+
+Manage teams for multi-tenant resource isolation. Teams are created and managed via the admin API and provide boundaries for resources and user access control. All team operations require admin:all scope.
+
+### Create Teams
+
+```bash
+# Create from JSON file
+cat > new-team.json <<EOF
+{
+  "name": "platform",
+  "displayName": "Platform Team",
+  "description": "Core platform infrastructure team",
+  "ownerUserId": "user_123abc"
+}
+EOF
+
+flowplane-cli team create --file new-team.json --token fp_pat_admin_token
+
+# Create with YAML output
+flowplane-cli team create --file new-team.json --output yaml
+```
+
+**Team Name Requirements:**
+- Must be lowercase letters, numbers, and hyphens only
+- Format: `^[a-z0-9]+(-[a-z0-9]+)*$`
+- Examples: `platform`, `backend-api`, `frontend-team`
+
+### List Teams
+
+```bash
+# List all teams (table format)
+flowplane-cli team list
+
+# List with pagination
+flowplane-cli team list --limit 20 --offset 0
+
+# List with JSON output
+flowplane-cli team list --output json
+```
+
+### Get Team Details
+
+```bash
+# Get team by ID
+flowplane-cli team get team_abc123xyz
+
+# Get with YAML output
+flowplane-cli team get team_abc123xyz --output yaml
+```
+
+### Update Teams
+
+```bash
+# Update team details
+cat > update-team.json <<EOF
+{
+  "displayName": "Updated Platform Team",
+  "description": "Updated description",
+  "status": "active"
+}
+EOF
+
+flowplane-cli team update team_abc123xyz --file update-team.json
+```
+
+### Delete Teams
+
+```bash
+# Delete team (with confirmation prompt)
+flowplane-cli team delete team_abc123xyz
+
+# Delete without confirmation
+flowplane-cli team delete team_abc123xyz --yes
+```
+
+**Important Notes:**
+- Team deletion will fail if the team owns any resources (listeners, clusters, routes, API definitions) due to foreign key constraints
+- Remove all team resources before deleting the team
+- Team memberships are automatically cleaned up when a team is deleted
 
 ## Cluster Management
 

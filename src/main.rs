@@ -4,7 +4,6 @@ use flowplane::{
     api::start_api_server,
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
-    openapi::defaults::ensure_default_gateway_resources,
     services::{LearningSessionService, SchemaAggregator, WebhookService},
     storage::{
         create_pool,
@@ -179,8 +178,6 @@ async fn main() -> Result<()> {
     if let Err(e) = learning_session_service.sync_active_sessions_with_access_log_service().await {
         error!(error = %e, "Failed to sync active sessions with Access Log Service on startup");
     }
-
-    ensure_default_gateway_resources(&state).await?;
 
     let xds_state = state.clone();
     let xds_task = async move {

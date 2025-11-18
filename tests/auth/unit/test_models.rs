@@ -35,6 +35,8 @@ fn token_has_scope_helper() {
         created_at: Utc::now(),
         updated_at: Utc::now(),
         scopes: vec!["listeners:write".into(), "listeners:read".into()],
+        user_id: None,
+        user_email: None,
     };
 
     assert!(token.has_scope("listeners:read"));

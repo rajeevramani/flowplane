@@ -354,6 +354,12 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
     if parts.len() >= 3 && parts[0] == "api" && parts[1] == "v1" {
+        // Special case: /api/v1/teams (list teams) should be accessible to all authenticated users
+        // This endpoint returns different results based on admin status but doesn't require specific scopes
+        if parts[2] == "teams" && parts.len() == 3 {
+            return None;
+        }
+
         // Special case: /api/v1/teams/{team}/bootstrap is an api-definitions resource
         // This allows tokens with api-definitions:read to access team bootstrap
         if parts[2] == "teams" && parts.len() >= 4 && parts.last() == Some(&"bootstrap") {
@@ -512,6 +518,13 @@ mod tests {
             resource_from_path("/api/v1/teams/engineering/bootstrap"),
             Some("api-definitions"),
             "team bootstrap should be treated as api-definitions resource"
+        );
+
+        // List teams endpoint should not require specific scope (accessible to all authenticated users)
+        assert_eq!(
+            resource_from_path("/api/v1/teams"),
+            None,
+            "list teams endpoint should be accessible to all authenticated users"
         );
 
         // But other team endpoints should return "teams"

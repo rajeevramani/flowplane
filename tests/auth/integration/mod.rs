@@ -1,8 +1,12 @@
+mod test_admin_team_management;
 mod test_audit_logging;
+mod test_audit_user_context;
 mod test_auth_middleware;
 mod test_authorization;
 mod test_concurrent_auth;
+mod test_login_scope_resolution;
 mod test_rotation_workflows;
 mod test_session_flow;
 mod test_token_lifecycle;
 mod test_token_security;
+mod test_user_management;

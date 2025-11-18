@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -54,6 +54,9 @@ async fn filters_local_rate_limit_override_present() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     let token = create_pat(vec![
         "api-definitions:write",
         "api-definitions:read",
@@ -71,31 +74,51 @@ async fn filters_local_rate_limit_override_present() {
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
     let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
+            .parse()
+            .unwrap();
     let body = serde_json::json!({
-        "team": "e2e",
-        "domain": domain,
-        "listenerIsolation": false,
-        "routes": [
-            { // Route A: no per-route override → inherits global RL
-                "match": {"prefix": route_path},
-                "cluster": {"name": format!("{}-a", namer.test_id()), "endpoint": endpoint},
-                "timeoutSeconds": 3
+        "openapi": "3.0.0",
+        "info": {
+            "title": "E2E Rate Limit Test API",
+            "version": "1.0.0",
+            "x-flowplane-domain": domain
+        },
+        "servers": [
+            {
+                "url": format!("http://{}", endpoint)
+            }
+        ],
+        "paths": {
+            route_path.clone(): {
+                "get": {
+                    "operationId": format!("{}-a", namer.test_id()),
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
+                    }
+                }
             },
-            { // Route B: disable RL via per-route filter_enabled 0
-                "match": {"prefix": format!("{}/norate", route_path)},
-                "cluster": {"name": format!("{}-b", namer.test_id()), "endpoint": endpoint},
-                "timeoutSeconds": 3,
-                "filters": {
-                    "rate_limit": {
-                        "stat_prefix": "rl_route_b",
-                        "token_bucket": {"max_tokens": 1, "tokens_per_fill": 1, "fill_interval_ms": 60000},
-                        "filter_enabled": {"numerator": 0, "denominator": "hundred"},
-                        "status_code": 429
+            format!("{}/norate", route_path): {
+                "get": {
+                    "operationId": format!("{}-b", namer.test_id()),
+                    "x-flowplane-filters": {
+                        "rate_limit": {
+                            "stat_prefix": "rl_route_b",
+                            "token_bucket": {"max_tokens": 1, "tokens_per_fill": 1, "fill_interval_ms": 60000},
+                            "filter_enabled": {"numerator": 0, "denominator": "hundred"},
+                            "status_code": 429
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
                     }
                 }
             }
-        ]
+        }
     });
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)

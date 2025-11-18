@@ -172,12 +172,18 @@ impl FlowplaneClient {
 
     // === Bootstrap API Methods ===
 
-    /// Generate a setup token via bootstrap initialization
+    /// Generate a setup token via bootstrap initialization and create first admin user
     pub async fn bootstrap_initialize(
         &self,
-        admin_email: &str,
+        email: &str,
+        password: &str,
+        name: &str,
     ) -> Result<BootstrapInitializeResponse> {
-        let request = BootstrapInitializeRequest { admin_email: admin_email.to_string() };
+        let request = BootstrapInitializeRequest {
+            email: email.to_string(),
+            password: password.to_string(),
+            name: name.to_string(),
+        };
 
         self.post_json("/api/v1/bootstrap/initialize", &request).await
     }
@@ -214,7 +220,9 @@ impl FlowplaneClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapInitializeRequest {
-    pub admin_email: String,
+    pub email: String,
+    pub password: String,
+    pub name: String,
 }
 
 /// Response from bootstrap initialization
@@ -290,11 +298,17 @@ mod tests {
 
     #[test]
     fn test_bootstrap_initialize_request_serialization() {
-        let request = BootstrapInitializeRequest { admin_email: "admin@example.com".to_string() };
+        let request = BootstrapInitializeRequest {
+            email: "admin@example.com".to_string(),
+            password: "secure123".to_string(),
+            name: "Admin User".to_string(),
+        };
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("adminEmail"));
+        assert!(json.contains("email"));
         assert!(json.contains("admin@example.com"));
+        assert!(json.contains("password"));
+        assert!(json.contains("name"));
     }
 
     #[test]
@@ -406,13 +420,18 @@ mod tests {
 
     #[test]
     fn test_dto_round_trip_bootstrap_request() {
-        let original =
-            BootstrapInitializeRequest { admin_email: "roundtrip@example.com".to_string() };
+        let original = BootstrapInitializeRequest {
+            email: "roundtrip@example.com".to_string(),
+            password: "secure456".to_string(),
+            name: "Test Admin".to_string(),
+        };
 
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: BootstrapInitializeRequest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.admin_email, original.admin_email);
+        assert_eq!(deserialized.email, original.email);
+        assert_eq!(deserialized.password, original.password);
+        assert_eq!(deserialized.name, original.name);
     }
 
     #[test]

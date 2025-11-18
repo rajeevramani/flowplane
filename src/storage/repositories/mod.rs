@@ -12,7 +12,9 @@ pub mod learning_session;
 pub mod listener;
 pub mod reporting;
 pub mod route;
+pub mod team;
 pub mod token;
+pub mod user;
 
 // Re-export all repository types and their associated request/response types
 pub use aggregated_schema::{
@@ -22,7 +24,7 @@ pub use api_definition::{
     ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, CreateApiDefinitionRequest,
     CreateApiRouteRequest, UpdateBootstrapMetadataRequest,
 };
-pub use audit_log::{AuditEvent, AuditLogRepository};
+pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
 pub use inferred_schema::{InferredSchemaData, InferredSchemaRepository};
 pub use learning_session::{
@@ -34,4 +36,8 @@ pub use listener::{
 };
 pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
+pub use team::{SqlxTeamRepository, TeamRepository};
 pub use token::{SqlxTokenRepository, TokenRepository};
+pub use user::{
+    SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
+};

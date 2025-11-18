@@ -21,7 +21,9 @@ use crate::auth::{
     token_service::{TokenSecretResponse, TokenService},
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
+use crate::domain::UserId;
 use crate::errors::Error;
+use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
 fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
@@ -63,12 +65,21 @@ pub struct CreateTokenBody {
 
 impl CreateTokenBody {
     fn into_request(self, created_by: &AuthContext) -> CreateTokenRequest {
+        // Use user_id if available (for user sessions), otherwise fall back to token_id (for setup tokens)
+        let creator = if let Some(user_id) = &created_by.user_id {
+            format!("user:{}", user_id)
+        } else {
+            created_by.token_id.to_string()
+        };
+
         CreateTokenRequest {
             name: self.name,
             description: self.description,
             expires_at: self.expires_at,
             scopes: self.scopes,
-            created_by: Some(created_by.token_id.to_string()),
+            created_by: Some(creator),
+            user_id: created_by.user_id.clone(),
+            user_email: created_by.user_email.clone(),
         }
     }
 }
@@ -160,8 +171,14 @@ pub async fn list_tokens_handler(
     let limit = params.limit.unwrap_or(50).clamp(1, 1000);
     let offset = params.offset.unwrap_or(0).max(0);
 
+    // Filter tokens by current user - only show tokens created by this user
+    let created_by_filter = context.user_id.as_ref().map(|user_id| format!("user:{}", user_id));
+
     let service = token_service_for_state(&state)?;
-    let tokens = service.list_tokens(limit, offset).await.map_err(convert_error)?;
+    let tokens = service
+        .list_tokens(limit, offset, created_by_filter.as_deref())
+        .await
+        .map_err(convert_error)?;
 
     Ok(Json(tokens))
 }
@@ -382,6 +399,10 @@ pub async fn create_session_handler(
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfoResponse {
     pub session_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub email: String,
+    pub is_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -424,8 +445,64 @@ pub async fn get_session_info_handler(
     // Validate session
     let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
 
+    // Get user information - need to find the user associated with this session
+    let (user_id_str, name, email, is_admin) =
+        match &session_info.token.created_by {
+            Some(created_by) if created_by.starts_with("user:") => {
+                // Session created from login - extract user ID
+                let user_id_str = created_by.strip_prefix("user:").unwrap();
+
+                let cluster_repo =
+                    state.xds_state.cluster_repository.as_ref().cloned().ok_or_else(|| {
+                        ApiError::service_unavailable("User repository unavailable")
+                    })?;
+                let pool = cluster_repo.pool().clone();
+                let user_repo = SqlxUserRepository::new(pool);
+
+                let user_id = UserId::from_string(user_id_str.to_string());
+                let user = user_repo.get_user(&user_id).await.map_err(convert_error)?.ok_or_else(
+                    || ApiError::Internal("User not found for session token".to_string()),
+                )?;
+
+                (user_id_str.to_string(), user.name.clone(), user.email.clone(), user.is_admin)
+            }
+            Some(created_by) if created_by.starts_with("setup_token:") => {
+                // For bootstrap sessions, we need to find the admin user
+                let cluster_repo =
+                    state.xds_state.cluster_repository.as_ref().cloned().ok_or_else(|| {
+                        ApiError::service_unavailable("User repository unavailable")
+                    })?;
+                let pool = cluster_repo.pool().clone();
+                let user_repo = SqlxUserRepository::new(pool);
+
+                // Get all users and find the admin (during bootstrap, there's only one user)
+                let users = user_repo.list_users(100, 0).await.map_err(convert_error)?;
+                let admin_user = users
+                    .iter()
+                    .find(|u| u.is_admin)
+                    .ok_or_else(|| ApiError::Internal("No admin user found".to_string()))?;
+
+                (
+                    admin_user.id.as_str().to_string(),
+                    admin_user.name.clone(),
+                    admin_user.email.clone(),
+                    admin_user.is_admin,
+                )
+            }
+            Some(_) => {
+                return Err(ApiError::Internal("Unknown session token creator format".to_string()))
+            }
+            None => {
+                return Err(ApiError::Internal("Session token has no associated user".to_string()))
+            }
+        };
+
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
+        user_id: user_id_str,
+        name,
+        email,
+        is_admin,
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
@@ -515,4 +592,133 @@ pub async fn logout_handler(
         .into();
 
     Ok(LogoutResponse { cookie: clear_cookie })
+}
+
+// Email/Password Login Endpoint
+
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginBody {
+    #[validate(email)]
+    pub email: String,
+    #[validate(length(min = 1))]
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResponseBody {
+    pub session_id: String,
+    pub csrf_token: String,
+    pub expires_at: DateTime<Utc>,
+    pub user_id: String,
+    pub user_email: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
+/// Response wrapper that includes both JSON body and Set-Cookie header
+pub struct LoginResponse {
+    body: LoginResponseBody,
+    cookie: Cookie<'static>,
+    csrf_token: String,
+}
+
+impl IntoResponse for LoginResponse {
+    fn into_response(self) -> Response {
+        let mut response = (StatusCode::OK, Json(self.body)).into_response();
+
+        // Set the session cookie
+        if let Ok(cookie_value) = self.cookie.to_string().parse() {
+            response.headers_mut().insert(header::SET_COOKIE, cookie_value);
+        }
+
+        // Set the CSRF token header
+        if let Ok(csrf_value) = self.csrf_token.parse() {
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static("x-csrf-token"), csrf_value);
+        }
+
+        response
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "Login successful", body = LoginResponseBody,
+         headers(
+             ("Set-Cookie" = String, description = "Session cookie (fp_session)"),
+             ("X-CSRF-Token" = String, description = "CSRF token for state-changing requests")
+         )
+        ),
+        (status = 400, description = "Invalid request format"),
+        (status = 401, description = "Invalid credentials or account not active"),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "auth"
+)]
+pub async fn login_handler(
+    State(state): State<ApiState>,
+    Json(payload): Json<LoginBody>,
+) -> Result<LoginResponse, ApiError> {
+    use crate::auth::login_service::LoginService;
+    use crate::auth::LoginRequest;
+
+    // Validate request
+    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Get database pool
+    let pool = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?
+        .pool()
+        .clone();
+
+    // Create login service
+    let login_service = LoginService::with_sqlx(pool.clone());
+
+    // Perform login
+    let login_request = LoginRequest { email: payload.email, password: payload.password };
+    let (user, scopes) = login_service.login(&login_request).await.map_err(convert_error)?;
+
+    // Create session service
+    let session_service = session_service_for_state(&state)?;
+
+    // Create session from user authentication
+    let session_response = session_service
+        .create_session_from_user(&user.id, &user.email, scopes.clone())
+        .await
+        .map_err(convert_error)?;
+
+    // Extract teams from scopes
+    let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
+
+    // Build secure session cookie
+    let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true) // TODO: Make this configurable for development
+        .same_site(SameSite::Strict)
+        .expires(
+            time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
+        )
+        .into();
+
+    let response_body = LoginResponseBody {
+        session_id: session_response.session_id,
+        csrf_token: session_response.csrf_token.clone(),
+        expires_at: session_response.expires_at,
+        user_id: user.id.to_string(),
+        user_email: user.email,
+        teams,
+        scopes,
+    };
+
+    Ok(LoginResponse { body: response_body, cookie, csrf_token: session_response.csrf_token })
 }

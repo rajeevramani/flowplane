@@ -11,12 +11,15 @@ use validator::Validate;
 
 use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
+use crate::auth::hashing;
 use crate::auth::models::{NewPersonalAccessToken, TokenStatus};
 use crate::auth::setup_token::SetupToken;
-use crate::domain::TokenId;
+use crate::auth::user::{NewUser, UserStatus};
+use crate::domain::{TokenId, UserId};
 use crate::errors::Error;
-use crate::storage::repository::{
-    AuditEvent, AuditLogRepository, SqlxTokenRepository, TokenRepository,
+use crate::storage::repositories::{
+    AuditEvent, AuditLogRepository, SqlxTokenRepository, SqlxUserRepository, TokenRepository,
+    UserRepository,
 };
 use std::sync::Arc;
 
@@ -26,7 +29,15 @@ use std::sync::Arc;
 pub struct BootstrapInitializeRequest {
     /// Email address for the system administrator
     #[validate(email)]
-    pub admin_email: String,
+    pub email: String,
+
+    /// Password for the admin user account
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
+    pub password: String,
+
+    /// Full name of the system administrator
+    #[validate(length(min = 1, message = "Name cannot be empty"))]
+    pub name: String,
 }
 
 /// Response from bootstrap initialization
@@ -48,6 +59,17 @@ pub struct BootstrapInitializeResponse {
 
     /// Next step instructions
     pub next_steps: Vec<String>,
+}
+
+/// Response from bootstrap status check
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapStatusResponse {
+    /// Whether the system needs initialization (true = needs bootstrap, false = already initialized)
+    pub needs_initialization: bool,
+
+    /// Optional message describing current state
+    pub message: String,
 }
 
 fn convert_error(err: Error) -> ApiError {
@@ -101,11 +123,14 @@ pub async fn bootstrap_initialize_handler(
 
     // Create repositories
     let token_repo = SqlxTokenRepository::new(pool.clone());
+    let user_repo = SqlxUserRepository::new(pool.clone());
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
 
-    // CRITICAL: Check if system is already initialized (has active tokens)
+    // CRITICAL: Check if system is already initialized (has active tokens OR users exist)
     let active_count = token_repo.count_active_tokens().await.map_err(convert_error)?;
-    if active_count > 0 {
+    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+
+    if active_count > 0 || user_count > 0 {
         return Err(ApiError::forbidden(
             "System already initialized. Bootstrap is only allowed for initial setup.",
         ));
@@ -122,6 +147,35 @@ pub async fn bootstrap_initialize_handler(
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
 
+    // Create the first admin user
+    let user_id = UserId::new();
+    let password_hash = hashing::hash_password(&payload.password).map_err(convert_error)?;
+
+    let new_user = NewUser {
+        id: user_id.clone(),
+        email: payload.email.clone(),
+        password_hash,
+        name: payload.name.clone(),
+        status: UserStatus::Active,
+        is_admin: true,
+    };
+
+    let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
+
+    // Log admin user creation
+    audit_repository
+        .record_auth_event(AuditEvent::token(
+            "bootstrap.admin_user_created",
+            Some(admin_user.id.as_str()),
+            Some(&admin_user.email),
+            serde_json::json!({
+                "name": admin_user.name,
+                "is_admin": admin_user.is_admin,
+            }),
+        ))
+        .await
+        .map_err(convert_error)?;
+
     // Generate setup token
     let setup_token_generator = SetupToken::new();
     let (token_value, hashed_secret, expires_at) =
@@ -135,50 +189,56 @@ pub async fn bootstrap_initialize_handler(
             convert_error(Error::internal("Failed to extract token ID from generated setup token"))
         })?;
 
-    // Store setup token in database
+    // Store setup token in database for the admin user
     let new_token = NewPersonalAccessToken {
         id: TokenId::from_string(token_id.to_string()),
-        name: format!("bootstrap-setup-token-{}", &payload.admin_email),
+        name: format!("bootstrap-setup-token-{}", &payload.email),
         description: Some(format!(
-            "Setup token for bootstrap initialization (admin: {}, expires in {} days)",
-            payload.admin_email, ttl_days
+            "Setup token for bootstrap initialization (admin: {}, user_id: {}, expires in {} days)",
+            payload.email, admin_user.id, ttl_days
         )),
         hashed_secret,
         status: TokenStatus::Active,
         expires_at: Some(expires_at),
-        created_by: Some("bootstrap".to_string()),
+        created_by: Some(format!("bootstrap:user:{}", admin_user.id)),
         scopes: vec!["bootstrap:initialize".to_string()],
         is_setup_token: true,
         max_usage_count: Some(max_usage),
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: Some(admin_user.id.clone()), // Setup token is for this admin user
+        user_email: Some(payload.email.clone()),
     };
 
     token_repo.create_token(new_token).await.map_err(convert_error)?;
 
-    // Log audit event
+    // Log audit event for setup token generation
     audit_repository
-        .record_auth_event(AuditEvent {
-            action: "bootstrap.setup_token_generated".to_string(),
-            resource_id: Some(token_id.to_string()),
-            resource_name: Some(format!("bootstrap-setup-token-{}", &payload.admin_email)),
-            metadata: serde_json::json!({
-                "admin_email": payload.admin_email,
+        .record_auth_event(AuditEvent::token(
+            "bootstrap.setup_token_generated",
+            Some(token_id),
+            Some(&format!("bootstrap-setup-token-{}", &payload.email)),
+            serde_json::json!({
+                "admin_email": payload.email,
+                "admin_user_id": admin_user.id.to_string(),
+                "admin_name": payload.name,
                 "ttl_days": ttl_days,
                 "max_usage": max_usage,
                 "expires_at": expires_at,
             }),
-        })
+        ))
         .await
         .map_err(convert_error)?;
 
     // Build response with next steps
     let next_steps = vec![
-        "Use this setup token to create a session by calling POST /api/v1/auth/sessions".to_string(),
-        format!("Example: curl -X POST http://localhost:8080/api/v1/auth/sessions -H 'Content-Type: application/json' -d '{{\"setupToken\": \"{}\"}}'", token_value),
-        "The session will include a session cookie and CSRF token for authenticated requests".to_string(),
-        "IMPORTANT: This setup token is single-use and will be revoked after creating a session".to_string(),
+        "Admin user created successfully. You can now login with your email and password.".to_string(),
+        format!("Email: {}", payload.email),
+        "Use POST /api/v1/auth/login to authenticate with your credentials.".to_string(),
+        format!("Example: curl -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' -d '{{\"email\": \"{}\", \"password\": \"YOUR_PASSWORD\"}}'", payload.email),
+        "The login response will include a session cookie and CSRF token for authenticated requests.".to_string(),
+        "Alternatively, use the setup token to create a session: POST /api/v1/auth/sessions".to_string(),
     ];
 
     Ok((
@@ -188,10 +248,56 @@ pub async fn bootstrap_initialize_handler(
             expires_at,
             max_usage_count: max_usage,
             message: format!(
-                "Setup token generated successfully for {}. Use this token to create your first session.",
-                payload.admin_email
+                "Bootstrap complete! Admin user '{}' created successfully. You can now login with your credentials.",
+                payload.name
             ),
             next_steps,
         }),
     ))
+}
+
+/// Bootstrap status endpoint
+///
+/// This endpoint checks whether the system needs initialization.
+/// Returns `needs_initialization: true` if no users exist in the system.
+///
+/// # Security
+///
+/// - This endpoint is public (no authentication required)
+/// - Only reveals whether the system has users, not any sensitive data
+/// - Safe to expose as it's needed before authentication is possible
+#[utoipa::path(
+    get,
+    path = "/api/v1/bootstrap/status",
+    responses(
+        (status = 200, description = "Bootstrap status retrieved successfully", body = BootstrapStatusResponse),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "bootstrap"
+)]
+pub async fn bootstrap_status_handler(
+    State(state): State<ApiState>,
+) -> Result<Json<BootstrapStatusResponse>, ApiError> {
+    // Get database pool
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Repository unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+
+    // Create user repository
+    let user_repo = SqlxUserRepository::new(pool.clone());
+
+    // Check if any users exist
+    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+
+    let (needs_initialization, message) = if user_count == 0 {
+        (true, "System requires initialization. Please create the first admin user.".to_string())
+    } else {
+        (false, "System is already initialized.".to_string())
+    };
+
+    Ok(Json(BootstrapStatusResponse { needs_initialization, message }))
 }

@@ -20,20 +20,23 @@ use crate::xds::XdsState;
 use super::{
     docs,
     handlers::{
-        append_route_handler, bootstrap_initialize_handler, compare_aggregated_schemas_handler,
-        create_api_definition_handler, create_cluster_handler, create_learning_session_handler,
-        create_listener_handler, create_route_handler, create_session_handler,
-        create_token_handler, delete_cluster_handler, delete_learning_session_handler,
-        delete_listener_handler, delete_route_handler, export_aggregated_schema_handler,
+        add_team_membership, admin_create_team, admin_delete_team, admin_get_team,
+        admin_list_teams, admin_update_team, append_route_handler, bootstrap_initialize_handler,
+        bootstrap_status_handler, compare_aggregated_schemas_handler, create_cluster_handler,
+        create_learning_session_handler, create_listener_handler, create_route_handler,
+        create_session_handler, create_token_handler, create_user, delete_api_definition_handler,
+        delete_cluster_handler, delete_learning_session_handler, delete_listener_handler,
+        delete_route_handler, delete_user, export_aggregated_schema_handler,
         get_aggregated_schema_handler, get_api_definition_handler, get_cluster_handler,
         get_learning_session_handler, get_listener_handler, get_route_handler,
-        get_session_info_handler, get_team_bootstrap_handler, get_token_handler, health_handler,
-        import_openapi_handler, list_aggregated_schemas_handler, list_api_definitions_handler,
-        list_clusters_handler, list_learning_sessions_handler, list_listeners_handler,
-        list_route_flows_handler, list_routes_handler, list_tokens_handler, logout_handler,
-        revoke_token_handler, rotate_token_handler, update_api_definition_handler,
-        update_cluster_handler, update_listener_handler, update_route_handler,
-        update_token_handler,
+        get_session_info_handler, get_team_bootstrap_handler, get_token_handler, get_user,
+        health_handler, import_openapi_handler, list_aggregated_schemas_handler,
+        list_api_definitions_handler, list_audit_logs, list_clusters_handler,
+        list_learning_sessions_handler, list_listeners_handler, list_route_flows_handler,
+        list_routes_handler, list_teams_handler, list_tokens_handler, list_user_teams, list_users,
+        login_handler, logout_handler, remove_team_membership, revoke_token_handler,
+        rotate_token_handler, update_api_definition_handler, update_cluster_handler,
+        update_listener_handler, update_route_handler, update_token_handler, update_user,
     },
 };
 
@@ -130,12 +133,13 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/routes/{name}", delete(delete_route_handler))
         // API definition endpoints
         .route("/api/v1/api-definitions", get(list_api_definitions_handler))
-        .route("/api/v1/api-definitions", post(create_api_definition_handler))
         .route("/api/v1/api-definitions/from-openapi", post(import_openapi_handler))
         .route("/api/v1/api-definitions/{id}", get(get_api_definition_handler))
         .route("/api/v1/api-definitions/{id}", patch(update_api_definition_handler))
+        .route("/api/v1/api-definitions/{id}", delete(delete_api_definition_handler))
         .route("/api/v1/api-definitions/{id}/routes", post(append_route_handler))
         // Team endpoints
+        .route("/api/v1/teams", get(list_teams_handler))
         .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
@@ -155,6 +159,23 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
+        // User management endpoints (admin only)
+        .route("/api/v1/users", get(list_users))
+        .route("/api/v1/users", post(create_user))
+        .route("/api/v1/users/{id}", get(get_user))
+        .route("/api/v1/users/{id}", put(update_user))
+        .route("/api/v1/users/{id}", delete(delete_user))
+        .route("/api/v1/users/{id}/teams", get(list_user_teams))
+        .route("/api/v1/users/{id}/teams", post(add_team_membership))
+        .route("/api/v1/users/{id}/teams/{team}", delete(remove_team_membership))
+        // Admin team management endpoints (admin only)
+        .route("/api/v1/admin/teams", get(admin_list_teams))
+        .route("/api/v1/admin/teams", post(admin_create_team))
+        .route("/api/v1/admin/teams/{id}", get(admin_get_team))
+        .route("/api/v1/admin/teams/{id}", put(admin_update_team))
+        .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
+        // Audit log endpoints (admin only)
+        .route("/api/v1/audit-logs", get(list_audit_logs))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
@@ -163,7 +184,9 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     // Public endpoints (no authentication required)
     let public_api = Router::new()
         .route("/health", get(health_handler))
+        .route("/api/v1/bootstrap/status", get(bootstrap_status_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
+        .route("/api/v1/auth/login", post(login_handler))
         .route("/api/v1/auth/sessions", post(create_session_handler))
         .route("/api/v1/auth/sessions/me", get(get_session_info_handler))
         .route("/api/v1/auth/sessions/logout", post(logout_handler))

@@ -350,7 +350,7 @@ impl ListenerRepository {
     pub async fn list_by_teams(
         &self,
         teams: &[String],
-        include_default: bool,
+        _include_default: bool, // Deprecated: always includes default resources
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ListenerData>> {
@@ -370,12 +370,8 @@ impl ListenerRepository {
             .collect::<Vec<_>>()
             .join(", ");
 
-        // Conditionally include NULL team listeners based on include_default flag
-        let where_clause = if include_default {
-            format!("WHERE team IN ({}) OR team IS NULL", placeholders)
-        } else {
-            format!("WHERE team IN ({})", placeholders)
-        };
+        // Always include NULL team listeners (default resources)
+        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
 
         let query_str = format!(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at \

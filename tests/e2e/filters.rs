@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -55,6 +55,9 @@ async fn filters_cors_and_jwt_overrides() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     let token = create_pat(vec![
         "api-definitions:write",
         "api-definitions:read",
@@ -67,28 +70,43 @@ async fn filters_cors_and_jwt_overrides() {
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());
 
     // Craft a payload with filter overrides: CORS and JWT authn per-route settings.
-    // The test helper builds a default route; we'll inline the POST manually here for filters.
+    // Create API definition using OpenAPI import with x-flowplane filter extensions
     let connector = hyper_util::client::legacy::connect::HttpConnector::new();
     let client: hyper_util::client::legacy::Client<_, _> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
     let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
+            .parse()
+            .unwrap();
     let body = serde_json::json!({
-        "team": "e2e",
-        "domain": domain,
-        "listenerIsolation": false,
-        "routes": [
+        "openapi": "3.0.0",
+        "info": {
+            "title": "E2E Filters Test API",
+            "version": "1.0.0",
+            "x-flowplane-domain": domain
+        },
+        "servers": [
             {
-                "match": {"prefix": route_path},
-                "cluster": {"name": namer.test_id(), "endpoint": endpoint},
-                "timeoutSeconds": 3,
-                "filters": {
-                    "cors": "allow-authenticated",
-                    "authn": "disabled"
+                "url": format!("http://{}", endpoint)
+            }
+        ],
+        "paths": {
+            route_path.clone(): {
+                "get": {
+                    "operationId": namer.test_id(),
+                    "x-flowplane-filters": {
+                        "cors": "allow-authenticated",
+                        "authn": "disabled"
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
+                    }
                 }
             }
-        ]
+        }
     });
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)

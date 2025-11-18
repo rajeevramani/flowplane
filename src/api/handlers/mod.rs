@@ -2,6 +2,7 @@
 
 pub mod aggregated_schemas;
 pub mod api_definitions;
+pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
@@ -11,6 +12,7 @@ pub mod listeners;
 pub mod reporting;
 pub mod routes;
 pub mod teams;
+pub mod users;
 
 // Re-export handler functions for backward compatibility
 pub use aggregated_schemas::{
@@ -18,15 +20,16 @@ pub use aggregated_schemas::{
     get_aggregated_schema_handler, list_aggregated_schemas_handler,
 };
 pub use api_definitions::{
-    append_route_handler, create_api_definition_handler, get_api_definition_handler,
+    append_route_handler, delete_api_definition_handler, get_api_definition_handler,
     import_openapi_handler, list_api_definitions_handler, update_api_definition_handler,
 };
+pub use audit_log::list_audit_logs;
 pub use auth::{
     create_session_handler, create_token_handler, get_session_info_handler, get_token_handler,
-    list_tokens_handler, logout_handler, revoke_token_handler, rotate_token_handler,
+    list_tokens_handler, login_handler, logout_handler, revoke_token_handler, rotate_token_handler,
     update_token_handler,
 };
-pub use bootstrap::bootstrap_initialize_handler;
+pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
@@ -45,7 +48,14 @@ pub use routes::{
     create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
     update_route_handler,
 };
-pub use teams::get_team_bootstrap_handler;
+pub use teams::{
+    admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
+    get_team_bootstrap_handler, list_teams_handler,
+};
+pub use users::{
+    add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
+    remove_team_membership, update_user,
+};
 
 // Re-export DTOs for OpenAPI docs
 pub use aggregated_schemas::{
@@ -59,4 +69,5 @@ pub use clusters::{
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
-pub use teams::BootstrapQuery;
+pub use teams::{AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse};
+pub use users::ListUsersResponse;

@@ -13,21 +13,6 @@ use super::config::{resolve_base_url, resolve_timeout, resolve_token};
 
 #[derive(Subcommand)]
 pub enum ApiCommands {
-    /// Create a new API definition from a JSON specification file
-    #[command(
-        long_about = "Create a new API definition by providing a JSON file with the specification.\n\nThe JSON file should contain fields like name, team, domain, and specification details.",
-        after_help = "EXAMPLES:\n    # Create an API definition from a JSON file\n    flowplane-cli api create --file api-spec.json\n\n    # Create and output as YAML\n    flowplane-cli api create --file api-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli api create --file api-spec.json --token your-token"
-    )]
-    Create {
-        /// Path to JSON file with API definition spec
-        #[arg(short, long, value_name = "FILE")]
-        file: PathBuf,
-
-        /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
-        output: String,
-    },
-
     /// List all API definitions with optional filtering
     #[command(
         long_about = "List all API definitions in the system. Supports filtering by team, domain, and pagination.",
@@ -127,7 +112,6 @@ pub struct ApiDefinitionSummary {
     pub id: String,
     pub team: String,
     pub domain: String,
-    pub listener_isolation: bool,
     pub bootstrap_uri: Option<String>,
     pub version: i64,
     pub created_at: String,
@@ -167,9 +151,6 @@ pub async fn handle_api_command(
     let client = FlowplaneClient::new(config)?;
 
     match command {
-        ApiCommands::Create { file, output } => {
-            create_api_definition(&client, file, &output).await?
-        }
         ApiCommands::List { team, domain, limit, offset, output } => {
             list_api_definitions(&client, team, domain, limit, offset, &output).await?
         }
@@ -183,24 +164,6 @@ pub async fn handle_api_command(
         ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
     }
 
-    Ok(())
-}
-
-async fn create_api_definition(
-    client: &FlowplaneClient,
-    file: PathBuf,
-    output: &str,
-) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
-
-    let response: CreateApiDefinitionResponse =
-        client.post_json("/api/v1/api-definitions", &body).await?;
-
-    print_output(&response, output)?;
     Ok(())
 }
 
@@ -327,16 +290,15 @@ fn print_definitions_table(definitions: &[ApiDefinitionSummary]) {
     }
 
     println!();
-    println!("{:<40} {:<15} {:<30} {:<10} {:<8}", "ID", "Team", "Domain", "Isolation", "Version");
-    println!("{}", "-".repeat(110));
+    println!("{:<40} {:<15} {:<30} {:<8}", "ID", "Team", "Domain", "Version");
+    println!("{}", "-".repeat(100));
 
     for def in definitions {
         println!(
-            "{:<40} {:<15} {:<30} {:<10} {:<8}",
+            "{:<40} {:<15} {:<30} {:<8}",
             truncate(&def.id, 38),
             truncate(&def.team, 13),
             truncate(&def.domain, 28),
-            def.listener_isolation,
             def.version
         );
     }

@@ -32,7 +32,10 @@ async fn setup_pool() -> DbPool {
             max_usage_count INTEGER,
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME
+            locked_until DATETIME,
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -101,6 +104,8 @@ async fn run_once_marks_expired_tokens() {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     };
     repo.create_token(token).await.unwrap();
 

@@ -62,12 +62,9 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("scope_type", "all");
                 span.record("team", "admin");
             }
-            Scope::Team { team, include_default } => {
+            Scope::Team { team } => {
                 span.record("scope_type", "team");
                 span.record("team", team.as_str());
-                if *include_default {
-                    span.record("include_default", true);
-                }
                 // NOTE: Team connection metric is now tracked at stream lifecycle level
                 // in stream.rs (increment on stream start, decrement on stream close)
             }
@@ -97,11 +94,12 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.cluster_repository {
-            // Extract teams and include_default flag from scope for filtering
-            let (teams, include_default) = match scope {
-                Scope::All => (vec![], true), // Admin access includes all resources
-                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
-                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to clusters
+            // Extract teams from scope for filtering
+            // Default resources (team IS NULL) are always included
+            let teams = match scope {
+                Scope::All => vec![], // Admin access includes all resources
+                Scope::Team { team } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
             };
 
             // Record team filtering in span
@@ -112,7 +110,8 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
+            // Always include default resources (include_default = true)
+            match repo.list_by_teams(&teams, true, Some(100), None).await {
                 Ok(cluster_data_list) => {
                     span.record("filtered_count", cluster_data_list.len());
 
@@ -184,11 +183,12 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.route_repository {
-            // Extract teams and include_default flag from scope for filtering
-            let (teams, include_default) = match scope {
-                Scope::All => (vec![], true), // Admin access includes all resources
-                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
-                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to routes
+            // Extract teams from scope for filtering
+            // Default resources (team IS NULL) are always included
+            let teams = match scope {
+                Scope::All => vec![], // Admin access includes all resources
+                Scope::Team { team } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
             };
 
             // Record team filtering in span
@@ -199,7 +199,8 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("teams", format!("{:?}", teams).as_str());
             }
 
-            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
+            // Always include default resources (include_default = true)
+            match repo.list_by_teams(&teams, true, Some(100), None).await {
                 Ok(route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
@@ -236,6 +237,8 @@ impl DatabaseAggregatedDiscoveryService {
         };
 
         // Merge Platform API virtual hosts into the default gateway routes for non-isolated APIs only
+        // NOTE: We build route configs from database routes (not from API definitions) to ensure
+        // cluster names match what's actually in the database/cluster resources
         if let Some(api_repo) = &self.state.api_definition_repository {
             use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
             use prost::Message;
@@ -244,96 +247,61 @@ impl DatabaseAggregatedDiscoveryService {
             let platform_routes = api_repo.list_all_routes().await?;
 
             if !definitions.is_empty() && !platform_routes.is_empty() {
-                let mut default_index: Option<usize> = None;
-                for (idx, res) in built.iter().enumerate() {
-                    if res.name == crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES {
-                        default_index = Some(idx);
-                        break;
-                    }
-                }
+                // Build Platform API route configs from database route entries (filtered by teams)
+                // This ensures cluster names match what's in the database clusters
+                let platform_teams = match scope {
+                    Scope::All => vec![],
+                    Scope::Team { team } => vec![team.clone()],
+                    Scope::Allowlist { .. } => vec![],
+                };
 
-                if let Some(idx) = default_index {
-                    let mut default_rc = {
-                        let any = &built[idx].resource;
-                        RouteConfiguration::decode(any.value.as_slice()).map_err(|e| {
+                let platform_db_routes = if let Some(route_repo) = &self.state.route_repository {
+                    // Get routes filtered by teams, only including platform_api routes
+                    let all_team_routes =
+                        route_repo.list_by_teams(&platform_teams, true, Some(1000), None).await?;
+                    all_team_routes
+                        .into_iter()
+                        .filter(|r| r.source == "platform_api")
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+
+                let platform_resources = if !platform_db_routes.is_empty() {
+                    resources::routes_from_database_entries(platform_db_routes, "platform_merge")?
+                } else {
+                    // Fallback to generating from API definitions if no database routes
+                    resources::resources_from_api_definitions(definitions.clone(), platform_routes)?
+                };
+
+                let mut isolated_route_configs = Vec::new();
+
+                for res in platform_resources.into_iter() {
+                    if res.type_url() != resources::ROUTE_TYPE_URL {
+                        continue;
+                    }
+                    let rc =
+                        RouteConfiguration::decode(res.resource.value.as_slice()).map_err(|e| {
                             crate::Error::internal(format!(
-                                "Failed to decode default gateway RouteConfiguration: {}",
+                                "Failed to decode Platform API RouteConfiguration: {}",
                                 e
                             ))
-                        })?
-                    };
+                        })?;
 
-                    // Build a domain allowlist from non-isolated API definitions
-                    let allowed_domains: std::collections::HashSet<String> = definitions
-                        .iter()
-                        .filter(|d| !d.listener_isolation)
-                        .map(|d| d.domain.clone())
-                        .collect();
-
-                    let platform_resources = resources::resources_from_api_definitions(
-                        definitions.clone(),
-                        platform_routes,
-                    )?;
-
-                    let mut isolated_route_configs = Vec::new();
-
-                    for res in platform_resources.into_iter() {
-                        if res.type_url() != resources::ROUTE_TYPE_URL {
-                            continue;
-                        }
-                        let mut rc = RouteConfiguration::decode(res.resource.value.as_slice())
-                            .map_err(|e| {
-                                crate::Error::internal(format!(
-                                    "Failed to decode Platform API RouteConfiguration: {}",
-                                    e
-                                ))
-                            })?;
-
-                        // Check if this route config belongs to an isolated listener
-                        let is_isolated = definitions.iter().any(|d| {
-                            d.listener_isolation
-                                && rc.virtual_hosts.iter().any(|vh| vh.domains.contains(&d.domain))
-                        });
-
-                        if is_isolated {
-                            // Keep isolated route configs separate - they'll be added to built list
-                            let isolated_any = envoy_types::pb::google::protobuf::Any {
-                                type_url: resources::ROUTE_TYPE_URL.to_string(),
-                                value: rc.encode_to_vec(),
-                            };
-                            isolated_route_configs.push(resources::BuiltResource {
-                                name: rc.name.clone(),
-                                resource: isolated_any,
-                            });
-                        } else {
-                            // Merge non-isolated routes into default gateway
-                            rc.virtual_hosts.retain(|vh| {
-                                vh.domains.iter().any(|d| allowed_domains.contains(d))
-                            });
-                            if !rc.virtual_hosts.is_empty() {
-                                default_rc.virtual_hosts.extend(rc.virtual_hosts.into_iter());
-                            }
-                        }
-                    }
-
-                    // Add isolated route configs to the built list
-                    built.extend(isolated_route_configs);
-
-                    // Re-encode merged default gateway route config
-                    let merged_any = envoy_types::pb::google::protobuf::Any {
+                    // All route configs are now isolated - add to isolated list
+                    let isolated_any = envoy_types::pb::google::protobuf::Any {
                         type_url: resources::ROUTE_TYPE_URL.to_string(),
-                        value: default_rc.encode_to_vec(),
+                        value: rc.encode_to_vec(),
                     };
-
-                    built[idx] = resources::BuiltResource {
-                        name: crate::openapi::defaults::DEFAULT_GATEWAY_ROUTES.to_string(),
-                        resource: merged_any,
-                    };
-                } else {
-                    warn!(
-                        "DEFAULT_GATEWAY_ROUTES not found in repository-built routes; skipping Platform API merge"
-                    );
+                    isolated_route_configs.push(resources::BuiltResource {
+                        name: rc.name.clone(),
+                        resource: isolated_any,
+                    });
                 }
+
+                // Add isolated route configs to the built list
+                // This happens regardless of whether DEFAULT_GATEWAY_ROUTES exists
+                built.extend(isolated_route_configs);
             }
         }
 
@@ -350,11 +318,12 @@ impl DatabaseAggregatedDiscoveryService {
         scope: &Scope,
     ) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.listener_repository {
-            // Extract teams and include_default flag from scope for filtering (same pattern as clusters)
-            let (teams, include_default) = match scope {
-                Scope::All => (vec![], true), // Admin access includes all resources
-                Scope::Team { team, include_default } => (vec![team.clone()], *include_default),
-                Scope::Allowlist { .. } => (vec![], false), // Allowlist doesn't apply to listeners
+            // Extract teams from scope for filtering
+            // Default resources (team IS NULL) are always included
+            let teams = match scope {
+                Scope::All => vec![], // Admin access includes all resources
+                Scope::Team { team } => vec![team.clone()],
+                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to listeners
             };
 
             // Record team filtering in span
@@ -365,7 +334,8 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("scope_info", format!("team:{}", teams[0]).as_str());
             }
 
-            match repo.list_by_teams(&teams, include_default, Some(100), None).await {
+            // Always include default resources (include_default = true)
+            match repo.list_by_teams(&teams, true, Some(100), None).await {
                 Ok(listener_data_list) => {
                     span.record("filtered_count", listener_data_list.len());
 
@@ -519,12 +489,9 @@ impl DatabaseAggregatedDiscoveryService {
                 span.record("scope_type", "all");
                 span.record("team", "admin");
             }
-            Scope::Team { team, include_default } => {
+            Scope::Team { team } => {
                 span.record("scope_type", "team");
                 span.record("team", team.as_str());
-                if *include_default {
-                    span.record("include_default", true);
-                }
             }
             Scope::Allowlist { names } => {
                 span.record("scope_type", "allowlist");
@@ -567,18 +534,32 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
             warn!(%error, "Failed to prime Platform API resources after cluster refresh");
         }
 
-        let mut last_version: Option<i64> = None;
+        // Track cluster state using count + last modification timestamp
+        // This avoids false positives from PRAGMA data_version which can change
+        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        let mut last_cluster_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
-                .fetch_one(repository.pool())
-                .await;
+            // Query actual cluster data: count and max updated_at timestamp
+            // This only changes when clusters are actually added/removed/modified
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM clusters",
+            )
+            .fetch_one(repository.pool())
+            .await;
 
             match poll_result {
-                Ok(version) => match last_version {
-                    Some(previous) if previous == version => {}
+                Ok(current_state) => match &last_cluster_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual cluster changes, skip update
+                    }
                     Some(_) => {
-                        last_version = Some(version);
+                        last_cluster_state = Some(current_state.clone());
+                        info!(
+                            cluster_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Cluster data changed, refreshing cluster cache"
+                        );
                         if let Err(error) = state.refresh_clusters_from_repository().await {
                             warn!(%error, "Failed to refresh cluster cache from repository");
                         }
@@ -587,11 +568,12 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
                         }
                     }
                     None => {
-                        last_version = Some(version);
+                        // First poll, just record the state without triggering update
+                        last_cluster_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll SQLite data_version for changes");
+                    warn!(error = %e, "Failed to poll cluster state for change detection");
                 }
             }
 
@@ -611,18 +593,32 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
             warn!(%error, "Failed to prime Platform API resources after route refresh");
         }
 
-        let mut last_version: Option<i64> = None;
+        // Track route state using count + last modification timestamp
+        // This avoids false positives from PRAGMA data_version which can change
+        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        let mut last_route_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            let poll_result = sqlx::query_scalar::<_, i64>("PRAGMA data_version;")
-                .fetch_one(repository.pool())
-                .await;
+            // Query actual route data: count and max updated_at timestamp
+            // This only changes when routes are actually added/removed/modified
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM routes",
+            )
+            .fetch_one(repository.pool())
+            .await;
 
             match poll_result {
-                Ok(version) => match last_version {
-                    Some(previous) if previous == version => {}
+                Ok(current_state) => match &last_route_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual route changes, skip update
+                    }
                     Some(_) => {
-                        last_version = Some(version);
+                        last_route_state = Some(current_state.clone());
+                        info!(
+                            route_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Route data changed, refreshing route cache"
+                        );
                         if let Err(error) = state.refresh_routes_from_repository().await {
                             warn!(%error, "Failed to refresh route cache from repository");
                         }
@@ -631,11 +627,12 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
                         }
                     }
                     None => {
-                        last_version = Some(version);
+                        // First poll, just record the state without triggering update
+                        last_route_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll SQLite data_version for route changes");
+                    warn!(error = %e, "Failed to poll route state for change detection");
                 }
             }
 
@@ -772,7 +769,7 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
 #[derive(Debug, Clone)]
 enum Scope {
     All,
-    Team { team: String, include_default: bool },
+    Team { team: String },
     Allowlist { names: Vec<String> },
 }
 
@@ -780,7 +777,6 @@ fn scope_from_discovery(node: &Option<envoy_types::pb::envoy::config::core::v3::
     if let Some(n) = node {
         if let Some(meta) = &n.metadata {
             let mut team: Option<String> = None;
-            let mut include_default = false;
             let mut allow: Vec<String> = Vec::new();
 
             if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
@@ -789,11 +785,6 @@ fn scope_from_discovery(node: &Option<envoy_types::pb::envoy::config::core::v3::
                 if !s.is_empty() {
                     team = Some(s.clone());
                 }
-            }
-            if let Some(envoy_types::pb::google::protobuf::value::Kind::BoolValue(b)) =
-                meta.fields.get("include_default").and_then(|v| v.kind.as_ref())
-            {
-                include_default = *b;
             }
             if let Some(envoy_types::pb::google::protobuf::value::Kind::ListValue(lv)) =
                 meta.fields.get("listener_allowlist").and_then(|v| v.kind.as_ref())
@@ -811,7 +802,7 @@ fn scope_from_discovery(node: &Option<envoy_types::pb::envoy::config::core::v3::
                 return Scope::Allowlist { names: allow };
             }
             if let Some(team) = team {
-                return Scope::Team { team, include_default };
+                return Scope::Team { team };
             }
         }
     }

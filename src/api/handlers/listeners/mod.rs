@@ -89,10 +89,10 @@ pub async fn create_listener_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<types::CreateListenerBody>,
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
-    // Authorization: require listeners:write scope
-    require_resource_access(&context, "listeners", "write", None)?;
-
     validate_create_listener_body(&payload)?;
+
+    // Verify user has write access to the specified team
+    require_resource_access(&context, "listeners", "write", Some(&payload.team))?;
 
     let repository = require_listener_repository(&state)?;
     let config = listener_config_from_create(&payload)?;
@@ -103,10 +103,8 @@ pub async fn create_listener_handler(
         )))
     })?;
 
-    // Extract team from auth context
-    // - Team-scoped users create resources for their team
-    // - Admin/resource-level users create global resources (team = None)
-    let team = extract_team_scopes(&context).into_iter().next();
+    // Use explicit team from request
+    let team = Some(payload.team.clone());
 
     let request = CreateListenerRequest {
         name: payload.name.clone(),
@@ -481,6 +479,7 @@ mod tests {
         let (state, api_state) = build_state().await;
 
         let payload = CreateListenerBody {
+            team: "test-team".to_string(),
             name: "edge-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 10000,
@@ -526,6 +525,7 @@ mod tests {
 
         // Seed a listener so we can update it.
         let initial = CreateListenerBody {
+            team: "test-team".to_string(),
             name: "edge-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 10000,

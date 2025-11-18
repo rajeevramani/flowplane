@@ -79,6 +79,12 @@ yarn-error.log*
 dev-debug.log
 # Dependency directories
 node_modules/
+
+# SvelteKit build outputs
+ui/.svelte-kit/
+ui/build/
+ui/.netlify/
+ui/.vercel/
 # Environment variables
 # Editor directories and files
 .idea

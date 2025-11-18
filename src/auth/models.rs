@@ -8,7 +8,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::domain::TokenId;
+use crate::domain::{TokenId, UserId};
 use crate::errors::Error;
 
 /// Lifecycle status for a personal access token.
@@ -68,6 +68,8 @@ pub struct PersonalAccessToken {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub scopes: Vec<String>,
+    pub user_id: Option<crate::domain::UserId>,
+    pub user_email: Option<String>,
 }
 
 impl PersonalAccessToken {
@@ -92,6 +94,8 @@ pub struct NewPersonalAccessToken {
     pub usage_count: i64,
     pub failed_attempts: i64,
     pub locked_until: Option<DateTime<Utc>>,
+    pub user_id: Option<crate::domain::UserId>,
+    pub user_email: Option<String>,
 }
 
 /// Update payload for an existing token.
@@ -114,17 +118,41 @@ impl Display for TokenScope {
     }
 }
 
-/// Request-scoped authentication context derived from a valid token.
+/// Request-scoped authentication context derived from a valid token or session.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub token_id: TokenId,
     pub token_name: String,
+    pub user_id: Option<UserId>,
+    pub user_email: Option<String>,
     scopes: HashSet<String>,
 }
 
 impl AuthContext {
     pub fn new(token_id: TokenId, token_name: String, scopes: Vec<String>) -> Self {
-        Self { token_id, token_name, scopes: scopes.into_iter().collect() }
+        Self {
+            token_id,
+            token_name,
+            user_id: None,
+            user_email: None,
+            scopes: scopes.into_iter().collect(),
+        }
+    }
+
+    pub fn with_user(
+        token_id: TokenId,
+        token_name: String,
+        user_id: UserId,
+        user_email: String,
+        scopes: Vec<String>,
+    ) -> Self {
+        Self {
+            token_id,
+            token_name,
+            user_id: Some(user_id),
+            user_email: Some(user_email),
+            scopes: scopes.into_iter().collect(),
+        }
     }
 
     pub fn has_scope(&self, scope: &str) -> bool {
@@ -201,6 +229,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             scopes: vec!["listeners:read".into(), "listeners:write".into()],
+            user_id: None,
+            user_email: None,
         };
 
         assert!(token.has_scope("listeners:write"));

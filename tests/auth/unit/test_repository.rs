@@ -31,7 +31,10 @@ async fn setup_pool() -> DbPool {
             max_usage_count INTEGER,
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME
+            locked_until DATETIME,
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -72,6 +75,8 @@ fn sample_token(id: &str) -> NewPersonalAccessToken {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     }
 }
 
@@ -142,7 +147,7 @@ async fn list_and_count_tokens() {
         repo.create_token(sample_token(&Uuid::new_v4().to_string())).await.unwrap();
     }
 
-    let tokens = repo.list_tokens(10, 0).await.unwrap();
+    let tokens = repo.list_tokens(10, 0, None).await.unwrap();
     assert_eq!(tokens.len(), 3);
 
     let count = repo.count_tokens().await.unwrap();

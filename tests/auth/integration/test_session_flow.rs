@@ -25,7 +25,7 @@ async fn bootstrap_generates_setup_token_on_uninitialized_system() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;
@@ -54,7 +54,7 @@ async fn bootstrap_fails_when_system_already_initialized() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;
@@ -73,7 +73,7 @@ async fn bootstrap_validates_email_format() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "not-an-email"
+            "email": "not-an-email", "password": "SecurePassword123", "name": "Test"
         })),
     )
     .await;
@@ -92,7 +92,7 @@ async fn setup_token_can_be_exchanged_for_session() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;
@@ -175,6 +175,8 @@ async fn session_creation_fails_with_expired_setup_token() {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     };
 
     let token_repo = SqlxTokenRepository::new(app.pool.clone());
@@ -206,7 +208,7 @@ async fn session_can_be_used_for_get_requests_without_csrf() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;
@@ -266,7 +268,7 @@ async fn session_post_request_requires_csrf_token() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;
@@ -329,7 +331,7 @@ async fn logout_revokes_session() {
         "/api/v1/bootstrap/initialize",
         None,
         Some(json!({
-            "adminEmail": "admin@example.com"
+            "email": "admin@example.com", "password": "SecurePassword123", "name": "Admin User"
         })),
     )
     .await;

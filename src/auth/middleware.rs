@@ -99,11 +99,26 @@ pub async fn authenticate(
                         .map_err(|_| ApiError::forbidden("Invalid CSRF token"))?;
                 }
 
-                Ok(AuthContext::new(
-                    session_info.token.id,
-                    session_info.token.name,
-                    session_info.token.scopes,
-                ))
+                // Use with_user if the token has user information, otherwise use new
+                Ok(
+                    if let (Some(user_id), Some(user_email)) =
+                        (&session_info.token.user_id, &session_info.token.user_email)
+                    {
+                        AuthContext::with_user(
+                            session_info.token.id,
+                            session_info.token.name,
+                            user_id.clone(),
+                            user_email.clone(),
+                            session_info.token.scopes,
+                        )
+                    } else {
+                        AuthContext::new(
+                            session_info.token.id,
+                            session_info.token.name,
+                            session_info.token.scopes,
+                        )
+                    },
+                )
             } else {
                 // GET requests don't need CSRF validation
                 let session_info = session_service
@@ -111,11 +126,26 @@ pub async fn authenticate(
                     .await
                     .map_err(|e| ApiError::unauthorized(e.to_string()))?;
 
-                Ok(AuthContext::new(
-                    session_info.token.id,
-                    session_info.token.name,
-                    session_info.token.scopes,
-                ))
+                // Use with_user if the token has user information, otherwise use new
+                Ok(
+                    if let (Some(user_id), Some(user_email)) =
+                        (&session_info.token.user_id, &session_info.token.user_email)
+                    {
+                        AuthContext::with_user(
+                            session_info.token.id,
+                            session_info.token.name,
+                            user_id.clone(),
+                            user_email.clone(),
+                            session_info.token.scopes,
+                        )
+                    } else {
+                        AuthContext::new(
+                            session_info.token.id,
+                            session_info.token.name,
+                            session_info.token.scopes,
+                        )
+                    },
+                )
             }
         } else {
             // Regular PAT authentication
@@ -145,11 +175,26 @@ pub async fn authenticate(
                     .map_err(|_| ApiError::forbidden("Invalid CSRF token"))?;
             }
 
-            Ok(AuthContext::new(
-                session_info.token.id,
-                session_info.token.name,
-                session_info.token.scopes,
-            ))
+            // Use with_user if the token has user information, otherwise use new
+            Ok(
+                if let (Some(user_id), Some(user_email)) =
+                    (&session_info.token.user_id, &session_info.token.user_email)
+                {
+                    AuthContext::with_user(
+                        session_info.token.id,
+                        session_info.token.name,
+                        user_id.clone(),
+                        user_email.clone(),
+                        session_info.token.scopes,
+                    )
+                } else {
+                    AuthContext::new(
+                        session_info.token.id,
+                        session_info.token.name,
+                        session_info.token.scopes,
+                    )
+                },
+            )
         } else {
             // GET requests don't need CSRF validation
             let session_info = session_service
@@ -157,11 +202,26 @@ pub async fn authenticate(
                 .await
                 .map_err(|e| ApiError::unauthorized(e.to_string()))?;
 
-            Ok(AuthContext::new(
-                session_info.token.id,
-                session_info.token.name,
-                session_info.token.scopes,
-            ))
+            // Use with_user if the token has user information, otherwise use new
+            Ok(
+                if let (Some(user_id), Some(user_email)) =
+                    (&session_info.token.user_id, &session_info.token.user_email)
+                {
+                    AuthContext::with_user(
+                        session_info.token.id,
+                        session_info.token.name,
+                        user_id.clone(),
+                        user_email.clone(),
+                        session_info.token.scopes,
+                    )
+                } else {
+                    AuthContext::new(
+                        session_info.token.id,
+                        session_info.token.name,
+                        session_info.token.scopes,
+                    )
+                },
+            )
         }
     } else {
         // No authentication credentials provided

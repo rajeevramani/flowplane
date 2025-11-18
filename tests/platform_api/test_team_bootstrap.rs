@@ -49,31 +49,11 @@ async fn team_bootstrap_returns_json_when_requested() {
         "platform",
         "team metadata should match requested team"
     );
-    assert!(
-        !metadata.get("include_default").unwrap().as_bool().unwrap(),
-        "include_default should be false by default"
-    );
 }
 
-#[tokio::test]
-async fn team_bootstrap_respects_include_default_parameter() {
-    let app = setup_platform_api_app().await;
-    let token = app.issue_token("team-bootstrap-defaults", &["api-definitions:read"]).await;
-
-    // Request with include_default=true
-    let path = "/api/v1/teams/engineering/bootstrap?format=json&include_default=true";
-    let resp = send_request(&app, Method::GET, path, Some(&token.token), None).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let bootstrap: serde_json::Value = read_json(resp).await;
-    let node = bootstrap.get("node").unwrap();
-    let metadata = node.get("metadata").unwrap();
-
-    assert!(
-        metadata.get("include_default").unwrap().as_bool().unwrap(),
-        "include_default should be true when specified"
-    );
-}
+// Test removed - include_default parameter eliminated in task 23
+// #[tokio::test]
+// async fn team_bootstrap_respects_include_default_parameter()
 
 #[tokio::test]
 async fn team_bootstrap_generates_unique_node_ids() {

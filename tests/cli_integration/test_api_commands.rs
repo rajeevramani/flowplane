@@ -58,6 +58,7 @@ paths:
 #[tokio::test]
 async fn test_api_import_simple_openapi() {
     let server = TestServer::start().await;
+    server.create_team("test-team").await;
     let token_response = server.issue_token("api-import-token", &["api-definitions:write"]).await;
     let openapi_file = TempOpenApiFile::new(SIMPLE_OPENAPI);
 
@@ -87,6 +88,7 @@ async fn test_api_import_simple_openapi() {
 #[tokio::test]
 async fn test_api_list_json_output() {
     let server = TestServer::start().await;
+    server.create_team("test-team").await;
     let token_response = server
         .issue_token("api-list-token", &["api-definitions:read", "api-definitions:write"])
         .await;
@@ -158,6 +160,7 @@ async fn test_api_list_yaml_output() {
 #[tokio::test]
 async fn test_api_get_by_id() {
     let server = TestServer::start().await;
+    server.create_team("test-team").await;
     let token_response = server
         .issue_token("api-get-token", &["api-definitions:read", "api-definitions:write"])
         .await;
@@ -286,6 +289,7 @@ async fn test_api_delete() {
 #[tokio::test]
 async fn test_api_bootstrap() {
     let server = TestServer::start().await;
+    server.create_team("test-team").await;
     let token_response = server
         .issue_token("api-bootstrap-token", &["api-definitions:read", "api-definitions:write"])
         .await;

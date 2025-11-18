@@ -4,7 +4,7 @@ use http_body_util::BodyExt;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::env::ControlPlaneHandle;
 use support::ports::PortAllocator;
 
@@ -27,14 +27,19 @@ async fn negative_invalid_payload_rejected() {
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
 
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     let token =
         create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
 
-    // Invalid: missing routes
+    // Invalid: malformed OpenAPI spec (missing openapi version)
     let body = serde_json::json!({
-        "team": "e2e",
-        "domain": "bad domain!", // invalid host
-        "routes": []
+        "info": {
+            "title": "Invalid API",
+            "version": "1.0.0"
+        },
+        "paths": {}
     });
 
     let connector = hyper_util::client::legacy::connect::HttpConnector::new();
@@ -42,7 +47,9 @@ async fn negative_invalid_payload_rejected() {
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
     let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
+            .parse()
+            .unwrap();
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)
         .uri(uri)

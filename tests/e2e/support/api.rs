@@ -6,9 +6,34 @@ use hyper_util::rt::TokioExecutor;
 use serde_json::json;
 use std::net::SocketAddr;
 
+use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{create_pool, DatabaseConfig};
+
+#[allow(dead_code)]
+pub async fn ensure_team_exists(team_name: &str) -> anyhow::Result<()> {
+    let pool = create_pool(&DatabaseConfig::from_env()).await?;
+    let repo = SqlxTeamRepository::new(pool);
+
+    // Check if team exists
+    if repo.get_team_by_name(team_name).await?.is_some() {
+        return Ok(());
+    }
+
+    // Create team if it doesn't exist
+    let request = CreateTeamRequest {
+        name: team_name.to_string(),
+        display_name: format!("E2E Test Team {}", team_name),
+        description: Some("Auto-created for E2E tests".to_string()),
+        owner_user_id: None,
+        settings: None,
+    };
+
+    repo.create_team(request).await?;
+    Ok(())
+}
 
 #[allow(dead_code)]
 pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
@@ -17,13 +42,13 @@ pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
         std::sync::Arc::new(flowplane::storage::repository::AuditLogRepository::new(pool.clone()));
     let svc = TokenService::with_sqlx(pool, audit);
     let short = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
-    let req = CreateTokenRequest {
-        name: format!("e2e-token-{}", short),
-        description: Some("e2e token".into()),
-        expires_at: None,
-        scopes: scopes.into_iter().map(|s| s.to_string()).collect(),
-        created_by: Some("e2e".into()),
-    };
+    let req = CreateTokenRequest::without_user(
+        format!("e2e-token-{}", short),
+        Some("e2e token".into()),
+        None,
+        scopes.into_iter().map(|s| s.to_string()).collect(),
+        Some("e2e".into()),
+    );
     let secret = svc.create_token(req).await?.token;
     Ok(secret)
 }
@@ -57,25 +82,42 @@ pub async fn post_create_api(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri = format!("http://{}/api/v1/api-definitions", api_addr).parse()?;
-    let body = json!({
-        "team": team,
-        "domain": domain,
-        "listenerIsolation": false,
-        "routes": [
+    let uri: Uri =
+        format!("http://{}/api/v1/api-definitions/from-openapi?team={}", api_addr, team).parse()?;
+
+    // Create a minimal OpenAPI 3.0 spec that represents the API definition
+    let openapi_spec = json!({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "E2E Test API",
+            "version": "1.0.0",
+            "x-flowplane-domain": domain
+        },
+        "servers": [
             {
-                "match": {"prefix": prefix},
-                "cluster": {"name": cluster_name, "endpoint": endpoint},
-                "timeoutSeconds": 3
+                "url": format!("http://{}", endpoint)
             }
-        ]
+        ],
+        "paths": {
+            prefix: {
+                "get": {
+                    "operationId": cluster_name,
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
+                    }
+                }
+            }
+        }
     });
+
     let req = Request::builder()
         .method(Method::POST)
         .uri(uri)
         .header(hyper::http::header::CONTENT_TYPE, "application/json")
         .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", bearer))
-        .body(Full::<Bytes>::from(body.to_string()))?;
+        .body(Full::<Bytes>::from(openapi_spec.to_string()))?;
 
     let res = client.request(req).await?;
     let status = res.status();

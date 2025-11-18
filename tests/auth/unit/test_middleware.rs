@@ -42,7 +42,9 @@ async fn setup_pool() -> flowplane::storage::DbPool {
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
             locked_until DATETIME,
-            csrf_token TEXT
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -142,6 +144,8 @@ async fn insufficient_scope_returns_forbidden() {
             expires_at: None,
             scopes: vec!["routes:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -172,6 +176,8 @@ async fn valid_token_allows_request() {
             expires_at: None,
             scopes: vec!["clusters:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();
@@ -243,6 +249,8 @@ async fn create_test_session(
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     };
 
     token_repo.create_token(new_session).await.unwrap();
@@ -407,6 +415,8 @@ async fn pat_tokens_bypass_csrf_validation() {
             expires_at: None,
             scopes: vec!["clusters:write".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

@@ -26,20 +26,18 @@ async fn cascading_delete_cleans_up_all_resources() {
     let route_repo = RouteRepository::new(app.pool.clone());
     let listener_repo = ListenerRepository::new(app.pool.clone());
 
-    // Create a Platform API definition with listener isolation
+    // Create a Platform API definition with dedicated listener
     let spec = ApiDefinitionSpec {
         team: "test-team".to_string(),
         domain: "cascade-test.example.com".to_string(),
-        listener_isolation: true,
-        isolation_listener: Some(flowplane::domain::ListenerConfig {
+        listener: flowplane::domain::ListenerConfig {
             name: Some("cascade-test-listener".to_string()),
             bind_address: "0.0.0.0".to_string(),
             port: 9999,
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
-        }),
-        target_listeners: None,
+        },
         tls_config: None,
         routes: vec![
             RouteSpec {
@@ -170,9 +168,14 @@ async fn database_rollback_on_domain_conflict() {
     let spec1 = ApiDefinitionSpec {
         team: "team-a".to_string(),
         domain: "rollback-test.example.com".to_string(),
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: flowplane::domain::ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8080,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -209,9 +212,14 @@ async fn database_rollback_on_domain_conflict() {
     let spec2 = ApiDefinitionSpec {
         team: "team-b".to_string(),                      // Different team
         domain: "rollback-test.example.com".to_string(), // SAME DOMAIN - will conflict
-        listener_isolation: false,
-        isolation_listener: None,
-        target_listeners: None,
+        listener: flowplane::domain::api_definition::ListenerConfig {
+            name: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8081,
+            protocol: "HTTP".to_string(),
+            tls_config: None,
+            http_filters: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -285,16 +293,14 @@ async fn xds_state_consistent_after_creation_failure() {
     let spec = ApiDefinitionSpec {
         team: "test-team".to_string(),
         domain: "xds-test.example.com".to_string(),
-        listener_isolation: true,
-        isolation_listener: Some(flowplane::domain::ListenerConfig {
+        listener: flowplane::domain::api_definition::ListenerConfig {
             name: Some("xds-test-listener".to_string()),
             bind_address: "0.0.0.0".to_string(),
             port: 18000, // This might conflict with xDS server port
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
-        }),
-        target_listeners: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),
@@ -371,20 +377,18 @@ async fn isolated_listener_deleted_with_api_definition() {
     let app = setup_multi_api_app().await;
     let listener_repo = ListenerRepository::new(app.pool.clone());
 
-    // Create API definition with isolated listener
+    // Create API definition with listener
     let spec = ApiDefinitionSpec {
         team: "test-team".to_string(),
         domain: "isolated-delete-test.example.com".to_string(),
-        listener_isolation: true,
-        isolation_listener: Some(flowplane::domain::ListenerConfig {
+        listener: flowplane::domain::api_definition::ListenerConfig {
             name: Some("isolated-delete-listener".to_string()),
             bind_address: "127.0.0.1".to_string(),
             port: 19999,
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
-        }),
-        target_listeners: None,
+        },
         tls_config: None,
         routes: vec![RouteSpec {
             match_type: "prefix".to_string(),

@@ -32,7 +32,10 @@ async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
             max_usage_count INTEGER,
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME
+            locked_until DATETIME,
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -87,6 +90,8 @@ async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
             expires_at: None,
             scopes: vec!["tokens:read".into()],
             created_by: Some("tests".into()),
+            user_id: None,
+            user_email: None,
         })
         .await
         .unwrap();

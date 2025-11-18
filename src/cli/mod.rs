@@ -12,6 +12,7 @@ pub mod config_cmd;
 pub mod listeners;
 pub mod output;
 pub mod routes;
+pub mod teams;
 
 use crate::config::DatabaseConfig;
 use crate::storage::{create_pool, run_db_migrations, validate_migrations, MigrationInfo};
@@ -94,6 +95,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: config_cmd::ConfigCommands,
     },
+
+    /// Team management commands
+    Team {
+        #[command(subcommand)]
+        command: teams::TeamCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -171,6 +178,16 @@ pub async fn run_cli() -> anyhow::Result<()> {
             routes::handle_route_command(command, &client).await?
         }
         Commands::Config { command } => config_cmd::handle_config_command(command).await?,
+        Commands::Team { command } => {
+            let client = create_http_client(
+                cli.token,
+                cli.token_file,
+                cli.base_url,
+                cli.timeout,
+                cli.verbose,
+            )?;
+            teams::handle_team_command(command, &client).await?
+        }
     }
 
     Ok(())

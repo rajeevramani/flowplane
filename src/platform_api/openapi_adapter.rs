@@ -14,25 +14,25 @@ use super::materializer::{ApiDefinitionSpec, ListenerInput, RouteSpec};
 /// - Source tagging (source='platform_api')
 /// - Bootstrap config generation
 /// - Unified data model
+///
+/// Each API definition gets its own dedicated listener.
 pub fn openapi_to_api_definition_spec(
     openapi: OpenAPI,
     team: String,
-    listener_isolation: bool,
     port: Option<u32>,
 ) -> Result<ApiDefinitionSpec, GatewayError> {
-    // Extract domain from first server URL
-    let servers = if openapi.servers.is_empty() {
+    // Validate servers array is not empty
+    if openapi.servers.is_empty() {
         return Err(GatewayError::MissingServers);
-    } else {
-        &openapi.servers
-    };
+    }
 
-    let primary_server = &servers[0];
-    let url = url::Url::parse(&primary_server.url).map_err(|err| {
+    // Extract domain from first server URL (used as the primary domain for routing)
+    let primary_server = &openapi.servers[0];
+    let primary_url = url::Url::parse(&primary_server.url).map_err(|err| {
         GatewayError::UnsupportedServer(format!("{} ({})", primary_server.url, err))
     })?;
 
-    let domain = url
+    let domain = primary_url
         .host_str()
         .ok_or_else(|| {
             GatewayError::UnsupportedServer(format!(
@@ -42,17 +42,70 @@ pub fn openapi_to_api_definition_spec(
         })?
         .to_string();
 
-    let url_port = url.port_or_known_default().ok_or_else(|| {
-        GatewayError::UnsupportedServer(format!(
-            "Server URL '{}' does not include a usable port",
-            primary_server.url
-        ))
-    })?;
-
-    let use_tls = matches!(url.scheme(), "https" | "grpcs");
+    let primary_scheme = primary_url.scheme();
+    let use_tls = matches!(primary_scheme, "https" | "grpcs");
 
     // Parse global x-flowplane-filters from OpenAPI extensions
     let global_filters = crate::openapi::parse_global_filters(&openapi)?;
+
+    // Parse all servers into upstream targets for load balancing
+    // Multiple servers will be load-balanced across using Envoy's default round-robin policy
+    let mut targets = Vec::new();
+
+    for (idx, server) in openapi.servers.iter().enumerate() {
+        let server_url = url::Url::parse(&server.url)
+            .map_err(|err| GatewayError::UnsupportedServer(format!("{} ({})", server.url, err)))?;
+
+        // Validate all servers use the same scheme (http vs https)
+        if server_url.scheme() != primary_scheme {
+            return Err(GatewayError::UnsupportedServer(format!(
+                "All servers must use the same scheme. Primary server uses '{}' but server {} uses '{}'",
+                primary_scheme, idx, server_url.scheme()
+            )));
+        }
+
+        let host = server_url
+            .host_str()
+            .ok_or_else(|| {
+                GatewayError::UnsupportedServer(format!(
+                    "Server URL '{}' does not contain a host",
+                    server.url
+                ))
+            })?
+            .to_string();
+
+        let port = server_url.port_or_known_default().ok_or_else(|| {
+            GatewayError::UnsupportedServer(format!(
+                "Server URL '{}' does not include a usable port",
+                server.url
+            ))
+        })?;
+
+        // Extract optional weight from server variables (x-flowplane-weight)
+        // If not specified, Envoy will use equal weights for round-robin
+        let weight = server
+            .variables
+            .as_ref()
+            .and_then(|vars| vars.get("x-flowplane-weight"))
+            .and_then(|var| var.default.parse::<u32>().ok());
+
+        let mut target = json!({
+            "name": format!("{}-upstream-{}", host, idx),
+            "endpoint": format!("{}:{}", host, port),
+        });
+
+        // Add weight if specified
+        if let Some(w) = weight {
+            target.as_object_mut().unwrap().insert("weight".to_string(), json!(w));
+        }
+
+        targets.push(target);
+    }
+
+    // Create upstream target configuration with all servers for load balancing
+    let upstream_targets = json!({
+        "targets": targets
+    });
 
     // Convert OpenAPI paths and operations to RouteSpec (one route per operation)
     let mut routes = Vec::new();
@@ -70,14 +123,6 @@ pub fn openapi_to_api_definition_spec(
         // Determine match type: use "template" for paths with parameters, otherwise "prefix"
         let match_type =
             if path_template.contains('{') { "template".to_string() } else { "prefix".to_string() };
-
-        // Create upstream target configuration
-        let upstream_targets = json!({
-            "targets": [{
-                "name": format!("{}-upstream", domain),
-                "endpoint": format!("{}:{}", domain, url_port),
-            }]
-        });
 
         // Parse route-level x-flowplane-route-overrides from path item operations
         // Store the raw JSON value in override_config for typed_per_filter_config processing
@@ -142,46 +187,29 @@ pub fn openapi_to_api_definition_spec(
         None
     };
 
-    // Configure listener isolation if requested
-    let isolation_listener = if listener_isolation {
-        // Use provided port if available, otherwise generate deterministic port
-        let listener_port = if let Some(p) = port {
-            p
-        } else {
-            // Use a deterministic port based on the domain to avoid conflicts
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            domain.hash(&mut hasher);
-            // Port range 20000-29999 for isolated listeners
-            20000 + (hasher.finish() % 10000) as u32
-        };
-
-        Some(ListenerInput {
-            name: None,
-            bind_address: "0.0.0.0".to_string(),
-            port: listener_port,
-            protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
-            tls_config: tls_config.clone(),
-            http_filters: if global_filters.is_empty() {
-                None
-            } else {
-                Some(global_filters.clone())
-            },
-        })
+    // Configure listener - use provided port if available, otherwise generate deterministic port
+    let listener_port = if let Some(p) = port {
+        p
     } else {
-        None
+        // Use a deterministic port based on the domain to avoid conflicts
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        domain.hash(&mut hasher);
+        // Port range 20000-29999 for API listeners
+        20000 + (hasher.finish() % 10000) as u32
     };
 
-    Ok(ApiDefinitionSpec {
-        team,
-        domain,
-        listener_isolation,
-        isolation_listener,
-        target_listeners: None,
-        tls_config,
-        routes,
-    })
+    let listener = ListenerInput {
+        name: None,
+        bind_address: "0.0.0.0".to_string(),
+        port: listener_port,
+        protocol: if use_tls { "HTTPS".to_string() } else { "HTTP".to_string() },
+        tls_config: tls_config.clone(),
+        http_filters: if global_filters.is_empty() { None } else { Some(global_filters.clone()) },
+    };
+
+    Ok(ApiDefinitionSpec { team, domain, listener, tls_config, routes })
 }
 
 /// Parse route-level x-flowplane-route-overrides from path item operations.
@@ -285,13 +313,11 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "platform-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.team, "platform-team");
         assert_eq!(spec.domain, "api.example.com");
-        assert!(!spec.listener_isolation);
-        assert!(spec.isolation_listener.is_none());
         assert!(spec.tls_config.is_some());
         assert_eq!(spec.routes.len(), 2);
 
@@ -302,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_openapi_with_listener_isolation() {
+    fn converts_openapi_with_custom_port() {
         let doc: OpenAPI = serde_json::from_str(
             r#"{
                 "openapi": "3.0.0",
@@ -321,21 +347,14 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "isolated-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), Some(9090))
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        assert!(spec.isolation_listener.is_some());
         assert!(spec.tls_config.is_none()); // HTTP not HTTPS
-
-        let listener = spec.isolation_listener.unwrap();
-        assert!(
-            listener.port >= 20000 && listener.port < 30000,
-            "Port should be in 20000-29999 range"
-        );
-        assert_eq!(listener.bind_address, "0.0.0.0");
-        assert_eq!(listener.protocol, "HTTP");
-        assert!(listener.tls_config.is_none());
+        assert_eq!(spec.listener.port, 9090);
+        assert_eq!(spec.listener.bind_address, "0.0.0.0");
+        assert_eq!(spec.listener.protocol, "HTTP");
+        assert!(spec.listener.tls_config.is_none());
     }
 
     #[test]
@@ -358,7 +377,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), GatewayError::MissingServers));
     }
@@ -386,7 +405,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -401,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_global_xflowplane_filters_with_listener_isolation() {
+    fn extracts_global_xflowplane_filters() {
         let doc: OpenAPI = serde_json::from_str(
             r#"{
                 "openapi": "3.0.0",
@@ -431,16 +450,13 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        assert!(spec.isolation_listener.is_some());
-
-        let listener = spec.isolation_listener.unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_some());
 
-        let filters = listener.http_filters.unwrap();
+        let filters = listener.http_filters.as_ref().unwrap();
         assert_eq!(filters.len(), 1);
     }
 
@@ -464,11 +480,10 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
-        assert!(spec.listener_isolation);
-        let listener = spec.isolation_listener.unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_none());
     }
 
@@ -492,7 +507,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -521,7 +536,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None);
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, GatewayError::InvalidFilters(_)));
@@ -550,7 +565,7 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), false, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         assert_eq!(spec.routes.len(), 1);
@@ -592,11 +607,11 @@ mod tests {
         )
         .expect("parse openapi");
 
-        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), true, None)
+        let spec = openapi_to_api_definition_spec(doc, "test-team".to_string(), None)
             .expect("convert spec");
 
         // Verify global filters
-        let listener = spec.isolation_listener.as_ref().unwrap();
+        let listener = &spec.listener;
         assert!(listener.http_filters.is_some());
         let global_filters = listener.http_filters.as_ref().unwrap();
         assert_eq!(global_filters.len(), 1);
@@ -605,5 +620,137 @@ mod tests {
         assert_eq!(spec.routes.len(), 1);
         let route = &spec.routes[0];
         assert!(route.override_config.is_some());
+    }
+
+    #[test]
+    fn converts_openapi_with_multiple_servers_for_load_balancing() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Multi-Server Example", "version": "1.0.0"},
+                "servers": [
+                    {"url": "https://api-1.example.com:443"},
+                    {"url": "https://api-2.example.com:443"},
+                    {"url": "https://api-3.example.com:443"}
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec =
+            openapi_to_api_definition_spec(doc, "lb-team".to_string(), None).expect("convert spec");
+
+        assert_eq!(spec.team, "lb-team");
+        assert_eq!(spec.domain, "api-1.example.com");
+        assert_eq!(spec.routes.len(), 1);
+
+        // Verify upstream targets include all 3 servers
+        let route = &spec.routes[0];
+        let targets = route.upstream_targets.get("targets").unwrap().as_array().unwrap();
+        assert_eq!(targets.len(), 3);
+
+        // Verify each target has correct endpoint
+        assert_eq!(targets[0]["endpoint"], "api-1.example.com:443");
+        assert_eq!(targets[1]["endpoint"], "api-2.example.com:443");
+        assert_eq!(targets[2]["endpoint"], "api-3.example.com:443");
+
+        // Verify names are unique
+        assert_eq!(targets[0]["name"], "api-1.example.com-upstream-0");
+        assert_eq!(targets[1]["name"], "api-2.example.com-upstream-1");
+        assert_eq!(targets[2]["name"], "api-3.example.com-upstream-2");
+    }
+
+    #[test]
+    fn rejects_openapi_with_mixed_http_and_https_servers() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Mixed Scheme Example", "version": "1.0.0"},
+                "servers": [
+                    {"url": "https://api-1.example.com:443"},
+                    {"url": "http://api-2.example.com:80"}
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let result = openapi_to_api_definition_spec(doc, "test-team".to_string(), None);
+
+        assert!(result.is_err());
+        match result {
+            Err(GatewayError::UnsupportedServer(msg)) => {
+                assert!(msg.contains("same scheme"));
+                assert!(msg.contains("https"));
+                assert!(msg.contains("http"));
+            }
+            _ => panic!("Expected UnsupportedServer error for mixed schemes"),
+        }
+    }
+
+    #[test]
+    fn supports_server_variables_for_load_balancing_weights() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Weighted LB Example", "version": "1.0.0"},
+                "servers": [
+                    {
+                        "url": "https://api-1.example.com:443",
+                        "variables": {
+                            "x-flowplane-weight": {
+                                "default": "100"
+                            }
+                        }
+                    },
+                    {
+                        "url": "https://api-2.example.com:443",
+                        "variables": {
+                            "x-flowplane-weight": {
+                                "default": "50"
+                            }
+                        }
+                    }
+                ],
+                "paths": {
+                    "/users": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "OK"}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let spec = openapi_to_api_definition_spec(doc, "weighted-team".to_string(), None)
+            .expect("convert spec");
+
+        let route = &spec.routes[0];
+        let targets = route.upstream_targets.get("targets").unwrap().as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+
+        // Verify weights are set
+        assert_eq!(targets[0]["weight"], 100);
+        assert_eq!(targets[1]["weight"], 50);
     }
 }

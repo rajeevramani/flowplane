@@ -12,7 +12,7 @@ use crate::xds::route::HeaderMatchConfig;
 /// High-level specification for creating a Platform API definition.
 ///
 /// This type represents the complete configuration for an API definition
-/// including team ownership, domain routing, isolation settings, and routes.
+/// including team ownership, domain routing, listener configuration, and routes.
 #[derive(Debug, Clone)]
 pub struct ApiDefinitionSpec {
     /// Team or organization owning this API
@@ -21,15 +21,9 @@ pub struct ApiDefinitionSpec {
     /// Domain name for routing (e.g., "api.example.com")
     pub domain: String,
 
-    /// Whether this API requires listener isolation
-    pub listener_isolation: bool,
-
-    /// Optional isolated listener configuration
-    pub isolation_listener: Option<ListenerConfig>,
-
-    /// Target listener names (only used when listener_isolation is false)
-    /// If None, defaults to "default-gateway-listener"
-    pub target_listeners: Option<Vec<String>>,
+    /// Listener configuration for this API
+    /// Each API definition requires an explicit listener configuration
+    pub listener: ListenerConfig,
 
     /// Optional TLS configuration
     pub tls_config: Option<Value>,
@@ -156,16 +150,21 @@ mod tests {
         let spec = ApiDefinitionSpec {
             team: "platform".to_string(),
             domain: "api.example.com".to_string(),
-            listener_isolation: false,
-            isolation_listener: None,
-            target_listeners: None,
+            listener: ListenerConfig {
+                name: Some("api-listener".to_string()),
+                bind_address: "0.0.0.0".to_string(),
+                port: 8080,
+                protocol: "HTTP".to_string(),
+                tls_config: None,
+                http_filters: None,
+            },
             tls_config: None,
             routes: vec![],
         };
 
         assert_eq!(spec.team, "platform");
         assert_eq!(spec.domain, "api.example.com");
-        assert!(!spec.listener_isolation);
+        assert_eq!(spec.listener.port, 8080);
         assert!(spec.routes.is_empty());
     }
 

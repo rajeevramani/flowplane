@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, post_create_api, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, post_create_api, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -59,6 +59,9 @@ async fn smoke_boot_and_route() {
     let _cp =
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
+
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
 
     // Optionally boot Envoy if binary exists
     let maybe_envoy = if EnvoyHandle::is_available() {

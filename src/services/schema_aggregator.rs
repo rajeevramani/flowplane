@@ -639,8 +639,24 @@ mod tests {
         pool
     }
 
+    /// Helper to create a test team in the database (idempotent)
+    async fn create_test_team(pool: &sqlx::Pool<sqlx::Sqlite>, name: &str) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')"
+        )
+        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(name)
+        .bind(format!("Test {}", name))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn create_test_session(pool: &sqlx::Pool<sqlx::Sqlite>) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
+
+        // Create the team first
+        create_test_team(pool, "test-team").await;
 
         sqlx::query(
             "INSERT INTO learning_sessions (

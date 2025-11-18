@@ -31,7 +31,10 @@ async fn setup_pool() -> DbPool {
             max_usage_count INTEGER,
             usage_count INTEGER NOT NULL DEFAULT 0,
             failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME
+            locked_until DATETIME,
+            csrf_token TEXT,
+            user_id TEXT,
+            user_email TEXT
         );
         "#,
     )
@@ -76,6 +79,8 @@ fn sample_token(id: &str, index: usize) -> NewPersonalAccessToken {
         usage_count: 0,
         failed_attempts: 0,
         locked_until: None,
+        user_id: None,
+        user_email: None,
     }
 }
 
@@ -93,7 +98,7 @@ async fn performance_list_tokens_100() {
     seed_tokens(&repo, 100).await;
 
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100, "Should fetch all 100 tokens");
@@ -113,7 +118,7 @@ async fn performance_list_tokens_1000() {
     seed_tokens(&repo, 1000).await;
 
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100, "Should fetch first 100 tokens");
@@ -133,9 +138,9 @@ async fn performance_list_tokens_pagination() {
     seed_tokens(&repo, 500).await;
 
     let start = Instant::now();
-    let page1 = repo.list_tokens(50, 0).await.unwrap();
-    let page2 = repo.list_tokens(50, 50).await.unwrap();
-    let page3 = repo.list_tokens(50, 100).await.unwrap();
+    let page1 = repo.list_tokens(50, 0, None).await.unwrap();
+    let page2 = repo.list_tokens(50, 50, None).await.unwrap();
+    let page3 = repo.list_tokens(50, 100, None).await.unwrap();
     let duration = start.elapsed();
 
     assert_eq!(page1.len(), 50);
@@ -178,7 +183,7 @@ async fn performance_get_single_token() {
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
-    let tokens = repo.list_tokens(1, 0).await.unwrap();
+    let tokens = repo.list_tokens(1, 0, None).await.unwrap();
     let token_id = &tokens[0].id;
 
     let start = Instant::now();
@@ -211,7 +216,7 @@ async fn performance_comparison_theoretical() {
 
     // Test the optimized version
     let start = Instant::now();
-    let tokens = repo.list_tokens(100, 0).await.unwrap();
+    let tokens = repo.list_tokens(100, 0, None).await.unwrap();
     let optimized_duration = start.elapsed();
 
     assert_eq!(tokens.len(), 100);
