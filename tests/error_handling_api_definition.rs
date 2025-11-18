@@ -5,9 +5,11 @@
 //! 2. Invalid data gracefully degrades instead of panicking
 //! 3. Error paths propagate correctly through the system
 
+use flowplane::auth::CreateTeamRequest;
 use flowplane::storage::repositories::api_definition::{
     ApiDefinitionRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
 };
+use flowplane::storage::repositories::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{self, DbPool};
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -19,6 +21,19 @@ async fn create_test_pool() -> DbPool {
         .expect("create sqlite pool");
 
     storage::run_migrations(&pool).await.expect("run migrations");
+
+    // Create test team required by FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let _ = team_repo
+        .create_team(CreateTeamRequest {
+            name: "test-team".to_string(),
+            display_name: "Test Team".to_string(),
+            description: Some("Team for error handling tests".to_string()),
+            owner_user_id: None,
+            settings: None,
+        })
+        .await;
+
     pool
 }
 

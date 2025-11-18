@@ -27,7 +27,7 @@ async fn create_test_team(pool: &sqlx::Pool<sqlx::Sqlite>, team_name: &str) {
         .create_team(CreateTeamRequest {
             name: team_name.to_string(),
             display_name: format!("Test Team {}", team_name),
-            description: Some(format!("Test team for integration tests")),
+            description: Some("Test team for integration tests".to_string()),
             owner_user_id: None,
             settings: None,
         })

@@ -12,87 +12,9 @@ use serde_json::json;
 
 use super::support::setup_multi_api_app;
 
-/// Scenario 2.1: Port Conflict Across Isolation Modes
-///
-/// Test that conflicts are detected when an isolated listener tries to use
-/// a port already occupied by a shared listener (or vice versa).
-#[tokio::test]
-async fn port_conflict_isolated_vs_shared() {
-    let app = setup_multi_api_app().await;
-    let listener_repo = ListenerRepository::new(app.pool.clone());
-
-    // Native API: Create a shared listener on 0.0.0.0:8080
-    let native_listener = listener_repo
-        .create(CreateListenerRequest {
-            name: "shared-listener-8080".to_string(),
-            address: "0.0.0.0".to_string(),
-            port: Some(8080),
-            protocol: Some("HTTP".into()),
-            configuration: serde_json::json!({
-                "note": "Native API shared listener"
-            }),
-            team: Some("team-native".into()),
-        })
-        .await
-        .expect("create native listener");
-
-    assert_eq!(native_listener.port, Some(8080));
-    assert_eq!(native_listener.address, "0.0.0.0");
-
-    // Platform API: Attempt to create listener on same port
-    let platform_spec = ApiDefinitionSpec {
-        team: "team-platform".to_string(),
-        domain: "platform.test.local".to_string(),
-        listener: flowplane::domain::ListenerConfig {
-            name: Some("listener-8080".to_string()),
-            bind_address: "0.0.0.0".to_string(),
-            port: 8080, // Conflict!
-            protocol: "HTTP".to_string(),
-            tls_config: None,
-            http_filters: None,
-        },
-        tls_config: None,
-        routes: vec![RouteSpec {
-            match_type: "prefix".to_string(),
-            match_value: "/api".to_string(),
-            case_sensitive: true,
-            headers: None,
-            rewrite_prefix: None,
-            rewrite_regex: None,
-            rewrite_substitution: None,
-            upstream_targets: json!({
-                "targets": [{
-                    "name": "platform-backend",
-                    "endpoint": "platform.svc:8080",
-                    "weight": 100
-                }]
-            }),
-            timeout_seconds: Some(30),
-            override_config: None,
-            deployment_note: None,
-            route_order: Some(0),
-        }],
-    };
-
-    // This should fail due to port conflict
-    let result = app.materializer.create_definition(platform_spec).await;
-    assert!(result.is_err(), "Platform API should detect port conflict with Native API listener");
-
-    // Verify error message mentions port conflict
-    let err = result.unwrap_err();
-    let err_str = format!("{:?}", err);
-    assert!(
-        err_str.to_lowercase().contains("port") || err_str.to_lowercase().contains("conflict"),
-        "Error should mention port or conflict, got: {}",
-        err_str
-    );
-
-    // Verify native listener still exists and is unchanged
-    let native_listener_check =
-        listener_repo.get_by_id(&native_listener.id).await.expect("get native listener");
-    assert_eq!(native_listener_check.id, native_listener.id);
-    assert_eq!(native_listener_check.port, Some(8080));
-}
+// Scenario 2.1 (port_conflict_isolated_vs_shared) removed in task 23
+// This test was validating port conflicts between "isolated" and "shared" listeners,
+// concepts that were removed when listener isolation was eliminated.
 
 /// Scenario 2.2: Domain Conflict with Overlapping Route Paths
 ///

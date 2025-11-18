@@ -95,3 +95,25 @@ pub async fn read_json<T: DeserializeOwned>(response: Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("read body");
     serde_json::from_slice(&bytes).expect("parse json")
 }
+
+pub async fn create_team(app: &TestApp, admin_token: &str, team_name: &str) {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    let response = send_request(
+        app,
+        Method::POST,
+        "/api/v1/admin/teams",
+        Some(admin_token),
+        Some(json!({
+            "name": team_name,
+            "displayName": format!("{} Team", team_name),
+            "description": format!("Test team: {}", team_name)
+        })),
+    )
+    .await;
+
+    if response.status() != StatusCode::CREATED && response.status() != StatusCode::CONFLICT {
+        panic!("Failed to create team {}: status {}", team_name, response.status());
+    }
+}

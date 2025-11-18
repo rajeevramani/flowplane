@@ -129,6 +129,7 @@ pub async fn create_team(pool: &DbPool, name: &str) {
 }
 
 /// Helper to create an API definition via import-openapi endpoint
+#[allow(dead_code)]
 pub async fn create_api_definition_via_openapi(
     app: &PlatformApiApp,
     token: &str,
@@ -160,13 +161,13 @@ paths:
         uri.push_str(&format!("&port={}", p));
     }
 
-    let mut builder = Request::builder()
+    let request = Request::builder()
         .method(Method::POST)
         .uri(&uri)
         .header("Authorization", format!("Bearer {}", token))
-        .header("content-type", "application/x-yaml");
-
-    let request = builder.body(Body::from(openapi_spec)).expect("build request");
+        .header("content-type", "application/x-yaml")
+        .body(Body::from(openapi_spec))
+        .expect("build request");
 
     app.router().oneshot(request).await.expect("request")
 }

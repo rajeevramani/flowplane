@@ -10,7 +10,7 @@
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 
-use crate::support::{read_json, send_request, setup_test_app};
+use crate::support::{create_team, read_json, send_request, setup_test_app};
 use flowplane::api::handlers::auth::LoginResponseBody;
 use flowplane::auth::user::UserResponse;
 
@@ -64,6 +64,9 @@ async fn login_admin_user_receives_admin_all_scope() {
 async fn login_regular_user_single_team() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+
+    // Create the team first
+    create_team(&app, &admin_token.token, "engineering").await;
 
     // Create a regular user
     let create_response = send_request(
@@ -124,6 +127,11 @@ async fn login_regular_user_single_team() {
 async fn login_regular_user_multiple_teams_deduplicates_scopes() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+
+    // Create teams first
+    create_team(&app, &admin_token.token, "engineering").await;
+    create_team(&app, &admin_token.token, "platform").await;
+    create_team(&app, &admin_token.token, "security").await;
 
     // Create a regular user
     let create_response = send_request(
@@ -445,6 +453,9 @@ async fn login_validates_email_format() {
 async fn login_session_can_be_used_for_authenticated_requests() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+
+    // Create team first
+    create_team(&app, &admin_token.token, "engineering").await;
 
     // Create a user with token permissions
     let create_response = send_request(

@@ -1,7 +1,7 @@
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 
-use crate::support::{read_json, send_request, setup_test_app};
+use crate::support::{create_team, read_json, send_request, setup_test_app};
 use flowplane::api::handlers::ListUsersResponse;
 use flowplane::auth::user::{UserResponse, UserTeamMembership, UserWithTeamsResponse};
 
@@ -423,6 +423,9 @@ async fn add_team_membership() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
 
+    // Create team first
+    create_team(&app, &admin_token.token, "engineering").await;
+
     // Create user
     let create_response = send_request(
         &app,
@@ -506,6 +509,11 @@ async fn list_user_teams() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
 
+    // Create teams first
+    create_team(&app, &admin_token.token, "engineering").await;
+    create_team(&app, &admin_token.token, "platform").await;
+    create_team(&app, &admin_token.token, "security").await;
+
     // Create user
     let create_response = send_request(
         &app,
@@ -552,6 +560,9 @@ async fn list_user_teams() {
 async fn remove_team_membership() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+
+    // Create team first
+    create_team(&app, &admin_token.token, "engineering").await;
 
     // Create user
     let create_response = send_request(
@@ -646,6 +657,9 @@ async fn remove_team_membership_requires_admin() {
 async fn user_lifecycle_integration() {
     let app = setup_test_app().await;
     let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+
+    // Create team first
+    create_team(&app, &admin_token.token, "platform").await;
 
     // 1. Create user
     let create_response = send_request(
