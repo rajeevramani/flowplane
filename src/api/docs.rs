@@ -52,7 +52,6 @@ use crate::xds::{
         crate::api::handlers::listeners::get_listener_handler,
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
-        crate::api::handlers::api_definitions::create_api_definition_handler,
         crate::api::handlers::api_definitions::import_openapi_handler,
         crate::api::handlers::api_definitions::append_route_handler,
         crate::api::handlers::api_definitions::list_api_definitions_handler,
@@ -109,13 +108,11 @@ use crate::xds::{
             crate::api::handlers::listeners::UpdateListenerBody,
             crate::api::handlers::api_definitions::OpenApiSpecBody,
             crate::api::handlers::api_definitions::ImportOpenApiQuery,
-            crate::validation::requests::api_definition::CreateApiDefinitionBody,
             crate::validation::requests::api_definition::AppendRouteBody,
             crate::validation::requests::api_definition::RouteBody,
             crate::validation::requests::api_definition::RouteMatchBody,
             crate::validation::requests::api_definition::RouteClusterBody,
             crate::validation::requests::api_definition::RouteRewriteBody,
-            crate::validation::requests::api_definition::IsolationListenerBody,
             crate::api::handlers::api_definitions::CreateApiDefinitionResponse,
             crate::api::handlers::api_definitions::AppendRouteResponse,
             crate::api::handlers::api_definitions::ApiDefinitionSummary,
@@ -273,7 +270,7 @@ mod tests {
         // API Definition endpoints (5)
         assert!(
             paths.contains_key("/api/v1/api-definitions"),
-            "Missing GET/POST /api/v1/api-definitions"
+            "Missing GET /api/v1/api-definitions"
         );
         assert!(
             paths.contains_key("/api/v1/api-definitions/from-openapi"),
@@ -418,19 +415,11 @@ mod tests {
         assert!(schemas.contains_key("UpdateListenerBody"), "Missing UpdateListenerBody schema");
 
         // Platform API schemas
-        assert!(
-            schemas.contains_key("CreateApiDefinitionBody"),
-            "Missing CreateApiDefinitionBody schema"
-        );
         assert!(schemas.contains_key("AppendRouteBody"), "Missing AppendRouteBody schema");
         assert!(schemas.contains_key("RouteBody"), "Missing RouteBody schema");
         assert!(schemas.contains_key("RouteMatchBody"), "Missing RouteMatchBody schema");
         assert!(schemas.contains_key("RouteClusterBody"), "Missing RouteClusterBody schema");
         assert!(schemas.contains_key("RouteRewriteBody"), "Missing RouteRewriteBody schema");
-        assert!(
-            schemas.contains_key("IsolationListenerBody"),
-            "Missing IsolationListenerBody schema"
-        );
         assert!(
             schemas.contains_key("CreateApiDefinitionResponse"),
             "Missing CreateApiDefinitionResponse schema"
@@ -533,17 +522,6 @@ mod tests {
     fn openapi_platform_api_schemas_have_examples() {
         let openapi = ApiDoc::openapi();
         let schemas = &openapi.components.as_ref().expect("components").schemas;
-
-        // Verify CreateApiDefinitionBody has examples
-        let create_def_schema = schemas
-            .get("CreateApiDefinitionBody")
-            .expect("CreateApiDefinitionBody schema should exist");
-
-        if let RefOr::T(Schema::Object(obj)) = create_def_schema {
-            assert!(obj.example.is_some(), "CreateApiDefinitionBody should have an example");
-        } else {
-            panic!("CreateApiDefinitionBody should be an object schema");
-        }
 
         // Verify AppendRouteBody has examples
         let append_route_schema =

@@ -5,73 +5,11 @@ use serde_json::{json, Value};
 
 use crate::platform_api::{
     filter_overrides::{canonicalize_filter_overrides, validate_filter_overrides},
-    materializer::{ApiDefinitionSpec, RouteSpec},
+    materializer::RouteSpec,
 };
 use crate::validation::validate_host;
 use crate::Error;
 use utoipa::ToSchema;
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-#[schema(example = json!({
-    "team": "payments",
-    "domain": "payments.example.com",
-    "listener": {
-        "name": "payments-listener",
-        "bindAddress": "0.0.0.0",
-        "port": 8080,
-        "protocol": "HTTP"
-    },
-    "routes": [{
-        "match": {
-            "prefix": "/api/v1/payments"
-        },
-        "cluster": {
-            "name": "payments-backend",
-            "endpoint": "payments-backend.svc.cluster.local:8080"
-        },
-        "timeoutSeconds": 30,
-        "rewrite": {
-            "prefix": "/internal/v1"
-        },
-        "filters": {
-            "cors": {
-                "allowOrigin": ["https://example.com"],
-                "allowMethods": ["GET", "POST", "PUT"],
-                "allowCredentials": true
-            },
-            "rateLimit": {
-                "requestsPerUnit": 100,
-                "unit": "minute"
-            }
-        }
-    }]
-}))]
-pub struct CreateApiDefinitionBody {
-    #[schema(example = "payments")]
-    pub team: String,
-    #[schema(example = "payments.example.com")]
-    pub domain: String,
-    pub listener: IsolationListenerBody,
-    #[serde(default)]
-    pub tls: Option<Value>,
-    pub routes: Vec<RouteBody>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct IsolationListenerBody {
-    #[serde(default)]
-    #[schema(example = "payments-shared-listener")]
-    pub name: Option<String>,
-    #[schema(example = "0.0.0.0")]
-    pub bind_address: String,
-    #[schema(example = 10010, minimum = 1, maximum = 65535)]
-    pub port: u16,
-    #[serde(default)]
-    #[schema(example = "HTTP")]
-    pub protocol: Option<String>,
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -178,81 +116,6 @@ pub struct RouteRewriteBody {
     #[serde(default)]
     #[schema(example = "/service/$1")]
     pub substitution: Option<String>,
-}
-
-impl CreateApiDefinitionBody {
-    fn validate_payload(&self) -> Result<(), Error> {
-        ensure_non_empty(&self.team, "team", 100)?;
-        ensure_non_empty(&self.domain, "domain", 253)?;
-        validate_host(&self.domain).map_err(|_| {
-            Error::validation("domain must contain alphanumeric, '.' or '-' characters")
-        })?;
-
-        if self.routes.is_empty() {
-            return Err(Error::validation("at least one route is required"));
-        }
-
-        if self.routes.len() > 50 {
-            return Err(Error::validation("no more than 50 routes can be provided"));
-        }
-
-        for route in &self.routes {
-            route.validate_payload()?;
-        }
-
-        // Validate listener (now always required)
-        self.listener.validate()?;
-
-        Ok(())
-    }
-
-    pub fn into_spec(self) -> Result<ApiDefinitionSpec, Error> {
-        self.validate_payload()?;
-
-        let CreateApiDefinitionBody { team, domain, listener, tls, routes } = self;
-
-        let mut specs = Vec::with_capacity(routes.len());
-        for (idx, route) in routes.into_iter().enumerate() {
-            specs.push(route.into_route_spec(Some(idx as i64), None)?);
-        }
-
-        Ok(ApiDefinitionSpec {
-            team,
-            domain,
-            listener: listener.into_spec(),
-            tls_config: tls,
-            routes: specs,
-        })
-    }
-}
-
-impl IsolationListenerBody {
-    fn validate(&self) -> Result<(), Error> {
-        ensure_non_empty(&self.bind_address, "listener.bindAddress", 255)?;
-        if let Some(proto) = &self.protocol {
-            let p = proto.to_uppercase();
-            if p != "HTTP" && p != "HTTPS" {
-                return Err(Error::validation(
-                    "listener.protocol must be either 'HTTP' or 'HTTPS'",
-                ));
-            }
-        }
-        if self.port == 0 {
-            return Err(Error::validation("listener.port must be greater than zero"));
-        }
-        Ok(())
-    }
-
-    fn into_spec(self) -> crate::platform_api::materializer::ListenerInput {
-        crate::platform_api::materializer::ListenerInput {
-            name: self.name,
-            bind_address: self.bind_address,
-            port: self.port as u32,
-            protocol: self.protocol.unwrap_or_else(|| "HTTP".to_string()),
-            tls_config: None,
-            http_filters: None, // No global filters when creating directly via API
-        }
-    }
 }
 
 impl AppendRouteBody {
@@ -500,33 +363,6 @@ fn parse_endpoint(endpoint: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn create_payload_validation_passes() {
-        let body = CreateApiDefinitionBody {
-            team: "payments".to_string(),
-            domain: "payments.flowplane.dev".to_string(),
-            listener: IsolationListenerBody {
-                name: Some("test-listener".to_string()),
-                bind_address: "0.0.0.0".to_string(),
-                port: 8080,
-                protocol: Some("HTTP".to_string()),
-            },
-            tls: None,
-            routes: vec![RouteBody {
-                matcher: RouteMatchBody { prefix: Some("/v1".to_string()), path: None },
-                cluster: RouteClusterBody {
-                    name: "backend".to_string(),
-                    endpoint: "backend.svc.cluster.local:8443".to_string(),
-                },
-                timeout_seconds: Some(30),
-                rewrite: None,
-                filters: None,
-            }],
-        };
-
-        assert!(body.into_spec().is_ok());
-    }
 
     #[test]
     fn invalid_endpoint_fails_validation() {

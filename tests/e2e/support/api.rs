@@ -57,25 +57,41 @@ pub async fn post_create_api(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri = format!("http://{}/api/v1/api-definitions", api_addr).parse()?;
-    let body = json!({
-        "team": team,
-        "domain": domain,
-        "listenerIsolation": false,
-        "routes": [
+    let uri: Uri = format!("http://{}/api/v1/api-definitions/from-openapi?team={}", api_addr, team).parse()?;
+
+    // Create a minimal OpenAPI 3.0 spec that represents the API definition
+    let openapi_spec = json!({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "E2E Test API",
+            "version": "1.0.0",
+            "x-flowplane-domain": domain
+        },
+        "servers": [
             {
-                "match": {"prefix": prefix},
-                "cluster": {"name": cluster_name, "endpoint": endpoint},
-                "timeoutSeconds": 3
+                "url": format!("http://{}", endpoint)
             }
-        ]
+        ],
+        "paths": {
+            prefix: {
+                "get": {
+                    "operationId": cluster_name,
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
+                    }
+                }
+            }
+        }
     });
+
     let req = Request::builder()
         .method(Method::POST)
         .uri(uri)
         .header(hyper::http::header::CONTENT_TYPE, "application/json")
         .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", bearer))
-        .body(Full::<Bytes>::from(body.to_string()))?;
+        .body(Full::<Bytes>::from(openapi_spec.to_string()))?;
 
     let res = client.request(req).await?;
     let status = res.status();

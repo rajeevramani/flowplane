@@ -30,11 +30,13 @@ async fn negative_invalid_payload_rejected() {
     let token =
         create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
 
-    // Invalid: missing routes
+    // Invalid: malformed OpenAPI spec (missing openapi version)
     let body = serde_json::json!({
-        "team": "e2e",
-        "domain": "bad domain!", // invalid host
-        "routes": []
+        "info": {
+            "title": "Invalid API",
+            "version": "1.0.0"
+        },
+        "paths": {}
     });
 
     let connector = hyper_util::client::legacy::connect::HttpConnector::new();
@@ -42,7 +44,9 @@ async fn negative_invalid_payload_rejected() {
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
     let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
+            .parse()
+            .unwrap();
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)
         .uri(uri)

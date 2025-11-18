@@ -21,9 +21,7 @@ use crate::{
         materializer::{AppendRouteOutcome, CreateDefinitionOutcome, PlatformApiMaterializer},
         openapi_adapter,
     },
-    validation::requests::api_definition::{
-        AppendRouteBody, CreateApiDefinitionBody, UpdateApiDefinitionBody,
-    },
+    validation::requests::api_definition::{AppendRouteBody, UpdateApiDefinitionBody},
 };
 
 // === Helper Functions ===
@@ -253,74 +251,6 @@ pub async fn get_api_definition_handler(
     let verified_definition = verify_api_definition_access(definition, &team_scopes).await?;
 
     Ok(Json(ApiDefinitionSummary::from(verified_definition)))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/api-definitions",
-    request_body = CreateApiDefinitionBody,
-    responses(
-        (status = 201, description = "API definition successfully created with routes and clusters", body = CreateApiDefinitionResponse),
-        (status = 400, description = "Invalid request: validation error in payload (e.g., empty team, invalid domain, missing routes, malformed endpoint)"),
-        (status = 409, description = "Conflict: domain already registered by another team or route collision detected"),
-        (status = 403, description = "Forbidden: insufficient permissions"),
-        (status = 500, description = "Internal server error"),
-        (status = 503, description = "API definition repository not configured")
-    ),
-    tag = "platform-api"
-)]
-pub async fn create_api_definition_handler(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    Json(payload): Json<CreateApiDefinitionBody>,
-) -> Result<(StatusCode, Json<CreateApiDefinitionResponse>), ApiError> {
-    // Authorization: require api-definitions:write scope
-    require_resource_access(&context, "api-definitions", "write", None)?;
-
-    // Extract team from auth context
-    // - Team-scoped users: must create definitions for their team only
-    // - Admin/resource-level users: can use any team (from payload)
-    let team_scopes = extract_team_scopes(&context);
-    let team = if team_scopes.is_empty() {
-        // Admin or resource-level scope - use team from payload
-        payload.team.clone()
-    } else {
-        // Team-scoped user - must use their team (only one team scope supported)
-        let user_team = team_scopes.into_iter().next().ok_or_else(|| {
-            ApiError::Forbidden("Team-scoped users must have exactly one team scope".to_string())
-        })?;
-
-        // Verify payload team matches user's team (if provided)
-        if !payload.team.is_empty() && payload.team != user_team {
-            return Err(ApiError::Forbidden(format!(
-                "Team-scoped users can only create definitions for their own team '{}', not '{}'",
-                user_team, payload.team
-            )));
-        }
-
-        user_team
-    };
-
-    let mut spec = payload.into_spec().map_err(ApiError::from)?;
-    // Override team with the one extracted from auth context
-    spec.team = team;
-
-    let materializer =
-        PlatformApiMaterializer::new(state.xds_state.clone()).map_err(ApiError::from)?;
-
-    let outcome: CreateDefinitionOutcome =
-        materializer.create_definition(spec).await.map_err(ApiError::from)?;
-
-    let created_route_ids = outcome.routes.iter().map(|route| route.id.to_string()).collect();
-
-    Ok((
-        StatusCode::CREATED,
-        Json(CreateApiDefinitionResponse {
-            id: outcome.definition.id.to_string(),
-            bootstrap_uri: outcome.bootstrap_uri,
-            routes: created_route_ids,
-        }),
-    ))
 }
 
 #[utoipa::path(

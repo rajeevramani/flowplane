@@ -13,21 +13,6 @@ use super::config::{resolve_base_url, resolve_timeout, resolve_token};
 
 #[derive(Subcommand)]
 pub enum ApiCommands {
-    /// Create a new API definition from a JSON specification file
-    #[command(
-        long_about = "Create a new API definition by providing a JSON file with the specification.\n\nThe JSON file should contain fields like name, team, domain, and specification details.",
-        after_help = "EXAMPLES:\n    # Create an API definition from a JSON file\n    flowplane-cli api create --file api-spec.json\n\n    # Create and output as YAML\n    flowplane-cli api create --file api-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli api create --file api-spec.json --token your-token"
-    )]
-    Create {
-        /// Path to JSON file with API definition spec
-        #[arg(short, long, value_name = "FILE")]
-        file: PathBuf,
-
-        /// Output format (json, yaml, or table)
-        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
-        output: String,
-    },
-
     /// List all API definitions with optional filtering
     #[command(
         long_about = "List all API definitions in the system. Supports filtering by team, domain, and pagination.",
@@ -166,9 +151,6 @@ pub async fn handle_api_command(
     let client = FlowplaneClient::new(config)?;
 
     match command {
-        ApiCommands::Create { file, output } => {
-            create_api_definition(&client, file, &output).await?
-        }
         ApiCommands::List { team, domain, limit, offset, output } => {
             list_api_definitions(&client, team, domain, limit, offset, &output).await?
         }
@@ -182,24 +164,6 @@ pub async fn handle_api_command(
         ApiCommands::ValidateFilters { .. } => unreachable!("Handled above"),
     }
 
-    Ok(())
-}
-
-async fn create_api_definition(
-    client: &FlowplaneClient,
-    file: PathBuf,
-    output: &str,
-) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
-
-    let response: CreateApiDefinitionResponse =
-        client.post_json("/api/v1/api-definitions", &body).await?;
-
-    print_output(&response, output)?;
     Ok(())
 }
 
