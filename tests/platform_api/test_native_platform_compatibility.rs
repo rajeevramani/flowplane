@@ -66,12 +66,13 @@ async fn create_test_context() -> TestContext {
 }
 
 #[tokio::test]
-async fn test_native_api_routes_unaffected_by_platform_api() {
+async fn test_native_api_and_platform_api_work_independently() {
     let ctx = create_test_context().await;
     let route_repo = RouteRepository::new(ctx.pool.clone());
     let cluster_repo = ClusterRepository::new(ctx.pool.clone());
+    let listener_repo = flowplane::storage::repository::ListenerRepository::new(ctx.pool.clone());
 
-    // Get initial state of default-gateway-routes
+    // Get initial state of default-gateway resources
     let initial_route = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let initial_config: RouteConfig = serde_json::from_str(&initial_route.configuration).unwrap();
     let initial_vhost_count = initial_config.virtual_hosts.len();
@@ -155,7 +156,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
         "Native API should add one virtual host"
     );
 
-    // Now create a Platform API definition that uses the same shared listener
+    // Now create a Platform API definition with its own isolated listener
     let materializer = PlatformApiMaterializer::new(ctx.state.clone()).unwrap();
     let platform_spec = ApiDefinitionSpec {
         team: "platform-team".to_string(),
@@ -163,7 +164,7 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
         listener: ListenerConfig {
             name: None,
             bind_address: "0.0.0.0".to_string(),
-            port: 8080,
+            port: 8081, // Different port than default gateway
             protocol: "HTTP".to_string(),
             tls_config: None,
             http_filters: None,
@@ -191,20 +192,21 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
         }],
     };
 
-    let _outcome = materializer.create_definition(platform_spec).await.unwrap();
+    let outcome = materializer.create_definition(platform_spec).await.unwrap();
 
-    // Verify both Native API and Platform API routes coexist
-    let after_both = route_repo.get_by_name("default-gateway-routes").await.unwrap();
-    let after_both_config: RouteConfig = serde_json::from_str(&after_both.configuration).unwrap();
+    // Verify Native API routes are unchanged (Platform API doesn't affect default-gateway-routes)
+    let after_platform = route_repo.get_by_name("default-gateway-routes").await.unwrap();
+    let after_platform_config: RouteConfig =
+        serde_json::from_str(&after_platform.configuration).unwrap();
 
     assert_eq!(
-        after_both_config.virtual_hosts.len(),
-        initial_vhost_count + 2,
-        "Should have both Native and Platform API virtual hosts"
+        after_platform_config.virtual_hosts.len(),
+        initial_vhost_count + 1,
+        "Native API virtual host count should be unchanged"
     );
 
     // Verify Native API virtual host still exists unchanged
-    let native_vhost = after_both_config
+    let native_vhost = after_platform_config
         .virtual_hosts
         .iter()
         .find(|vh| vh.domains.contains(&"native.test.local".to_string()))
@@ -212,19 +214,22 @@ async fn test_native_api_routes_unaffected_by_platform_api() {
     assert_eq!(native_vhost.name, "native-test-vhost");
     assert_eq!(native_vhost.routes.len(), 1);
 
-    // Verify Platform API virtual host exists
-    let platform_vhost = after_both_config
-        .virtual_hosts
-        .iter()
-        .find(|vh| vh.domains.contains(&"platform.test.local".to_string()))
-        .expect("Platform API virtual host should exist");
-    assert!(platform_vhost.name.starts_with("platform-api-"));
+    // Verify Platform API created its own isolated listener
+    assert!(
+        outcome.generated_listener_id.is_some(),
+        "Platform API should create isolated listener"
+    );
+    let listener_id_str = outcome.generated_listener_id.unwrap();
+    let listener_id = flowplane::domain::ListenerId::from_str_unchecked(&listener_id_str);
+    let platform_listener = listener_repo.get_by_id(&listener_id).await.unwrap();
+    assert_eq!(platform_listener.port, Some(8081), "Platform API listener should be on port 8081");
 }
 
 #[tokio::test]
-async fn test_native_api_update_preserves_platform_api_routes() {
+async fn test_native_api_update_does_not_affect_platform_api() {
     let ctx = create_test_context().await;
     let route_repo = RouteRepository::new(ctx.pool.clone());
+    let listener_repo = flowplane::storage::repository::ListenerRepository::new(ctx.pool.clone());
 
     // Create Platform API definition first
     let materializer = PlatformApiMaterializer::new(ctx.state.clone()).unwrap();
@@ -262,22 +267,25 @@ async fn test_native_api_update_preserves_platform_api_routes() {
         }],
     };
 
-    let _outcome = materializer.create_definition(platform_spec).await.unwrap();
+    let outcome = materializer.create_definition(platform_spec).await.unwrap();
+    let platform_listener_id_str = outcome.generated_listener_id.clone().unwrap();
+    let platform_listener_id =
+        flowplane::domain::ListenerId::from_str_unchecked(&platform_listener_id_str);
 
-    // Get the route config after Platform API creation
-    let after_platform = route_repo.get_by_name("default-gateway-routes").await.unwrap();
-    let mut route_config: RouteConfig =
-        serde_json::from_str(&after_platform.configuration).unwrap();
-    let vhost_count_before_native = route_config.virtual_hosts.len();
+    // Get the Platform API listener state
+    let platform_listener_before = listener_repo.get_by_id(&platform_listener_id).await.unwrap();
 
-    // Simulate Native API UPDATE: modify the default virtual host
+    // Now update Native API (modify default-gateway-routes)
+    let default_route = route_repo.get_by_name("default-gateway-routes").await.unwrap();
+    let mut route_config: RouteConfig = serde_json::from_str(&default_route.configuration).unwrap();
+
+    // Add a new route to the default virtual host
     let default_vhost = route_config
         .virtual_hosts
         .iter_mut()
         .find(|vh| vh.name == "default-gateway-vhost")
         .expect("Default vhost should exist");
 
-    // Add a new route to the default virtual host
     default_vhost.routes.push(RouteRule {
         name: Some("native-updated-route".to_string()),
         r#match: RouteMatchConfig {
@@ -297,7 +305,7 @@ async fn test_native_api_update_preserves_platform_api_routes() {
     // Update via Native API (direct repository call)
     route_repo
         .update(
-            &after_platform.id,
+            &default_route.id,
             flowplane::storage::repository::UpdateRouteRequest {
                 path_prefix: None,
                 cluster_name: None,
@@ -308,25 +316,20 @@ async fn test_native_api_update_preserves_platform_api_routes() {
         .await
         .unwrap();
 
-    // Verify Platform API virtual host is still present after Native API update
-    let after_update = route_repo.get_by_name("default-gateway-routes").await.unwrap();
-    let updated_config: RouteConfig = serde_json::from_str(&after_update.configuration).unwrap();
-
+    // Verify Platform API listener is unchanged
+    let platform_listener_after = listener_repo.get_by_id(&platform_listener_id).await.unwrap();
     assert_eq!(
-        updated_config.virtual_hosts.len(),
-        vhost_count_before_native,
-        "Virtual host count should remain the same"
+        platform_listener_before.id, platform_listener_after.id,
+        "Platform API listener should be unchanged"
+    );
+    assert_eq!(
+        platform_listener_before.port, platform_listener_after.port,
+        "Platform API listener port should be unchanged"
     );
 
-    // Verify Platform API virtual host still exists
-    let platform_vhost = updated_config
-        .virtual_hosts
-        .iter()
-        .find(|vh| vh.domains.contains(&"platform.test.local".to_string()))
-        .expect("Platform API virtual host should still exist after Native API update");
-    assert!(platform_vhost.name.starts_with("platform-api-"));
-
-    // Verify the native route was added
+    // Verify the native route was added to default-gateway-routes
+    let after_update = route_repo.get_by_name("default-gateway-routes").await.unwrap();
+    let updated_config: RouteConfig = serde_json::from_str(&after_update.configuration).unwrap();
     let default_vhost = updated_config
         .virtual_hosts
         .iter()
@@ -343,16 +346,15 @@ async fn test_native_api_update_preserves_platform_api_routes() {
 }
 
 #[tokio::test]
-async fn test_platform_api_delete_preserves_native_api_routes() {
+async fn test_platform_api_delete_does_not_affect_native_api() {
     let ctx = create_test_context().await;
     let route_repo = RouteRepository::new(ctx.pool.clone());
+    let listener_repo = flowplane::storage::repository::ListenerRepository::new(ctx.pool.clone());
 
-    // Get initial route config
+    // Get initial state of default-gateway-routes
     let initial_route = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let initial_config: RouteConfig = serde_json::from_str(&initial_route.configuration).unwrap();
-
-    // Count default virtual hosts (should have default-gateway-vhost)
-    let native_vhost_count = initial_config.virtual_hosts.len();
+    let initial_vhost_count = initial_config.virtual_hosts.len();
 
     // Create Platform API definition
     let materializer = PlatformApiMaterializer::new(ctx.state.clone()).unwrap();
@@ -391,29 +393,42 @@ async fn test_platform_api_delete_preserves_native_api_routes() {
     };
 
     let outcome = materializer.create_definition(platform_spec).await.unwrap();
+    let platform_listener_id_str = outcome.generated_listener_id.clone().unwrap();
+    let platform_listener_id =
+        flowplane::domain::ListenerId::from_str_unchecked(&platform_listener_id_str);
 
-    // Verify Platform API route was added
+    // Verify Platform API listener was created
+    let platform_listener = listener_repo.get_by_id(&platform_listener_id).await.unwrap();
+    assert_eq!(platform_listener.port, Some(8082));
+
+    // Verify default-gateway-routes is unchanged (Platform API doesn't affect it)
     let after_create = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let after_create_config: RouteConfig =
         serde_json::from_str(&after_create.configuration).unwrap();
     assert_eq!(
         after_create_config.virtual_hosts.len(),
-        native_vhost_count + 1,
-        "Platform API should add one virtual host"
+        initial_vhost_count,
+        "Platform API should not affect default-gateway-routes"
     );
 
     // Delete the Platform API definition
     materializer.delete_definition(outcome.definition.id.as_str()).await.unwrap();
 
-    // Verify only Platform API routes were removed, Native API routes remain
+    // Verify Platform API listener was deleted
+    assert!(
+        listener_repo.get_by_id(&platform_listener_id).await.is_err(),
+        "Platform API listener should be deleted"
+    );
+
+    // Verify default-gateway-routes is still unchanged
     let after_delete = route_repo.get_by_name("default-gateway-routes").await.unwrap();
     let after_delete_config: RouteConfig =
         serde_json::from_str(&after_delete.configuration).unwrap();
 
     assert_eq!(
         after_delete_config.virtual_hosts.len(),
-        native_vhost_count,
-        "Should return to original native virtual host count"
+        initial_vhost_count,
+        "Native API routes should remain unchanged"
     );
 
     // Verify default-gateway-vhost still exists
@@ -423,15 +438,6 @@ async fn test_platform_api_delete_preserves_native_api_routes() {
         .find(|vh| vh.name == "default-gateway-vhost")
         .expect("Default gateway vhost should still exist");
     assert!(!default_vhost.routes.is_empty(), "Default routes should still exist");
-
-    // Verify Platform API virtual host was removed
-    assert!(
-        !after_delete_config
-            .virtual_hosts
-            .iter()
-            .any(|vh| vh.domains.contains(&"platform.test.local".to_string())),
-        "Platform API virtual host should be removed"
-    );
 }
 
 #[tokio::test]

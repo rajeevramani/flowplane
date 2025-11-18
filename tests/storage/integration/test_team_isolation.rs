@@ -3,13 +3,15 @@
 //! These tests verify that team-scoped RBAC filtering works correctly at the database
 //! level, ensuring proper data isolation between teams.
 
+use flowplane::auth::team::CreateTeamRequest;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{
     ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest,
     DbPool, ListenerRepository, RouteRepository,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
-/// Set up an in-memory SQLite database with migrations applied
+/// Set up an in-memory SQLite database with migrations applied and create test teams
 async fn setup_pool() -> DbPool {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -19,6 +21,20 @@ async fn setup_pool() -> DbPool {
 
     // Run migrations to create tables with team columns
     sqlx::migrate!("./migrations").run(&pool).await.expect("migrations should apply");
+
+    // Create test teams to satisfy FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    for team_name in &["team-a", "team-b", "special-team", "team-with-dashes_and_underscores"] {
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for storage team isolation tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
 
     pool
 }

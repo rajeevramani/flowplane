@@ -5,8 +5,10 @@
 //! - 20251112000002_create_user_team_memberships_table.sql
 //! - 20251112000003_add_user_columns_to_tokens.sql
 
+use flowplane::auth::team::CreateTeamRequest;
 use flowplane::config::DatabaseConfig;
 use flowplane::storage::create_pool;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use sqlx::Row;
 
 async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
@@ -15,7 +17,23 @@ async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
         auto_migrate: true,
         ..Default::default()
     };
-    create_pool(&config).await.unwrap()
+    let pool = create_pool(&config).await.unwrap();
+
+    // Create test teams to satisfy FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    for team_name in &["team-a", "team-b", "team-c", "team-1", "team-2", "team-3"] {
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for user team membership tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
+
+    pool
 }
 
 // Tests for users table migration (20251112000001)

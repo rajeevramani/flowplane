@@ -3,10 +3,12 @@
 //! Tests UserRepository and TeamMembershipRepository implementations
 //! with SQLite database to ensure all CRUD operations work correctly.
 
+use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::user::{NewUser, NewUserTeamMembership, UpdateUser, UserStatus};
 use flowplane::config::DatabaseConfig;
 use flowplane::domain::UserId;
 use flowplane::storage::create_pool;
+use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::repositories::{
     SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };
@@ -17,7 +19,37 @@ async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
         auto_migrate: true,
         ..Default::default()
     };
-    create_pool(&config).await.unwrap()
+    let pool = create_pool(&config).await.unwrap();
+
+    // Create test teams to satisfy FK constraints
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    for team_name in &[
+        "team-a",
+        "team-alpha",
+        "team-beta",
+        "team-gamma",
+        "team-delta",
+        "team-epsilon",
+        "team-zeta",
+        "team-1",
+        "team-2",
+        "team-3",
+        "cascade-team-1",
+        "cascade-team-2",
+        "cascade-team-3",
+    ] {
+        let _ = team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Team for user repository tests".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await;
+    }
+
+    pool
 }
 
 // UserRepository tests
