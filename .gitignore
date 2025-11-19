@@ -56,6 +56,7 @@ coverage/
 # Claude Code specific (if you want to keep these private)
 .claude/
 CLAUDE.md
+CLAUDE.md.backup
 
 Database
 data/

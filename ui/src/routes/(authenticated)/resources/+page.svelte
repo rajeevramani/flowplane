@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
-	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import Modal from '$lib/components/Modal.svelte';
 	import type {
 		ApiDefinitionSummary,
 		ListenerResponse,
@@ -12,6 +13,14 @@
 	type ResourceTab = 'api-definitions' | 'listeners' | 'routes' | 'clusters';
 
 	let activeTab = $state<ResourceTab>('api-definitions');
+
+	// Read tab from URL query parameter on mount
+	$effect(() => {
+		const urlTab = $page.url.searchParams.get('tab') as ResourceTab;
+		if (urlTab && ['api-definitions', 'listeners', 'routes', 'clusters'].includes(urlTab)) {
+			activeTab = urlTab;
+		}
+	});
 	let isLoading = $state(false);
 	let error = $state<string | null>(null);
 	let searchQuery = $state('');
@@ -25,24 +34,18 @@
 	let clusters = $state<ClusterResponse[]>([]);
 
 	// Delete confirmation state
-	let deleteConfirm = $state<{
-		show: boolean;
+	let showDeleteModal = $state(false);
+	let deleteTarget = $state<{
 		resourceType: string;
 		resourceId: string;
 		resourceName: string;
 	} | null>(null);
 
 	onMount(async () => {
-		// Check authentication
-		try {
-			await apiClient.getSessionInfo();
-			// Load available teams
-			const teamsResponse = await apiClient.listTeams();
-			availableTeams = teamsResponse.teams;
-			await loadResources();
-		} catch (err) {
-			goto('/login');
-		}
+		// Load available teams
+		const teamsResponse = await apiClient.listTeams();
+		availableTeams = teamsResponse.teams;
+		await loadResources();
 	});
 
 	async function loadResources() {
@@ -74,42 +77,44 @@
 	}
 
 	function confirmDelete(resourceType: string, resourceId: string, resourceName: string) {
-		deleteConfirm = {
-			show: true,
+		deleteTarget = {
 			resourceType,
 			resourceId,
 			resourceName
 		};
+		showDeleteModal = true;
 	}
 
 	function cancelDelete() {
-		deleteConfirm = null;
+		showDeleteModal = false;
+		deleteTarget = null;
 	}
 
 	async function handleDelete() {
-		if (!deleteConfirm) return;
+		if (!deleteTarget) return;
 
 		try {
 			isLoading = true;
 
-			switch (deleteConfirm.resourceType) {
+			switch (deleteTarget.resourceType) {
 				case 'api-definition':
-					await apiClient.deleteApiDefinition(deleteConfirm.resourceId);
+					await apiClient.deleteApiDefinition(deleteTarget.resourceId);
 					break;
 				case 'listener':
-					await apiClient.deleteListener(deleteConfirm.resourceId);
+					await apiClient.deleteListener(deleteTarget.resourceId);
 					break;
 				case 'route':
-					await apiClient.deleteRoute(deleteConfirm.resourceId);
+					await apiClient.deleteRoute(deleteTarget.resourceId);
 					break;
 				case 'cluster':
-					await apiClient.deleteCluster(deleteConfirm.resourceId);
+					await apiClient.deleteCluster(deleteTarget.resourceId);
 					break;
 			}
 
 			// Reload resources
 			await loadResources();
-			deleteConfirm = null;
+			showDeleteModal = false;
+			deleteTarget = null;
 		} catch (err: any) {
 			error = err.message || 'Failed to delete resource';
 		} finally {
@@ -175,29 +180,11 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<!-- Navigation -->
-	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-			<div class="flex justify-between h-16 items-center">
-				<div class="flex items-center gap-4">
-					<a href="/dashboard" class="text-blue-600 hover:text-blue-800" aria-label="Back to dashboard">
-						<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10 19l-7-7m0 0l7-7m-7 7h18"
-							/>
-						</svg>
-					</a>
-					<h1 class="text-xl font-bold text-gray-900">Resource Management</h1>
-				</div>
-			</div>
-		</div>
-	</nav>
-
-	<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+<!-- Page Header -->
+<div class="mb-6">
+	<h1 class="text-2xl font-bold text-gray-900">Resource Management</h1>
+	<p class="mt-1 text-sm text-gray-600">Manage your API definitions, listeners, routes, and clusters</p>
+</div>
 		<!-- Error Message -->
 		{#if error}
 			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
@@ -510,37 +497,21 @@
 				{/if}
 			{/if}
 		</div>
-	</main>
-</div>
 
 <!-- Delete Confirmation Modal -->
-{#if deleteConfirm}
-	<div
-		class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-		role="dialog"
-		aria-modal="true"
-	>
-		<div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
-			<h2 class="text-lg font-semibold text-gray-900 mb-4">Confirm Delete</h2>
-			<p class="text-sm text-gray-600 mb-6">
-				Are you sure you want to delete the {deleteConfirm.resourceType}
-				<strong class="text-gray-900">{deleteConfirm.resourceName}</strong>?
-				This action cannot be undone.
-			</p>
-			<div class="flex justify-end gap-3">
-				<button
-					onclick={cancelDelete}
-					class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
-				>
-					Cancel
-				</button>
-				<button
-					onclick={handleDelete}
-					class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
-				>
-					Delete
-				</button>
-			</div>
-		</div>
-	</div>
-{/if}
+<Modal
+	show={showDeleteModal}
+	title="Confirm Delete"
+	onClose={cancelDelete}
+	onConfirm={handleDelete}
+	confirmText="Delete"
+	confirmVariant="danger"
+>
+	{#if deleteTarget}
+		<p class="text-sm text-gray-600">
+			Are you sure you want to delete the {deleteTarget.resourceType}
+			<strong class="text-gray-900">{deleteTarget.resourceName}</strong>?
+			This action cannot be undone.
+		</p>
+	{/if}
+</Modal>
