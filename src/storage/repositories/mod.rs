@@ -4,9 +4,10 @@
 //! Each repository handles CRUD operations for a specific resource type.
 
 pub mod aggregated_schema;
-pub mod api_definition;
 pub mod audit_log;
 pub mod cluster;
+pub mod cluster_references;
+pub mod import_metadata;
 pub mod inferred_schema;
 pub mod learning_session;
 pub mod listener;
@@ -20,12 +21,12 @@ pub mod user;
 pub use aggregated_schema::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
 };
-pub use api_definition::{
-    ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, CreateApiDefinitionRequest,
-    CreateApiRouteRequest, UpdateBootstrapMetadataRequest,
-};
 pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
+pub use cluster_references::{ClusterReferenceData, ClusterReferencesRepository};
+pub use import_metadata::{
+    CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
+};
 pub use inferred_schema::{InferredSchemaData, InferredSchemaRepository};
 pub use learning_session::{
     CreateLearningSessionRequest, LearningSessionData, LearningSessionRepository,

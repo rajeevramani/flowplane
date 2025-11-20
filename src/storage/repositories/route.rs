@@ -24,6 +24,9 @@ struct RouteRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
+    pub route_order: Option<i64>,
+    pub headers: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -43,6 +46,9 @@ struct RouteRow {
 /// - `version`: Version number for optimistic locking
 /// - `source`: API source ("native", "gateway", "platform")
 /// - `team`: Optional team identifier
+/// - `import_id`: Optional import metadata ID (for OpenAPI imports)
+/// - `route_order`: Order for deterministic Envoy route matching
+/// - `headers`: Optional JSON-encoded header matching rules
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteData {
     pub id: RouteId,
@@ -53,6 +59,9 @@ pub struct RouteData {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
+    pub route_order: Option<i64>,
+    pub headers: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -68,6 +77,9 @@ impl From<RouteRow> for RouteData {
             version: row.version,
             source: row.source,
             team: row.team,
+            import_id: row.import_id,
+            route_order: row.route_order,
+            headers: row.headers,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -82,6 +94,9 @@ pub struct CreateRouteRequest {
     pub cluster_name: String,
     pub configuration: serde_json::Value,
     pub team: Option<String>,
+    pub import_id: Option<String>,
+    pub route_order: Option<i64>,
+    pub headers: Option<serde_json::Value>,
 }
 
 /// Update route request
@@ -146,10 +161,19 @@ impl RouteRepository {
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
             FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
         })?;
+        let headers_json = request
+            .headers
+            .as_ref()
+            .map(|h| {
+                serde_json::to_string(h)
+                    .map_err(|e| FlowplaneError::validation(format!("Invalid headers JSON: {}", e)))
+            })
+            .transpose()?;
         let now = chrono::Utc::now();
 
         let result = sqlx::query(
-            "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8)"
+            "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, team, import_id, route_order, headers, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, $10, $11)"
         )
         .bind(&id)
         .bind(&request.name)
@@ -157,6 +181,9 @@ impl RouteRepository {
         .bind(&request.cluster_name)
         .bind(&configuration_json)
         .bind(&request.team)
+        .bind(&request.import_id)
+        .bind(request.route_order)
+        .bind(&headers_json)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -180,7 +207,7 @@ impl RouteRepository {
 
     pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE id = $1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -201,7 +228,7 @@ impl RouteRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -246,7 +273,7 @@ impl RouteRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -305,7 +332,7 @@ impl RouteRepository {
         let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, created_at, updated_at \
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
              FROM routes \
              {} \
              ORDER BY created_at DESC \
@@ -330,6 +357,40 @@ impl RouteRepository {
             FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to list routes for teams: {:?}", teams),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(RouteData::from).collect())
+    }
+
+    /// Lists routes filtered by import_id for OpenAPI import tracking.
+    ///
+    /// Returns all routes associated with a specific OpenAPI import,
+    /// used for import details and cascade delete operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `import_id` - Import metadata ID to filter by
+    ///
+    /// # Errors
+    ///
+    /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), name = "db_list_routes_by_import")]
+    pub async fn list_by_import(&self, import_id: &str) -> Result<Vec<RouteData>> {
+        let rows = sqlx::query_as::<Sqlite, RouteRow>(
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
+             FROM routes \
+             WHERE import_id = $1 \
+             ORDER BY route_order ASC, created_at ASC"
+        )
+        .bind(import_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, import_id = %import_id, "Failed to list routes by import_id");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list routes for import_id: {}", import_id),
             }
         })?;
 

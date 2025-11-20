@@ -27,17 +27,24 @@
 
 		// Load resource counts
 		try {
-			const [apiDefs, listeners, routes, clusters] = await Promise.all([
+			const [apiDefs, listeners, nativeRoutes, clusters] = await Promise.all([
 				apiClient.listApiDefinitions(),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()
 			]);
 
+			// Count platform routes from all API definitions
+			const platformRoutesPromises = apiDefs.map(apiDef =>
+				apiClient.getApiDefinitionRoutes(apiDef.id).catch(() => [])
+			);
+			const platformRoutesArrays = await Promise.all(platformRoutesPromises);
+			const platformRoutesCount = platformRoutesArrays.reduce((sum, routes) => sum + routes.length, 0);
+
 			resourceCounts = {
 				apiDefinitions: apiDefs.length,
 				listeners: listeners.length,
-				routes: routes.length,
+				routes: nativeRoutes.length + platformRoutesCount,
 				clusters: clusters.length
 			};
 		} catch (error) {

@@ -1,51 +1,35 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import Modal from '$lib/components/Modal.svelte';
+	import ResourceSection from '$lib/components/ResourceSection.svelte';
 	import type {
 		ApiDefinitionSummary,
 		ListenerResponse,
 		RouteResponse,
-		ClusterResponse
+		ApiRouteResponse,
+		ClusterResponse,
+		SessionInfoResponse
 	} from '$lib/api/types';
 
-	type ResourceTab = 'api-definitions' | 'listeners' | 'routes' | 'clusters';
-
-	let activeTab = $state<ResourceTab>('api-definitions');
-
-	// Read tab from URL query parameter on mount
-	$effect(() => {
-		const urlTab = $page.url.searchParams.get('tab') as ResourceTab;
-		if (urlTab && ['api-definitions', 'listeners', 'routes', 'clusters'].includes(urlTab)) {
-			activeTab = urlTab;
-		}
-	});
 	let isLoading = $state(false);
 	let error = $state<string | null>(null);
 	let searchQuery = $state('');
-	let teamFilter = $state('');
-	let availableTeams = $state<string[]>([]);
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// Data for each resource type
 	let apiDefinitions = $state<ApiDefinitionSummary[]>([]);
 	let listeners = $state<ListenerResponse[]>([]);
-	let routes = $state<RouteResponse[]>([]);
+	let nativeRoutes = $state<RouteResponse[]>([]);
+	let platformRoutes = $state<ApiRouteResponse[]>([]);
 	let clusters = $state<ClusterResponse[]>([]);
 
-	// Delete confirmation state
-	let showDeleteModal = $state(false);
-	let deleteTarget = $state<{
-		resourceType: string;
-		resourceId: string;
-		resourceName: string;
-	} | null>(null);
-
 	onMount(async () => {
-		// Load available teams
-		const teamsResponse = await apiClient.listTeams();
-		availableTeams = teamsResponse.teams;
-		await loadResources();
+		try {
+			sessionInfo = await apiClient.getSessionInfo();
+			await loadResources();
+		} catch (err: any) {
+			error = err.message || 'Failed to load session info';
+		}
 	});
 
 	async function loadResources() {
@@ -55,7 +39,7 @@
 		try {
 			// Load all resources in parallel
 			const [apiDefsData, listenersData, routesData, clustersData] = await Promise.all([
-				apiClient.listApiDefinitions(teamFilter ? { team: teamFilter } : undefined),
+				apiClient.listApiDefinitions(),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()
@@ -63,8 +47,15 @@
 
 			apiDefinitions = apiDefsData;
 			listeners = listenersData;
-			routes = routesData;
+			nativeRoutes = routesData;
 			clusters = clustersData;
+
+			// Load platform routes from all API definitions
+			const platformRoutesPromises = apiDefsData.map(apiDef =>
+				apiClient.getApiDefinitionRoutes(apiDef.id).catch(() => [])
+			);
+			const platformRoutesArrays = await Promise.all(platformRoutesPromises);
+			platformRoutes = platformRoutesArrays.flat();
 		} catch (err: any) {
 			error = err.message || 'Failed to load resources';
 		} finally {
@@ -72,63 +63,7 @@
 		}
 	}
 
-	function switchTab(tab: ResourceTab) {
-		activeTab = tab;
-	}
-
-	function confirmDelete(resourceType: string, resourceId: string, resourceName: string) {
-		deleteTarget = {
-			resourceType,
-			resourceId,
-			resourceName
-		};
-		showDeleteModal = true;
-	}
-
-	function cancelDelete() {
-		showDeleteModal = false;
-		deleteTarget = null;
-	}
-
-	async function handleDelete() {
-		if (!deleteTarget) return;
-
-		try {
-			isLoading = true;
-
-			switch (deleteTarget.resourceType) {
-				case 'api-definition':
-					await apiClient.deleteApiDefinition(deleteTarget.resourceId);
-					break;
-				case 'listener':
-					await apiClient.deleteListener(deleteTarget.resourceId);
-					break;
-				case 'route':
-					await apiClient.deleteRoute(deleteTarget.resourceId);
-					break;
-				case 'cluster':
-					await apiClient.deleteCluster(deleteTarget.resourceId);
-					break;
-			}
-
-			// Reload resources
-			await loadResources();
-			showDeleteModal = false;
-			deleteTarget = null;
-		} catch (err: any) {
-			error = err.message || 'Failed to delete resource';
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	// Filtered data based on search query
-	$effect(() => {
-		// This will reactively update when searchQuery changes
-		// For now, we'll do client-side filtering
-		// Could be improved with server-side search
-	});
-
+	// Filtered data based on search query only (backend handles team filtering)
 	function getFilteredApiDefinitions(): ApiDefinitionSummary[] {
 		if (!searchQuery) return apiDefinitions;
 		const query = searchQuery.toLowerCase();
@@ -146,18 +81,30 @@
 		return listeners.filter(
 			(listener) =>
 				listener.name.toLowerCase().includes(query) ||
-				listener.address.toLowerCase().includes(query)
+				listener.address.toLowerCase().includes(query) ||
+				listener.team.toLowerCase().includes(query)
 		);
 	}
 
-	function getFilteredRoutes(): RouteResponse[] {
-		if (!searchQuery) return routes;
+	function getFilteredNativeRoutes(): RouteResponse[] {
+		if (!searchQuery) return nativeRoutes;
 		const query = searchQuery.toLowerCase();
-		return routes.filter(
+		return nativeRoutes.filter(
 			(route) =>
 				route.name.toLowerCase().includes(query) ||
 				route.pathPrefix.toLowerCase().includes(query) ||
-				route.clusterTargets.toLowerCase().includes(query)
+				route.clusterTargets.toLowerCase().includes(query) ||
+				route.team.toLowerCase().includes(query)
+		);
+	}
+
+	function getFilteredPlatformRoutes(): ApiRouteResponse[] {
+		if (!searchQuery) return platformRoutes;
+		const query = searchQuery.toLowerCase();
+		return platformRoutes.filter(
+			(route) =>
+				route.matchValue.toLowerCase().includes(query) ||
+				route.apiDefinitionId.toLowerCase().includes(query)
 		);
 	}
 
@@ -167,7 +114,8 @@
 		return clusters.filter(
 			(cluster) =>
 				cluster.name.toLowerCase().includes(query) ||
-				cluster.serviceName.toLowerCase().includes(query)
+				cluster.serviceName.toLowerCase().includes(query) ||
+				cluster.team.toLowerCase().includes(query)
 		);
 	}
 
@@ -178,340 +126,255 @@
 			day: 'numeric'
 		});
 	}
+
+	function getApiDefinitionDomain(apiDefId: string): string {
+		const apiDef = apiDefinitions.find(def => def.id === apiDefId);
+		return apiDef?.domain || apiDefId;
+	}
+
+	function formatUpstreamTargets(upstreamTargets: any): string {
+		if (!upstreamTargets) return 'None';
+
+		if (Array.isArray(upstreamTargets)) {
+			return upstreamTargets.map((target: any) => `${target.host}:${target.port}`).join(', ');
+		}
+
+		if (upstreamTargets.targets && Array.isArray(upstreamTargets.targets)) {
+			return upstreamTargets.targets.map((target: any) => target.endpoint).join(', ');
+		}
+
+		return 'None';
+	}
+
+	function extractHttpMethod(route: ApiRouteResponse): string {
+		if (!route.headers || !Array.isArray(route.headers)) {
+			return 'ANY';
+		}
+
+		for (const header of route.headers) {
+			if (header.name === ':method' || header.name === 'method') {
+				return header.value || header.exactMatch || 'ANY';
+			}
+		}
+
+		return 'ANY';
+	}
+
+	function extractClusterEndpoint(cluster: ClusterResponse): { host: string; port: string } {
+		try {
+			if (cluster.config && typeof cluster.config === 'object') {
+				const config = cluster.config as any;
+
+				// Try config.endpoints first (Platform API format)
+				if (config.endpoints && Array.isArray(config.endpoints) && config.endpoints.length > 0) {
+					const endpoint = config.endpoints[0];
+					return {
+						host: endpoint.host || 'N/A',
+						port: endpoint.port?.toString() || 'N/A'
+					};
+				}
+
+				// Fallback: Try to find endpoints in config.load_assignment.endpoints (xDS format)
+				const loadAssignment = config.load_assignment;
+				if (loadAssignment && loadAssignment.endpoints && Array.isArray(loadAssignment.endpoints)) {
+					const firstEndpoint = loadAssignment.endpoints[0];
+					if (firstEndpoint && firstEndpoint.lb_endpoints && Array.isArray(firstEndpoint.lb_endpoints)) {
+						const lbEndpoint = firstEndpoint.lb_endpoints[0];
+						if (lbEndpoint && lbEndpoint.endpoint && lbEndpoint.endpoint.address) {
+							const address = lbEndpoint.endpoint.address;
+							if (address.socket_address) {
+								return {
+									host: address.socket_address.address || 'N/A',
+									port: address.socket_address.port_value?.toString() || 'N/A'
+								};
+							}
+						}
+					}
+				}
+			}
+		} catch (e) {
+			console.error('Error extracting cluster endpoint:', e);
+		}
+
+		return { host: 'N/A', port: 'N/A' };
+	}
+
+	// Column definitions for each resource type
+	const apiDefinitionsColumns = [
+		{
+			key: 'domain',
+			label: 'Domain',
+			format: (value: any, row: ApiDefinitionSummary) => ({
+				type: 'link',
+				text: value,
+				href: `/api-definitions/${row.id}`
+			})
+		},
+		{
+			key: 'team',
+			label: 'Team',
+			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
+		},
+		{ key: 'id', label: 'ID' },
+		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` },
+		{
+			key: 'listenerIsolation',
+			label: 'Listener Isolation',
+			format: (value: any) => (value ? 'Yes' : 'No')
+		},
+		{ key: 'createdAt', label: 'Created', format: (value: any) => formatDate(value) }
+	];
+
+	const listenersColumns = [
+		{ key: 'name', label: 'Name' },
+		{
+			key: 'team',
+			label: 'Team',
+			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
+		},
+		{ key: 'address', label: 'Address' },
+		{ key: 'port', label: 'Port', format: (value: any) => value || 'N/A' },
+		{ key: 'protocol', label: 'Protocol' },
+		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` }
+	];
+
+	const nativeRoutesColumns = [
+		{ key: 'name', label: 'Name' },
+		{
+			key: 'team',
+			label: 'Team',
+			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
+		},
+		{ key: 'pathPrefix', label: 'Path Prefix' },
+		{ key: 'clusterTargets', label: 'Cluster Targets' }
+	];
+
+	const platformRoutesColumns = [
+		{
+			key: 'matchType',
+			label: 'Match Type',
+			format: (value: any) => ({ type: 'badge', text: value, variant: 'green' as const })
+		},
+		{ key: 'matchValue', label: 'Path/Pattern' },
+		{
+			key: 'apiDefinitionId',
+			label: 'API Definition',
+			format: (value: any) => ({
+				type: 'link',
+				text: getApiDefinitionDomain(value),
+				href: `/api-definitions/${value}`
+			})
+		},
+		{
+			key: 'headers',
+			label: 'HTTP Method',
+			format: (value: any, row: ApiRouteResponse) => ({
+				type: 'badge',
+				text: extractHttpMethod(row),
+				variant: 'purple' as const
+			})
+		},
+		{
+			key: 'upstreamTargets',
+			label: 'Upstream Targets',
+			format: (value: any) => formatUpstreamTargets(value)
+		},
+		{ key: 'routeOrder', label: 'Order' }
+	];
+
+	const clustersColumns = [
+		{ key: 'serviceName', label: 'Service Name' },
+		{
+			key: 'team',
+			label: 'Team',
+			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
+		},
+		{
+			key: 'config',
+			label: 'Host',
+			format: (value: any, row: ClusterResponse) => extractClusterEndpoint(row).host
+		},
+		{
+			key: 'config',
+			label: 'Port',
+			format: (value: any, row: ClusterResponse) => extractClusterEndpoint(row).port
+		}
+	];
 </script>
 
 <!-- Page Header -->
 <div class="mb-6">
 	<h1 class="text-2xl font-bold text-gray-900">Resource Management</h1>
-	<p class="mt-1 text-sm text-gray-600">Manage your API definitions, listeners, routes, and clusters</p>
+	<p class="mt-1 text-sm text-gray-600">
+		View and manage all accessible resources
+	</p>
 </div>
-		<!-- Error Message -->
-		{#if error}
-			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
-				<p class="text-red-800 text-sm">{error}</p>
-			</div>
-		{/if}
 
-		<!-- Search and Filters -->
-		<div class="mb-6 flex gap-4">
-			<div class="flex-1">
-				<input
-					type="text"
-					bind:value={searchQuery}
-					placeholder="Search resources..."
-					class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-				/>
-			</div>
-			<div class="w-64">
-				<select
-					bind:value={teamFilter}
-					onchange={() => loadResources()}
-					class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-				>
-					<option value="">All Teams</option>
-					{#each availableTeams as team}
-						<option value={team}>{team}</option>
-					{/each}
-				</select>
-			</div>
-		</div>
+<!-- Error Message -->
+{#if error}
+	<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
+		<p class="text-red-800 text-sm">{error}</p>
+	</div>
+{/if}
 
-		<!-- Tabs -->
-		<div class="bg-white rounded-t-lg shadow-md border-b border-gray-200">
-			<div class="flex">
-				<button
-					onclick={() => switchTab('api-definitions')}
-					class="flex-1 px-6 py-4 text-sm font-medium transition-colors {activeTab === 'api-definitions'
-						? 'text-blue-600 border-b-2 border-blue-600'
-						: 'text-gray-600 hover:text-gray-900'}"
-				>
-					API Definitions ({apiDefinitions.length})
-				</button>
-				<button
-					onclick={() => switchTab('listeners')}
-					class="flex-1 px-6 py-4 text-sm font-medium transition-colors {activeTab === 'listeners'
-						? 'text-blue-600 border-b-2 border-blue-600'
-						: 'text-gray-600 hover:text-gray-900'}"
-				>
-					Listeners ({listeners.length})
-				</button>
-				<button
-					onclick={() => switchTab('routes')}
-					class="flex-1 px-6 py-4 text-sm font-medium transition-colors {activeTab === 'routes'
-						? 'text-blue-600 border-b-2 border-blue-600'
-						: 'text-gray-600 hover:text-gray-900'}"
-				>
-					Routes ({routes.length})
-				</button>
-				<button
-					onclick={() => switchTab('clusters')}
-					class="flex-1 px-6 py-4 text-sm font-medium transition-colors {activeTab === 'clusters'
-						? 'text-blue-600 border-b-2 border-blue-600'
-						: 'text-gray-600 hover:text-gray-900'}"
-				>
-					Clusters ({clusters.length})
-				</button>
-			</div>
-		</div>
+<!-- Search Bar -->
+<div class="mb-6">
+	<input
+		type="text"
+		bind:value={searchQuery}
+		placeholder="Search across all resources..."
+		class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+	/>
+</div>
 
-		<!-- Tab Content -->
-		<div class="bg-white rounded-b-lg shadow-md p-6">
-			{#if isLoading}
-				<div class="flex justify-center items-center py-12">
-					<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-				</div>
-			{:else if activeTab === 'api-definitions'}
-				<!-- API Definitions - Card Layout -->
-				{#if getFilteredApiDefinitions().length === 0}
-					<p class="text-center text-gray-500 py-12">No API definitions found</p>
-				{:else}
-					<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-						{#each getFilteredApiDefinitions() as apiDef}
-							<div class="border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow">
-								<div class="flex justify-between items-start mb-4">
-									<div>
-										<h3 class="text-lg font-semibold text-gray-900">{apiDef.domain}</h3>
-										<span class="inline-block mt-1 px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded">
-											{apiDef.team}
-										</span>
-									</div>
-									<button
-										onclick={() => confirmDelete('api-definition', apiDef.id, apiDef.domain)}
-										class="text-red-600 hover:text-red-800"
-										title="Delete"
-									>
-										<svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-											<path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-											/>
-										</svg>
-									</button>
-								</div>
-								<div class="space-y-2 text-sm text-gray-600">
-									<p><span class="font-medium">ID:</span> {apiDef.id}</p>
-									<p><span class="font-medium">Version:</span> {apiDef.version}</p>
-									<p>
-										<span class="font-medium">Listener Isolation:</span>
-										{apiDef.listenerIsolation ? 'Yes' : 'No'}
-									</p>
-									<p><span class="font-medium">Created:</span> {formatDate(apiDef.createdAt)}</p>
-								</div>
-<div class="mt-4 flex gap-2">
-									<a
-										href={`/api-definitions/${apiDef.id}`}
-										class="flex-1 px-3 py-2 text-center text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
-									>
-										View Details
-									</a>
-										<a
-											href="/generate-envoy-config"
-											class="px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
-											title="Generate Envoy Config"
-										>
-											Envoy Config
-										</a>
-								</div>
-							</div>
-						{/each}
-					</div>
-				{/if}
-			{:else if activeTab === 'listeners'}
-				<!-- Listeners - Table Layout -->
-				{#if getFilteredListeners().length === 0}
-					<p class="text-center text-gray-500 py-12">No listeners found</p>
-				{:else}
-					<div class="overflow-x-auto">
-						<table class="min-w-full divide-y divide-gray-200">
-							<thead class="bg-gray-50">
-								<tr>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Name
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Team
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Address
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Port
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Protocol
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Version
-									</th>
-									<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Actions
-									</th>
-								</tr>
-							</thead>
-							<tbody class="bg-white divide-y divide-gray-200">
-								{#each getFilteredListeners() as listener}
-									<tr class="hover:bg-gray-50">
-										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-											{listener.name}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap">
-											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-												{listener.team}
-											</span>
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{listener.address}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{listener.port || 'N/A'}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{listener.protocol}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{listener.version}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-											<button
-												onclick={() => confirmDelete('listener', listener.name, listener.name)}
-												class="text-red-600 hover:text-red-800"
-											>
-												Delete
-											</button>
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
-			{:else if activeTab === 'routes'}
-				<!-- Routes - Table Layout -->
-				{#if getFilteredRoutes().length === 0}
-					<p class="text-center text-gray-500 py-12">No routes found</p>
-				{:else}
-					<div class="overflow-x-auto">
-						<table class="min-w-full divide-y divide-gray-200">
-							<thead class="bg-gray-50">
-								<tr>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Name
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Team
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Path Prefix
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Cluster Targets
-									</th>
-									<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Actions
-									</th>
-								</tr>
-							</thead>
-							<tbody class="bg-white divide-y divide-gray-200">
-								{#each getFilteredRoutes() as route}
-									<tr class="hover:bg-gray-50">
-										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-											{route.name}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap">
-											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-												{route.team}
-											</span>
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{route.pathPrefix}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{route.clusterTargets}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-											<button
-												onclick={() => confirmDelete('route', route.name, route.name)}
-												class="text-red-600 hover:text-red-800"
-											>
-												Delete
-											</button>
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
-			{:else if activeTab === 'clusters'}
-				<!-- Clusters - Table Layout -->
-				{#if getFilteredClusters().length === 0}
-					<p class="text-center text-gray-500 py-12">No clusters found</p>
-				{:else}
-					<div class="overflow-x-auto">
-						<table class="min-w-full divide-y divide-gray-200">
-							<thead class="bg-gray-50">
-								<tr>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Name
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Team
-									</th>
-									<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Service Name
-									</th>
-									<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-										Actions
-									</th>
-								</tr>
-							</thead>
-							<tbody class="bg-white divide-y divide-gray-200">
-								{#each getFilteredClusters() as cluster}
-									<tr class="hover:bg-gray-50">
-										<td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-											{cluster.name}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap">
-											<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-												{cluster.team}
-											</span>
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-											{cluster.serviceName}
-										</td>
-										<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-											<button
-												onclick={() => confirmDelete('cluster', cluster.name, cluster.name)}
-												class="text-red-600 hover:text-red-800"
-											>
-												Delete
-											</button>
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
-			{/if}
-		</div>
+{#if isLoading}
+	<div class="flex justify-center items-center py-12">
+		<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+	</div>
+{:else}
+	<!-- API Definitions Section -->
+	<ResourceSection
+		title="API Definitions"
+		count={getFilteredApiDefinitions().length}
+		columns={apiDefinitionsColumns}
+		data={getFilteredApiDefinitions()}
+		emptyMessage="No API definitions found"
+		actionButton={{ text: 'Import OpenAPI', href: '/api-definitions/import' }}
+	/>
 
-<!-- Delete Confirmation Modal -->
-<Modal
-	show={showDeleteModal}
-	title="Confirm Delete"
-	onClose={cancelDelete}
-	onConfirm={handleDelete}
-	confirmText="Delete"
-	confirmVariant="danger"
->
-	{#if deleteTarget}
-		<p class="text-sm text-gray-600">
-			Are you sure you want to delete the {deleteTarget.resourceType}
-			<strong class="text-gray-900">{deleteTarget.resourceName}</strong>?
-			This action cannot be undone.
-		</p>
-	{/if}
-</Modal>
+	<!-- Listeners Section -->
+	<ResourceSection
+		title="Listeners"
+		count={getFilteredListeners().length}
+		columns={listenersColumns}
+		data={getFilteredListeners()}
+		emptyMessage="No listeners found"
+	/>
+
+	<!-- Platform API Routes Section -->
+	<ResourceSection
+		title="Platform API Routes"
+		count={getFilteredPlatformRoutes().length}
+		columns={platformRoutesColumns}
+		data={getFilteredPlatformRoutes()}
+		emptyMessage="No platform API routes found"
+	/>
+
+	<!-- Native API Routes Section -->
+	<ResourceSection
+		title="Native API Routes"
+		count={getFilteredNativeRoutes().length}
+		columns={nativeRoutesColumns}
+		data={getFilteredNativeRoutes()}
+		emptyMessage="No native API routes found"
+	/>
+
+	<!-- Clusters Section -->
+	<ResourceSection
+		title="Clusters"
+		count={getFilteredClusters().length}
+		columns={clustersColumns}
+		data={getFilteredClusters()}
+		emptyMessage="No clusters found"
+	/>
+{/if}

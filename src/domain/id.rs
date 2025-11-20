@@ -139,16 +139,6 @@ domain_id!(
 );
 
 domain_id!(
-    /// Unique identifier for an API definition
-    ApiDefinitionId
-);
-
-domain_id!(
-    /// Unique identifier for an API route within an API definition
-    ApiRouteId
-);
-
-domain_id!(
     /// Unique identifier for a user
     UserId
 );
@@ -188,12 +178,6 @@ mod tests {
         let uuid_str = Uuid::new_v4().to_string();
         let id: TokenId = uuid_str.parse().expect("Failed to parse UUID");
         assert_eq!(id.as_str(), uuid_str);
-    }
-
-    #[test]
-    fn api_definition_id_invalid_uuid_fails() {
-        let result = ApiDefinitionId::parse("not-a-uuid");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -237,15 +221,6 @@ mod tests {
 
         assert_eq!(id1, id2);
         assert_eq!(id1.as_str(), id2.as_str());
-    }
-
-    #[test]
-    fn api_route_id_into_string() {
-        let uuid_str = Uuid::new_v4().to_string();
-        let id = ApiRouteId::from_string(uuid_str.clone());
-        let string: String = id.into_string();
-
-        assert_eq!(string, uuid_str);
     }
 
     #[test]

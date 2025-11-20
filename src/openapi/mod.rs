@@ -194,6 +194,9 @@ pub fn build_gateway_plan(
             cluster_name: default_cluster_name,
             configuration: route_config_value,
             team: None, // OpenAPI Gateway routes are not team-scoped by default
+            import_id: None,
+            route_order: None,
+            headers: None,
         };
 
         let listener_config = ListenerConfig {

@@ -3,6 +3,7 @@ import { goto } from '$app/navigation';
 import type {
 	LoginRequest,
 	LoginResponse,
+	ChangePasswordRequest,
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
@@ -16,6 +17,7 @@ import type {
 	ImportOpenApiRequest,
 	CreateApiDefinitionResponse,
 	ApiDefinitionSummary,
+	ApiRouteResponse,
 	ListenerResponse,
 	RouteResponse,
 	ClusterResponse,
@@ -140,6 +142,17 @@ class ApiClient {
 		});
 
 		return this.handleResponse<SessionInfoResponse>(response);
+	}
+
+	async changePassword(request: ChangePasswordRequest): Promise<void> {
+		const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
+			method: 'POST',
+			headers: this.getHeaders(true), // Include CSRF token
+			body: JSON.stringify(request),
+			credentials: 'include',
+		});
+
+		await this.handleResponse<void>(response);
 	}
 
 	clearAuth() {
@@ -293,6 +306,10 @@ class ApiClient {
 
 	async getApiDefinition(id: string): Promise<ApiDefinitionSummary> {
 		return this.get<ApiDefinitionSummary>(`/api/v1/api-definitions/${id}`);
+	}
+
+	async getApiDefinitionRoutes(id: string): Promise<ApiRouteResponse[]> {
+		return this.get<ApiRouteResponse[]>(`/api/v1/api-definitions/${id}/routes`);
 	}
 
 	async deleteApiDefinition(id: string): Promise<void> {

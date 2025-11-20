@@ -2,6 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import Navigation from '$lib/components/Navigation.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import hljs from 'highlight.js/lib/core';
 	import yaml from 'highlight.js/lib/languages/yaml';
@@ -14,6 +15,7 @@
 
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let teams = $state<string[]>([]);
+	let availableTeams = $state<string[]>([]);
 	let selectedTeam = $state('');
 	let format = $state<'yaml' | 'json'>('yaml');
 	let bootstrapConfig = $state('');
@@ -37,6 +39,7 @@
 		try {
 			const teamsResponse = await apiClient.listTeams();
 			teams = teamsResponse.teams;
+			availableTeams = teamsResponse.teams;
 
 			// Set first team as default
 			if (teams.length > 0) {
@@ -48,6 +51,11 @@
 			error = err.message || 'Failed to load teams';
 		}
 	});
+
+	function handleTeamChange(team: string) {
+		selectedTeam = team;
+		sessionStorage.setItem('selected_team', selectedTeam);
+	}
 
 	async function loadBootstrapConfig() {
 		if (!selectedTeam) return;
@@ -69,10 +77,6 @@
 		} finally {
 			isLoading = false;
 		}
-	}
-
-	function handleTeamChange() {
-		loadBootstrapConfig();
 	}
 
 	function handleFormatChange() {
@@ -104,29 +108,17 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<!-- Navigation -->
-	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-			<div class="flex justify-between h-16 items-center">
-				<div class="flex items-center gap-4">
-					<a href="/dashboard" class="text-blue-600 hover:text-blue-800" aria-label="Back to dashboard">
-						<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10 19l-7-7m0 0l7-7m-7 7h18"
-							/>
-						</svg>
-					</a>
-					<h1 class="text-xl font-bold text-gray-900">Envoy Configuration</h1>
-				</div>
-			</div>
-		</div>
-	</nav>
+{#if sessionInfo}
+	<div class="min-h-screen bg-gray-50">
+		<!-- Navigation -->
+		<Navigation
+			{sessionInfo}
+			{selectedTeam}
+			{availableTeams}
+			onTeamChange={handleTeamChange}
+		/>
 
-	<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+		<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 		{#if error}
 			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
 				<p class="text-red-800 text-sm">{error}</p>
@@ -247,4 +239,5 @@ envoy -c bootstrap.yaml
 			</div>
 		</div>
 	</main>
-</div>
+	</div>
+{/if}

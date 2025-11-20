@@ -49,9 +49,6 @@
 			tokens = await apiClient.listTokens(100, 0);
 		} catch (e: any) {
 			error = e.message || 'Failed to load tokens';
-			if (e.message?.includes('Unauthorized')) {
-				goto('/login');
-			}
 		} finally {
 			isLoading = false;
 		}
@@ -238,40 +235,33 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<!-- Navigation -->
-	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-			<div class="flex justify-between h-16 items-center">
-				<div class="flex items-center gap-4">
-					<a href="/dashboard" class="text-blue-600 hover:text-blue-800" aria-label="Back to dashboard">
-						<svg
-							class="h-6 w-6"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10 19l-7-7m0 0l7-7m-7 7h18"
-							/>
-						</svg>
-					</a>
-					<h1 class="text-xl font-bold text-gray-900">Personal Access Tokens</h1>
-				</div>
-				<button
-					onclick={openCreateModal}
-					class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-				>
-					Create Token
-				</button>
-			</div>
-		</div>
-	</nav>
-
-	<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+<!-- Page Header -->
+<div class="flex justify-between items-center mb-6">
+	<div class="flex items-center gap-4">
+		<a href="/dashboard" class="text-blue-600 hover:text-blue-800" aria-label="Back to dashboard">
+			<svg
+				class="h-6 w-6"
+				fill="none"
+				viewBox="0 0 24 24"
+				stroke="currentColor"
+			>
+				<path
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					stroke-width="2"
+					d="M10 19l-7-7m0 0l7-7m-7 7h18"
+				/>
+			</svg>
+		</a>
+		<h1 class="text-2xl font-bold text-gray-900">Personal Access Tokens</h1>
+	</div>
+	<button
+		onclick={openCreateModal}
+		class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+	>
+		Create Token
+	</button>
+</div>
 		<!-- Error message -->
 		{#if error}
 			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
@@ -411,9 +401,8 @@
 				</table>
 			</div>
 		{/if}
-	</main>
 
-	<!-- Create Token Modal -->
+<!-- Create Token Modal -->
 	{#if showCreateModal}
 		<div class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50">
 			<div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
@@ -684,7 +673,6 @@
 			</div>
 		</div>
 	{/if}
-</div>
 
 <style>
 	@keyframes fade-in {

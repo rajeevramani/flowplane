@@ -370,11 +370,13 @@ pub async fn create_session_handler(
         .map_err(convert_error)?;
 
     // Build secure session cookie
+    // Note: .secure(false) allows cookie to work over HTTP in development
+    // In production, this should be set to true and use HTTPS
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(true) // TODO: Make this configurable for development
-        .same_site(SameSite::Strict)
+        .secure(false) // Allow HTTP in development
+        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
@@ -700,11 +702,13 @@ pub async fn login_handler(
     let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
 
     // Build secure session cookie
+    // Note: .secure(false) allows cookie to work over HTTP in development
+    // In production, this should be set to true and use HTTPS
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(true) // TODO: Make this configurable for development
-        .same_site(SameSite::Strict)
+        .secure(false) // Allow HTTP in development
+        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
@@ -721,4 +725,72 @@ pub async fn login_handler(
     };
 
     Ok(LoginResponse { body: response_body, cookie, csrf_token: session_response.csrf_token })
+}
+
+// Password Change Endpoint
+
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePasswordBody {
+    #[validate(length(min = 1))]
+    pub current_password: String,
+    #[validate(length(min = 8, message = "New password must be at least 8 characters"))]
+    pub new_password: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/change-password",
+    request_body = ChangePasswordBody,
+    responses(
+        (status = 204, description = "Password changed successfully"),
+        (status = 400, description = "Invalid request format or password validation failed"),
+        (status = 401, description = "Current password is incorrect or user not authenticated"),
+        (status = 503, description = "Service unavailable")
+    ),
+    security(("session" = [])),
+    tag = "auth"
+)]
+pub async fn change_password_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Json(payload): Json<ChangePasswordBody>,
+) -> Result<StatusCode, ApiError> {
+    use crate::auth::user_service::UserService;
+
+    // Validate request
+    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Ensure user is authenticated via session (not PAT)
+    let user_id_str = context
+        .user_id
+        .as_ref()
+        .ok_or_else(|| ApiError::unauthorized("Password change requires session authentication"))?;
+
+    let user_id = UserId::from_string(user_id_str.to_string());
+
+    // Get database pool
+    let pool = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?
+        .pool()
+        .clone();
+
+    // Create user service
+    let user_repo = Arc::new(SqlxUserRepository::new(pool.clone()));
+    let membership_repo = Arc::new(
+        crate::storage::repositories::user::SqlxTeamMembershipRepository::new(pool.clone()),
+    );
+    let audit_repo = Arc::new(AuditLogRepository::new(pool));
+    let user_service = UserService::new(user_repo, membership_repo, audit_repo);
+
+    // Change password with verification
+    user_service
+        .change_password_with_verification(&user_id, payload.current_password, payload.new_password)
+        .await
+        .map_err(convert_error)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

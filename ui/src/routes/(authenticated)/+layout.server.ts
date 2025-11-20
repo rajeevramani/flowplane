@@ -2,9 +2,9 @@ import { redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ cookies }) => {
-	const sessionId = cookies.get('session_id');
+	const sessionToken = cookies.get('fp_session');
 
-	if (!sessionId) {
+	if (!sessionToken) {
 		throw redirect(302, '/login');
 	}
 

@@ -109,6 +109,9 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             cluster_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             configuration: route_configuration,
             team: None, // Default gateway routes are not team-scoped
+            import_id: None,
+            route_order: None,
+            headers: None,
         };
 
         route_repo.create(request).await?;

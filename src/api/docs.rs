@@ -52,11 +52,6 @@ use crate::xds::{
         crate::api::handlers::listeners::get_listener_handler,
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
-        crate::api::handlers::api_definitions::import_openapi_handler,
-        crate::api::handlers::api_definitions::append_route_handler,
-        crate::api::handlers::api_definitions::list_api_definitions_handler,
-        crate::api::handlers::api_definitions::get_api_definition_handler,
-        crate::api::handlers::api_definitions::update_api_definition_handler,
         crate::api::handlers::teams::get_team_bootstrap_handler,
         crate::api::handlers::reporting::list_route_flows_handler,
         // Learning session endpoints
@@ -106,17 +101,6 @@ use crate::xds::{
             crate::api::handlers::listeners::ListenerResponse,
             crate::api::handlers::listeners::CreateListenerBody,
             crate::api::handlers::listeners::UpdateListenerBody,
-            crate::api::handlers::api_definitions::OpenApiSpecBody,
-            crate::api::handlers::api_definitions::ImportOpenApiQuery,
-            crate::validation::requests::api_definition::AppendRouteBody,
-            crate::validation::requests::api_definition::RouteBody,
-            crate::validation::requests::api_definition::RouteMatchBody,
-            crate::validation::requests::api_definition::RouteClusterBody,
-            crate::validation::requests::api_definition::RouteRewriteBody,
-            crate::api::handlers::api_definitions::CreateApiDefinitionResponse,
-            crate::api::handlers::api_definitions::AppendRouteResponse,
-            crate::api::handlers::api_definitions::ApiDefinitionSummary,
-            crate::api::handlers::api_definitions::ListDefinitionsQuery,
             crate::api::handlers::teams::BootstrapQuery,
             // Commonly used HTTP filter configurations
             CorsPolicyConfig,
@@ -151,7 +135,6 @@ use crate::xds::{
         (name = "clusters", description = "Operations for managing Envoy clusters"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
-        (name = "platform-api", description = "Platform API Abstraction endpoints"),
         (name = "reports", description = "Platform visibility and reporting endpoints"),
         (name = "learning-sessions", description = "API schema learning and traffic observation"),
         (name = "aggregated-schemas", description = "Learned API schemas and catalog management")
@@ -265,24 +248,6 @@ mod tests {
         assert!(
             paths.contains_key("/api/v1/listeners/{name}"),
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
-        );
-
-        // API Definition endpoints (5)
-        assert!(
-            paths.contains_key("/api/v1/api-definitions"),
-            "Missing GET /api/v1/api-definitions"
-        );
-        assert!(
-            paths.contains_key("/api/v1/api-definitions/from-openapi"),
-            "Missing POST /api/v1/api-definitions/from-openapi"
-        );
-        assert!(
-            paths.contains_key("/api/v1/api-definitions/{id}"),
-            "Missing GET /api/v1/api-definitions/{{id}}"
-        );
-        assert!(
-            paths.contains_key("/api/v1/api-definitions/{id}/routes"),
-            "Missing POST /api/v1/api-definitions/{{id}}/routes"
         );
 
         // Team endpoints (1)
@@ -414,28 +379,8 @@ mod tests {
         assert!(schemas.contains_key("CreateListenerBody"), "Missing CreateListenerBody schema");
         assert!(schemas.contains_key("UpdateListenerBody"), "Missing UpdateListenerBody schema");
 
-        // Platform API schemas
-        assert!(schemas.contains_key("AppendRouteBody"), "Missing AppendRouteBody schema");
-        assert!(schemas.contains_key("RouteBody"), "Missing RouteBody schema");
-        assert!(schemas.contains_key("RouteMatchBody"), "Missing RouteMatchBody schema");
-        assert!(schemas.contains_key("RouteClusterBody"), "Missing RouteClusterBody schema");
-        assert!(schemas.contains_key("RouteRewriteBody"), "Missing RouteRewriteBody schema");
-        assert!(
-            schemas.contains_key("CreateApiDefinitionResponse"),
-            "Missing CreateApiDefinitionResponse schema"
-        );
-        assert!(schemas.contains_key("AppendRouteResponse"), "Missing AppendRouteResponse schema");
-        assert!(
-            schemas.contains_key("ApiDefinitionSummary"),
-            "Missing ApiDefinitionSummary schema"
-        );
-        assert!(
-            schemas.contains_key("ListDefinitionsQuery"),
-            "Missing ListDefinitionsQuery schema"
-        );
+        // Team schemas
         assert!(schemas.contains_key("BootstrapQuery"), "Missing BootstrapQuery schema");
-        assert!(schemas.contains_key("OpenApiSpecBody"), "Missing OpenApiSpecBody schema");
-        assert!(schemas.contains_key("ImportOpenApiQuery"), "Missing ImportOpenApiQuery schema");
 
         // HTTP filter schemas
         assert!(schemas.contains_key("CorsPolicyConfig"), "Missing CorsPolicyConfig schema");
@@ -503,7 +448,6 @@ mod tests {
         assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
         assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");
-        assert!(tag_names.contains(&"platform-api"), "Missing 'platform-api' tag");
         assert!(tag_names.contains(&"reports"), "Missing 'reports' tag");
         assert!(tag_names.contains(&"learning-sessions"), "Missing 'learning-sessions' tag");
         assert!(tag_names.contains(&"aggregated-schemas"), "Missing 'aggregated-schemas' tag");
@@ -516,21 +460,5 @@ mod tests {
         let security_schemes = &components.security_schemes;
 
         assert!(security_schemes.contains_key("bearerAuth"), "Missing bearerAuth security scheme");
-    }
-
-    #[test]
-    fn openapi_platform_api_schemas_have_examples() {
-        let openapi = ApiDoc::openapi();
-        let schemas = &openapi.components.as_ref().expect("components").schemas;
-
-        // Verify AppendRouteBody has examples
-        let append_route_schema =
-            schemas.get("AppendRouteBody").expect("AppendRouteBody schema should exist");
-
-        if let RefOr::T(Schema::Object(obj)) = append_route_schema {
-            assert!(obj.example.is_some(), "AppendRouteBody should have an example");
-        } else {
-            panic!("AppendRouteBody should be an object schema");
-        }
     }
 }

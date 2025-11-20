@@ -82,10 +82,9 @@ pub async fn post_create_api(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri =
-        format!("http://{}/api/v1/api-definitions/from-openapi?team={}", api_addr, team).parse()?;
+    let uri: Uri = format!("http://{}/api/v1/openapi/import?team={}", api_addr, team).parse()?;
 
-    // Create a minimal OpenAPI 3.0 spec that represents the API definition
+    // Create a minimal OpenAPI 3.0 spec for import
     let openapi_spec = json!({
         "openapi": "3.0.0",
         "info": {
@@ -133,7 +132,7 @@ pub async fn post_create_api(
 pub async fn post_append_route(
     api_addr: SocketAddr,
     bearer: &str,
-    api_id: &str,
+    _api_id: &str, // Deprecated: no longer used with new OpenAPI import
     prefix: &str,
     cluster_name: &str,
     endpoint: &str,
@@ -141,8 +140,8 @@ pub async fn post_append_route(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri =
-        format!("http://{}/api/v1/api-definitions/{}/routes", api_addr, api_id).parse()?;
+    // Note: This function is deprecated and should not be used with new OpenAPI import API
+    let uri: Uri = format!("http://{}/api/v1/routes", api_addr).parse()?;
     let body = json!({
         "route": {
             "match": {"prefix": prefix},

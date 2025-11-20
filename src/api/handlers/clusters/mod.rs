@@ -323,8 +323,9 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)

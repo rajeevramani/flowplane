@@ -73,12 +73,7 @@ impl ReportingRepository {
                 FROM routes r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
-                WHERE l.name LIKE 'default%' OR l.name IN (
-                    SELECT DISTINCT listener_name
-                    FROM api_routes ar
-                    INNER JOIN api_definitions ad ON ar.api_definition_id = ad.id
-                    WHERE ar.generated_route_id = r.id
-                )
+                WHERE l.name LIKE 'default%'
                 ORDER BY r.created_at DESC
                 LIMIT $1 OFFSET $2
             "#
@@ -122,12 +117,7 @@ impl ReportingRepository {
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
                 WHERE (r.team IN ({}) OR r.team IS NULL)
-                AND (l.name LIKE 'default%' OR l.name IN (
-                    SELECT DISTINCT listener_name
-                    FROM api_routes ar
-                    INNER JOIN api_definitions ad ON ar.api_definition_id = ad.id
-                    WHERE ar.generated_route_id = r.id
-                ))
+                AND l.name LIKE 'default%'
                 ORDER BY r.created_at DESC
                 LIMIT ${} OFFSET ${}
                 "#,

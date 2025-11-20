@@ -169,6 +169,9 @@ async fn route_repository_filters_by_team() {
             "virtual_hosts": []
         }),
         team: Some("team-a".to_string()),
+        import_id: None,
+        route_order: None,
+        headers: None,
     };
 
     let team_b_route = CreateRouteRepositoryRequest {
@@ -180,6 +183,9 @@ async fn route_repository_filters_by_team() {
             "virtual_hosts": []
         }),
         team: Some("team-b".to_string()),
+        import_id: None,
+        route_order: None,
+        headers: None,
     };
 
     let global_route = CreateRouteRepositoryRequest {
@@ -191,6 +197,9 @@ async fn route_repository_filters_by_team() {
             "virtual_hosts": []
         }),
         team: None,
+        import_id: None,
+        route_order: None,
+        headers: None,
     };
 
     route_repo.create(team_a_route).await.unwrap();

@@ -2,7 +2,7 @@
 //!
 //! Comprehensive integration tests for all CLI commands including:
 //! - Authentication methods and precedence
-//! - API definition management
+//! - OpenAPI import management
 //! - Native resource management (clusters, listeners, routes)
 //! - Configuration file handling
 //! - Error handling and edge cases
@@ -15,9 +15,6 @@ mod support;
 
 #[path = "cli_integration/test_auth_methods.rs"]
 mod test_auth_methods;
-
-#[path = "cli_integration/test_api_commands.rs"]
-mod test_api_commands;
 
 #[path = "cli_integration/test_native_commands.rs"]
 mod test_native_commands;

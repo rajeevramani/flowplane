@@ -4,18 +4,12 @@
 //! All types and implementations are re-exported here for backward compatibility.
 
 pub use crate::storage::repositories::{
-    // API Definition repository
-    ApiDefinitionData,
-    ApiDefinitionRepository,
-    ApiRouteData,
     // Audit Log repository
     AuditEvent,
     AuditLogRepository,
     // Cluster repository
     ClusterData,
     ClusterRepository,
-    CreateApiDefinitionRequest,
-    CreateApiRouteRequest,
     CreateClusterRequest,
     // Listener repository
     CreateListenerRequest,
@@ -28,7 +22,6 @@ pub use crate::storage::repositories::{
     // Token repository
     SqlxTokenRepository,
     TokenRepository,
-    UpdateBootstrapMetadataRequest,
     UpdateClusterRequest,
     UpdateListenerRequest,
     UpdateRouteRequest,
@@ -57,8 +50,9 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -78,8 +72,11 @@ mod tests {
                 cluster_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
+                route_order INTEGER,
+                headers TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -100,8 +97,9 @@ mod tests {
                 protocol TEXT NOT NULL DEFAULT 'HTTP',
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -226,6 +224,9 @@ mod tests {
                 ]
             }),
             team: None,
+            import_id: None,
+            route_order: None,
+            headers: None,
         };
 
         let created = repo.create(create_request).await.unwrap();

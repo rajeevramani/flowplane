@@ -213,6 +213,64 @@ impl UserService {
         Ok(())
     }
 
+    /// Change a user's password with current password verification.
+    ///
+    /// This method verifies the current password before allowing the change.
+    /// This is the secure method that should be used for self-service password changes.
+    pub async fn change_password_with_verification(
+        &self,
+        id: &UserId,
+        current_password: String,
+        new_password: String,
+    ) -> Result<()> {
+        use crate::errors::AuthErrorType;
+
+        // Verify user exists and get password hash
+        let user = self
+            .user_repository
+            .get_user(id)
+            .await?
+            .ok_or_else(|| Error::not_found("User", id.as_str()))?;
+
+        // Get the user with password hash from the repository using email
+        // (since get_user_with_password only takes email as parameter)
+        let (_user, current_hash) = self
+            .user_repository
+            .get_user_with_password(&user.email)
+            .await?
+            .ok_or_else(|| Error::not_found("User", id.as_str()))?;
+
+        // Verify current password
+        let is_valid = hashing::verify_password(&current_password, &current_hash)?;
+        if !is_valid {
+            return Err(Error::auth(
+                "Current password is incorrect",
+                AuthErrorType::InvalidCredentials,
+            ));
+        }
+
+        // Hash new password
+        let password_hash = hashing::hash_password(&new_password)?;
+
+        // Update password
+        self.user_repository.update_password(id, password_hash).await?;
+
+        // Log audit event
+        self.audit_repository
+            .record_auth_event(AuditEvent::token(
+                "user.password_changed",
+                Some(id.as_str()),
+                Some(&user.email),
+                serde_json::json!({
+                    "changed_by": format!("user:{}", id.as_str()),
+                    "self_service": true,
+                }),
+            ))
+            .await?;
+
+        Ok(())
+    }
+
     /// Delete a user account.
     ///
     /// This will cascade delete all team memberships for the user.

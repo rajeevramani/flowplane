@@ -21,22 +21,21 @@ use super::{
     docs,
     handlers::{
         add_team_membership, admin_create_team, admin_delete_team, admin_get_team,
-        admin_list_teams, admin_update_team, append_route_handler, bootstrap_initialize_handler,
-        bootstrap_status_handler, compare_aggregated_schemas_handler, create_cluster_handler,
-        create_learning_session_handler, create_listener_handler, create_route_handler,
-        create_session_handler, create_token_handler, create_user, delete_api_definition_handler,
+        admin_list_teams, admin_update_team, bootstrap_initialize_handler,
+        bootstrap_status_handler, change_password_handler, compare_aggregated_schemas_handler,
+        create_cluster_handler, create_learning_session_handler, create_listener_handler,
+        create_route_handler, create_session_handler, create_token_handler, create_user,
         delete_cluster_handler, delete_learning_session_handler, delete_listener_handler,
         delete_route_handler, delete_user, export_aggregated_schema_handler,
-        get_aggregated_schema_handler, get_api_definition_handler, get_cluster_handler,
-        get_learning_session_handler, get_listener_handler, get_route_handler,
-        get_session_info_handler, get_team_bootstrap_handler, get_token_handler, get_user,
-        health_handler, import_openapi_handler, list_aggregated_schemas_handler,
-        list_api_definitions_handler, list_audit_logs, list_clusters_handler,
+        get_aggregated_schema_handler, get_cluster_handler, get_learning_session_handler,
+        get_listener_handler, get_route_handler, get_session_info_handler,
+        get_team_bootstrap_handler, get_token_handler, get_user, health_handler,
+        list_aggregated_schemas_handler, list_audit_logs, list_clusters_handler,
         list_learning_sessions_handler, list_listeners_handler, list_route_flows_handler,
         list_routes_handler, list_teams_handler, list_tokens_handler, list_user_teams, list_users,
         login_handler, logout_handler, remove_team_membership, revoke_token_handler,
-        rotate_token_handler, update_api_definition_handler, update_cluster_handler,
-        update_listener_handler, update_route_handler, update_token_handler, update_user,
+        rotate_token_handler, update_cluster_handler, update_listener_handler,
+        update_route_handler, update_token_handler, update_user,
     },
 };
 
@@ -112,6 +111,8 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
     let trace_layer = middleware::from_fn(trace_http_requests);
 
     let secured_api = Router::new()
+        // Password change endpoint (authenticated users only)
+        .route("/api/v1/auth/change-password", post(change_password_handler))
         // Token management endpoints
         .route("/api/v1/tokens", get(list_tokens_handler))
         .route("/api/v1/tokens", post(create_token_handler))
@@ -131,13 +132,23 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/routes/{name}", get(get_route_handler))
         .route("/api/v1/routes/{name}", put(update_route_handler))
         .route("/api/v1/routes/{name}", delete(delete_route_handler))
-        // API definition endpoints
-        .route("/api/v1/api-definitions", get(list_api_definitions_handler))
-        .route("/api/v1/api-definitions/from-openapi", post(import_openapi_handler))
-        .route("/api/v1/api-definitions/{id}", get(get_api_definition_handler))
-        .route("/api/v1/api-definitions/{id}", patch(update_api_definition_handler))
-        .route("/api/v1/api-definitions/{id}", delete(delete_api_definition_handler))
-        .route("/api/v1/api-definitions/{id}/routes", post(append_route_handler))
+        // OpenAPI import endpoints
+        .route(
+            "/api/v1/openapi/import",
+            post(super::handlers::openapi_import::import_openapi_handler),
+        )
+        .route(
+            "/api/v1/openapi/imports",
+            get(super::handlers::openapi_import::list_imports_handler),
+        )
+        .route(
+            "/api/v1/openapi/imports/{id}",
+            get(super::handlers::openapi_import::get_import_handler),
+        )
+        .route(
+            "/api/v1/openapi/imports/{id}",
+            delete(super::handlers::openapi_import::delete_import_handler),
+        )
         // Team endpoints
         .route("/api/v1/teams", get(list_teams_handler))
         .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))

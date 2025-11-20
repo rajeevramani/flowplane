@@ -121,7 +121,7 @@ async fn openapi_global_filters_applied_to_all_routes() {
             .build(connector);
 
     let import_uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        "http://{}/api/v1/openapi/import?team={}&shared_listener=false",
         api_addr,
         namer.test_id()
     )
@@ -143,12 +143,12 @@ async fn openapi_global_filters_applied_to_all_routes() {
 
     assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
-    // Parse the response to get the API definition ID
+    // Parse the response to get the import ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
     eprintln!("OpenAPI import successful: {}", serde_json::to_string_pretty(&response).unwrap());
 
-    // Verify that the import succeeded and returned an ID
-    assert!(response["id"].is_string(), "Response should contain API definition ID");
+    // Verify that the import succeeded and returned an importId
+    assert!(response["importId"].is_string(), "Response should contain import ID");
 
     echo.stop().await;
     guard.finish(true);
@@ -254,7 +254,7 @@ async fn openapi_route_level_filters_override_global() {
             .build(connector);
 
     let import_uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        "http://{}/api/v1/openapi/import?team={}&shared_listener=false",
         api_addr,
         namer.test_id()
     )
@@ -276,7 +276,7 @@ async fn openapi_route_level_filters_override_global() {
 
     assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
-    // Parse the response to get the API definition ID
+    // Parse the response to get the import ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
     eprintln!(
         "OpenAPI import with route overrides successful: {}",
@@ -284,7 +284,7 @@ async fn openapi_route_level_filters_override_global() {
     );
 
     // Verify that the import succeeded and returned an ID
-    assert!(response["id"].is_string(), "Response should contain API definition ID");
+    assert!(response["importId"].is_string(), "Response should contain import ID");
 
     echo.stop().await;
     guard.finish(true);
@@ -402,7 +402,7 @@ async fn openapi_comprehensive_filter_validation() {
             .build(connector);
 
     let import_uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        "http://{}/api/v1/openapi/import?team={}&shared_listener=false",
         api_addr,
         namer.test_id()
     )
@@ -424,7 +424,7 @@ async fn openapi_comprehensive_filter_validation() {
 
     assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
-    // Parse the response to get the API definition ID
+    // Parse the response to get the import ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
     eprintln!(
         "Comprehensive OpenAPI filter import successful: {}",
@@ -432,7 +432,7 @@ async fn openapi_comprehensive_filter_validation() {
     );
 
     // Verify that the import succeeded and returned an ID
-    assert!(response["id"].is_string(), "Response should contain API definition ID");
+    assert!(response["importId"].is_string(), "Response should contain import ID");
 
     // Wait for Envoy to receive the configuration
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -577,7 +577,7 @@ async fn openapi_custom_response_route_override() {
             .build(connector);
 
     let import_uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        "http://{}/api/v1/openapi/import?team={}&shared_listener=false",
         api_addr,
         namer.test_id()
     )
@@ -599,7 +599,7 @@ async fn openapi_custom_response_route_override() {
 
     assert!(status.is_success(), "OpenAPI import failed: {} - {}", status, body_str);
 
-    // Parse the response to get the API definition ID
+    // Parse the response to get the import ID
     let response: serde_json::Value = serde_json::from_str(&body_str).expect("valid JSON");
     eprintln!(
         "OpenAPI import with custom_response route override successful: {}",
@@ -607,7 +607,7 @@ async fn openapi_custom_response_route_override() {
     );
 
     // Verify that the import succeeded and returned an ID
-    assert!(response["id"].is_string(), "Response should contain API definition ID");
+    assert!(response["importId"].is_string(), "Response should contain import ID");
 
     // Wait for Envoy to receive the configuration
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -752,7 +752,7 @@ async fn openapi_custom_response_matcher_400_returns_json() {
             .build(connector);
 
     let import_uri: hyper::http::Uri = format!(
-        "http://{}/api/v1/api-definitions/from-openapi?team={}&listenerIsolation=true",
+        "http://{}/api/v1/openapi/import?team={}&shared_listener=false",
         api_addr,
         namer.test_id()
     )
@@ -780,7 +780,7 @@ async fn openapi_custom_response_matcher_400_returns_json() {
         serde_json::to_string_pretty(&response).unwrap()
     );
 
-    assert!(response["id"].is_string(), "Response should contain API definition ID");
+    assert!(response["importId"].is_string(), "Response should contain import ID");
 
     // Wait for Envoy to receive the configuration
     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;

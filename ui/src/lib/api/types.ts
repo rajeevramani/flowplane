@@ -15,6 +15,11 @@ export interface LoginResponse {
 	scopes: string[];
 }
 
+export interface ChangePasswordRequest {
+	currentPassword: string;
+	newPassword: string;
+}
+
 export interface BootstrapStatusResponse {
 	needsInitialization: boolean;
 	message: string;
@@ -188,6 +193,29 @@ export interface RouteResponse {
 	pathPrefix: string;
 	clusterTargets: string;
 	config: any; // Full route config
+}
+
+// API Route types (Platform API)
+export interface ApiRouteResponse {
+	id: string;
+	apiDefinitionId: string;
+	matchType: string;
+	matchValue: string;
+	caseSensitive: boolean;
+	headers?: any;
+	rewritePrefix?: string;
+	rewriteRegex?: string;
+	rewriteSubstitution?: string;
+	upstreamTargets: any;
+	timeoutSeconds?: number;
+	overrideConfig?: any;
+	deploymentNote?: string;
+	routeOrder: number;
+	generatedRouteId?: string;
+	generatedClusterId?: string;
+	filterConfig?: any;
+	createdAt: string;
+	updatedAt: string;
 }
 
 // Cluster types
