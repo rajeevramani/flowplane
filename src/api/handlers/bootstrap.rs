@@ -14,12 +14,15 @@ use crate::api::routes::ApiState;
 use crate::auth::hashing;
 use crate::auth::models::{NewPersonalAccessToken, TokenStatus};
 use crate::auth::setup_token::SetupToken;
+use crate::auth::team::CreateTeamRequest;
+use crate::auth::user::NewUserTeamMembership;
 use crate::auth::user::{NewUser, UserStatus};
 use crate::domain::{TokenId, UserId};
 use crate::errors::Error;
 use crate::storage::repositories::{
-    AuditEvent, AuditLogRepository, SqlxTokenRepository, SqlxUserRepository, TokenRepository,
-    UserRepository,
+    AuditEvent, AuditLogRepository, SqlxTeamMembershipRepository, SqlxTeamRepository,
+    SqlxTokenRepository, SqlxUserRepository, TeamMembershipRepository, TeamRepository,
+    TokenRepository, UserRepository,
 };
 use std::sync::Arc;
 
@@ -176,6 +179,66 @@ pub async fn bootstrap_initialize_handler(
         .await
         .map_err(convert_error)?;
 
+    // Create platform-admin team
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
+
+    // Check if platform-admin team already exists (idempotency)
+    let existing_team = team_repo.get_team_by_name("platform-admin").await;
+
+    match existing_team {
+        Ok(None) => {
+            // Team doesn't exist, create it
+            let create_team_request = CreateTeamRequest {
+                name: "platform-admin".to_string(),
+                display_name: "Platform Admin".to_string(),
+                description: Some("Default team created during system bootstrap".to_string()),
+                owner_user_id: Some(admin_user.id.clone()),
+                settings: None,
+            };
+
+            let created_team =
+                team_repo.create_team(create_team_request).await.map_err(convert_error)?;
+
+            // Add admin to platform-admin team with full permissions
+            let membership = NewUserTeamMembership {
+                id: format!("utm_{}", admin_user.id),
+                user_id: admin_user.id.clone(),
+                team: "platform-admin".to_string(),
+                scopes: vec!["team:platform-admin:*:*".to_string()],
+            };
+
+            membership_repo.create_membership(membership).await.map_err(convert_error)?;
+
+            // Log team creation
+            audit_repository
+                .record_auth_event(AuditEvent::token(
+                    "bootstrap.platform_admin_team_created",
+                    Some(created_team.id.as_str()),
+                    Some("platform-admin"),
+                    serde_json::json!({
+                        "name": "platform-admin",
+                        "display_name": "Platform Admin",
+                        "owner": admin_user.id.to_string(),
+                        "admin_email": admin_user.email,
+                    }),
+                ))
+                .await
+                .map_err(convert_error)?;
+        }
+        Ok(Some(_)) => {
+            // Team already exists - log warning but continue
+            tracing::warn!(
+                "platform-admin team already exists during bootstrap, skipping creation"
+            );
+        }
+        Err(e) => {
+            // Database error - log and propagate
+            tracing::error!("Failed to check for platform-admin team: {:?}", e);
+            return Err(convert_error(e));
+        }
+    }
+
     // Generate setup token
     let setup_token_generator = SetupToken::new();
     let (token_value, hashed_secret, expires_at) =
@@ -235,6 +298,7 @@ pub async fn bootstrap_initialize_handler(
     let next_steps = vec![
         "Admin user created successfully. You can now login with your email and password.".to_string(),
         format!("Email: {}", payload.email),
+        "Default team 'platform-admin' created for OpenAPI imports and resource management.".to_string(),
         "Use POST /api/v1/auth/login to authenticate with your credentials.".to_string(),
         format!("Example: curl -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' -d '{{\"email\": \"{}\", \"password\": \"YOUR_PASSWORD\"}}'", payload.email),
         "The login response will include a session cookie and CSRF token for authenticated requests.".to_string(),
