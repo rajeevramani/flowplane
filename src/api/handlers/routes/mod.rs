@@ -129,6 +129,8 @@ pub async fn create_route_handler(
         team: created.team.unwrap_or_default(),
         path_prefix: created.path_prefix,
         cluster_targets: created.cluster_name,
+        import_id: created.import_id,
+        route_order: created.route_order,
         config: payload,
     };
 
@@ -271,6 +273,8 @@ pub async fn update_route_handler(
         team: updated.team.unwrap_or_default(),
         path_prefix,
         cluster_targets: cluster_summary,
+        import_id: updated.import_id,
+        route_order: updated.route_order,
         config: payload,
     };
 

@@ -7,7 +7,7 @@
 	let isFirstAdmin = $state(false);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let resourceCounts = $state({
-		apiDefinitions: 0,
+		imports: 0,
 		listeners: 0,
 		routes: 0,
 		clusters: 0
@@ -27,24 +27,20 @@
 
 		// Load resource counts
 		try {
-			const [apiDefs, listeners, nativeRoutes, clusters] = await Promise.all([
-				apiClient.listApiDefinitions(),
+			// Get first team to list imports (or use empty array if no teams)
+			const team = sessionInfo?.teams[0] || '';
+
+			const [imports, listeners, routes, clusters] = await Promise.all([
+				team ? apiClient.listImports(team) : Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()
 			]);
 
-			// Count platform routes from all API definitions
-			const platformRoutesPromises = apiDefs.map(apiDef =>
-				apiClient.getApiDefinitionRoutes(apiDef.id).catch(() => [])
-			);
-			const platformRoutesArrays = await Promise.all(platformRoutesPromises);
-			const platformRoutesCount = platformRoutesArrays.reduce((sum, routes) => sum + routes.length, 0);
-
 			resourceCounts = {
-				apiDefinitions: apiDefs.length,
+				imports: imports.length,
 				listeners: listeners.length,
-				routes: nativeRoutes.length + platformRoutesCount,
+				routes: routes.length,
 				clusters: clusters.length
 			};
 		} catch (error) {
@@ -134,10 +130,10 @@
 		{:else}
 			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
 				<StatCard
-					title="API Definitions"
-					value={resourceCounts.apiDefinitions}
+					title="Imports"
+					value={resourceCounts.imports}
 					icon="api"
-					href="/resources?tab=api-definitions"
+					href="/resources?tab=imports"
 					colorClass="blue"
 				/>
 				<StatCard
@@ -255,7 +251,7 @@
 
 			<!-- Developer actions -->
 			<a
-				href="/api-definitions/import"
+				href="/imports/import"
 				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
 			>
 				<div class="flex items-start justify-between">
@@ -316,7 +312,7 @@
 					<div>
 						<h4 class="text-lg font-semibold text-gray-900 mb-2">View Resources</h4>
 						<p class="text-sm text-gray-600">
-							Browse listeners, routes, clusters, and API definitions
+							Browse listeners, routes, clusters, and imports
 						</p>
 					</div>
 					<svg

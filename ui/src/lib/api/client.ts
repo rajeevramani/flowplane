@@ -15,9 +15,9 @@ import type {
 	TokenSecretResponse,
 	UpdateTokenRequest,
 	ImportOpenApiRequest,
-	CreateApiDefinitionResponse,
-	ApiDefinitionSummary,
-	ApiRouteResponse,
+	ImportResponse,
+	ImportSummary,
+	ImportDetailsResponse,
 	ListenerResponse,
 	RouteResponse,
 	ClusterResponse,
@@ -259,15 +259,15 @@ class ApiClient {
 	}
 
 	// OpenAPI import
-	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<CreateApiDefinitionResponse> {
+	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
 		if (request.team) params.append('team', request.team);
 		if (request.listenerIsolation !== undefined) {
-			params.append('listenerIsolation', request.listenerIsolation.toString());
+			params.append('shared_listener', (!request.listenerIsolation).toString());
 		}
 		if (request.port) params.append('port', request.port.toString());
 
-		const path = `/api/v1/api-definitions/from-openapi${params.toString() ? `?${params.toString()}` : ''}`;
+		const path = `/api/v1/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
 
 		// Determine content type based on spec format
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
@@ -283,38 +283,22 @@ class ApiClient {
 			credentials: 'include'
 		});
 
-		return this.handleResponse<CreateApiDefinitionResponse>(response);
+		return this.handleResponse<ImportResponse>(response);
 	}
 
-	// API Definition methods
-	async listApiDefinitions(params?: {
-		team?: string;
-		domain?: string;
-		limit?: number;
-		offset?: number;
-	}): Promise<ApiDefinitionSummary[]> {
-		let path = '/api/v1/api-definitions';
-		const searchParams = new URLSearchParams();
-		if (params?.team) searchParams.append('team', params.team);
-		if (params?.domain) searchParams.append('domain', params.domain);
-		if (params?.limit) searchParams.append('limit', params.limit.toString());
-		if (params?.offset) searchParams.append('offset', params.offset.toString());
-		if (searchParams.toString()) path += `?${searchParams.toString()}`;
-
-		return this.get<ApiDefinitionSummary[]>(path);
+	// Import methods (replacing API Definition methods)
+	async listImports(team: string): Promise<ImportSummary[]> {
+		const path = `/api/v1/openapi/imports?team=${encodeURIComponent(team)}`;
+		const response = await this.get<{ imports: ImportSummary[] }>(path);
+		return response.imports;
 	}
 
-	async getApiDefinition(id: string): Promise<ApiDefinitionSummary> {
-		return this.get<ApiDefinitionSummary>(`/api/v1/api-definitions/${id}`);
+	async getImport(id: string): Promise<ImportDetailsResponse> {
+		return this.get<ImportDetailsResponse>(`/api/v1/openapi/imports/${id}`);
 	}
 
-	async getApiDefinitionRoutes(id: string): Promise<ApiRouteResponse[]> {
-		return this.get<ApiRouteResponse[]>(`/api/v1/api-definitions/${id}/routes`);
-	}
-
-	async deleteApiDefinition(id: string): Promise<void> {
-		// Note: DELETE endpoint not yet implemented in backend
-		return this.delete<void>(`/api/v1/api-definitions/${id}`);
+	async deleteImport(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/openapi/imports/${id}`);
 	}
 
 	// Listener methods

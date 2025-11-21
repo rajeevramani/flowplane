@@ -112,10 +112,10 @@
 								</a>
 								<div class="border-t border-gray-100"></div>
 								<a
-									href="/resources?tab=api-definitions"
+									href="/resources?tab=imports"
 									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
 								>
-									API Definitions
+									Imports
 								</a>
 								<a
 									href="/resources?tab=clusters"

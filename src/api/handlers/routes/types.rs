@@ -192,6 +192,9 @@ pub struct RouteResponse {
     pub team: String,
     pub path_prefix: String,
     pub cluster_targets: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_id: Option<String>,
+    pub route_order: Option<i64>,
     pub config: RouteDefinition,
 }
 

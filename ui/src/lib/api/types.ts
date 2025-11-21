@@ -92,7 +92,7 @@ export interface AdminListTeamsResponse {
 }
 
 export interface DashboardStats {
-	apiDefinitionsCount: number;
+	importsCount: number;
 	listenersCount: number;
 	routesCount: number;
 	clustersCount: number;
@@ -142,10 +142,14 @@ export interface ImportOpenApiRequest {
 	port?: number;
 }
 
-export interface CreateApiDefinitionResponse {
-	id: string;
-	bootstrapUri: string;
-	routes: string[];
+export interface ImportResponse {
+	importId: string;
+	specName: string;
+	specVersion: string | null;
+	routesCreated: number;
+	clustersCreated: number;
+	clustersReused: number;
+	listenerName: string | null;
 }
 
 export interface OpenApiSpec {
@@ -163,16 +167,26 @@ export interface OpenApiSpec {
 	paths: Record<string, any>;
 }
 
-// API Definition types
-export interface ApiDefinitionSummary {
+// Import types (replacing API Definition types)
+export interface ImportSummary {
 	id: string;
+	specName: string;
+	specVersion: string | null;
 	team: string;
-	domain: string;
-	listenerIsolation: boolean;
-	bootstrapUri: string | null;
-	version: number;
-	createdAt: string;
+	importedAt: string;
 	updatedAt: string;
+}
+
+export interface ImportDetailsResponse {
+	id: string;
+	specName: string;
+	specVersion: string | null;
+	specChecksum: string | null;
+	team: string;
+	importedAt: string;
+	updatedAt: string;
+	routeCount: number;
+	clusterCount: number;
 }
 
 // Listener types
@@ -183,6 +197,7 @@ export interface ListenerResponse {
 	port: number | null;
 	protocol: string;
 	version: number;
+	importId?: string;
 	config: any; // Full listener config
 }
 
@@ -192,37 +207,20 @@ export interface RouteResponse {
 	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
+	importId?: string;
+	routeOrder?: number;
 	config: any; // Full route config
 }
 
-// API Route types (Platform API)
-export interface ApiRouteResponse {
-	id: string;
-	apiDefinitionId: string;
-	matchType: string;
-	matchValue: string;
-	caseSensitive: boolean;
-	headers?: any;
-	rewritePrefix?: string;
-	rewriteRegex?: string;
-	rewriteSubstitution?: string;
-	upstreamTargets: any;
-	timeoutSeconds?: number;
-	overrideConfig?: any;
-	deploymentNote?: string;
-	routeOrder: number;
-	generatedRouteId?: string;
-	generatedClusterId?: string;
-	filterConfig?: any;
-	createdAt: string;
-	updatedAt: string;
-}
+// Legacy type - no longer used after API definitions removal
+// Routes are now accessed directly via RouteResponse
 
 // Cluster types
 export interface ClusterResponse {
 	name: string;
 	team: string;
 	serviceName: string;
+	importId?: string;
 	config: any; // Full cluster config
 }
 

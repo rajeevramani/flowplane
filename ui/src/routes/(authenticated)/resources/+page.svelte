@@ -3,10 +3,9 @@
 	import { onMount } from 'svelte';
 	import ResourceSection from '$lib/components/ResourceSection.svelte';
 	import type {
-		ApiDefinitionSummary,
+		ImportSummary,
 		ListenerResponse,
 		RouteResponse,
-		ApiRouteResponse,
 		ClusterResponse,
 		SessionInfoResponse
 	} from '$lib/api/types';
@@ -17,10 +16,9 @@
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// Data for each resource type
-	let apiDefinitions = $state<ApiDefinitionSummary[]>([]);
+	let imports = $state<ImportSummary[]>([]);
 	let listeners = $state<ListenerResponse[]>([]);
-	let nativeRoutes = $state<RouteResponse[]>([]);
-	let platformRoutes = $state<ApiRouteResponse[]>([]);
+	let routes = $state<RouteResponse[]>([]);
 	let clusters = $state<ClusterResponse[]>([]);
 
 	onMount(async () => {
@@ -37,25 +35,21 @@
 		error = null;
 
 		try {
+			// Get first team to list imports (or use empty array if no teams)
+			const team = sessionInfo?.teams[0] || '';
+
 			// Load all resources in parallel
-			const [apiDefsData, listenersData, routesData, clustersData] = await Promise.all([
-				apiClient.listApiDefinitions(),
+			const [importsData, listenersData, routesData, clustersData] = await Promise.all([
+				team ? apiClient.listImports(team) : Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()
 			]);
 
-			apiDefinitions = apiDefsData;
+			imports = importsData;
 			listeners = listenersData;
-			nativeRoutes = routesData;
+			routes = routesData;
 			clusters = clustersData;
-
-			// Load platform routes from all API definitions
-			const platformRoutesPromises = apiDefsData.map(apiDef =>
-				apiClient.getApiDefinitionRoutes(apiDef.id).catch(() => [])
-			);
-			const platformRoutesArrays = await Promise.all(platformRoutesPromises);
-			platformRoutes = platformRoutesArrays.flat();
 		} catch (err: any) {
 			error = err.message || 'Failed to load resources';
 		} finally {
@@ -64,14 +58,14 @@
 	}
 
 	// Filtered data based on search query only (backend handles team filtering)
-	function getFilteredApiDefinitions(): ApiDefinitionSummary[] {
-		if (!searchQuery) return apiDefinitions;
+	function getFilteredImports(): ImportSummary[] {
+		if (!searchQuery) return imports;
 		const query = searchQuery.toLowerCase();
-		return apiDefinitions.filter(
-			(def) =>
-				def.id.toLowerCase().includes(query) ||
-				def.domain.toLowerCase().includes(query) ||
-				def.team.toLowerCase().includes(query)
+		return imports.filter(
+			(imp) =>
+				imp.id.toLowerCase().includes(query) ||
+				imp.specName.toLowerCase().includes(query) ||
+				imp.team.toLowerCase().includes(query)
 		);
 	}
 
@@ -86,25 +80,15 @@
 		);
 	}
 
-	function getFilteredNativeRoutes(): RouteResponse[] {
-		if (!searchQuery) return nativeRoutes;
+	function getFilteredRoutes(): RouteResponse[] {
+		if (!searchQuery) return routes;
 		const query = searchQuery.toLowerCase();
-		return nativeRoutes.filter(
+		return routes.filter(
 			(route) =>
 				route.name.toLowerCase().includes(query) ||
 				route.pathPrefix.toLowerCase().includes(query) ||
 				route.clusterTargets.toLowerCase().includes(query) ||
 				route.team.toLowerCase().includes(query)
-		);
-	}
-
-	function getFilteredPlatformRoutes(): ApiRouteResponse[] {
-		if (!searchQuery) return platformRoutes;
-		const query = searchQuery.toLowerCase();
-		return platformRoutes.filter(
-			(route) =>
-				route.matchValue.toLowerCase().includes(query) ||
-				route.apiDefinitionId.toLowerCase().includes(query)
 		);
 	}
 
@@ -123,41 +107,10 @@
 		return new Date(dateString).toLocaleDateString('en-US', {
 			year: 'numeric',
 			month: 'short',
-			day: 'numeric'
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
 		});
-	}
-
-	function getApiDefinitionDomain(apiDefId: string): string {
-		const apiDef = apiDefinitions.find(def => def.id === apiDefId);
-		return apiDef?.domain || apiDefId;
-	}
-
-	function formatUpstreamTargets(upstreamTargets: any): string {
-		if (!upstreamTargets) return 'None';
-
-		if (Array.isArray(upstreamTargets)) {
-			return upstreamTargets.map((target: any) => `${target.host}:${target.port}`).join(', ');
-		}
-
-		if (upstreamTargets.targets && Array.isArray(upstreamTargets.targets)) {
-			return upstreamTargets.targets.map((target: any) => target.endpoint).join(', ');
-		}
-
-		return 'None';
-	}
-
-	function extractHttpMethod(route: ApiRouteResponse): string {
-		if (!route.headers || !Array.isArray(route.headers)) {
-			return 'ANY';
-		}
-
-		for (const header of route.headers) {
-			if (header.name === ':method' || header.name === 'method') {
-				return header.value || header.exactMatch || 'ANY';
-			}
-		}
-
-		return 'ANY';
 	}
 
 	function extractClusterEndpoint(cluster: ClusterResponse): { host: string; port: string } {
@@ -199,30 +152,81 @@
 		return { host: 'N/A', port: 'N/A' };
 	}
 
+	function extractRoutePaths(route: RouteResponse): string {
+		try {
+			if (route.config && typeof route.config === 'object') {
+				const config = route.config as any;
+
+				// Extract paths from virtualHosts
+				if (config.virtualHosts && Array.isArray(config.virtualHosts)) {
+					const paths: string[] = [];
+
+					for (const vh of config.virtualHosts) {
+						if (vh.routes && Array.isArray(vh.routes)) {
+							for (const r of vh.routes) {
+								if (r.match && r.match.path) {
+									const pathMatch = r.match.path;
+
+									if (pathMatch.type === 'exact' && pathMatch.value) {
+										paths.push(pathMatch.value);
+									} else if (pathMatch.type === 'prefix' && pathMatch.value) {
+										paths.push(pathMatch.value + '*');
+									} else if (pathMatch.type === 'regex' && pathMatch.value) {
+										paths.push('regex:' + pathMatch.value);
+									} else if (pathMatch.type === 'template' && pathMatch.template) {
+										paths.push(pathMatch.template);
+									}
+								}
+							}
+						}
+					}
+
+					return paths.length > 0 ? paths.join(', ') : 'N/A';
+				}
+			}
+		} catch (e) {
+			console.error('Error extracting route paths:', e);
+		}
+
+		return route.pathPrefix || 'N/A';
+	}
+
+	function getImportSource(importId?: string): string {
+		if (!importId) return 'Native';
+
+		const importRecord = imports.find((imp) => imp.id === importId);
+		if (importRecord) {
+			return importRecord.specVersion
+				? `${importRecord.specName} v${importRecord.specVersion}`
+				: importRecord.specName;
+		}
+
+		return 'Unknown';
+	}
+
 	// Column definitions for each resource type
-	const apiDefinitionsColumns = [
+	const importsColumns = [
 		{
-			key: 'domain',
-			label: 'Domain',
-			format: (value: any, row: ApiDefinitionSummary) => ({
+			key: 'specName',
+			label: 'Name',
+			format: (value: any, row: ImportSummary) => ({
 				type: 'link',
 				text: value,
-				href: `/api-definitions/${row.id}`
+				href: `/imports/${row.id}`
 			})
+		},
+		{
+			key: 'specVersion',
+			label: 'Version',
+			format: (value: any) => value || 'N/A'
 		},
 		{
 			key: 'team',
 			label: 'Team',
 			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
 		},
-		{ key: 'id', label: 'ID' },
-		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` },
-		{
-			key: 'listenerIsolation',
-			label: 'Listener Isolation',
-			format: (value: any) => (value ? 'Yes' : 'No')
-		},
-		{ key: 'createdAt', label: 'Created', format: (value: any) => formatDate(value) }
+		{ key: 'importedAt', label: 'Imported', format: (value: any) => formatDate(value) },
+		{ key: 'updatedAt', label: 'Updated', format: (value: any) => formatDate(value) }
 	];
 
 	const listenersColumns = [
@@ -235,51 +239,32 @@
 		{ key: 'address', label: 'Address' },
 		{ key: 'port', label: 'Port', format: (value: any) => value || 'N/A' },
 		{ key: 'protocol', label: 'Protocol' },
-		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` }
+		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` },
+		{
+			key: 'importId',
+			label: 'Source',
+			format: (value: any, row: ListenerResponse) => getImportSource(row.importId)
+		}
 	];
 
-	const nativeRoutesColumns = [
+	const routesColumns = [
 		{ key: 'name', label: 'Name' },
 		{
 			key: 'team',
 			label: 'Team',
 			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
 		},
-		{ key: 'pathPrefix', label: 'Path Prefix' },
-		{ key: 'clusterTargets', label: 'Cluster Targets' }
-	];
-
-	const platformRoutesColumns = [
 		{
-			key: 'matchType',
-			label: 'Match Type',
-			format: (value: any) => ({ type: 'badge', text: value, variant: 'green' as const })
+			key: 'config',
+			label: 'Paths',
+			format: (value: any, row: RouteResponse) => extractRoutePaths(row)
 		},
-		{ key: 'matchValue', label: 'Path/Pattern' },
+		{ key: 'clusterTargets', label: 'Cluster Targets' },
 		{
-			key: 'apiDefinitionId',
-			label: 'API Definition',
-			format: (value: any) => ({
-				type: 'link',
-				text: getApiDefinitionDomain(value),
-				href: `/api-definitions/${value}`
-			})
-		},
-		{
-			key: 'headers',
-			label: 'HTTP Method',
-			format: (value: any, row: ApiRouteResponse) => ({
-				type: 'badge',
-				text: extractHttpMethod(row),
-				variant: 'purple' as const
-			})
-		},
-		{
-			key: 'upstreamTargets',
-			label: 'Upstream Targets',
-			format: (value: any) => formatUpstreamTargets(value)
-		},
-		{ key: 'routeOrder', label: 'Order' }
+			key: 'importId',
+			label: 'Source',
+			format: (value: any, row: RouteResponse) => getImportSource(row.importId)
+		}
 	];
 
 	const clustersColumns = [
@@ -298,6 +283,11 @@
 			key: 'config',
 			label: 'Port',
 			format: (value: any, row: ClusterResponse) => extractClusterEndpoint(row).port
+		},
+		{
+			key: 'importId',
+			label: 'Source',
+			format: (value: any, row: ClusterResponse) => getImportSource(row.importId)
 		}
 	];
 </script>
@@ -332,14 +322,14 @@
 		<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
 	</div>
 {:else}
-	<!-- API Definitions Section -->
+	<!-- Imports Section -->
 	<ResourceSection
-		title="API Definitions"
-		count={getFilteredApiDefinitions().length}
-		columns={apiDefinitionsColumns}
-		data={getFilteredApiDefinitions()}
-		emptyMessage="No API definitions found"
-		actionButton={{ text: 'Import OpenAPI', href: '/api-definitions/import' }}
+		title="OpenAPI Imports"
+		count={getFilteredImports().length}
+		columns={importsColumns}
+		data={getFilteredImports()}
+		emptyMessage="No imports found"
+		actionButton={{ text: 'Import OpenAPI', href: '/imports/import' }}
 	/>
 
 	<!-- Listeners Section -->
@@ -351,22 +341,13 @@
 		emptyMessage="No listeners found"
 	/>
 
-	<!-- Platform API Routes Section -->
+	<!-- Routes Section -->
 	<ResourceSection
-		title="Platform API Routes"
-		count={getFilteredPlatformRoutes().length}
-		columns={platformRoutesColumns}
-		data={getFilteredPlatformRoutes()}
-		emptyMessage="No platform API routes found"
-	/>
-
-	<!-- Native API Routes Section -->
-	<ResourceSection
-		title="Native API Routes"
-		count={getFilteredNativeRoutes().length}
-		columns={nativeRoutesColumns}
-		data={getFilteredNativeRoutes()}
-		emptyMessage="No native API routes found"
+		title="Routes"
+		count={getFilteredRoutes().length}
+		columns={routesColumns}
+		data={getFilteredRoutes()}
+		emptyMessage="No routes found"
 	/>
 
 	<!-- Clusters Section -->

@@ -38,9 +38,22 @@ pub(super) fn require_listener_repository(
 pub(super) fn listener_response_from_data(
     data: ListenerData,
 ) -> Result<ListenerResponse, ApiError> {
-    let config: ListenerConfig = serde_json::from_str(&data.configuration).map_err(|err| {
+    // First parse as JSON value to extract import_id
+    let config_value: serde_json::Value =
+        serde_json::from_str(&data.configuration).map_err(|err| {
+            ApiError::from(Error::internal(format!(
+                "Failed to parse stored listener configuration '{}': {}",
+                data.name, err
+            )))
+        })?;
+
+    // Extract import_id if present
+    let import_id = config_value.get("import_id").and_then(|v| v.as_str()).map(String::from);
+
+    // Parse as ListenerConfig
+    let config: ListenerConfig = serde_json::from_value(config_value).map_err(|err| {
         ApiError::from(Error::internal(format!(
-            "Failed to parse stored listener configuration '{}': {}",
+            "Failed to deserialize listener configuration '{}': {}",
             data.name, err
         )))
     })?;
@@ -52,6 +65,7 @@ pub(super) fn listener_response_from_data(
         port: port_from_i64(data.port)?,
         protocol: data.protocol,
         version: data.version,
+        import_id,
         config,
     })
 }

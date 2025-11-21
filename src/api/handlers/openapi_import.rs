@@ -494,10 +494,10 @@ async fn materialize_clusters(
         // Check if cluster already exists (by name)
         let existing = cluster_repo.get_by_name(&cluster_request.name).await;
 
-        if existing.is_ok() {
-            // Cluster exists - add reference
+        if let Ok(existing_cluster) = existing {
+            // Cluster exists - add reference using cluster ID
             cluster_ref_repo
-                .add_reference(&cluster_request.name, import_id, 1)
+                .add_reference(existing_cluster.id.as_ref(), import_id, 1)
                 .await
                 .map_err(ApiError::from)?;
             reused += 1;
@@ -509,9 +509,10 @@ async fn materialize_clusters(
                 .as_object_mut()
                 .and_then(|obj| obj.insert("import_id".to_string(), serde_json::json!(import_id)));
 
-            cluster_repo.create(cluster_request.clone()).await.map_err(ApiError::from)?;
+            let created_cluster =
+                cluster_repo.create(cluster_request.clone()).await.map_err(ApiError::from)?;
             cluster_ref_repo
-                .add_reference(&cluster_request.name, import_id, 1)
+                .add_reference(created_cluster.id.as_ref(), import_id, 1)
                 .await
                 .map_err(ApiError::from)?;
             created += 1;

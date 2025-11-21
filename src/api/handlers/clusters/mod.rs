@@ -107,6 +107,7 @@ pub async fn create_cluster_handler(
             name: created.name.clone(),
             team: created.team.unwrap_or_else(|| "unknown".to_string()),
             service_name: created.service_name,
+            import_id: created.import_id,
             config,
         }),
     ))

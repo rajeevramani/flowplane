@@ -87,6 +87,7 @@ impl TestServer {
     }
 
     /// Create a team via direct database access (for test setup)
+    #[allow(dead_code)]
     pub async fn create_team(&self, team_name: &str) {
         use flowplane::auth::CreateTeamRequest;
         use flowplane::storage::repositories::{SqlxTeamRepository, TeamRepository};
