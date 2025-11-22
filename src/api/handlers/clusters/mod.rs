@@ -561,6 +561,7 @@ mod tests {
             service_name: name.to_string(),
             configuration: config,
             team: team.map(String::from),
+            import_id: None,
         };
 
         repo.create(request).await?;

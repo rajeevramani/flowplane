@@ -2,6 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { onMount } from 'svelte';
 	import ResourceSection from '$lib/components/ResourceSection.svelte';
+	import RoutesTable from '$lib/components/RoutesTable.svelte';
 	import type {
 		ImportSummary,
 		ListenerResponse,
@@ -152,45 +153,6 @@
 		return { host: 'N/A', port: 'N/A' };
 	}
 
-	function extractRoutePaths(route: RouteResponse): string {
-		try {
-			if (route.config && typeof route.config === 'object') {
-				const config = route.config as any;
-
-				// Extract paths from virtualHosts
-				if (config.virtualHosts && Array.isArray(config.virtualHosts)) {
-					const paths: string[] = [];
-
-					for (const vh of config.virtualHosts) {
-						if (vh.routes && Array.isArray(vh.routes)) {
-							for (const r of vh.routes) {
-								if (r.match && r.match.path) {
-									const pathMatch = r.match.path;
-
-									if (pathMatch.type === 'exact' && pathMatch.value) {
-										paths.push(pathMatch.value);
-									} else if (pathMatch.type === 'prefix' && pathMatch.value) {
-										paths.push(pathMatch.value + '*');
-									} else if (pathMatch.type === 'regex' && pathMatch.value) {
-										paths.push('regex:' + pathMatch.value);
-									} else if (pathMatch.type === 'template' && pathMatch.template) {
-										paths.push(pathMatch.template);
-									}
-								}
-							}
-						}
-					}
-
-					return paths.length > 0 ? paths.join(', ') : 'N/A';
-				}
-			}
-		} catch (e) {
-			console.error('Error extracting route paths:', e);
-		}
-
-		return route.pathPrefix || 'N/A';
-	}
-
 	function getImportSource(importId?: string): string {
 		if (!importId) return 'Native';
 
@@ -244,26 +206,6 @@
 			key: 'importId',
 			label: 'Source',
 			format: (value: any, row: ListenerResponse) => getImportSource(row.importId)
-		}
-	];
-
-	const routesColumns = [
-		{ key: 'name', label: 'Name' },
-		{
-			key: 'team',
-			label: 'Team',
-			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
-		},
-		{
-			key: 'config',
-			label: 'Paths',
-			format: (value: any, row: RouteResponse) => extractRoutePaths(row)
-		},
-		{ key: 'clusterTargets', label: 'Cluster Targets' },
-		{
-			key: 'importId',
-			label: 'Source',
-			format: (value: any, row: RouteResponse) => getImportSource(row.importId)
 		}
 	];
 
@@ -342,13 +284,13 @@
 	/>
 
 	<!-- Routes Section -->
-	<ResourceSection
-		title="Routes"
-		count={getFilteredRoutes().length}
-		columns={routesColumns}
-		data={getFilteredRoutes()}
-		emptyMessage="No routes found"
-	/>
+	<div class="mb-6">
+		<RoutesTable
+			routes={getFilteredRoutes()}
+			{getImportSource}
+			emptyMessage="No routes found"
+		/>
+	</div>
 
 	<!-- Clusters Section -->
 	<ResourceSection

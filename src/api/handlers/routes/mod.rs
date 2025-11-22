@@ -426,6 +426,7 @@ mod tests {
                     "endpoints": ["127.0.0.1:8080"]
                 }),
                 team: None, // Test cluster without team assignment
+                import_id: None,
             })
             .await
             .expect("seed cluster");
@@ -438,6 +439,7 @@ mod tests {
                     "endpoints": ["127.0.0.1:8181"]
                 }),
                 team: None, // Test cluster without team assignment
+                import_id: None,
             })
             .await
             .expect("seed shadow cluster");

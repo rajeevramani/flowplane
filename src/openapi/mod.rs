@@ -337,6 +337,7 @@ fn cluster_from_server(
         service_name: cluster_name.clone(),
         configuration,
         team: None, // OpenAPI Gateway clusters are not team-scoped by default
+        import_id: None,
     };
 
     let domain = host.to_string();

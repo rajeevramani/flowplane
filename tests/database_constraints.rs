@@ -61,6 +61,7 @@ async fn test_source_enum_constraint_on_routes() {
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -121,6 +122,7 @@ async fn test_valid_source_values_accepted() {
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();

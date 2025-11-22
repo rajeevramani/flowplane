@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "connect_timeout_seconds": 10
         }),
         team: None, // Test cluster without team assignment
+        import_id: None,
     };
 
     let created_cluster = repo.create(create_request).await?;

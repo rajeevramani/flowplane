@@ -504,10 +504,7 @@ async fn materialize_clusters(
         } else {
             // Create new cluster
             cluster_request.team = Some(team.to_string());
-            cluster_request
-                .configuration
-                .as_object_mut()
-                .and_then(|obj| obj.insert("import_id".to_string(), serde_json::json!(import_id)));
+            cluster_request.import_id = Some(import_id.to_string());
 
             let created_cluster =
                 cluster_repo.create(cluster_request.clone()).await.map_err(ApiError::from)?;

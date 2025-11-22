@@ -127,6 +127,7 @@ mod tests {
                 "endpoints": ["127.0.0.1:8080"]
             }),
             team: None,
+            import_id: None,
         };
 
         let created = repo.create(create_request).await.unwrap();

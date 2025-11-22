@@ -68,6 +68,7 @@ impl ClusterService {
                 service_name: service_name.clone(),
                 configuration,
                 team,
+                import_id: None,
             };
 
             // Create nested span for database operation

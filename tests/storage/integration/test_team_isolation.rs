@@ -53,6 +53,7 @@ async fn cluster_repository_filters_by_team() {
             "connect_timeout_seconds": 5
         }),
         team: Some("team-a".to_string()),
+        import_id: None,
     };
 
     let team_b_cluster = CreateClusterRequest {
@@ -63,6 +64,7 @@ async fn cluster_repository_filters_by_team() {
             "connect_timeout_seconds": 5
         }),
         team: Some("team-b".to_string()),
+        import_id: None,
     };
 
     let global_cluster = CreateClusterRequest {
@@ -73,6 +75,7 @@ async fn cluster_repository_filters_by_team() {
             "connect_timeout_seconds": 5
         }),
         team: None, // Global cluster with NULL team
+        import_id: None,
     };
 
     repo.create(team_a_cluster).await.unwrap();
@@ -129,6 +132,7 @@ async fn route_repository_filters_by_team() {
                 "connect_timeout_seconds": 5
             }),
             team: Some("team-a".to_string()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -142,6 +146,7 @@ async fn route_repository_filters_by_team() {
                 "connect_timeout_seconds": 5
             }),
             team: Some("team-b".to_string()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -155,6 +160,7 @@ async fn route_repository_filters_by_team() {
                 "connect_timeout_seconds": 5
             }),
             team: None,
+            import_id: None,
         })
         .await
         .unwrap();
@@ -333,6 +339,7 @@ async fn team_filtering_respects_pagination() {
                 "connect_timeout_seconds": 5
             }),
             team: Some("team-a".to_string()),
+            import_id: None,
         };
         repo.create(cluster).await.unwrap();
     }
@@ -362,6 +369,7 @@ async fn team_filtering_handles_special_characters_in_team_names() {
             "connect_timeout_seconds": 5
         }),
         team: Some("team-with-dashes_and_underscores".to_string()),
+        import_id: None,
     };
 
     repo.create(cluster).await.unwrap();

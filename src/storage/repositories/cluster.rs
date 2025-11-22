@@ -64,6 +64,7 @@ pub struct CreateClusterRequest {
     pub service_name: String,
     pub configuration: serde_json::Value,
     pub team: Option<String>,
+    pub import_id: Option<String>,
 }
 
 /// Update cluster request
@@ -97,13 +98,14 @@ impl ClusterRepository {
 
         // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
         let result = sqlx::query(
-            "INSERT INTO clusters (id, name, service_name, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)"
+            "INSERT INTO clusters (id, name, service_name, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)"
         )
         .bind(&id)
         .bind(&request.name)
         .bind(&request.service_name)
         .bind(&configuration_json)
         .bind(&request.team)
+        .bind(&request.import_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
