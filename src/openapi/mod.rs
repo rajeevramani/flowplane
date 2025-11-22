@@ -13,8 +13,8 @@ use crate::{
         filters::http::HttpFilterConfigEntry,
         listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         route::{
-            PathMatch, RouteActionConfig, RouteConfig as XdsRouteConfig, RouteMatchConfig,
-            RouteRule, VirtualHostConfig,
+            HeaderMatchConfig, PathMatch, RouteActionConfig, RouteConfig as XdsRouteConfig,
+            RouteMatchConfig, RouteRule, VirtualHostConfig,
         },
     },
 };
@@ -111,7 +111,7 @@ pub fn build_gateway_plan(
     let mut route_rules: Vec<RouteRule> = Vec::new();
 
     for (path_template, item) in openapi.paths.paths.iter() {
-        let _path_item = match item {
+        let path_item = match item {
             ReferenceOr::Item(item) => item,
             ReferenceOr::Reference { reference } => {
                 return Err(GatewayError::UnsupportedServer(reference.clone()))
@@ -119,25 +119,52 @@ pub fn build_gateway_plan(
         };
 
         let effective_path = combine_base_path(primary_server, path_template);
-        let route_name = route_name_for_path(&options.name, &effective_path);
 
-        let route_rule = RouteRule {
-            name: Some(route_name),
-            r#match: RouteMatchConfig {
-                path: PathMatch::Template(effective_path),
-                headers: None,
-                query_parameters: None,
-            },
-            action: RouteActionConfig::Cluster {
-                name: cluster_info.request.name.clone(),
-                timeout: None,
-                prefix_rewrite: None,
-                path_template_rewrite: None,
-            },
-            typed_per_filter_config: Default::default(),
-        };
+        // Extract HTTP operations from the path item
+        let operations: [(&str, bool); 8] = [
+            ("GET", path_item.get.is_some()),
+            ("POST", path_item.post.is_some()),
+            ("PUT", path_item.put.is_some()),
+            ("DELETE", path_item.delete.is_some()),
+            ("PATCH", path_item.patch.is_some()),
+            ("HEAD", path_item.head.is_some()),
+            ("OPTIONS", path_item.options.is_some()),
+            ("TRACE", path_item.trace.is_some()),
+        ];
 
-        route_rules.push(route_rule);
+        // Create a route for each HTTP method defined in the OpenAPI spec
+        for (method, has_operation) in operations {
+            if has_operation {
+                // Include HTTP method in route name for uniqueness
+                let route_name = route_name_for_path_method(&options.name, &effective_path, method);
+
+                // Create :method header matcher for HTTP method matching
+                let headers = Some(vec![HeaderMatchConfig {
+                    name: ":method".to_string(),
+                    value: Some(method.to_string()),
+                    regex: None,
+                    present: None,
+                }]);
+
+                let route_rule = RouteRule {
+                    name: Some(route_name),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Template(effective_path.clone()),
+                        headers,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: cluster_info.request.name.clone(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                    },
+                    typed_per_filter_config: Default::default(),
+                };
+
+                route_rules.push(route_rule);
+            }
+        }
     }
 
     if route_rules.is_empty() {
@@ -351,10 +378,11 @@ fn combine_base_path(server: &Server, template: &str) -> String {
     }
 }
 
-fn route_name_for_path(prefix: &str, path: &str) -> String {
+/// Generate a route name including the HTTP method for uniqueness
+fn route_name_for_path_method(prefix: &str, path: &str, method: &str) -> String {
     let slug = path.trim_matches('/').replace('/', "_").replace(['{', '}'], "");
     let slug = if slug.is_empty() { "root".to_string() } else { slug };
-    sanitize_name(&format!("{}-{}", prefix, slug))
+    sanitize_name(&format!("{}-{}-{}", prefix, slug, method))
 }
 
 fn sanitize_name(raw: &str) -> String {
@@ -593,5 +621,227 @@ mod tests {
         assert!(plan.summary.shared_listener);
         assert_eq!(plan.summary.listener, defaults::DEFAULT_GATEWAY_LISTENER);
         assert_eq!(plan.summary.route_config, defaults::DEFAULT_GATEWAY_ROUTES);
+    }
+
+    #[test]
+    fn extracts_multiple_http_methods_per_path() {
+        // OpenAPI spec with multiple methods on same path
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {"responses": {"200": {"description": "List users"}}},
+                        "post": {"responses": {"201": {"description": "Create user"}}}
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let options = GatewayOptions {
+            name: "example".to_string(),
+            bind_address: "0.0.0.0".to_string(),
+            port: 10000,
+            protocol: "HTTP".to_string(),
+            shared_listener: false,
+            listener_name: "example-listener".to_string(),
+        };
+
+        let plan = build_gateway_plan(doc, options).expect("plan");
+
+        // Should create 2 routes: one for GET, one for POST
+        let route_request = plan.route_request.as_ref().expect("route request");
+        let route_config: XdsRouteConfig =
+            serde_json::from_value(route_request.configuration.clone())
+                .expect("parse route config");
+
+        assert_eq!(route_config.virtual_hosts.len(), 1);
+        let virtual_host = &route_config.virtual_hosts[0];
+
+        // 2 routes for 2 HTTP methods
+        assert_eq!(virtual_host.routes.len(), 2, "Expected 2 routes (GET, POST)");
+
+        // Verify route names include HTTP method
+        let route_names: Vec<&str> =
+            virtual_host.routes.iter().filter_map(|r| r.name.as_deref()).collect();
+        assert!(
+            route_names.iter().any(|name| name.contains("GET")),
+            "Expected a route with GET in name"
+        );
+        assert!(
+            route_names.iter().any(|name| name.contains("POST")),
+            "Expected a route with POST in name"
+        );
+
+        // Verify each route has :method header matcher
+        for route in &virtual_host.routes {
+            let headers = route.r#match.headers.as_ref().expect("route should have headers");
+            assert_eq!(headers.len(), 1, "Expected exactly 1 header matcher");
+            assert_eq!(headers[0].name, ":method", "Expected :method header");
+            assert!(headers[0].value.is_some(), "Expected header value for method");
+        }
+    }
+
+    #[test]
+    fn extracts_all_http_method_types() {
+        // OpenAPI spec with all supported HTTP methods
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/resource": {
+                        "get": {"responses": {"200": {"description": "Get"}}},
+                        "post": {"responses": {"201": {"description": "Post"}}},
+                        "put": {"responses": {"200": {"description": "Put"}}},
+                        "delete": {"responses": {"204": {"description": "Delete"}}},
+                        "patch": {"responses": {"200": {"description": "Patch"}}},
+                        "head": {"responses": {"200": {"description": "Head"}}},
+                        "options": {"responses": {"200": {"description": "Options"}}}
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let options = GatewayOptions {
+            name: "example".to_string(),
+            bind_address: "0.0.0.0".to_string(),
+            port: 10000,
+            protocol: "HTTP".to_string(),
+            shared_listener: false,
+            listener_name: "example-listener".to_string(),
+        };
+
+        let plan = build_gateway_plan(doc, options).expect("plan");
+
+        let route_request = plan.route_request.as_ref().expect("route request");
+        let route_config: XdsRouteConfig =
+            serde_json::from_value(route_request.configuration.clone())
+                .expect("parse route config");
+
+        let virtual_host = &route_config.virtual_hosts[0];
+
+        // 7 routes for 7 HTTP methods (TRACE not in spec)
+        assert_eq!(virtual_host.routes.len(), 7, "Expected 7 routes for all methods");
+
+        // Collect all methods from header matchers
+        let methods: Vec<String> = virtual_host
+            .routes
+            .iter()
+            .filter_map(|r| {
+                r.r#match
+                    .headers
+                    .as_ref()
+                    .and_then(|h| h.first())
+                    .and_then(|header| header.value.clone())
+            })
+            .collect();
+
+        assert!(methods.contains(&"GET".to_string()), "Missing GET method");
+        assert!(methods.contains(&"POST".to_string()), "Missing POST method");
+        assert!(methods.contains(&"PUT".to_string()), "Missing PUT method");
+        assert!(methods.contains(&"DELETE".to_string()), "Missing DELETE method");
+        assert!(methods.contains(&"PATCH".to_string()), "Missing PATCH method");
+        assert!(methods.contains(&"HEAD".to_string()), "Missing HEAD method");
+        assert!(methods.contains(&"OPTIONS".to_string()), "Missing OPTIONS method");
+    }
+
+    #[test]
+    fn handles_multiple_paths_with_multiple_methods() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/users": {
+                        "get": {"responses": {"200": {"description": "List"}}},
+                        "post": {"responses": {"201": {"description": "Create"}}}
+                    },
+                    "/users/{id}": {
+                        "get": {"responses": {"200": {"description": "Get one"}}},
+                        "put": {"responses": {"200": {"description": "Update"}}},
+                        "delete": {"responses": {"204": {"description": "Delete"}}}
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let options = GatewayOptions {
+            name: "example".to_string(),
+            bind_address: "0.0.0.0".to_string(),
+            port: 10000,
+            protocol: "HTTP".to_string(),
+            shared_listener: false,
+            listener_name: "example-listener".to_string(),
+        };
+
+        let plan = build_gateway_plan(doc, options).expect("plan");
+
+        let route_request = plan.route_request.as_ref().expect("route request");
+        let route_config: XdsRouteConfig =
+            serde_json::from_value(route_request.configuration.clone())
+                .expect("parse route config");
+
+        let virtual_host = &route_config.virtual_hosts[0];
+
+        // 5 total routes: 2 for /users (GET, POST) + 3 for /users/{id} (GET, PUT, DELETE)
+        assert_eq!(virtual_host.routes.len(), 5, "Expected 5 routes total");
+
+        // Verify all routes have unique names
+        let route_names: Vec<&str> =
+            virtual_host.routes.iter().filter_map(|r| r.name.as_deref()).collect();
+        let unique_names: std::collections::HashSet<&str> = route_names.iter().copied().collect();
+        assert_eq!(route_names.len(), unique_names.len(), "Route names should be unique");
+    }
+
+    #[test]
+    fn method_header_matcher_uses_correct_format() {
+        let doc: OpenAPI = serde_json::from_str(
+            r#"{
+                "openapi": "3.0.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/test": {
+                        "get": {"responses": {"200": {"description": "OK"}}}
+                    }
+                }
+            }"#,
+        )
+        .expect("parse openapi");
+
+        let options = GatewayOptions {
+            name: "example".to_string(),
+            bind_address: "0.0.0.0".to_string(),
+            port: 10000,
+            protocol: "HTTP".to_string(),
+            shared_listener: false,
+            listener_name: "example-listener".to_string(),
+        };
+
+        let plan = build_gateway_plan(doc, options).expect("plan");
+
+        let route_request = plan.route_request.as_ref().expect("route request");
+        let route_config: XdsRouteConfig =
+            serde_json::from_value(route_request.configuration.clone())
+                .expect("parse route config");
+
+        let route = &route_config.virtual_hosts[0].routes[0];
+        let headers = route.r#match.headers.as_ref().expect("headers");
+
+        // Verify the header matcher format
+        assert_eq!(headers.len(), 1);
+        let header = &headers[0];
+        assert_eq!(header.name, ":method", "Should use :method pseudo-header");
+        assert_eq!(header.value, Some("GET".to_string()), "Should have exact method value");
+        assert!(header.regex.is_none(), "Should not use regex");
+        assert!(header.present.is_none(), "Should not use present match");
     }
 }
