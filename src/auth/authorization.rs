@@ -519,7 +519,9 @@ mod tests {
         assert!(check_resource_access(&ctx, "openapi-import", "delete", Some("random-team")));
 
         // require_resource_access also works
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok());
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
     }
 
     /// Test that admin with admin:all AND team memberships can still access any team
@@ -546,8 +548,12 @@ mod tests {
         assert!(check_resource_access(&ctx, "routes", "write", Some("random-team")));
 
         // require_resource_access also works for any team
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok());
-        assert!(require_resource_access(&ctx, "openapi-import", "read", Some("platform-admin")).is_ok());
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "read", Some("platform-admin")).is_ok()
+        );
     }
 
     /// Test that extract_team_scopes correctly extracts teams but ignores admin:all
@@ -584,7 +590,9 @@ mod tests {
         );
 
         assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok());
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
     }
 
     /// Test that user with team-scoped permission CANNOT access other teams

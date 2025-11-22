@@ -260,6 +260,7 @@ async fn listener_repository_filters_by_team() {
             "filter_chains": []
         }),
         team: Some("team-a".to_string()),
+        import_id: None,
     };
 
     let team_b_listener = CreateListenerRequest {
@@ -274,6 +275,7 @@ async fn listener_repository_filters_by_team() {
             "filter_chains": []
         }),
         team: Some("team-b".to_string()),
+        import_id: None,
     };
 
     let global_listener = CreateListenerRequest {
@@ -288,6 +290,7 @@ async fn listener_repository_filters_by_team() {
             "filter_chains": []
         }),
         team: None,
+        import_id: None,
     };
 
     repo.create(team_a_listener).await.unwrap();

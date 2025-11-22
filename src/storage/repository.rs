@@ -299,6 +299,7 @@ mod tests {
                 "port": 8080
             }),
             team: None,
+            import_id: None,
         };
 
         let created = repo.create(create_request).await.unwrap();

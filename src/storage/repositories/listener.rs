@@ -24,6 +24,7 @@ struct ListenerRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -58,6 +59,7 @@ pub struct ListenerData {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -74,6 +76,7 @@ impl From<ListenerRow> for ListenerData {
             version: row.version,
             source: row.source,
             team: row.team,
+            import_id: row.import_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -105,6 +108,7 @@ pub struct CreateListenerRequest {
     pub protocol: Option<String>,
     pub configuration: serde_json::Value,
     pub team: Option<String>,
+    pub import_id: Option<String>,
 }
 
 /// Request to update an existing listener.
@@ -191,7 +195,7 @@ impl ListenerRepository {
         let protocol = request.protocol.unwrap_or_else(|| "HTTP".to_string());
 
         let result = sqlx::query(
-            "INSERT INTO listeners (id, name, address, port, protocol, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9)"
+            "INSERT INTO listeners (id, name, address, port, protocol, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10)"
         )
         .bind(&id)
         .bind(&request.name)
@@ -200,6 +204,7 @@ impl ListenerRepository {
         .bind(&protocol)
         .bind(&configuration_json)
         .bind(&request.team)
+        .bind(&request.import_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -237,7 +242,7 @@ impl ListenerRepository {
     /// - [`FlowplaneError::Database`] if query execution fails
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at FROM listeners WHERE id = $1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -260,7 +265,7 @@ impl ListenerRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -287,7 +292,7 @@ impl ListenerRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -374,7 +379,7 @@ impl ListenerRepository {
         let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, created_at, updated_at \
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at \
              FROM listeners \
              {} \
              ORDER BY created_at DESC \
@@ -408,7 +413,7 @@ impl ListenerRepository {
     /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
     pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
         sqlx::query_scalar::<Sqlite, i64>(
-            "SELECT COUNT(*) FROM listeners WHERE json_extract(configuration, '$.import_id') = $1",
+            "SELECT COUNT(*) FROM listeners WHERE import_id = $1",
         )
         .bind(import_id)
         .fetch_one(&self.pool)

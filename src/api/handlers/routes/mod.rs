@@ -159,11 +159,8 @@ pub async fn list_routes_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = if has_admin_bypass(&context) {
-        Vec::new()
-    } else {
-        extract_team_scopes(&context)
-    };
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let rows = repository
@@ -199,11 +196,8 @@ pub async fn get_route_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = if has_admin_bypass(&context) {
-        Vec::new()
-    } else {
-        extract_team_scopes(&context)
-    };
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;

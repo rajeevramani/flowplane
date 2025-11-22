@@ -1201,6 +1201,7 @@ mod tests {
             version: 1,
             source: "native_api".to_string(),
             team: None,
+            import_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

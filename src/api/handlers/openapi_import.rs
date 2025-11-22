@@ -350,8 +350,8 @@ pub async fn list_imports_handler(
     }
 
     // Non-admin users must specify a team
-    let team = team
-        .ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
+    let team =
+        team.ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
 
     // Authorization: require openapi-import:read scope for the target team
     require_resource_access(&context, "openapi-import", "read", Some(team))?;
@@ -635,10 +635,7 @@ async fn materialize_listener(
 
     // Add import metadata
     listener_request.team = Some(team.to_string());
-    listener_request
-        .configuration
-        .as_object_mut()
-        .and_then(|obj| obj.insert("import_id".to_string(), serde_json::json!(import_id)));
+    listener_request.import_id = Some(import_id.to_string());
 
     listener_repo.create(listener_request).await.map_err(ApiError::from)?;
 

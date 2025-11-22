@@ -182,6 +182,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             protocol: Some("HTTP".to_string()),
             configuration: listener_configuration,
             team: None, // Default gateway listener is not team-scoped
+            import_id: None,
         };
 
         listener_repo.create(request).await?;

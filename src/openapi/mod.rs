@@ -257,6 +257,7 @@ pub fn build_gateway_plan(
             protocol: Some(options.protocol),
             configuration: listener_config_value,
             team: None, // OpenAPI Gateway listeners are not team-scoped by default
+            import_id: None,
         };
 
         Ok(GatewayPlan {

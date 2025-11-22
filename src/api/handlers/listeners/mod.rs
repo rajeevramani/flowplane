@@ -113,6 +113,7 @@ pub async fn create_listener_handler(
         protocol: payload.protocol.clone(),
         configuration,
         team,
+        import_id: None,
     };
 
     let created = repository.create(request).await.map_err(ApiError::from)?;
@@ -149,11 +150,8 @@ pub async fn list_listeners_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = if has_admin_bypass(&context) {
-        Vec::new()
-    } else {
-        extract_team_scopes(&context)
-    };
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let rows = repository
@@ -189,11 +187,8 @@ pub async fn get_listener_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = if has_admin_bypass(&context) {
-        Vec::new()
-    } else {
-        extract_team_scopes(&context)
-    };
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -405,6 +400,7 @@ mod tests {
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
