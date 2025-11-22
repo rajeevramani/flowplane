@@ -187,6 +187,10 @@
 					<dd class="mt-1 text-2xl font-bold text-green-600">{importDetails.routeCount}</dd>
 				</div>
 				<div>
+					<dt class="text-sm font-medium text-gray-500">Listeners</dt>
+					<dd class="mt-1 text-2xl font-bold text-blue-600">{importDetails.listenerCount}</dd>
+				</div>
+				<div>
 					<dt class="text-sm font-medium text-gray-500">Clusters</dt>
 					<dd class="mt-1 text-2xl font-bold text-purple-600">{importDetails.clusterCount}</dd>
 				</div>
@@ -212,7 +216,7 @@
 			</div>
 			<div class="ml-3">
 				<p class="text-sm text-blue-700">
-					This import created {importDetails.routeCount} route{importDetails.routeCount !== 1 ? 's' : ''} and {importDetails.clusterCount} cluster{importDetails.clusterCount !== 1 ? 's' : ''}.
+					This import created {importDetails.routeCount} route{importDetails.routeCount !== 1 ? 's' : ''}, {importDetails.clusterCount} cluster{importDetails.clusterCount !== 1 ? 's' : ''}, and {importDetails.listenerCount} listener{importDetails.listenerCount !== 1 ? 's' : ''}.
 					You can view these resources in the <a href="/resources" class="font-medium underline">Resources</a> page.
 				</p>
 			</div>

@@ -150,6 +150,20 @@ impl ImportMetadataRepository {
         Ok(rows.into_iter().map(ImportMetadataData::from).collect())
     }
 
+    /// List all import metadata across all teams (for admin users)
+    #[instrument(skip(self), name = "db_list_all_import_metadata")]
+    pub async fn list_all(&self) -> Result<Vec<ImportMetadataData>> {
+        let rows = sqlx::query_as::<Sqlite, ImportMetadataRow>(
+            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at
+             FROM import_metadata ORDER BY imported_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::database(e, "Failed to list all import metadata".to_string()))?;
+
+        Ok(rows.into_iter().map(ImportMetadataData::from).collect())
+    }
+
     /// Delete import metadata by ID (cascades to resources)
     #[instrument(skip(self), name = "db_delete_import_metadata")]
     pub async fn delete(&self, id: &str) -> Result<()> {

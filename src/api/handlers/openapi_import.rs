@@ -25,7 +25,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::{
-        authorization::{extract_team_scopes, require_resource_access},
+        authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
         models::AuthContext,
     },
     openapi::{build_gateway_plan, GatewayOptions},
@@ -127,6 +127,7 @@ pub struct ImportDetailsResponse {
     pub updated_at: String,
     pub route_count: usize,
     pub cluster_count: usize,
+    pub listener_count: usize,
 }
 
 #[derive(Debug, ToSchema)]
@@ -161,16 +162,18 @@ pub async fn import_openapi_handler(
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
-    // Authorization: require openapi-import:write scope
-    require_resource_access(&context, "openapi-import", "write", None)?;
+    // Authorization: require openapi-import:write scope for the target team
+    require_resource_access(&context, "openapi-import", "write", Some(&params.team))?;
 
-    // Team-scoped users validation
-    let team_scopes = extract_team_scopes(&context);
-    if !team_scopes.is_empty() && !team_scopes.contains(&params.team) {
-        return Err(ApiError::Forbidden(format!(
-            "Cannot import for team '{}' - not in your team scopes",
-            params.team
-        )));
+    // Team-scoped users validation (skip for admins)
+    if !has_admin_bypass(&context) {
+        let team_scopes = extract_team_scopes(&context);
+        if !team_scopes.is_empty() && !team_scopes.contains(&params.team) {
+            return Err(ApiError::Forbidden(format!(
+                "Cannot import for team '{}' - not in your team scopes",
+                params.team
+            )));
+        }
     }
 
     // Read request body
@@ -321,13 +324,37 @@ pub async fn list_imports_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<serde_json::Value>,
 ) -> std::result::Result<Json<ListImportsResponse>, ApiError> {
-    // Authorization: require openapi-import:read scope
-    require_resource_access(&context, "openapi-import", "read", None)?;
+    let team = query.get("team").and_then(|v| v.as_str());
 
-    let team = query
-        .get("team")
-        .and_then(|v| v.as_str())
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Cluster repository not configured".to_string()))?;
+    let db_pool = cluster_repo.pool().clone();
+    let import_repo = ImportMetadataRepository::new(db_pool);
+
+    // Admin users can list all imports when no team is specified
+    if has_admin_bypass(&context) {
+        let imports = if let Some(team) = team {
+            // Admin requesting specific team's imports
+            import_repo.list_by_team(team).await.map_err(ApiError::from)?
+        } else {
+            // Admin requesting all imports across all teams
+            import_repo.list_all().await.map_err(ApiError::from)?
+        };
+
+        return Ok(Json(ListImportsResponse {
+            imports: imports.into_iter().map(ImportSummary::from).collect(),
+        }));
+    }
+
+    // Non-admin users must specify a team
+    let team = team
         .ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
+
+    // Authorization: require openapi-import:read scope for the target team
+    require_resource_access(&context, "openapi-import", "read", Some(team))?;
 
     // Team-scoped users validation
     let team_scopes = extract_team_scopes(&context);
@@ -338,14 +365,6 @@ pub async fn list_imports_handler(
         )));
     }
 
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::Internal("Cluster repository not configured".to_string()))?;
-    let db_pool = cluster_repo.pool().clone();
-
-    let import_repo = ImportMetadataRepository::new(db_pool);
     let imports = import_repo.list_by_team(team).await.map_err(ApiError::from)?;
 
     Ok(Json(ListImportsResponse {
@@ -372,9 +391,6 @@ pub async fn get_import_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> std::result::Result<Json<ImportDetailsResponse>, ApiError> {
-    // Authorization: require openapi-import:read scope
-    require_resource_access(&context, "openapi-import", "read", None)?;
-
     let cluster_repo = state
         .xds_state
         .cluster_repository
@@ -389,10 +405,15 @@ pub async fn get_import_handler(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Import with ID '{}' not found", id)))?;
 
-    // Team-scoped users validation
-    let team_scopes = extract_team_scopes(&context);
-    if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
-        return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
+    // Authorization: require openapi-import:read scope for the import's team
+    require_resource_access(&context, "openapi-import", "read", Some(&import_data.team))?;
+
+    // Team-scoped users validation (skip for admins)
+    if !has_admin_bypass(&context) {
+        let team_scopes = extract_team_scopes(&context);
+        if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
+            return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
+        }
     }
 
     // Count routes and clusters
@@ -401,9 +422,15 @@ pub async fn get_import_handler(
         .route_repository
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+    let listener_repo = state
+        .xds_state
+        .listener_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
     let cluster_ref_repo = ClusterReferencesRepository::new(db_pool);
 
     let routes = route_repo.list_by_import(&id).await.map_err(ApiError::from)?;
+    let listener_count = listener_repo.count_by_import(&id).await.map_err(ApiError::from)?;
     let cluster_refs = cluster_ref_repo.get_by_import(&id).await.map_err(ApiError::from)?;
 
     Ok(Json(ImportDetailsResponse {
@@ -416,6 +443,7 @@ pub async fn get_import_handler(
         updated_at: import_data.updated_at.to_rfc3339(),
         route_count: routes.len(),
         cluster_count: cluster_refs.len(),
+        listener_count: listener_count as usize,
     }))
 }
 
@@ -438,9 +466,6 @@ pub async fn delete_import_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> std::result::Result<StatusCode, ApiError> {
-    // Authorization: require openapi-import:delete scope
-    require_resource_access(&context, "openapi-import", "delete", None)?;
-
     let cluster_repo = state
         .xds_state
         .cluster_repository
@@ -457,10 +482,15 @@ pub async fn delete_import_handler(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Import with ID '{}' not found", id)))?;
 
-    // Team-scoped users validation
-    let team_scopes = extract_team_scopes(&context);
-    if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
-        return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
+    // Authorization: require openapi-import:delete scope for the import's team
+    require_resource_access(&context, "openapi-import", "delete", Some(&import_data.team))?;
+
+    // Team-scoped users validation (skip for admins)
+    if !has_admin_bypass(&context) {
+        let team_scopes = extract_team_scopes(&context);
+        if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
+            return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
+        }
     }
 
     // Delete import cascade logic

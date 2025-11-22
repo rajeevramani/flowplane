@@ -20,7 +20,7 @@ use axum::{
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     services::ClusterService,
@@ -135,7 +135,11 @@ pub async fn list_clusters_handler(
     require_resource_access(&context, "clusters", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = if has_admin_bypass(&context) {
+        Vec::new()
+    } else {
+        extract_team_scopes(&context)
+    };
 
     // Get repository and apply team filtering
     let repository = state
@@ -178,7 +182,11 @@ pub async fn get_cluster_handler(
     require_resource_access(&context, "clusters", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = if has_admin_bypass(&context) {
+        Vec::new()
+    } else {
+        extract_team_scopes(&context)
+    };
 
     let service = ClusterService::new(state.xds_state.clone());
     let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;

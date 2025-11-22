@@ -1,5 +1,6 @@
 // API client with CSRF token handling
 import { goto } from '$app/navigation';
+import { env } from '$env/dynamic/public';
 import type {
 	LoginRequest,
 	LoginResponse,
@@ -39,7 +40,7 @@ import type {
 	ListAuditLogsResponse
 } from './types';
 
-const API_BASE = 'http://localhost:8080';
+const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
 
 class ApiClient {
 	private csrfToken: string | null = null;
@@ -289,6 +290,13 @@ class ApiClient {
 	// Import methods (replacing API Definition methods)
 	async listImports(team: string): Promise<ImportSummary[]> {
 		const path = `/api/v1/openapi/imports?team=${encodeURIComponent(team)}`;
+		const response = await this.get<{ imports: ImportSummary[] }>(path);
+		return response.imports;
+	}
+
+	// List all imports across all teams (admin only)
+	async listAllImports(): Promise<ImportSummary[]> {
+		const path = '/api/v1/openapi/imports';
 		const response = await this.get<{ imports: ImportSummary[] }>(path);
 		return response.imports;
 	}

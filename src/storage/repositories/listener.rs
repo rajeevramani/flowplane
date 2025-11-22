@@ -405,6 +405,23 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
+    /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
+    pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
+        sqlx::query_scalar::<Sqlite, i64>(
+            "SELECT COUNT(*) FROM listeners WHERE json_extract(configuration, '$.import_id') = $1",
+        )
+        .bind(import_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, import_id = %import_id, "Failed to count listeners by import");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count listeners for import '{}'", import_id),
+            }
+        })
+    }
+
     pub async fn update(
         &self,
         id: &ListenerId,

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import ResourceSection from '$lib/components/ResourceSection.svelte';
 	import RoutesTable from '$lib/components/RoutesTable.svelte';
 	import type {
@@ -10,11 +10,15 @@
 		ClusterResponse,
 		SessionInfoResponse
 	} from '$lib/api/types';
+	import { selectedTeam } from '$lib/stores/team';
+	import type { Unsubscriber } from 'svelte/store';
 
 	let isLoading = $state(false);
 	let error = $state<string | null>(null);
 	let searchQuery = $state('');
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let currentTeam = $state<string>('');
+	let unsubscribe: Unsubscriber;
 
 	// Data for each resource type
 	let imports = $state<ImportSummary[]>([]);
@@ -25,23 +29,41 @@
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
-			await loadResources();
+
+			// Subscribe to team changes and reload resources
+			unsubscribe = selectedTeam.subscribe(async (team) => {
+				if (team && team !== currentTeam) {
+					currentTeam = team;
+					await loadResources(team);
+				}
+			});
 		} catch (err: any) {
 			error = err.message || 'Failed to load session info';
 		}
 	});
 
-	async function loadResources() {
+	onDestroy(() => {
+		if (unsubscribe) {
+			unsubscribe();
+		}
+	});
+
+	async function loadResources(team: string) {
 		isLoading = true;
 		error = null;
 
 		try {
-			// Get first team to list imports (or use empty array if no teams)
-			const team = sessionInfo?.teams[0] || '';
+			// Admin users see all resources from all teams
+			// Non-admin users see resources filtered by the selected team
+			const isAdmin = sessionInfo?.isAdmin ?? false;
 
 			// Load all resources in parallel
 			const [importsData, listenersData, routesData, clustersData] = await Promise.all([
-				team ? apiClient.listImports(team) : Promise.resolve([]),
+				isAdmin
+					? apiClient.listAllImports()
+					: team
+						? apiClient.listImports(team)
+						: Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()

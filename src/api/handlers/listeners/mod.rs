@@ -22,7 +22,7 @@ use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_listener,
@@ -149,7 +149,11 @@ pub async fn list_listeners_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = if has_admin_bypass(&context) {
+        Vec::new()
+    } else {
+        extract_team_scopes(&context)
+    };
 
     let repository = require_listener_repository(&state)?;
     let rows = repository
@@ -185,7 +189,11 @@ pub async fn get_listener_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = if has_admin_bypass(&context) {
+        Vec::new()
+    } else {
+        extract_team_scopes(&context)
+    };
 
     let repository = require_listener_repository(&state)?;
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;

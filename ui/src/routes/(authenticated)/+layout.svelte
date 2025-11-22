@@ -4,13 +4,19 @@
 	import { onMount } from 'svelte';
 	import Navigation from '$lib/components/Navigation.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
+	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
 
 	let isLoading = $state(true);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
-	let selectedTeam = $state<string>('');
+	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
 
 	let { children } = $props();
+
+	// Subscribe to store changes
+	selectedTeam.subscribe((value) => {
+		currentTeam = value;
+	});
 
 	onMount(async () => {
 		try {
@@ -20,14 +26,8 @@
 			const teamsResponse = await apiClient.listTeams();
 			availableTeams = teamsResponse.teams;
 
-			// Set selected team from session storage or first team
-			const storedTeam = sessionStorage.getItem('selected_team');
-			if (storedTeam && availableTeams.includes(storedTeam)) {
-				selectedTeam = storedTeam;
-			} else if (availableTeams.length > 0) {
-				selectedTeam = availableTeams[0];
-				sessionStorage.setItem('selected_team', selectedTeam);
-			}
+			// Initialize selected team from store/sessionStorage or first team
+			initializeSelectedTeam(availableTeams);
 
 			isLoading = false;
 		} catch (error) {
@@ -37,8 +37,7 @@
 	});
 
 	function handleTeamChange(team: string) {
-		selectedTeam = team;
-		sessionStorage.setItem('selected_team', selectedTeam);
+		setSelectedTeam(team);
 	}
 </script>
 
@@ -50,7 +49,7 @@
 	<div class="min-h-screen bg-gray-50">
 		<Navigation
 			{sessionInfo}
-			{selectedTeam}
+			selectedTeam={currentTeam}
 			{availableTeams}
 			onTeamChange={handleTeamChange}
 		/>

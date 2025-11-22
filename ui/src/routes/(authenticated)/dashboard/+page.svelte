@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import StatCard from '$lib/components/StatCard.svelte';
+	import { selectedTeam } from '$lib/stores/team';
+	import type { Unsubscriber } from 'svelte/store';
 
 	let isFirstAdmin = $state(false);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let currentTeam = $state<string>('');
 	let resourceCounts = $state({
 		imports: 0,
 		listeners: 0,
@@ -13,25 +16,21 @@
 		clusters: 0
 	});
 	let isLoadingResources = $state(true);
+	let unsubscribe: Unsubscriber;
 
-	onMount(async () => {
-		sessionInfo = await apiClient.getSessionInfo();
-
-		// Check if this is the first admin (check if sessionStorage has bootstrap flag)
-		const bootstrapCompleted = sessionStorage.getItem('bootstrap_completed');
-		if (bootstrapCompleted === 'true') {
-			isFirstAdmin = true;
-			// Clear the flag so message only shows once
-			sessionStorage.removeItem('bootstrap_completed');
-		}
-
-		// Load resource counts
+	async function loadResourceCounts(team: string) {
+		isLoadingResources = true;
 		try {
-			// Get first team to list imports (or use empty array if no teams)
-			const team = sessionInfo?.teams[0] || '';
+			// Admin users see all resources from all teams
+			// Non-admin users see resources filtered by the selected team
+			const isAdmin = sessionInfo?.isAdmin ?? false;
 
 			const [imports, listeners, routes, clusters] = await Promise.all([
-				team ? apiClient.listImports(team) : Promise.resolve([]),
+				isAdmin
+					? apiClient.listAllImports()
+					: team
+						? apiClient.listImports(team)
+						: Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRoutes(),
 				apiClient.listClusters()
@@ -47,6 +46,32 @@
 			console.error('Failed to load resource counts:', error);
 		} finally {
 			isLoadingResources = false;
+		}
+	}
+
+	onMount(async () => {
+		sessionInfo = await apiClient.getSessionInfo();
+
+		// Check if this is the first admin (check if sessionStorage has bootstrap flag)
+		const bootstrapCompleted = sessionStorage.getItem('bootstrap_completed');
+		if (bootstrapCompleted === 'true') {
+			isFirstAdmin = true;
+			// Clear the flag so message only shows once
+			sessionStorage.removeItem('bootstrap_completed');
+		}
+
+		// Subscribe to team changes and reload resources
+		unsubscribe = selectedTeam.subscribe(async (team) => {
+			if (team && team !== currentTeam) {
+				currentTeam = team;
+				await loadResourceCounts(team);
+			}
+		});
+	});
+
+	onDestroy(() => {
+		if (unsubscribe) {
+			unsubscribe();
 		}
 	});
 </script>

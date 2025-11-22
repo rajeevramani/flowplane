@@ -53,10 +53,11 @@
 			]
 		},
 		{
-			category: 'API Definitions',
+			category: 'OpenAPI Import',
 			scopes: [
-				{ value: 'api-definitions:read', label: 'Read API definitions' },
-				{ value: 'api-definitions:write', label: 'Create/update API definitions' }
+				{ value: 'openapi-import:read', label: 'View imports' },
+				{ value: 'openapi-import:write', label: 'Create imports' },
+				{ value: 'openapi-import:delete', label: 'Delete imports' }
 			]
 		}
 	];

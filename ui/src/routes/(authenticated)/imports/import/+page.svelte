@@ -35,9 +35,16 @@
 		const session = await apiClient.getSessionInfo();
 		isAdmin = session.isAdmin || false;
 
-		// Load teams from API (all teams for admin, user's teams for non-admin)
-		const teamsResponse = await apiClient.listTeams();
-		userTeams = teamsResponse.teams || [];
+		// Load teams from API
+		// Use admin endpoint for full team list (includes teams without memberships)
+		// Use regular endpoint for non-admins (only teams they're members of)
+		if (isAdmin) {
+			const teamsResponse = await apiClient.adminListTeams();
+			userTeams = teamsResponse.teams.map((t) => t.name);
+		} else {
+			const teamsResponse = await apiClient.listTeams();
+			userTeams = teamsResponse.teams || [];
+		}
 
 		// Auto-populate team for non-admin single-team users
 		if (!isAdmin && userTeams.length === 1) {

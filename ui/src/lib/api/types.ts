@@ -187,6 +187,7 @@ export interface ImportDetailsResponse {
 	updatedAt: string;
 	routeCount: number;
 	clusterCount: number;
+	listenerCount: number;
 }
 
 // Listener types
