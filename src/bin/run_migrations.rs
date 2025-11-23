@@ -2,7 +2,6 @@
 //! This bypasses SQLx compile-time issues while enabling real database schema
 
 use flowplane::{config::DatabaseConfig, storage::create_pool};
-use std::fs;
 use tracing::info;
 
 #[tokio::main]
@@ -11,9 +10,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🗄️ Running database migrations manually");
 
+    // Clean up previous test database to ensure fresh state
+    let db_path = "./test_flowplane.db";
+    if std::path::Path::new(db_path).exists() {
+        std::fs::remove_file(db_path)?;
+        info!("🗑️ Removed existing test database: {}", db_path);
+    }
+
     // Create database pool
     let db_config = DatabaseConfig {
-        url: "sqlite://./test_flowplane.db".to_string(), // Use file-based SQLite for persistence
+        url: format!("sqlite://{}", db_path), // Use file-based SQLite for persistence
         max_connections: 5,
         auto_migrate: false, // We'll do it manually
         ..Default::default()
@@ -22,30 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = create_pool(&db_config).await?;
     info!("✅ Connected to database: {}", db_config.url);
 
-    // Read and execute migration files in order
-    let migration_files = [
-        "migrations/20241201000001_create_clusters_table.sql",
-        "migrations/20241201000002_create_routes_table.sql",
-        "migrations/20241201000003_create_listeners_table.sql",
-        "migrations/20241201000004_create_configuration_versions_table.sql",
-        "migrations/20241201000005_create_audit_log_table.sql",
-    ];
-
-    for migration_file in &migration_files {
-        info!("📜 Executing migration: {}", migration_file);
-
-        let sql_content = fs::read_to_string(migration_file)
-            .map_err(|e| format!("Failed to read {}: {}", migration_file, e))?;
-
-        // Execute the SQL
-        sqlx::raw_sql(&sql_content)
-            .execute(&pool)
-            .await
-            .map_err(|e| format!("Failed to execute {}: {}", migration_file, e))?;
-
-        info!("✅ Applied: {}", migration_file);
-    }
-
+    // Run migrations using the shared dynamic logic
+    info!("🚀 Starting migration process...");
+    flowplane::storage::run_migrations(&pool).await?;
+    
     // Verify tables were created
     info!("🔍 Verifying database schema...");
 
