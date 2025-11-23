@@ -321,3 +321,182 @@ export interface ListAuditLogsResponse {
 	limit: number;
 	offset: number;
 }
+
+// === Create API Types ===
+
+// Cluster creation types
+export interface EndpointRequest {
+	host: string;
+	port: number;
+}
+
+export interface HealthCheckRequest {
+	type?: string;
+	path?: string;
+	host?: string;
+	method?: string;
+	intervalSeconds?: number;
+	timeoutSeconds?: number;
+	healthyThreshold?: number;
+	unhealthyThreshold?: number;
+	expectedStatuses?: number[];
+}
+
+export interface CircuitBreakerThresholdsRequest {
+	maxConnections?: number;
+	maxPendingRequests?: number;
+	maxRequests?: number;
+	maxRetries?: number;
+}
+
+export interface CircuitBreakersRequest {
+	default?: CircuitBreakerThresholdsRequest;
+	high?: CircuitBreakerThresholdsRequest;
+}
+
+export interface OutlierDetectionRequest {
+	consecutive5xx?: number;
+	intervalSeconds?: number;
+	baseEjectionTimeSeconds?: number;
+	maxEjectionPercent?: number;
+}
+
+export interface CreateClusterBody {
+	team: string;
+	name: string;
+	serviceName?: string;
+	endpoints: EndpointRequest[];
+	connectTimeoutSeconds?: number;
+	useTls?: boolean;
+	tlsServerName?: string;
+	dnsLookupFamily?: 'AUTO' | 'V4_ONLY' | 'V6_ONLY' | 'V4_PREFERRED' | 'ALL';
+	lbPolicy?: 'ROUND_ROBIN' | 'LEAST_REQUEST' | 'RANDOM' | 'RING_HASH' | 'MAGLEV' | 'CLUSTER_PROVIDED';
+	healthChecks?: HealthCheckRequest[];
+	circuitBreakers?: CircuitBreakersRequest;
+	outlierDetection?: OutlierDetectionRequest;
+}
+
+// Route creation types
+export type PathMatchType = 'exact' | 'prefix' | 'regex' | 'template';
+
+export interface PathMatchDefinition {
+	type: PathMatchType;
+	value?: string;
+	template?: string;
+}
+
+export interface HeaderMatchDefinition {
+	name: string;
+	value?: string;
+	regex?: string;
+	present?: boolean;
+}
+
+export interface QueryParameterMatchDefinition {
+	name: string;
+	value?: string;
+	regex?: string;
+	present?: boolean;
+}
+
+export interface RouteMatchDefinition {
+	path: PathMatchDefinition;
+	headers?: HeaderMatchDefinition[];
+	queryParameters?: QueryParameterMatchDefinition[];
+}
+
+export interface WeightedClusterDefinition {
+	name: string;
+	weight: number;
+}
+
+export type RouteActionDefinition =
+	| {
+			type: 'forward';
+			cluster: string;
+			timeoutSeconds?: number;
+			prefixRewrite?: string;
+			templateRewrite?: string;
+	  }
+	| {
+			type: 'weighted';
+			clusters: WeightedClusterDefinition[];
+			totalWeight?: number;
+	  }
+	| {
+			type: 'redirect';
+			hostRedirect?: string;
+			pathRedirect?: string;
+			responseCode?: number;
+	  };
+
+export interface RouteRuleDefinition {
+	name?: string;
+	match: RouteMatchDefinition;
+	action: RouteActionDefinition;
+}
+
+export interface VirtualHostDefinition {
+	name: string;
+	domains: string[];
+	routes: RouteRuleDefinition[];
+}
+
+export interface CreateRouteBody {
+	team: string;
+	name: string;
+	virtualHosts: VirtualHostDefinition[];
+}
+
+// Listener creation types
+export interface ListenerTlsContextInput {
+	certChainFile?: string;
+	privateKeyFile?: string;
+	caCertFile?: string;
+	requireClientCertificate?: boolean;
+}
+
+export interface ListenerAccessLogInput {
+	path?: string;
+	format?: string;
+}
+
+export interface ListenerTracingInput {
+	provider: string;
+	config: Record<string, unknown>;
+}
+
+export type ListenerFilterTypeInput =
+	| {
+			type: 'httpConnectionManager';
+			routeConfigName?: string;
+			inlineRouteConfig?: unknown;
+			accessLog?: ListenerAccessLogInput;
+			tracing?: ListenerTracingInput;
+			httpFilters?: Array<{ name: string; typedConfig: unknown }>;
+	  }
+	| {
+			type: 'tcpProxy';
+			cluster: string;
+			accessLog?: ListenerAccessLogInput;
+	  };
+
+export interface ListenerFilterInput {
+	name: string;
+	filterType: ListenerFilterTypeInput;
+}
+
+export interface ListenerFilterChainInput {
+	name?: string;
+	filters: ListenerFilterInput[];
+	tlsContext?: ListenerTlsContextInput;
+}
+
+export interface CreateListenerBody {
+	team: string;
+	name: string;
+	address: string;
+	port: number;
+	protocol?: string;
+	filterChains: ListenerFilterChainInput[];
+}

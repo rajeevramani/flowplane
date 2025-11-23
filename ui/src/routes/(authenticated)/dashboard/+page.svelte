@@ -276,6 +276,33 @@
 
 			<!-- Developer actions -->
 			<a
+				href="/apis/create"
+				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-green-300 hover:shadow-md transition-all"
+			>
+				<div class="flex items-start justify-between">
+					<div>
+						<h4 class="text-lg font-semibold text-gray-900 mb-2">Create API</h4>
+						<p class="text-sm text-gray-600">
+							Manually configure an API with custom endpoints, routes, and listeners
+						</p>
+					</div>
+					<svg
+						class="h-6 w-6 text-green-500"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M12 4v16m8-8H4"
+						/>
+					</svg>
+				</div>
+			</a>
+
+			<a
 				href="/imports/import"
 				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
 			>

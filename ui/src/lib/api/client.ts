@@ -37,7 +37,10 @@ import type {
 	CreateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
-	ListAuditLogsResponse
+	ListAuditLogsResponse,
+	CreateClusterBody,
+	CreateRouteBody,
+	CreateListenerBody
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -364,6 +367,18 @@ class ApiClient {
 
 	async deleteCluster(name: string): Promise<void> {
 		return this.delete<void>(`/api/v1/clusters/${name}`);
+	}
+
+	async createCluster(body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.post<ClusterResponse>('/api/v1/clusters', body);
+	}
+
+	async createRoute(body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>('/api/v1/routes', body);
+	}
+
+	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
+		return this.post<ListenerResponse>('/api/v1/listeners', body);
 	}
 
 	// Bootstrap configuration methods
