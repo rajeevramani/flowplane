@@ -448,6 +448,14 @@ export interface CreateRouteBody {
 	virtualHosts: VirtualHostDefinition[];
 }
 
+// UpdateRouteBody - full payload required for route updates
+// Note: team and name must match existing route
+export interface UpdateRouteBody {
+	team: string;
+	name: string;
+	virtualHosts: VirtualHostDefinition[];
+}
+
 // Listener creation types
 export interface ListenerTlsContextInput {
 	certChainFile?: string;
@@ -466,25 +474,41 @@ export interface ListenerTracingInput {
 	config: Record<string, unknown>;
 }
 
-export type ListenerFilterTypeInput =
+// HttpFilterKind - discriminated union for filter types
+export type HttpFilterKind =
+	| { type: 'router' }
+	| { type: 'cors'; config: unknown }
+	| { type: 'local_rate_limit'; config: unknown }
+	| { type: 'jwt_authn'; config: unknown }
+	| { type: 'rate_limit'; config: unknown }
+	| { type: 'header_mutation'; config: unknown }
+	| { type: 'health_check'; config: unknown };
+
+// HttpFilterConfigEntry - matches Rust HttpFilterConfigEntry
+export interface HttpFilterConfigEntry {
+	name?: string;
+	isOptional?: boolean;
+	disabled?: boolean;
+	filter: HttpFilterKind;
+}
+
+// ListenerFilterInput uses flattened structure - type discriminator is at the same level as name
+export type ListenerFilterInput =
 	| {
+			name: string;
 			type: 'httpConnectionManager';
 			routeConfigName?: string;
 			inlineRouteConfig?: unknown;
 			accessLog?: ListenerAccessLogInput;
 			tracing?: ListenerTracingInput;
-			httpFilters?: Array<{ name: string; typedConfig: unknown }>;
+			httpFilters?: HttpFilterConfigEntry[];
 	  }
 	| {
+			name: string;
 			type: 'tcpProxy';
 			cluster: string;
 			accessLog?: ListenerAccessLogInput;
 	  };
-
-export interface ListenerFilterInput {
-	name: string;
-	filterType: ListenerFilterTypeInput;
-}
 
 export interface ListenerFilterChainInput {
 	name?: string;
@@ -499,4 +523,33 @@ export interface CreateListenerBody {
 	port: number;
 	protocol?: string;
 	filterChains: ListenerFilterChainInput[];
+}
+
+// UpdateListenerBody - no name or team fields (from path param / existing listener)
+export interface UpdateListenerBody {
+	address: string;
+	port: number;
+	filterChains: ListenerFilterChainInput[];
+	protocol?: string;
+}
+
+// === Scope Types ===
+
+export interface ScopeDefinition {
+	id: string;
+	value: string;
+	resource: string;
+	action: string;
+	label: string;
+	description: string | null;
+	category: string;
+	visibleInUi: boolean;
+	enabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ListScopesResponse {
+	scopes: ScopeDefinition[];
+	count: number;
 }

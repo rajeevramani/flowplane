@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run migrations using the shared dynamic logic
     info!("🚀 Starting migration process...");
     flowplane::storage::run_migrations(&pool).await?;
-    
+
     // Verify tables were created
     info!("🔍 Verifying database schema...");
 

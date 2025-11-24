@@ -13,6 +13,7 @@ pub mod learning_session;
 pub mod listener;
 pub mod reporting;
 pub mod route;
+pub mod scope;
 pub mod team;
 pub mod token;
 pub mod user;
@@ -37,6 +38,9 @@ pub use listener::{
 };
 pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
+pub use scope::{
+    CreateScopeRequest, ScopeDefinition, ScopeRepository, SqlxScopeRepository, UpdateScopeRequest,
+};
 pub use team::{SqlxTeamRepository, TeamRepository};
 pub use token::{SqlxTokenRepository, TokenRepository};
 pub use user::{

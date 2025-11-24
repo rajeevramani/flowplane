@@ -40,7 +40,10 @@ import type {
 	ListAuditLogsResponse,
 	CreateClusterBody,
 	CreateRouteBody,
-	CreateListenerBody
+	UpdateRouteBody,
+	CreateListenerBody,
+	UpdateListenerBody,
+	ListScopesResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -350,6 +353,10 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/routes/${name}`);
 	}
 
+	async updateRoute(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/routes/${name}`, body);
+	}
+
 	// Cluster methods
 	async listClusters(params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
 		let path = '/api/v1/clusters';
@@ -379,6 +386,10 @@ class ApiClient {
 
 	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
 		return this.post<ListenerResponse>('/api/v1/listeners', body);
+	}
+
+	async updateListener(name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
+		return this.put<ListenerResponse>(`/api/v1/listeners/${name}`, body);
 	}
 
 	// Bootstrap configuration methods
@@ -483,6 +494,22 @@ class ApiClient {
 		if (query.offset !== undefined) params.append('offset', query.offset.toString());
 
 		return this.get<ListAuditLogsResponse>(`/api/v1/audit-logs?${params.toString()}`);
+	}
+
+	// Scope methods (public - no auth required)
+	async listScopes(): Promise<ListScopesResponse> {
+		// This endpoint is public, no credentials needed
+		const response = await fetch(`${API_BASE}/api/v1/scopes`, {
+			method: 'GET',
+			headers: { 'Content-Type': 'application/json' }
+		});
+
+		return this.handleResponse<ListScopesResponse>(response);
+	}
+
+	// Admin scope methods
+	async listAllScopes(): Promise<ListScopesResponse> {
+		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
 	}
 }
 

@@ -1,0 +1,152 @@
+<script lang="ts">
+	import type {
+		PathMatchType,
+		HeaderMatchDefinition,
+		QueryParameterMatchDefinition,
+		ClusterResponse
+	} from '$lib/api/types';
+	import Badge from './Badge.svelte';
+
+	export interface RouteRule {
+		id: string;
+		method: string;
+		path: string;
+		pathType: PathMatchType;
+		cluster: string;
+		headers?: HeaderMatchDefinition[];
+		queryParams?: QueryParameterMatchDefinition[];
+		timeoutSeconds?: number;
+	}
+
+	interface Props {
+		routes: RouteRule[];
+		clusters: ClusterResponse[];
+		onEditRoute: (routeId: string) => void;
+		onDeleteRoute: (routeId: string) => void;
+	}
+
+	let { routes, clusters, onEditRoute, onDeleteRoute }: Props = $props();
+
+	function getMethodVariant(
+		method: string
+	): 'primary' | 'success' | 'warning' | 'error' | 'default' {
+		switch (method.toUpperCase()) {
+			case 'GET':
+				return 'success';
+			case 'POST':
+				return 'primary';
+			case 'PUT':
+				return 'warning';
+			case 'PATCH':
+				return 'warning';
+			case 'DELETE':
+				return 'error';
+			case '*':
+				return 'default';
+			default:
+				return 'default';
+		}
+	}
+
+	function getClusterDisplay(clusterName: string): string {
+		const cluster = clusters.find((c) => c.name === clusterName);
+		if (cluster) {
+			return cluster.name;
+		}
+		return clusterName;
+	}
+</script>
+
+{#if routes.length === 0}
+	<div class="text-center py-8 text-gray-500">
+		<p class="text-sm">No routes configured for this domain</p>
+	</div>
+{:else}
+	<div class="overflow-x-auto">
+		<table class="min-w-full divide-y divide-gray-200">
+			<thead class="bg-gray-50">
+				<tr>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Method</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Path</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Match</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Cluster</th
+					>
+					<th
+						class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Actions</th
+					>
+				</tr>
+			</thead>
+			<tbody class="bg-white divide-y divide-gray-200">
+				{#each routes as route}
+					<tr class="hover:bg-gray-50">
+						<td class="px-4 py-3 whitespace-nowrap">
+							<Badge variant={getMethodVariant(route.method)}>
+								{route.method === '*' ? 'ANY' : route.method}
+							</Badge>
+						</td>
+						<td class="px-4 py-3 whitespace-nowrap">
+							<code class="text-sm text-gray-900 bg-gray-100 px-2 py-1 rounded">{route.path}</code>
+							{#if (route.headers && route.headers.length > 0) || (route.queryParams && route.queryParams.length > 0)}
+								<span class="ml-2 text-xs text-gray-500" title="Has advanced matching rules">
+									+{(route.headers?.length || 0) + (route.queryParams?.length || 0)} matcher{(route.headers?.length || 0) + (route.queryParams?.length || 0) !== 1 ? 's' : ''}
+								</span>
+							{/if}
+						</td>
+						<td class="px-4 py-3 whitespace-nowrap">
+							<span class="text-sm text-gray-600">{route.pathType}</span>
+						</td>
+						<td class="px-4 py-3 whitespace-nowrap">
+							<span class="text-sm text-gray-900">{getClusterDisplay(route.cluster)}</span>
+						</td>
+						<td class="px-4 py-3 whitespace-nowrap text-right">
+							<div class="flex items-center justify-end gap-1">
+								<button
+									type="button"
+									onclick={() => onEditRoute(route.id)}
+									class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+									title="Edit route"
+								>
+									<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											stroke-width="2"
+											d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+										/>
+									</svg>
+								</button>
+								<button
+									type="button"
+									onclick={() => onDeleteRoute(route.id)}
+									class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+									title="Delete route"
+								>
+									<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											stroke-width="2"
+											d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+										/>
+									</svg>
+								</button>
+							</div>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+{/if}

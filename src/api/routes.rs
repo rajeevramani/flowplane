@@ -30,12 +30,12 @@ use super::{
         get_aggregated_schema_handler, get_cluster_handler, get_learning_session_handler,
         get_listener_handler, get_route_handler, get_session_info_handler,
         get_team_bootstrap_handler, get_token_handler, get_user, health_handler,
-        list_aggregated_schemas_handler, list_audit_logs, list_clusters_handler,
-        list_learning_sessions_handler, list_listeners_handler, list_route_flows_handler,
-        list_routes_handler, list_teams_handler, list_tokens_handler, list_user_teams, list_users,
-        login_handler, logout_handler, remove_team_membership, revoke_token_handler,
-        rotate_token_handler, update_cluster_handler, update_listener_handler,
-        update_route_handler, update_token_handler, update_user,
+        list_aggregated_schemas_handler, list_all_scopes_handler, list_audit_logs,
+        list_clusters_handler, list_learning_sessions_handler, list_listeners_handler,
+        list_route_flows_handler, list_routes_handler, list_scopes_handler, list_teams_handler,
+        list_tokens_handler, list_user_teams, list_users, login_handler, logout_handler,
+        remove_team_membership, revoke_token_handler, rotate_token_handler, update_cluster_handler,
+        update_listener_handler, update_route_handler, update_token_handler, update_user,
     },
 };
 
@@ -187,6 +187,8 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
+        // Admin scopes endpoint (includes hidden scopes like admin:all)
+        .route("/api/v1/admin/scopes", get(list_all_scopes_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
@@ -201,6 +203,8 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/auth/sessions", post(create_session_handler))
         .route("/api/v1/auth/sessions/me", get(get_session_info_handler))
         .route("/api/v1/auth/sessions/logout", post(logout_handler))
+        // Scopes endpoint (public - needed for token creation UI)
+        .route("/api/v1/scopes", get(list_scopes_handler))
         .with_state(api_state);
 
     // Build CORS layer for UI integration

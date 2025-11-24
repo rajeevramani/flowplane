@@ -148,6 +148,11 @@ domain_id!(
     TeamId
 );
 
+domain_id!(
+    /// Unique identifier for a scope definition
+    ScopeId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

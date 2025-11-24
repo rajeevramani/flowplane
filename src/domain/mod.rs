@@ -32,7 +32,7 @@ pub use cluster::{
     CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
     HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
 };
-pub use id::{ClusterId, ListenerId, RouteId, TeamId, TokenId, UserId};
+pub use id::{ClusterId, ListenerId, RouteId, ScopeId, TeamId, TokenId, UserId};
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
     TlsConfig as ListenerTlsConfig, TlsVersion as ListenerTlsVersion,
