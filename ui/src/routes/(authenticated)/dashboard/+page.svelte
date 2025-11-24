@@ -276,14 +276,14 @@
 
 			<!-- Developer actions -->
 			<a
-				href="/apis/create"
+				href="/apis"
 				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-green-300 hover:shadow-md transition-all"
 			>
 				<div class="flex items-start justify-between">
 					<div>
-						<h4 class="text-lg font-semibold text-gray-900 mb-2">Create API</h4>
+						<h4 class="text-lg font-semibold text-gray-900 mb-2">APIs</h4>
 						<p class="text-sm text-gray-600">
-							Manually configure an API with custom endpoints, routes, and listeners
+							View and manage your API configurations
 						</p>
 					</div>
 					<svg
@@ -296,7 +296,7 @@
 							stroke-linecap="round"
 							stroke-linejoin="round"
 							stroke-width="2"
-							d="M12 4v16m8-8H4"
+							d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
 						/>
 					</svg>
 				</div>

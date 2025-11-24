@@ -6,7 +6,6 @@
 		name: string;
 		endpoints: EndpointRequest[];
 		lbPolicy: string;
-		useTls: boolean;
 	}
 
 	export interface ClusterConfig {
@@ -31,8 +30,7 @@
 				newClusterConfig: {
 					name: '',
 					endpoints: [{ host: '', port: 8080 }],
-					lbPolicy: 'ROUND_ROBIN',
-					useTls: false
+					lbPolicy: 'ROUND_ROBIN'
 				}
 			});
 		}
@@ -46,8 +44,7 @@
 				newClusterConfig: config.newClusterConfig || {
 					name: '',
 					endpoints: [{ host: '', port: 8080 }],
-					lbPolicy: 'ROUND_ROBIN',
-					useTls: false
+					lbPolicy: 'ROUND_ROBIN'
 				}
 			});
 		} else {
@@ -93,17 +90,6 @@
 			newClusterConfig: {
 				...config.newClusterConfig!,
 				lbPolicy
-			}
-		});
-	}
-
-	function handleTlsChange(e: Event) {
-		const target = e.target as HTMLInputElement;
-		onConfigChange({
-			...config,
-			newClusterConfig: {
-				...config.newClusterConfig!,
-				useTls: target.checked
 			}
 		});
 	}
@@ -177,19 +163,6 @@
 				onEndpointsChange={handleEndpointsChange}
 				onLbPolicyChange={handleLbPolicyChange}
 			/>
-
-			<!-- TLS Option -->
-			<div class="pt-2">
-				<label class="flex items-center gap-2 cursor-pointer">
-					<input
-						type="checkbox"
-						checked={config.newClusterConfig.useTls}
-						onchange={handleTlsChange}
-						class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-					/>
-					<span class="text-sm text-gray-700">Use TLS (HTTPS) for upstream connections</span>
-				</label>
-			</div>
 		</div>
 	{/if}
 </div>

@@ -46,6 +46,20 @@
 	// Derived value for proper reactivity with $state arrays
 	let hasDomainGroups = $derived(domainGroups.length > 0);
 
+	// Combine available clusters with pending clusters for UI display
+	let allClusters = $derived([
+		...availableClusters,
+		...pendingClusters.map(
+			(pc) =>
+				({
+					name: pc.name,
+					team: pc.team,
+					serviceName: pc.name,
+					config: { endpoints: pc.endpoints }
+				}) as ClusterResponse
+		)
+	]);
+
 	// Modal state
 	let showDomainEditor = $state(false);
 	let editingDomainGroup = $state<DomainGroupData | null>(null);
@@ -288,17 +302,22 @@
 
 		// If creating a new cluster, add it to pending clusters
 		if (newCluster?.mode === 'new' && newCluster.newClusterConfig) {
-			const clusterBody: CreateClusterBody = {
-				team: listenerConfig.selectedTeam,
-				name: newCluster.newClusterConfig.name,
-				endpoints: newCluster.newClusterConfig.endpoints.filter((e) => e.host.trim() !== ''),
-				useTls: newCluster.newClusterConfig.useTls,
-				lbPolicy:
-					newCluster.newClusterConfig.endpoints.length > 1
-						? (newCluster.newClusterConfig.lbPolicy as CreateClusterBody['lbPolicy'])
-						: undefined
-			};
-			pendingClusters = [...pendingClusters, clusterBody];
+			// Check if cluster already exists in pending clusters to avoid duplicates
+			const alreadyPending = pendingClusters.some(
+				(pc) => pc.name === newCluster.newClusterConfig!.name
+			);
+			if (!alreadyPending) {
+				const clusterBody: CreateClusterBody = {
+					team: listenerConfig.selectedTeam,
+					name: newCluster.newClusterConfig.name,
+					endpoints: newCluster.newClusterConfig.endpoints.filter((e) => e.host.trim() !== ''),
+					lbPolicy:
+						newCluster.newClusterConfig.endpoints.length > 1
+							? (newCluster.newClusterConfig.lbPolicy as CreateClusterBody['lbPolicy'])
+							: undefined
+				};
+				pendingClusters = [...pendingClusters, clusterBody];
+			}
 		}
 
 		// Add or update route in domain group
@@ -599,7 +618,7 @@
 							{#each domainGroups as group}
 								<DomainGroup
 									{group}
-									clusters={availableClusters}
+									clusters={allClusters}
 									onEditDomain={handleEditDomain}
 									onDeleteDomain={handleDeleteDomain}
 									onAddRoute={handleAddRoute}
@@ -661,7 +680,7 @@
 	show={showRouteEditor}
 	route={editingRoute}
 	domainName={getEditingDomainName()}
-	clusters={availableClusters}
+	clusters={allClusters}
 	onSave={handleSaveRoute}
 	onCancel={() => {
 		showRouteEditor = false;
