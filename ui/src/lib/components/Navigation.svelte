@@ -13,7 +13,6 @@
 	let { sessionInfo, selectedTeam = '', availableTeams = [], onTeamChange }: Props = $props();
 
 	let showProfileMenu = $state(false);
-	let showResourcesMenu = $state(false);
 
 	async function handleLogout() {
 		try {
@@ -34,7 +33,6 @@
 	// Close menus when clicking outside
 	function closeMenus() {
 		showProfileMenu = false;
-		showResourcesMenu = false;
 	}
 </script>
 
@@ -77,68 +75,13 @@
 					</a>
 				{/if}
 
-				<!-- Resources Dropdown -->
-				<div class="relative">
-					<button
-						onclick={(e) => {
-							e.stopPropagation();
-							showResourcesMenu = !showResourcesMenu;
-							showProfileMenu = false;
-						}}
-						class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors flex items-center gap-1"
-					>
-						Resources
-						<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M19 9l-7 7-7-7"
-							/>
-						</svg>
-					</button>
-
-					{#if showResourcesMenu}
-						<div
-							class="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg border border-gray-200 z-50"
-							onclick={(e) => e.stopPropagation()}
-						>
-							<div class="py-1">
-								<a
-									href="/resources"
-									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-								>
-									All Resources
-								</a>
-								<div class="border-t border-gray-100"></div>
-								<a
-									href="/resources?tab=imports"
-									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-								>
-									Imports
-								</a>
-								<a
-									href="/resources?tab=clusters"
-									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-								>
-									Clusters
-								</a>
-								<a
-									href="/resources?tab=routes"
-									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-								>
-									Route Configs
-								</a>
-								<a
-									href="/resources?tab=listeners"
-									class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-								>
-									Listeners
-								</a>
-							</div>
-						</div>
-					{/if}
-				</div>
+				<!-- Resources Link -->
+				<a
+					href="/resources"
+					class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+				>
+					Resources
+				</a>
 
 				<!-- PAT Link -->
 				<a
@@ -174,7 +117,6 @@
 						onclick={(e) => {
 							e.stopPropagation();
 							showProfileMenu = !showProfileMenu;
-							showResourcesMenu = false;
 						}}
 						class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-100 transition-colors"
 					>

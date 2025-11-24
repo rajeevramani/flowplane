@@ -276,14 +276,14 @@
 
 			<!-- Developer actions -->
 			<a
-				href="/apis"
+				href="/resources"
 				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-green-300 hover:shadow-md transition-all"
 			>
 				<div class="flex items-start justify-between">
 					<div>
-						<h4 class="text-lg font-semibold text-gray-900 mb-2">APIs</h4>
+						<h4 class="text-lg font-semibold text-gray-900 mb-2">Resources</h4>
 						<p class="text-sm text-gray-600">
-							View and manage your API configurations
+							View and manage APIs, listeners, clusters, and imports
 						</p>
 					</div>
 					<svg

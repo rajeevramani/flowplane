@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import ResourceSection from '$lib/components/ResourceSection.svelte';
-	import RoutesTable from '$lib/components/RoutesTable.svelte';
+	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
+	import ResourceTabs from '$lib/components/ResourceTabs.svelte';
+	import ExpandableApiRow from '$lib/components/ExpandableApiRow.svelte';
+	import ExpandableListenerRow from '$lib/components/ExpandableListenerRow.svelte';
+	import ExpandableClusterRow from '$lib/components/ExpandableClusterRow.svelte';
+	import ExpandableImportRow from '$lib/components/ExpandableImportRow.svelte';
 	import type {
 		ImportSummary,
 		ListenerResponse,
@@ -20,17 +25,27 @@
 	let currentTeam = $state<string>('');
 	let unsubscribe: Unsubscriber;
 
+	// Active tab from URL or default
+	let activeTab = $state<string>('apis');
+
 	// Data for each resource type
 	let imports = $state<ImportSummary[]>([]);
 	let listeners = $state<ListenerResponse[]>([]);
 	let routes = $state<RouteResponse[]>([]);
 	let clusters = $state<ClusterResponse[]>([]);
 
+	// Read initial tab from URL
+	$effect(() => {
+		const urlTab = $page.url.searchParams.get('tab');
+		if (urlTab && ['apis', 'listeners', 'clusters', 'imports'].includes(urlTab)) {
+			activeTab = urlTab;
+		}
+	});
+
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
 
-			// Subscribe to team changes and reload resources
 			unsubscribe = selectedTeam.subscribe(async (team) => {
 				if (team && team !== currentTeam) {
 					currentTeam = team;
@@ -53,11 +68,8 @@
 		error = null;
 
 		try {
-			// Admin users see all resources from all teams
-			// Non-admin users see resources filtered by the selected team
 			const isAdmin = sessionInfo?.isAdmin ?? false;
 
-			// Load all resources in parallel
 			const [importsData, listenersData, routesData, clustersData] = await Promise.all([
 				isAdmin
 					? apiClient.listAllImports()
@@ -80,7 +92,12 @@
 		}
 	}
 
-	// Filtered data based on search query only (backend handles team filtering)
+	function handleTabChange(tabId: string) {
+		activeTab = tabId;
+		goto(`/resources?tab=${tabId}`, { replaceState: true });
+	}
+
+	// Filtered data based on search query
 	function getFilteredImports(): ImportSummary[] {
 		if (!searchQuery) return imports;
 		const query = searchQuery.toLowerCase();
@@ -126,142 +143,80 @@
 		);
 	}
 
-	function formatDate(dateString: string): string {
-		return new Date(dateString).toLocaleDateString('en-US', {
-			year: 'numeric',
-			month: 'short',
-			day: 'numeric',
-			hour: '2-digit',
-			minute: '2-digit'
-		});
-	}
+	// Tab configuration
+	const tabs = $derived([
+		{ id: 'apis', label: 'APIs', count: getFilteredRoutes().length },
+		{ id: 'listeners', label: 'Listeners', count: getFilteredListeners().length },
+		{ id: 'clusters', label: 'Clusters', count: getFilteredClusters().length },
+		{ id: 'imports', label: 'Imports', count: getFilteredImports().length }
+	]);
 
-	function extractClusterEndpoint(cluster: ClusterResponse): { host: string; port: string } {
+	// Delete handlers
+	async function handleDeleteRoute(route: RouteResponse) {
 		try {
-			if (cluster.config && typeof cluster.config === 'object') {
-				const config = cluster.config as any;
-
-				// Try config.endpoints first (Platform API format)
-				if (config.endpoints && Array.isArray(config.endpoints) && config.endpoints.length > 0) {
-					const endpoint = config.endpoints[0];
-					return {
-						host: endpoint.host || 'N/A',
-						port: endpoint.port?.toString() || 'N/A'
-					};
-				}
-
-				// Fallback: Try to find endpoints in config.load_assignment.endpoints (xDS format)
-				const loadAssignment = config.load_assignment;
-				if (loadAssignment && loadAssignment.endpoints && Array.isArray(loadAssignment.endpoints)) {
-					const firstEndpoint = loadAssignment.endpoints[0];
-					if (firstEndpoint && firstEndpoint.lb_endpoints && Array.isArray(firstEndpoint.lb_endpoints)) {
-						const lbEndpoint = firstEndpoint.lb_endpoints[0];
-						if (lbEndpoint && lbEndpoint.endpoint && lbEndpoint.endpoint.address) {
-							const address = lbEndpoint.endpoint.address;
-							if (address.socket_address) {
-								return {
-									host: address.socket_address.address || 'N/A',
-									port: address.socket_address.port_value?.toString() || 'N/A'
-								};
-							}
-						}
-					}
-				}
-			}
-		} catch (e) {
-			console.error('Error extracting cluster endpoint:', e);
+			await apiClient.deleteRoute(route.name);
+			await loadResources(currentTeam);
+		} catch (err: any) {
+			error = err.message || 'Failed to delete route';
 		}
-
-		return { host: 'N/A', port: 'N/A' };
 	}
 
-	function getImportSource(importId?: string): string {
-		if (!importId) return 'Native';
-
-		const importRecord = imports.find((imp) => imp.id === importId);
-		if (importRecord) {
-			return importRecord.specVersion
-				? `${importRecord.specName} v${importRecord.specVersion}`
-				: importRecord.specName;
+	async function handleDeleteListener(listener: ListenerResponse) {
+		try {
+			await apiClient.deleteListener(listener.name);
+			await loadResources(currentTeam);
+		} catch (err: any) {
+			error = err.message || 'Failed to delete listener';
 		}
-
-		return 'Unknown';
 	}
 
-	// Column definitions for each resource type
-	const importsColumns = [
-		{
-			key: 'specName',
-			label: 'Name',
-			format: (value: any, row: ImportSummary) => ({
-				type: 'link',
-				text: value,
-				href: `/imports/${row.id}`
-			})
-		},
-		{
-			key: 'specVersion',
-			label: 'Version',
-			format: (value: any) => value || 'N/A'
-		},
-		{
-			key: 'team',
-			label: 'Team',
-			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
-		},
-		{ key: 'importedAt', label: 'Imported', format: (value: any) => formatDate(value) },
-		{ key: 'updatedAt', label: 'Updated', format: (value: any) => formatDate(value) }
-	];
-
-	const listenersColumns = [
-		{ key: 'name', label: 'Name' },
-		{
-			key: 'team',
-			label: 'Team',
-			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
-		},
-		{ key: 'address', label: 'Address' },
-		{ key: 'port', label: 'Port', format: (value: any) => value || 'N/A' },
-		{ key: 'protocol', label: 'Protocol' },
-		{ key: 'version', label: 'Version', format: (value: any) => `v${value}` },
-		{
-			key: 'importId',
-			label: 'Source',
-			format: (value: any, row: ListenerResponse) => getImportSource(row.importId)
+	async function handleDeleteCluster(cluster: ClusterResponse) {
+		try {
+			await apiClient.deleteCluster(cluster.name);
+			await loadResources(currentTeam);
+		} catch (err: any) {
+			error = err.message || 'Failed to delete cluster';
 		}
-	];
+	}
 
-	const clustersColumns = [
-		{ key: 'serviceName', label: 'Service Name' },
-		{
-			key: 'team',
-			label: 'Team',
-			format: (value: any) => ({ type: 'badge', text: value, variant: 'blue' as const })
-		},
-		{
-			key: 'config',
-			label: 'Host',
-			format: (value: any, row: ClusterResponse) => extractClusterEndpoint(row).host
-		},
-		{
-			key: 'config',
-			label: 'Port',
-			format: (value: any, row: ClusterResponse) => extractClusterEndpoint(row).port
-		},
-		{
-			key: 'importId',
-			label: 'Source',
-			format: (value: any, row: ClusterResponse) => getImportSource(row.importId)
+	async function handleDeleteImport(importRecord: ImportSummary) {
+		try {
+			await apiClient.deleteImport(importRecord.id);
+			await loadResources(currentTeam);
+		} catch (err: any) {
+			error = err.message || 'Failed to delete import';
 		}
-	];
+	}
 </script>
 
 <!-- Page Header -->
-<div class="mb-6">
-	<h1 class="text-2xl font-bold text-gray-900">Resource Management</h1>
-	<p class="mt-1 text-sm text-gray-600">
-		View and manage all accessible resources
-	</p>
+<div class="mb-6 flex items-center justify-between">
+	<div>
+		<h1 class="text-2xl font-bold text-gray-900">Resources</h1>
+		<p class="mt-1 text-sm text-gray-600">
+			View and manage all your API gateway resources
+		</p>
+	</div>
+	<div class="flex gap-3">
+		<a
+			href="/apis/manage"
+			class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
+		>
+			<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+			</svg>
+			New API
+		</a>
+		<a
+			href="/imports/import"
+			class="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-md border border-gray-300 hover:bg-gray-50 transition-colors"
+		>
+			<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+			</svg>
+			Import OpenAPI
+		</a>
+	</div>
 </div>
 
 <!-- Error Message -->
@@ -276,50 +231,141 @@
 	<input
 		type="text"
 		bind:value={searchQuery}
-		placeholder="Search across all resources..."
-		class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+		placeholder="Search resources..."
+		class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
 	/>
 </div>
 
-{#if isLoading}
-	<div class="flex justify-center items-center py-12">
-		<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-	</div>
-{:else}
-	<!-- Imports Section -->
-	<ResourceSection
-		title="OpenAPI Imports"
-		count={getFilteredImports().length}
-		columns={importsColumns}
-		data={getFilteredImports()}
-		emptyMessage="No imports found"
-		actionButton={{ text: 'Import OpenAPI', href: '/imports/import' }}
-	/>
+<!-- Tabs -->
+<div class="mb-6">
+	<ResourceTabs {tabs} {activeTab} onTabChange={handleTabChange} />
+</div>
 
-	<!-- Listeners Section -->
-	<ResourceSection
-		title="Listeners"
-		count={getFilteredListeners().length}
-		columns={listenersColumns}
-		data={getFilteredListeners()}
-		emptyMessage="No listeners found"
-	/>
+<!-- Content -->
+<div class="bg-white rounded-lg shadow-sm border border-gray-200">
+	{#if isLoading}
+		<div class="flex justify-center items-center py-12">
+			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+		</div>
+	{:else if activeTab === 'apis'}
+		<!-- APIs -->
+		{#if getFilteredRoutes().length === 0}
+			<div class="text-center py-12">
+				<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+				</svg>
+				<p class="mt-4 text-gray-500">No APIs found. Create one to get started.</p>
+			</div>
+		{:else}
+			<div class="flex items-center gap-6 py-2 px-4 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wide">
+				<div class="w-4"></div>
+				<div class="w-48">Name</div>
+				<div class="w-24">Team</div>
+				<div class="w-32">Domains</div>
+				<div class="w-28">Routes</div>
+				<div class="flex-1">Source</div>
+				<div class="w-8"></div>
+			</div>
+			{#each getFilteredRoutes() as route (route.name)}
+				<ExpandableApiRow
+					{route}
+					{imports}
+					{clusters}
+					{listeners}
+					onDelete={handleDeleteRoute}
+				/>
+			{/each}
+		{/if}
 
-	<!-- Routes Section -->
-	<div class="mb-6">
-		<RoutesTable
-			routes={getFilteredRoutes()}
-			{getImportSource}
-			emptyMessage="No routes found"
-		/>
-	</div>
+	{:else if activeTab === 'listeners'}
+		<!-- Listeners -->
+		{#if getFilteredListeners().length === 0}
+			<div class="text-center py-12">
+				<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+				</svg>
+				<p class="mt-4 text-gray-500">No listeners found.</p>
+			</div>
+		{:else}
+			<div class="flex items-center gap-6 py-2 px-4 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wide">
+				<div class="w-4"></div>
+				<div class="w-48">Name</div>
+				<div class="w-24">Team</div>
+				<div class="w-40">Address</div>
+				<div class="w-24">Protocol</div>
+				<div class="w-28">Chains</div>
+				<div class="flex-1">Source</div>
+				<div class="w-8"></div>
+			</div>
+			{#each getFilteredListeners() as listener (listener.name)}
+				<ExpandableListenerRow
+					{listener}
+					{routes}
+					{imports}
+					onDelete={handleDeleteListener}
+				/>
+			{/each}
+		{/if}
 
-	<!-- Clusters Section -->
-	<ResourceSection
-		title="Clusters"
-		count={getFilteredClusters().length}
-		columns={clustersColumns}
-		data={getFilteredClusters()}
-		emptyMessage="No clusters found"
-	/>
-{/if}
+	{:else if activeTab === 'clusters'}
+		<!-- Clusters -->
+		{#if getFilteredClusters().length === 0}
+			<div class="text-center py-12">
+				<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+				</svg>
+				<p class="mt-4 text-gray-500">No clusters found.</p>
+			</div>
+		{:else}
+			<div class="flex items-center gap-6 py-2 px-4 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wide">
+				<div class="w-4"></div>
+				<div class="w-48">Service</div>
+				<div class="w-24">Team</div>
+				<div class="w-40">Endpoint</div>
+				<div class="w-28">Endpoints</div>
+				<div class="w-28">LB Policy</div>
+				<div class="flex-1">Source</div>
+				<div class="w-8"></div>
+			</div>
+			{#each getFilteredClusters() as cluster (cluster.name)}
+				<ExpandableClusterRow
+					{cluster}
+					{routes}
+					{imports}
+					onDelete={handleDeleteCluster}
+				/>
+			{/each}
+		{/if}
+
+	{:else if activeTab === 'imports'}
+		<!-- Imports -->
+		{#if getFilteredImports().length === 0}
+			<div class="text-center py-12">
+				<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+				</svg>
+				<p class="mt-4 text-gray-500">No imports found. Import an OpenAPI spec to get started.</p>
+			</div>
+		{:else}
+			<div class="flex items-center gap-6 py-2 px-4 bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-500 uppercase tracking-wide">
+				<div class="w-4"></div>
+				<div class="w-48">Spec Name</div>
+				<div class="w-20">Version</div>
+				<div class="w-24">Team</div>
+				<div class="w-32">Resources</div>
+				<div class="w-28">Imported</div>
+				<div class="flex-1">ID</div>
+				<div class="w-8"></div>
+			</div>
+			{#each getFilteredImports() as importRecord (importRecord.id)}
+				<ExpandableImportRow
+					{importRecord}
+					{routes}
+					{clusters}
+					{listeners}
+					onDelete={handleDeleteImport}
+				/>
+			{/each}
+		{/if}
+	{/if}
+</div>
