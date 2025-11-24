@@ -225,7 +225,8 @@ pub async fn update_listener_handler(
     validate_update_listener_body(&payload)?;
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -286,7 +287,8 @@ pub async fn delete_listener_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;

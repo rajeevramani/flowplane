@@ -228,7 +228,8 @@ pub async fn update_cluster_handler(
     }
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let service = ClusterService::new(state.xds_state.clone());
 
     // Get existing cluster to verify access
@@ -263,7 +264,8 @@ pub async fn delete_cluster_handler(
     require_resource_access(&context, "clusters", "write", None)?;
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let service = ClusterService::new(state.xds_state.clone());
 
     // Get existing cluster to verify access

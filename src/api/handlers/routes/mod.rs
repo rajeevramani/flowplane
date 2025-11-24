@@ -240,7 +240,8 @@ pub async fn update_route_handler(
     }
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
@@ -309,7 +310,8 @@ pub async fn delete_route_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
