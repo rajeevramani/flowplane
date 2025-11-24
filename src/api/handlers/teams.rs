@@ -74,12 +74,10 @@ pub async fn get_team_bootstrap_handler(
     // Authorization: Check if user has permission to access bootstrap
     // Users need either:
     // 1. admin:all scope (bypass all checks)
-    // 2. api-definitions:read scope (global access)
-    // 3. team:{team}:api-definitions:read scope (team-specific access)
-    // Note: We don't pass the team to require_resource_access because:
-    // - Global scopes (api-definitions:read) should allow access to any team
-    // - Team-scoped tokens will be filtered server-side by xDS based on node metadata
-    require_resource_access(&context, "api-definitions", "read", None)?;
+    // 2. generate-envoy-config:read scope (global access to any team)
+    // 3. team:{team}:generate-envoy-config:read scope (team-specific access)
+    // 4. team:{team}:*:* scope (team wildcard - access to all resources for the team)
+    require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
 

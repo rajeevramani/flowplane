@@ -59,6 +59,10 @@
 				{ value: 'openapi-import:write', label: 'Create imports' },
 				{ value: 'openapi-import:delete', label: 'Delete imports' }
 			]
+		},
+		{
+			category: 'Envoy Config',
+			scopes: [{ value: 'generate-envoy-config:read', label: 'Generate Envoy bootstrap config' }]
 		}
 	];
 </script>

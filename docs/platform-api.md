@@ -24,8 +24,9 @@ Authorization: Bearer YOUR_TOKEN
 
 | Scope | Operations |
 |-------|-----------|
-| `api-definitions:read` | List definitions, get by ID, download bootstrap |
-| `api-definitions:write` | Create, update, append routes, import OpenAPI |
+| `generate-envoy-config:read` | Download Envoy bootstrap configuration |
+| `openapi-import:read` | List OpenAPI imports |
+| `openapi-import:write` | Import OpenAPI specifications |
 
 See [Authentication Documentation](authentication.md) for token management.
 
@@ -1045,7 +1046,7 @@ curl -X POST "http://localhost:8080/api/v1/api-definitions/$API_ID/routes" \
 **Solutions**:
 - Verify API definition ID is correct
 - Check that the API definition was created successfully
-- Ensure you have `api-definitions:read` scope
+- Ensure you have `generate-envoy-config:read` scope
 
 ### Routes Not Updating
 
