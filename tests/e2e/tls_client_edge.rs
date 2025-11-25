@@ -75,11 +75,11 @@ async fn tls_client_edge_matrix() {
 
     // Create API via Platform API using unique domain/path
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:api-definitions:write",
+        "team:e2e:api-definitions:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");

@@ -62,13 +62,13 @@ async fn config_delete_cleanup() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "clusters:write",
-        "clusters:read",
-        "routes:write",
-        "routes:read",
-        "routes:delete",
-        "listeners:write",
-        "listeners:read",
+        "team:e2e:clusters:write",
+        "team:e2e:clusters:read",
+        "team:e2e:routes:write",
+        "team:e2e:routes:read",
+        "team:e2e:routes:delete",
+        "team:e2e:listeners:write",
+        "team:e2e:listeners:read",
     ])
     .await
     .expect("pat");

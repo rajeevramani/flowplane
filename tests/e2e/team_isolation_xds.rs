@@ -74,11 +74,11 @@ async fn team_isolation_clusters_routes_listeners() {
 
     // Create PAT token
     let token = create_pat(vec![
-        "openapi-import:write",
-        "openapi-import:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");
@@ -229,11 +229,11 @@ async fn team_isolation_route_filtering() {
     wait_http_ready(api_addr).await;
 
     let token = create_pat(vec![
-        "openapi-import:write",
-        "openapi-import:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");
@@ -341,11 +341,11 @@ async fn team_isolation_listener_filtering() {
     wait_http_ready(api_addr).await;
 
     let token = create_pat(vec![
-        "openapi-import:write",
-        "openapi-import:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");

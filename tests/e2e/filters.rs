@@ -59,11 +59,11 @@ async fn filters_cors_and_jwt_overrides() {
     ensure_team_exists("e2e").await.expect("create e2e team");
 
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:api-definitions:write",
+        "team:e2e:api-definitions:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");

@@ -54,12 +54,12 @@ async fn filters_header_mutation_request_and_response() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "listeners:write",
-        "listeners:read",
-        "routes:write",
-        "routes:read",
-        "clusters:write",
-        "clusters:read",
+        "team:e2e:listeners:write",
+        "team:e2e:listeners:read",
+        "team:e2e:routes:write",
+        "team:e2e:routes:read",
+        "team:e2e:clusters:write",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");

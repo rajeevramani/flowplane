@@ -30,8 +30,9 @@ async fn negative_invalid_payload_rejected() {
     // Ensure the e2e team exists before creating API definitions
     ensure_team_exists("e2e").await.expect("create e2e team");
 
-    let token =
-        create_pat(vec!["api-definitions:write", "api-definitions:read"]).await.expect("pat");
+    let token = create_pat(vec!["team:e2e:api-definitions:write", "team:e2e:api-definitions:read"])
+        .await
+        .expect("pat");
 
     // Invalid: malformed OpenAPI spec (missing openapi version)
     let body = serde_json::json!({
