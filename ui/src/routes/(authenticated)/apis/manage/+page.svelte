@@ -77,9 +77,15 @@
 			const session = await apiClient.getSessionInfo();
 			isAdmin = session.isAdmin || false;
 			const teamsResponse = await apiClient.listTeams();
-			userTeams = teamsResponse.teams || [];
 
-			// Auto-select team if only one
+			// For admins, prepend "All Teams" option (empty string)
+			if (isAdmin) {
+				userTeams = ['', ...(teamsResponse.teams || [])];
+			} else {
+				userTeams = teamsResponse.teams || [];
+			}
+
+			// Auto-select team if only one (developers only)
 			if (!isAdmin && userTeams.length === 1) {
 				listenerConfig = { ...listenerConfig, selectedTeam: userTeams[0] };
 			}
@@ -474,7 +480,7 @@
 
 			// Redirect after short delay
 			setTimeout(() => {
-				goto('/apis');
+				goto('/resources');
 			}, 1500);
 		} catch (e: unknown) {
 			// Rollback: delete created clusters
@@ -506,13 +512,13 @@
 				return;
 			}
 		}
-		goto('/apis');
+		goto('/resources');
 	}
 </script>
 
 <div class="max-w-5xl mx-auto">
 	<div class="flex items-center gap-4 mb-6">
-		<a href="/apis" class="text-blue-600 hover:text-blue-800">
+		<a href="/resources" class="text-blue-600 hover:text-blue-800">
 			<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path
 					stroke-linecap="round"

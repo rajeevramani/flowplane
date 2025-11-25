@@ -24,9 +24,9 @@
 	let isLoadingRoutes = $state(false);
 	let loadError = $state<string | null>(null);
 
-	// Load listeners when team changes
+	// Load listeners when team changes (empty string means "All Teams" for admins)
 	$effect(() => {
-		if (config.selectedTeam) {
+		if (config.selectedTeam !== null && config.selectedTeam !== undefined) {
 			loadListenersForTeam(config.selectedTeam);
 		}
 	});
@@ -45,8 +45,15 @@
 		isLoadingListeners = true;
 		loadError = null;
 		try {
+			// Backend filters by user's team scopes automatically:
+			// - Admin users get all listeners
+			// - Developer users get team-filtered listeners
 			const allListeners = await apiClient.listListeners();
-			listeners = allListeners.filter((l) => l.team === team);
+
+			// Filter by selected team for UX (when specific team chosen)
+			// When team is empty string (All Teams), show all listeners
+			listeners = team ? allListeners.filter((l) => l.team === team) : allListeners;
+
 			onListenersLoaded?.(listeners);
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : 'Failed to load listeners';
@@ -161,13 +168,13 @@
 				>
 					<option value="">Select a team...</option>
 					{#each teams as team}
-						<option value={team}>{team}</option>
+						<option value={team}>{team === '' ? 'All Teams' : team}</option>
 					{/each}
 				</select>
 			{:else if teams.length === 1}
 				<input
 					type="text"
-					value={config.selectedTeam}
+					value={teams[0] === '' ? 'All Teams' : config.selectedTeam}
 					readonly
 					class="w-full rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-sm"
 				/>
