@@ -731,7 +731,9 @@ async fn cleanup_virtual_host_from_route_config(
         .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
 
     // Derive virtual host name (matches creation logic in openapi/mod.rs:93)
-    let virtual_host_name = format!("{}-vh", spec_name);
+    // CRITICAL: Must sanitize spec_name the same way it's done during import
+    let gateway_name = sanitize_gateway_name(spec_name);
+    let virtual_host_name = format!("{}-vh", gateway_name);
 
     // Get the listener to find its route config name
     let listener = listener_repo.get_by_name(listener_name).await.map_err(|e| {
