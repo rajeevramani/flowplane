@@ -45,18 +45,26 @@ use crate::{
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ImportOpenApiQuery {
     /// Team name for multi-tenancy isolation
     #[param(required = true, example = "payments")]
     pub team: String,
-    /// Optional custom port for isolated listener (if not using shared listener)
+    /// Listener mode: "existing" to use an existing listener, "new" to create a new one
+    #[param(required = true, example = "existing")]
+    pub listener_mode: String,
+    /// Name of an existing listener to use (required when listener_mode="existing")
+    #[param(required = false, example = "my-api-listener")]
+    pub existing_listener_name: Option<String>,
+    /// Name for the new listener (required when listener_mode="new")
+    #[param(required = false, example = "petstore-listener")]
+    pub new_listener_name: Option<String>,
+    /// Bind address for the new listener (default: 0.0.0.0)
+    #[param(required = false, example = "0.0.0.0")]
+    pub new_listener_address: Option<String>,
+    /// Port for the new listener (default: 10000)
     #[param(required = false, example = 10000)]
-    pub port: Option<u16>,
-    /// Whether to use the shared default gateway listener
-    #[param(required = false, example = false)]
-    #[serde(default)]
-    pub shared_listener: bool,
+    pub new_listener_port: Option<u16>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -98,6 +106,7 @@ pub struct ImportSummary {
     pub spec_name: String,
     pub spec_version: Option<String>,
     pub team: String,
+    pub listener_name: Option<String>,
     pub imported_at: String,
     pub updated_at: String,
 }
@@ -109,6 +118,7 @@ impl From<ImportMetadataData> for ImportSummary {
             spec_name: data.spec_name,
             spec_version: data.spec_version,
             team: data.team,
+            listener_name: data.listener_name,
             imported_at: data.imported_at.to_rfc3339(),
             updated_at: data.updated_at.to_rfc3339(),
         }
@@ -123,6 +133,7 @@ pub struct ImportDetailsResponse {
     pub spec_version: Option<String>,
     pub spec_checksum: Option<String>,
     pub team: String,
+    pub listener_name: Option<String>,
     pub imported_at: String,
     pub updated_at: String,
     pub route_count: usize,
@@ -205,20 +216,32 @@ pub async fn import_openapi_handler(
     let spec_checksum = Some(compute_checksum(&bytes));
 
     let gateway_name = sanitize_gateway_name(&spec_name);
-    let listener_name = if params.shared_listener {
-        crate::openapi::defaults::DEFAULT_GATEWAY_LISTENER.to_string()
+
+    // Determine listener mode from query parameters
+    let listener_mode = if params.listener_mode == "existing" {
+        let listener_name = params.existing_listener_name.clone().ok_or_else(|| {
+            ApiError::BadRequest(
+                "existing_listener_name is required when listener_mode is 'existing'".to_string(),
+            )
+        })?;
+        crate::openapi::ListenerMode::Existing { name: listener_name }
     } else {
-        format!("{}-listener", gateway_name)
+        let listener_name = params
+            .new_listener_name
+            .clone()
+            .unwrap_or_else(|| format!("{}-listener", gateway_name));
+        let address = params.new_listener_address.clone().unwrap_or_else(|| "0.0.0.0".to_string());
+        let port = params.new_listener_port.unwrap_or(10000);
+        crate::openapi::ListenerMode::New { name: listener_name, address, port }
     };
 
-    let gateway_options = GatewayOptions {
-        name: gateway_name.clone(),
-        bind_address: "0.0.0.0".to_string(),
-        port: params.port.unwrap_or(10000),
-        protocol: "HTTP".to_string(),
-        shared_listener: params.shared_listener,
-        listener_name: listener_name.clone(),
+    let listener_name = match &listener_mode {
+        crate::openapi::ListenerMode::Existing { name } => name.clone(),
+        crate::openapi::ListenerMode::New { name, .. } => name.clone(),
     };
+
+    let gateway_options =
+        GatewayOptions { name: gateway_name.clone(), protocol: "HTTP".to_string(), listener_mode };
 
     let plan = build_gateway_plan(document, gateway_options)
         .map_err(|err| ApiError::BadRequest(format!("Failed to build gateway plan: {}", err)))?;
@@ -240,6 +263,7 @@ pub async fn import_openapi_handler(
             spec_checksum: spec_checksum.clone(),
             team: params.team.clone(),
             source_content: None, // TODO: optionally store source
+            listener_name: Some(listener_name.clone()),
         })
         .await
         .map_err(ApiError::from)?;
@@ -262,12 +286,14 @@ pub async fn import_openapi_handler(
             .await?;
         1
     } else if let Some(virtual_host) = plan.default_virtual_host {
+        // For existing listener mode, merge virtual host into the listener's route config
         materialize_routes_from_virtual_host(
             &state.xds_state,
             &db_pool,
             &import_id,
             &params.team,
             virtual_host,
+            &listener_name,
         )
         .await?
     } else {
@@ -439,6 +465,7 @@ pub async fn get_import_handler(
         spec_version: import_data.spec_version,
         spec_checksum: import_data.spec_checksum,
         team: import_data.team,
+        listener_name: import_data.listener_name,
         imported_at: import_data.imported_at.to_rfc3339(),
         updated_at: import_data.updated_at.to_rfc3339(),
         route_count: routes.len(),
@@ -574,51 +601,98 @@ async fn materialize_route(
 async fn materialize_routes_from_virtual_host(
     xds_state: &XdsState,
     _db_pool: &crate::storage::DbPool,
-    import_id: &str,
-    team: &str,
+    _import_id: &str,
+    _team: &str,
     virtual_host: crate::xds::route::VirtualHostConfig,
+    listener_name: &str,
 ) -> std::result::Result<usize, ApiError> {
     let route_repo = xds_state
         .route_repository
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
-    let mut count = 0;
+    let listener_repo = xds_state
+        .listener_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
 
-    for (idx, route_rule) in virtual_host.routes.iter().enumerate() {
-        let route_name = route_rule
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("openapi-{}-route-{}", import_id, idx));
-        let cluster_name = match &route_rule.action {
-            crate::xds::route::RouteActionConfig::Cluster { name, .. } => name.clone(),
-            _ => continue,
-        };
+    // Get the existing listener to find its route config name
+    let listener = listener_repo.get_by_name(listener_name).await.map_err(|e| {
+        ApiError::BadRequest(format!("Listener '{}' not found: {}", listener_name, e))
+    })?;
 
-        let route_config = crate::xds::route::RouteConfig {
-            name: route_name.clone(),
-            virtual_hosts: vec![virtual_host.clone()],
-        };
-
-        let configuration = serde_json::to_value(&route_config).map_err(|err| {
-            ApiError::Internal(format!("Failed to serialize route config: {}", err))
+    // Parse the listener configuration to find the route_config_name
+    let listener_config: crate::xds::listener::ListenerConfig =
+        serde_json::from_str(&listener.configuration).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse listener configuration: {}", e))
         })?;
 
-        let route_request = CreateRouteRepositoryRequest {
-            name: route_name,
-            path_prefix: "/".to_string(),
-            cluster_name,
-            configuration,
-            team: Some(team.to_string()),
-            import_id: Some(import_id.to_string()),
-            route_order: Some(idx as i64),
-            headers: None,
-        };
+    // Find the HTTP connection manager and get the route_config_name
+    let route_config_name = listener_config
+        .filter_chains
+        .iter()
+        .flat_map(|fc| fc.filters.iter())
+        .find_map(|f| match &f.filter_type {
+            crate::xds::listener::FilterType::HttpConnectionManager {
+                route_config_name, ..
+            } => route_config_name.clone(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "Listener '{}' has no HTTP connection manager with route_config_name",
+                listener_name
+            ))
+        })?;
 
-        route_repo.create(route_request).await.map_err(ApiError::from)?;
-        count += 1;
+    // Get the existing route config
+    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
+        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+    })?;
+
+    // Parse the existing route configuration
+    let existing_config: serde_json::Value = serde_json::from_str(&existing_route.configuration)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse route configuration: {}", e)))?;
+
+    let mut route_config: crate::xds::route::RouteConfig = serde_json::from_value(existing_config)
+        .map_err(|e| ApiError::Internal(format!("Failed to deserialize route config: {}", e)))?;
+
+    // Check if a virtual host with the same name already exists
+    let vh_exists = route_config.virtual_hosts.iter().any(|vh| vh.name == virtual_host.name);
+
+    if vh_exists {
+        tracing::debug!(
+            virtual_host_name = %virtual_host.name,
+            route_config_name = %route_config_name,
+            "Virtual host already exists in route config, skipping"
+        );
+        return Ok(0);
     }
 
-    Ok(count)
+    // Add the new virtual host to the existing route config
+    route_config.virtual_hosts.push(virtual_host);
+
+    // Serialize the updated route config
+    let updated_configuration = serde_json::to_value(&route_config)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
+
+    // Update the route config in the database
+    let update_request = crate::storage::UpdateRouteRepositoryRequest {
+        path_prefix: None,
+        cluster_name: None,
+        configuration: Some(updated_configuration),
+        team: None,
+    };
+
+    route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+
+    tracing::info!(
+        route_config_name = %route_config_name,
+        virtual_hosts_count = route_config.virtual_hosts.len(),
+        "Added virtual host to existing route config"
+    );
+
+    // Return 1 to indicate virtual host was added
+    Ok(1)
 }
 
 async fn materialize_listener(
@@ -642,6 +716,99 @@ async fn materialize_listener(
     Ok(())
 }
 
+async fn cleanup_virtual_host_from_route_config(
+    xds_state: &XdsState,
+    spec_name: &str,
+    listener_name: &str,
+) -> std::result::Result<(), ApiError> {
+    let route_repo = xds_state
+        .route_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+    let listener_repo = xds_state
+        .listener_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
+
+    // Derive virtual host name (matches creation logic in openapi/mod.rs:93)
+    let virtual_host_name = format!("{}-vh", spec_name);
+
+    // Get the listener to find its route config name
+    let listener = listener_repo.get_by_name(listener_name).await.map_err(|e| {
+        ApiError::Internal(format!("Failed to get listener '{}': {}", listener_name, e))
+    })?;
+
+    // Parse the listener configuration to find the route_config_name
+    let listener_config: crate::xds::listener::ListenerConfig =
+        serde_json::from_str(&listener.configuration).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse listener configuration: {}", e))
+        })?;
+
+    // Find the HTTP connection manager and get the route_config_name
+    let route_config_name = listener_config
+        .filter_chains
+        .iter()
+        .flat_map(|fc| fc.filters.iter())
+        .find_map(|f| match &f.filter_type {
+            crate::xds::listener::FilterType::HttpConnectionManager {
+                route_config_name, ..
+            } => route_config_name.clone(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            ApiError::Internal(format!(
+                "Listener '{}' has no HTTP connection manager with route_config_name",
+                listener_name
+            ))
+        })?;
+
+    // Get the existing route config
+    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
+        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+    })?;
+
+    // Parse the existing route configuration
+    let mut route_config: crate::xds::route::RouteConfig =
+        serde_json::from_str(&existing_route.configuration).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse route configuration: {}", e))
+        })?;
+
+    // Remove the virtual host
+    let original_count = route_config.virtual_hosts.len();
+    route_config.virtual_hosts.retain(|vh| vh.name != virtual_host_name);
+
+    if route_config.virtual_hosts.len() < original_count {
+        // Serialize the updated route config
+        let updated_configuration = serde_json::to_value(&route_config)
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
+
+        // Update the route config in the database
+        let update_request = crate::storage::UpdateRouteRepositoryRequest {
+            path_prefix: None,
+            cluster_name: None,
+            configuration: Some(updated_configuration),
+            team: None,
+        };
+
+        route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+
+        tracing::info!(
+            virtual_host_name = %virtual_host_name,
+            route_config_name = %route_config_name,
+            remaining_vh_count = route_config.virtual_hosts.len(),
+            "Removed virtual host from route config during import deletion"
+        );
+    } else {
+        tracing::debug!(
+            virtual_host_name = %virtual_host_name,
+            route_config_name = %route_config_name,
+            "Virtual host not found in route config, nothing to clean up"
+        );
+    }
+
+    Ok(())
+}
+
 async fn delete_import_cascade(
     xds_state: &XdsState,
     db_pool: &crate::storage::DbPool,
@@ -653,6 +820,23 @@ async fn delete_import_cascade(
         .cluster_repository
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Cluster repository not configured".to_string()))?;
+
+    // Get import metadata to check if we need to clean up virtual hosts
+    let import_metadata = import_repo
+        .get_by_id(import_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Import '{}' not found", import_id)))?;
+
+    // Clean up virtual hosts from existing route configs (if using existing listener)
+    if let Some(listener_name) = &import_metadata.listener_name {
+        cleanup_virtual_host_from_route_config(
+            xds_state,
+            &import_metadata.spec_name,
+            listener_name,
+        )
+        .await?;
+    }
 
     // Get orphaned clusters before deleting references
     let orphaned_clusters =
