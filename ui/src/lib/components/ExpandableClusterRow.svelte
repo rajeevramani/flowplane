@@ -113,7 +113,7 @@
 		</div>
 
 		<!-- Primary Endpoint -->
-		<div class="w-40 text-sm text-gray-600 font-mono">
+		<div class="w-40 text-sm text-gray-600 font-mono truncate" title={primaryEndpoint}>
 			{primaryEndpoint}
 		</div>
 
