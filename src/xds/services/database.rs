@@ -564,8 +564,9 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
-        // CRITICAL: Do NOT refresh listeners into global cache
-        // Listeners MUST be fetched per-team on each xDS request to maintain team isolation
+        if let Err(error) = state.refresh_listeners_from_repository().await {
+            warn!(%error, "Failed to initialize listener cache from repository");
+        }
 
         // Track listener state using count + last modification timestamp
         // This avoids false positives from PRAGMA data_version which can change
@@ -588,16 +589,14 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                     }
                     Some(_) => {
                         last_listener_state = Some(current_state.clone());
-                        // Increment version to trigger xDS push notifications
-                        // Each connected Envoy will then fetch listeners with team filtering
-                        let new_version =
-                            state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         info!(
-                            new_version,
                             listener_count = current_state.0,
                             last_updated = ?current_state.1,
-                            "Listener data changed, incremented xDS version to trigger team-scoped updates"
+                            "Listener data changed, refreshing listener cache"
                         );
+                        if let Err(error) = state.refresh_listeners_from_repository().await {
+                            warn!(%error, "Failed to refresh listener cache from repository");
+                        }
                     }
                     None => {
                         // First poll, just record the state without triggering update
