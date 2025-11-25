@@ -23,14 +23,20 @@ const EXTENSION_GLOBAL_FILTERS: &str = "x-flowplane-filters";
 
 pub mod defaults;
 
+/// Listener mode for import operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ListenerMode {
+    /// Use an existing listener by name
+    Existing { name: String },
+    /// Create a new listener with the given configuration
+    New { name: String, address: String, port: u16 },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayOptions {
     pub name: String,
-    pub bind_address: String,
-    pub port: u16,
     pub protocol: String,
-    pub shared_listener: bool,
-    pub listener_name: String,
+    pub listener_mode: ListenerMode,
 }
 
 #[derive(Debug, Clone)]
@@ -75,18 +81,15 @@ pub fn build_gateway_plan(
         return Err(GatewayError::InvalidGatewayName(options.name));
     }
 
-    let route_name = if options.shared_listener {
-        defaults::DEFAULT_GATEWAY_ROUTES.to_string()
-    } else {
-        format!("{}-routes", &options.name)
+    // Determine if we're using an existing listener or creating a new one
+    let is_existing_listener = matches!(options.listener_mode, ListenerMode::Existing { .. });
+
+    let (listener_name, bind_address, port) = match &options.listener_mode {
+        ListenerMode::Existing { name } => (name.clone(), "0.0.0.0".to_string(), 10000u16),
+        ListenerMode::New { name, address, port } => (name.clone(), address.clone(), *port),
     };
 
-    let listener_name = if options.shared_listener {
-        defaults::DEFAULT_GATEWAY_LISTENER.to_string()
-    } else {
-        options.listener_name.clone()
-    };
-
+    let route_name = format!("{}-routes", &options.name);
     let virtual_host_name = format!("{}-vh", &options.name);
 
     let servers = if openapi.servers.is_empty() { Vec::new() } else { openapi.servers.clone() };
@@ -99,7 +102,7 @@ pub fn build_gateway_plan(
     let cluster_info = cluster_from_server(primary_server, &options.name, &options.name)?;
     let cluster_requests = vec![cluster_info.request.clone()];
     let mut domains: HashSet<String> = HashSet::new();
-    if !options.shared_listener {
+    if !is_existing_listener {
         domains.insert("*".to_string());
     }
     if !cluster_info.domain.is_empty() {
@@ -174,7 +177,7 @@ pub fn build_gateway_plan(
     let mut domains_vec: Vec<String> =
         if domains.is_empty() { vec!["*".to_string()] } else { domains.into_iter().collect() };
 
-    if options.shared_listener {
+    if is_existing_listener {
         domains_vec.retain(|domain| domain != "*");
         if domains_vec.is_empty() {
             domains_vec.push(cluster_info.domain.clone());
@@ -193,13 +196,15 @@ pub fn build_gateway_plan(
         listener: listener_name.clone(),
         route_config: route_name.clone(),
         clusters: cluster_requests.iter().map(|request| request.name.clone()).collect(),
-        shared_listener: options.shared_listener,
+        shared_listener: is_existing_listener,
     };
 
     let default_cluster_name =
         summary.clusters.first().cloned().unwrap_or_else(|| cluster_info.request.name.clone());
 
-    if options.shared_listener {
+    if is_existing_listener {
+        // When using an existing listener, we return the virtual host to be merged
+        // into the listener's route config
         Ok(GatewayPlan {
             cluster_requests,
             route_request: None,
@@ -208,6 +213,7 @@ pub fn build_gateway_plan(
             summary,
         })
     } else {
+        // When creating a new listener, we create both the route config and listener
         let route_config =
             XdsRouteConfig { name: route_name.clone(), virtual_hosts: vec![virtual_host] };
 
@@ -228,8 +234,8 @@ pub fn build_gateway_plan(
 
         let listener_config = ListenerConfig {
             name: listener_name.clone(),
-            address: options.bind_address.clone(),
-            port: options.port as u32,
+            address: bind_address.clone(),
+            port: port as u32,
             filter_chains: vec![FilterChainConfig {
                 name: Some(format!("{}-chain", options.name)),
                 filters: vec![FilterConfig {
@@ -252,8 +258,8 @@ pub fn build_gateway_plan(
 
         let listener_request = CreateListenerRequest {
             name: listener_name,
-            address: options.bind_address,
-            port: Some(options.port as i64),
+            address: bind_address,
+            port: Some(port as i64),
             protocol: Some(options.protocol),
             configuration: listener_config_value,
             team: None, // OpenAPI Gateway listeners are not team-scoped by default
@@ -495,11 +501,12 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: "0.0.0.0".to_string(),
-            port: 10000,
             protocol: "HTTP".to_string(),
-            shared_listener: false,
-            listener_name: "example-listener".to_string(),
+            listener_mode: ListenerMode::New {
+                name: "example-listener".to_string(),
+                address: "0.0.0.0".to_string(),
+                port: 10000,
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -608,11 +615,10 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: defaults::DEFAULT_GATEWAY_ADDRESS.to_string(),
-            port: defaults::DEFAULT_GATEWAY_PORT,
             protocol: "HTTP".to_string(),
-            shared_listener: true,
-            listener_name: defaults::DEFAULT_GATEWAY_LISTENER.to_string(),
+            listener_mode: ListenerMode::Existing {
+                name: defaults::DEFAULT_GATEWAY_LISTENER.to_string(),
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -620,9 +626,9 @@ mod tests {
         assert!(plan.route_request.is_none());
         assert!(plan.listener_request.is_none());
         assert!(plan.default_virtual_host.is_some());
-        assert!(plan.summary.shared_listener);
+        assert!(plan.summary.shared_listener); // true when using existing listener
         assert_eq!(plan.summary.listener, defaults::DEFAULT_GATEWAY_LISTENER);
-        assert_eq!(plan.summary.route_config, defaults::DEFAULT_GATEWAY_ROUTES);
+        assert_eq!(plan.summary.route_config, "example-routes"); // Now uses gateway-specific route name
     }
 
     #[test]
@@ -645,11 +651,12 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: "0.0.0.0".to_string(),
-            port: 10000,
             protocol: "HTTP".to_string(),
-            shared_listener: false,
-            listener_name: "example-listener".to_string(),
+            listener_mode: ListenerMode::New {
+                name: "example-listener".to_string(),
+                address: "0.0.0.0".to_string(),
+                port: 10000,
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -712,11 +719,12 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: "0.0.0.0".to_string(),
-            port: 10000,
             protocol: "HTTP".to_string(),
-            shared_listener: false,
-            listener_name: "example-listener".to_string(),
+            listener_mode: ListenerMode::New {
+                name: "example-listener".to_string(),
+                address: "0.0.0.0".to_string(),
+                port: 10000,
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -777,11 +785,12 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: "0.0.0.0".to_string(),
-            port: 10000,
             protocol: "HTTP".to_string(),
-            shared_listener: false,
-            listener_name: "example-listener".to_string(),
+            listener_mode: ListenerMode::New {
+                name: "example-listener".to_string(),
+                address: "0.0.0.0".to_string(),
+                port: 10000,
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -821,11 +830,12 @@ mod tests {
 
         let options = GatewayOptions {
             name: "example".to_string(),
-            bind_address: "0.0.0.0".to_string(),
-            port: 10000,
             protocol: "HTTP".to_string(),
-            shared_listener: false,
-            listener_name: "example-listener".to_string(),
+            listener_mode: ListenerMode::New {
+                name: "example-listener".to_string(),
+                address: "0.0.0.0".to_string(),
+                port: 10000,
+            },
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");

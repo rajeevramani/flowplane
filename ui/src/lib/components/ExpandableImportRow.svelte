@@ -47,6 +47,21 @@
 		};
 	}
 
+	// Get the associated listener (either created by this import or an existing one)
+	function getAssociatedListener(): ListenerResponse | null {
+		// First, check if we created a listener
+		const createdListener = listeners.find(l => l.importId === importRecord.id);
+		if (createdListener) return createdListener;
+
+		// If not, try to find the listener by name from importRecord
+		if (importRecord.listenerName) {
+			return listeners.find(l => l.name === importRecord.listenerName) || null;
+		}
+		return null;
+	}
+
+	const associatedListener = $derived(getAssociatedListener());
+
 	function handleDelete(e: Event) {
 		e.stopPropagation();
 		if (onDelete && confirm(`Delete import "${importRecord.specName}"? This will also delete all associated resources.`)) {
@@ -55,7 +70,12 @@
 	}
 
 	const createdResources = $derived(getCreatedResources());
-	const totalResources = $derived(createdResources.routes.length + createdResources.clusters.length + createdResources.listeners.length);
+	// Count includes associated listener even if not created by this import
+	const totalResources = $derived(
+		createdResources.routes.length +
+		createdResources.clusters.length +
+		(associatedListener ? 1 : 0)
+	);
 </script>
 
 <!-- Row Header -->
@@ -186,7 +206,7 @@
 						</svg>
 					</div>
 					<div>
-						<p class="text-2xl font-bold text-gray-900">{createdResources.listeners.length}</p>
+						<p class="text-2xl font-bold text-gray-900">{associatedListener ? 1 : 0}</p>
 						<p class="text-xs text-gray-500">Listeners</p>
 					</div>
 				</div>
@@ -220,15 +240,16 @@
 			</div>
 		{/if}
 
-		{#if createdResources.listeners.length > 0}
+		{#if associatedListener}
 			<div>
-				<h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Listeners</h4>
+				<h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Listener</h4>
 				<div class="flex flex-wrap gap-2">
-					{#each createdResources.listeners as listener}
-						<span class="inline-flex items-center px-2.5 py-1 bg-orange-50 text-orange-700 text-xs rounded-md border border-orange-200">
-							{listener.name}
-						</span>
-					{/each}
+					<span class="inline-flex items-center px-2.5 py-1 bg-orange-50 text-orange-700 text-xs rounded-md border border-orange-200">
+						{associatedListener.name}
+						{#if createdResources.listeners.length === 0}
+							<span class="ml-1.5 px-1.5 py-0.5 bg-orange-100 text-orange-600 text-[10px] rounded" title="Using existing listener">shared</span>
+						{/if}
+					</span>
 				</div>
 			</div>
 		{/if}

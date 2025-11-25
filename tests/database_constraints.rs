@@ -166,6 +166,7 @@ async fn test_listener_created_with_import_id_stores_in_column() {
             spec_checksum: None,
             team: "test".to_string(),
             source_content: None,
+            listener_name: Some("imported-listener".to_string()),
         })
         .await
         .unwrap();
@@ -229,6 +230,7 @@ async fn test_count_by_import_uses_column_not_json() {
             spec_checksum: None,
             team: "test".to_string(),
             source_content: None,
+            listener_name: Some("import1-listener".to_string()),
         })
         .await
         .unwrap();
@@ -240,6 +242,7 @@ async fn test_count_by_import_uses_column_not_json() {
             spec_checksum: None,
             team: "test".to_string(),
             source_content: None,
+            listener_name: Some("import2-listener".to_string()),
         })
         .await
         .unwrap();
@@ -300,6 +303,7 @@ async fn test_cascade_delete_removes_listeners_when_import_deleted() {
             spec_checksum: None,
             team: "test".to_string(),
             source_content: None,
+            listener_name: Some("cascade-listener".to_string()),
         })
         .await
         .unwrap();
@@ -352,6 +356,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             spec_checksum: None,
             team: "test".to_string(),
             source_content: None,
+            listener_name: Some("linked-listener".to_string()),
         })
         .await
         .unwrap();

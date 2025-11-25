@@ -138,8 +138,11 @@ export interface UpdateTokenRequest {
 export interface ImportOpenApiRequest {
 	spec: string; // YAML or JSON string
 	team?: string;
-	listenerIsolation?: boolean;
-	port?: number;
+	listenerMode: 'existing' | 'new';
+	existingListenerName?: string; // when mode='existing'
+	newListenerName?: string; // when mode='new'
+	newListenerAddress?: string;
+	newListenerPort?: number;
 }
 
 export interface ImportResponse {
@@ -173,6 +176,7 @@ export interface ImportSummary {
 	specName: string;
 	specVersion: string | null;
 	team: string;
+	listenerName: string | null;
 	importedAt: string;
 	updatedAt: string;
 }
@@ -183,6 +187,7 @@ export interface ImportDetailsResponse {
 	specVersion: string | null;
 	specChecksum: string | null;
 	team: string;
+	listenerName: string | null;
 	importedAt: string;
 	updatedAt: string;
 	routeCount: number;

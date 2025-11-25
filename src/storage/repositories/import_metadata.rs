@@ -19,6 +19,7 @@ struct ImportMetadataRow {
     pub spec_checksum: Option<String>,
     pub team: String,
     pub source_content: Option<String>,
+    pub listener_name: Option<String>,
     pub imported_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -32,6 +33,7 @@ pub struct ImportMetadataData {
     pub spec_checksum: Option<String>,
     pub team: String,
     pub source_content: Option<String>,
+    pub listener_name: Option<String>,
     pub imported_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -45,6 +47,7 @@ impl From<ImportMetadataRow> for ImportMetadataData {
             spec_checksum: row.spec_checksum,
             team: row.team,
             source_content: row.source_content,
+            listener_name: row.listener_name,
             imported_at: row.imported_at,
             updated_at: row.updated_at,
         }
@@ -59,6 +62,7 @@ pub struct CreateImportMetadataRequest {
     pub spec_checksum: Option<String>,
     pub team: String,
     pub source_content: Option<String>,
+    pub listener_name: Option<String>,
 }
 
 /// Repository for import metadata data access
@@ -80,8 +84,8 @@ impl ImportMetadataRepository {
         let now = chrono::Utc::now();
 
         sqlx::query(
-            "INSERT INTO import_metadata (id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO import_metadata (id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&id)
         .bind(&request.spec_name)
@@ -89,6 +93,7 @@ impl ImportMetadataRepository {
         .bind(&request.spec_checksum)
         .bind(&request.team)
         .bind(&request.source_content)
+        .bind(&request.listener_name)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -104,8 +109,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_get_import_metadata")]
     pub async fn get_by_id(&self, id: &str) -> Result<Option<ImportMetadataData>> {
         let row = sqlx::query_as::<Sqlite, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at
-             FROM import_metadata WHERE id = $1"
+            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
+             FROM import_metadata WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -123,8 +128,8 @@ impl ImportMetadataRepository {
         spec_name: &str,
     ) -> Result<Option<ImportMetadataData>> {
         let row = sqlx::query_as::<Sqlite, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at
-             FROM import_metadata WHERE team = $1 AND spec_name = $2"
+            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
+             FROM import_metadata WHERE team = $1 AND spec_name = $2",
         )
         .bind(team)
         .bind(spec_name)
@@ -139,8 +144,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_list_import_metadata")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<ImportMetadataData>> {
         let rows = sqlx::query_as::<Sqlite, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at
-             FROM import_metadata WHERE team = $1 ORDER BY imported_at DESC"
+            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
+             FROM import_metadata WHERE team = $1 ORDER BY imported_at DESC",
         )
         .bind(team)
         .fetch_all(&self.pool)
@@ -154,8 +159,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_list_all_import_metadata")]
     pub async fn list_all(&self) -> Result<Vec<ImportMetadataData>> {
         let rows = sqlx::query_as::<Sqlite, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, imported_at, updated_at
-             FROM import_metadata ORDER BY imported_at DESC"
+            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
+             FROM import_metadata ORDER BY imported_at DESC",
         )
         .fetch_all(&self.pool)
         .await

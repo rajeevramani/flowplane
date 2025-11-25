@@ -172,10 +172,16 @@
 		if (!user || !newTeam.team.trim()) return;
 
 		try {
+			// Transform global scopes to team-scoped format
+			// e.g., "listeners:read" -> "team:engineering:listeners:read"
+			const teamScopedScopes = newTeam.scopes.map(scope =>
+				`team:${newTeam.team}:${scope}`
+			);
+
 			const request: CreateTeamMembershipRequest = {
 				userId: user.id,
 				team: newTeam.team,
-				scopes: newTeam.scopes
+				scopes: teamScopedScopes
 			};
 			const membership = await apiClient.addTeamMembership(user.id, request);
 			user.teams = [...user.teams, membership];
@@ -430,10 +436,13 @@
 									<h3 class="font-medium text-gray-900">{membership.team}</h3>
 									<div class="mt-2 flex flex-wrap gap-1">
 										{#each membership.scopes as scope}
+											{@const displayScope = scope.startsWith(`team:${membership.team}:`)
+												? scope.substring(`team:${membership.team}:`.length)
+												: scope}
 											<span
 												class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800"
 											>
-												{scope}
+												{displayScope}
 											</span>
 										{/each}
 									</div>
@@ -469,10 +478,13 @@
 						{@const allScopes = [...new Set(user.teams.flatMap(t => t.scopes))]}
 						<div class="flex flex-wrap gap-2">
 							{#each allScopes as scope}
+								{@const displayScope = scope.includes(':') && scope.split(':').length === 4
+									? scope.split(':').slice(2).join(':')
+									: scope}
 								<span
 									class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800"
 								>
-									{scope}
+									{displayScope}
 								</span>
 							{/each}
 						</div>

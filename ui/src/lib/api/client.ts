@@ -269,10 +269,15 @@ class ApiClient {
 	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
 		if (request.team) params.append('team', request.team);
-		if (request.listenerIsolation !== undefined) {
-			params.append('shared_listener', (!request.listenerIsolation).toString());
+		params.append('listener_mode', request.listenerMode);
+		if (request.listenerMode === 'existing' && request.existingListenerName) {
+			params.append('existing_listener_name', request.existingListenerName);
 		}
-		if (request.port) params.append('port', request.port.toString());
+		if (request.listenerMode === 'new') {
+			if (request.newListenerName) params.append('new_listener_name', request.newListenerName);
+			if (request.newListenerAddress) params.append('new_listener_address', request.newListenerAddress);
+			if (request.newListenerPort) params.append('new_listener_port', request.newListenerPort.toString());
+		}
 
 		const path = `/api/v1/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
 

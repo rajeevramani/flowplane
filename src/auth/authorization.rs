@@ -527,6 +527,42 @@ mod tests {
     }
 
     #[test]
+    fn extract_team_scopes_returns_empty_for_global_scopes() {
+        // This test verifies Bug 12 fix: users with only global scopes
+        // (not team-scoped) should get empty team list, preventing them
+        // from seeing all resources via the admin bypass logic
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("global-scopes-only"),
+            "bug-12-user".into(),
+            vec!["listeners:read".into(), "routes:read".into(), "clusters:read".into()],
+        );
+
+        let teams = extract_team_scopes(&ctx);
+        assert_eq!(teams.len(), 0, "Users with global scopes should NOT bypass team isolation");
+        assert!(!has_admin_bypass(&ctx), "Global scopes should not grant admin bypass");
+    }
+
+    #[test]
+    fn extract_team_scopes_correctly_parses_team_scoped_permissions() {
+        // This test verifies correct behavior: users with team-scoped permissions
+        // get their team list extracted properly for resource filtering
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("team-scoped"),
+            "correct-user".into(),
+            vec![
+                "team:engineering:listeners:read".into(),
+                "team:engineering:routes:read".into(),
+                "team:engineering:clusters:read".into(),
+            ],
+        );
+
+        let teams = extract_team_scopes(&ctx);
+        assert_eq!(teams.len(), 1);
+        assert!(teams.contains(&"engineering".to_string()));
+        assert!(!has_admin_bypass(&ctx));
+    }
+
+    #[test]
     fn require_resource_access_returns_ok_when_allowed() {
         let ctx = global_read_context();
         assert!(require_resource_access(&ctx, "routes", "read", None).is_ok());

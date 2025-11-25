@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { parse as parseYaml } from 'yaml';
-	import type { OpenApiSpec } from '$lib/api/types';
+	import type { OpenApiSpec, ListenerResponse } from '$lib/api/types';
 
 	let activeTab = $state<'upload' | 'paste'>('paste');
 	let specContent = $state('');
@@ -18,11 +18,18 @@
 	let userTeams = $state<string[]>([]);
 	let isAdmin = $state(false);
 
+	// Available listeners for the selected team
+	let availableListeners = $state<ListenerResponse[]>([]);
+	let isLoadingListeners = $state(false);
+
 	// Configuration
 	let config = $state({
 		team: '',
-		listenerIsolation: false,
-		port: 8080
+		listenerMode: 'existing' as 'existing' | 'new',
+		existingListenerName: null as string | null,
+		newListenerName: '',
+		newListenerAddress: '0.0.0.0',
+		newListenerPort: 10000
 	});
 
 	// Submission state
@@ -49,8 +56,35 @@
 		// Auto-populate team for non-admin single-team users
 		if (!isAdmin && userTeams.length === 1) {
 			config.team = userTeams[0];
+			await loadListenersForTeam(userTeams[0]);
 		}
 	});
+
+	async function loadListenersForTeam(team: string) {
+		if (!team) {
+			availableListeners = [];
+			return;
+		}
+
+		isLoadingListeners = true;
+		try {
+			const listeners = await apiClient.listListeners();
+			// Filter listeners by team
+			availableListeners = listeners.filter((l) => l.team === team);
+			// Reset selection when team changes
+			config.existingListenerName = availableListeners.length > 0 ? availableListeners[0].name : null;
+		} catch (err) {
+			console.error('Failed to load listeners:', err);
+			availableListeners = [];
+		} finally {
+			isLoadingListeners = false;
+		}
+	}
+
+	async function handleTeamChange(newTeam: string) {
+		config.team = newTeam;
+		await loadListenersForTeam(newTeam);
+	}
 
 	function handleFileSelect(event: Event) {
 		const target = event.target as HTMLInputElement;
@@ -142,6 +176,17 @@
 			return;
 		}
 
+		// Validate listener configuration
+		if (config.listenerMode === 'existing' && !config.existingListenerName) {
+			submitError = 'Please select an existing listener or choose to create a new one.';
+			return;
+		}
+
+		if (config.listenerMode === 'new' && !config.newListenerName.trim()) {
+			submitError = 'Listener name is required when creating a new listener.';
+			return;
+		}
+
 		try {
 			isSubmitting = true;
 			submitError = null;
@@ -149,15 +194,18 @@
 			const response = await apiClient.importOpenApiSpec({
 				spec: specContent,
 				team: config.team,
-				listenerIsolation: config.listenerIsolation,
-				port: config.listenerIsolation ? config.port : undefined
+				listenerMode: config.listenerMode,
+				existingListenerName: config.listenerMode === 'existing' ? config.existingListenerName ?? undefined : undefined,
+				newListenerName: config.listenerMode === 'new' ? config.newListenerName : undefined,
+				newListenerAddress: config.listenerMode === 'new' ? config.newListenerAddress : undefined,
+				newListenerPort: config.listenerMode === 'new' ? config.newListenerPort : undefined
 			});
 
 			showToast('OpenAPI spec imported successfully!', 'success');
 
-			// Redirect to import detail page after a short delay
+			// Redirect to resources page (Imports tab) after a short delay
 			setTimeout(() => {
-				goto(`/imports/${response.importId}`);
+				goto('/resources?tab=imports');
 			}, 1500);
 
 		} catch (e: any) {
@@ -368,7 +416,8 @@
 						<!-- Dropdown for multi-team or admin users -->
 						<select
 							id="team"
-							bind:value={config.team}
+							value={config.team}
+							onchange={(e) => handleTeamChange((e.target as HTMLSelectElement).value)}
 							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 							required
 						>
@@ -386,7 +435,8 @@
 							</p>
 							<input
 								type="text"
-								bind:value={config.team}
+								value={config.team}
+								oninput={(e) => handleTeamChange((e.target as HTMLInputElement).value)}
 								class="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 								placeholder="Enter team name"
 							/>
@@ -408,7 +458,8 @@
 						<input
 							id="team"
 							type="text"
-							bind:value={config.team}
+							value={config.team}
+							oninput={(e) => handleTeamChange((e.target as HTMLInputElement).value)}
 							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 							placeholder="Enter team name"
 							required
@@ -419,37 +470,104 @@
 					{/if}
 				</div>
 
-				<!-- Listener Isolation -->
+				<!-- Listener Selection -->
 				<div>
-					<label class="flex items-center">
-						<input
-							type="checkbox"
-							bind:checked={config.listenerIsolation}
-							class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-						/>
-						<span class="ml-2 text-sm text-gray-700">Enable Listener Isolation</span>
+					<label class="block text-sm font-medium text-gray-700 mb-2">
+						Listener <span class="text-red-500">*</span>
 					</label>
-					<p class="mt-1 text-xs text-gray-500 ml-6">
-						Create a dedicated listener for this API (default: shared listener)
-					</p>
-				</div>
 
-				<!-- Port (only if listener isolation is enabled) -->
-				{#if config.listenerIsolation}
-					<div>
-						<label for="port" class="block text-sm font-medium text-gray-700 mb-2">
-							Listener Port
+					<!-- Radio buttons for listener mode -->
+					<div class="space-y-3">
+						<label class="flex items-center">
+							<input
+								type="radio"
+								name="listenerMode"
+								value="existing"
+								bind:group={config.listenerMode}
+								class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+							/>
+							<span class="ml-2 text-sm text-gray-700">Use existing listener</span>
 						</label>
-						<input
-							id="port"
-							type="number"
-							bind:value={config.port}
-							min="1024"
-							max="65535"
-							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-						/>
+
+						{#if config.listenerMode === 'existing'}
+							<div class="ml-6">
+								{#if isLoadingListeners}
+									<p class="text-sm text-gray-500">Loading listeners...</p>
+								{:else if availableListeners.length === 0}
+									<p class="text-sm text-amber-600">No existing listeners available for this team. Please create a new listener.</p>
+								{:else}
+									<select
+										bind:value={config.existingListenerName}
+										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+									>
+										{#each availableListeners as listener}
+											<option value={listener.name}>{listener.name} ({listener.address}:{listener.port})</option>
+										{/each}
+									</select>
+									<p class="mt-1 text-xs text-gray-500">
+										Routes will be added to the selected listener. Existing routes won't be overwritten.
+									</p>
+								{/if}
+							</div>
+						{/if}
+
+						<label class="flex items-center">
+							<input
+								type="radio"
+								name="listenerMode"
+								value="new"
+								bind:group={config.listenerMode}
+								class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+							/>
+							<span class="ml-2 text-sm text-gray-700">Create new listener</span>
+						</label>
+
+						{#if config.listenerMode === 'new'}
+							<div class="ml-6 space-y-3">
+								<div>
+									<label for="listenerName" class="block text-sm font-medium text-gray-700 mb-1">
+										Listener Name <span class="text-red-500">*</span>
+									</label>
+									<input
+										id="listenerName"
+										type="text"
+										bind:value={config.newListenerName}
+										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+										placeholder="my-api-listener"
+									/>
+								</div>
+
+								<div class="grid grid-cols-2 gap-3">
+									<div>
+										<label for="listenerAddress" class="block text-sm font-medium text-gray-700 mb-1">
+											Address
+										</label>
+										<input
+											id="listenerAddress"
+											type="text"
+											bind:value={config.newListenerAddress}
+											class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+											placeholder="0.0.0.0"
+										/>
+									</div>
+									<div>
+										<label for="listenerPort" class="block text-sm font-medium text-gray-700 mb-1">
+											Port
+										</label>
+										<input
+											id="listenerPort"
+											type="number"
+											bind:value={config.newListenerPort}
+											min="1024"
+											max="65535"
+											class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+										/>
+									</div>
+								</div>
+							</div>
+						{/if}
 					</div>
-				{/if}
+				</div>
 
 				<!-- Submit error -->
 				{#if submitError}

@@ -183,7 +183,7 @@
 			{/if}
 		</div>
 
-		{#if config.selectedTeam}
+		{#if config.selectedTeam !== null && config.selectedTeam !== undefined}
 			<!-- Listener Mode Selection -->
 			<div class="space-y-3">
 				<label class="flex items-center gap-3 cursor-pointer">
