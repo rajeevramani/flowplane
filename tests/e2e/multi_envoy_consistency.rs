@@ -58,8 +58,8 @@ async fn multi_envoy_consistency() {
     envoy2.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:api-definitions:write",
-        "team:e2e:api-definitions:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
         "team:e2e:listeners:read",
         "team:e2e:clusters:read",

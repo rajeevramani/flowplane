@@ -63,8 +63,8 @@ async fn resilience_restart_envoy() {
 
     // Create token and initial API
     let token = create_pat(vec![
-        "team:e2e:api-definitions:write",
-        "team:e2e:api-definitions:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
         "team:e2e:listeners:read",
         "team:e2e:clusters:read",

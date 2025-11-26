@@ -82,7 +82,10 @@ pub async fn post_create_api(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri = format!("http://{}/api/v1/openapi/import?team={}", api_addr, team).parse()?;
+    let uri: Uri = format!(
+        "http://{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener",
+        api_addr, team, cluster_name
+    ).parse()?;
 
     // Create a minimal OpenAPI 3.0 spec for import
     let openapi_spec = json!({

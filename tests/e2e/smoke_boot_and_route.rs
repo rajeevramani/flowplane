@@ -76,8 +76,8 @@ async fn smoke_boot_and_route() {
     // Create a PAT with team-scoped permissions for the e2e team
     // (required after team isolation fix in v0.0.9)
     let token = create_pat(vec![
-        "team:e2e:api-definitions:write",
-        "team:e2e:api-definitions:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
         "team:e2e:listeners:read",
         "team:e2e:clusters:read",

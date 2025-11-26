@@ -55,11 +55,10 @@ async fn openapi_global_filters_applied_to_all_routes() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:listeners:write",
-        "team:e2e:listeners:read",
-        "team:e2e:routes:write",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
-        "team:e2e:clusters:write",
+        "team:e2e:listeners:read",
         "team:e2e:clusters:read",
     ])
     .await
@@ -196,11 +195,10 @@ async fn openapi_route_level_filters_override_global() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:listeners:write",
-        "team:e2e:listeners:read",
-        "team:e2e:routes:write",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
-        "team:e2e:clusters:write",
+        "team:e2e:listeners:read",
         "team:e2e:clusters:read",
     ])
     .await
@@ -331,11 +329,10 @@ async fn openapi_comprehensive_filter_validation() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:listeners:write",
-        "team:e2e:listeners:read",
-        "team:e2e:routes:write",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
-        "team:e2e:clusters:write",
+        "team:e2e:listeners:read",
         "team:e2e:clusters:read",
     ])
     .await
@@ -522,11 +519,10 @@ async fn openapi_custom_response_route_override() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:listeners:write",
-        "team:e2e:listeners:read",
-        "team:e2e:routes:write",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
-        "team:e2e:clusters:write",
+        "team:e2e:listeners:read",
         "team:e2e:clusters:read",
     ])
     .await
@@ -681,11 +677,10 @@ async fn openapi_custom_response_matcher_400_returns_json() {
     envoy.wait_admin_ready().await;
 
     let token = create_pat(vec![
-        "team:e2e:listeners:write",
-        "team:e2e:listeners:read",
-        "team:e2e:routes:write",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
         "team:e2e:routes:read",
-        "team:e2e:clusters:write",
+        "team:e2e:listeners:read",
         "team:e2e:clusters:read",
     ])
     .await
