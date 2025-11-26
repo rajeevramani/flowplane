@@ -3,7 +3,7 @@
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, post_create_api, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, post_create_api, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::naming::UniqueNamer;
@@ -29,6 +29,9 @@ async fn negative_conflicts_duplicate_domain() {
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
 
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     // Boot echo upstream (not strictly required, but handy for endpoint)
     let echo_addr: std::net::SocketAddr = format!("127.0.0.1:{}", echo_upstream).parse().unwrap();
     let mut echo = EchoServerHandle::start(echo_addr).await;
@@ -42,33 +45,37 @@ async fn negative_conflicts_duplicate_domain() {
         .expect("pat");
 
     // First create should succeed
-    let _ =
+    let _res1 =
         post_create_api(api_addr, &token, "e2e", &domain, &route_path, &namer.test_id(), &endpoint)
             .await
             .expect("create api 1");
 
     // Second create with same domain should fail with 409
-    let connector = hyper_util::client::legacy::connect::HttpConnector::new();
-    let client: hyper_util::client::legacy::Client<_, _> =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(connector);
-    let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
-    let body = serde_json::json!({
-        "team": "e2e",
-        "domain": domain,
-        "listenerIsolation": false,
-        "routes": [ { "match": {"prefix": route_path}, "cluster": {"name": namer.test_id(), "endpoint": endpoint}, "timeoutSeconds": 3 } ]
-    });
-    let req = hyper::Request::builder()
-        .method(hyper::http::Method::POST)
-        .uri(uri)
-        .header(hyper::http::header::CONTENT_TYPE, "application/json")
-        .header(hyper::http::header::AUTHORIZATION, format!("Bearer {}", token))
-        .body(http_body_util::Full::<bytes::Bytes>::from(body.to_string()))
-        .unwrap();
-    let res = client.request(req).await.unwrap();
-    assert_eq!(res.status(), hyper::http::StatusCode::CONFLICT);
+    // Note: In the new OpenAPI import system, duplicate domains are detected via listener names.
+    // Since each import creates a unique listener name based on cluster_name, we test by
+    // attempting to create with the same listener name, which should fail with a conflict.
+    let result2 = post_create_api(
+        api_addr,
+        &token,
+        "e2e",
+        &domain, // Same domain
+        &route_path,
+        &namer.test_id(), // Same cluster name = same listener name
+        &endpoint,
+    )
+    .await;
+
+    // The second import should fail due to duplicate listener name
+    assert!(
+        result2.is_err(),
+        "Second import with duplicate domain/listener should fail, but it succeeded"
+    );
+    let err_msg = result2.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("409") || err_msg.contains("conflict") || err_msg.contains("Conflict"),
+        "Expected 409 Conflict error, got: {}",
+        err_msg
+    );
 
     echo.stop().await;
 }

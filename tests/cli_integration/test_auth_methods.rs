@@ -52,20 +52,17 @@ async fn test_auth_with_token_file() {
 }
 
 #[tokio::test]
-#[ignore = "Passes in full test suite but fails when run individually - env var isolation issue"]
 async fn test_auth_with_env_var() {
+    use super::support::run_cli_command_with_env;
+
     let server = TestServer::start().await;
     let token_response = server.issue_token("test-env-var", &["clusters:read"]).await;
 
-    // Set environment variable
-    std::env::set_var("FLOWPLANE_TOKEN", &token_response.token);
-
-    let result =
-        run_cli_command(&["cluster", "list", "--base-url", &server.base_url(), "--output", "json"])
-            .await;
-
-    // Clean up environment variable
-    std::env::remove_var("FLOWPLANE_TOKEN");
+    let result = run_cli_command_with_env(
+        &["cluster", "list", "--base-url", &server.base_url(), "--output", "json"],
+        Some(&[("FLOWPLANE_TOKEN", &token_response.token)]),
+    )
+    .await;
 
     assert!(
         result.is_ok(),
@@ -100,27 +97,27 @@ async fn test_auth_precedence_token_flag_over_file() {
 
 #[tokio::test]
 async fn test_auth_precedence_token_file_over_env() {
+    use super::support::run_cli_command_with_env;
+
     let server = TestServer::start().await;
     let valid_token = server.issue_token("valid-file-token", &["clusters:read"]).await;
     let token_file = TempTokenFile::new(&valid_token.token);
 
-    // Set invalid env var
-    std::env::set_var("FLOWPLANE_TOKEN", "invalid-env-token");
-
     // --token-file should take precedence over env var
-    let result = run_cli_command(&[
-        "cluster",
-        "list",
-        "--token-file",
-        &token_file.path_str(),
-        "--base-url",
-        &server.base_url(),
-        "--output",
-        "json",
-    ])
+    let result = run_cli_command_with_env(
+        &[
+            "cluster",
+            "list",
+            "--token-file",
+            &token_file.path_str(),
+            "--base-url",
+            &server.base_url(),
+            "--output",
+            "json",
+        ],
+        Some(&[("FLOWPLANE_TOKEN", "invalid-env-token")]),
+    )
     .await;
-
-    std::env::remove_var("FLOWPLANE_TOKEN");
 
     assert!(
         result.is_ok(),
@@ -156,9 +153,6 @@ async fn test_auth_failure_with_invalid_token() {
 #[tokio::test]
 async fn test_auth_failure_with_no_token() {
     let server = TestServer::start().await;
-
-    // Ensure no env var is set
-    std::env::remove_var("FLOWPLANE_TOKEN");
 
     let result =
         run_cli_command(&["cluster", "list", "--base-url", &server.base_url(), "--output", "json"])

@@ -30,7 +30,7 @@ async fn negative_invalid_payload_rejected() {
     // Ensure the e2e team exists before creating API definitions
     ensure_team_exists("e2e").await.expect("create e2e team");
 
-    let token = create_pat(vec!["team:e2e:api-definitions:write", "team:e2e:api-definitions:read"])
+    let token = create_pat(vec!["team:e2e:openapi-import:write", "team:e2e:openapi-import:read"])
         .await
         .expect("pat");
 
@@ -47,10 +47,12 @@ async fn negative_invalid_payload_rejected() {
     let client: hyper_util::client::legacy::Client<_, _> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
-    let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
-            .parse()
-            .unwrap();
+    let uri: hyper::http::Uri = format!(
+        "http://{}/api/v1/openapi/import?team=e2e&listener_mode=new&new_listener_name=test-listener",
+        api_addr
+    )
+    .parse()
+    .unwrap();
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)
         .uri(uri)
@@ -61,9 +63,9 @@ async fn negative_invalid_payload_rejected() {
     let res = client.request(req).await.unwrap();
     assert_eq!(res.status(), hyper::http::StatusCode::BAD_REQUEST);
 
-    // Ensure list API definitions returns empty
+    // Ensure list imports returns empty (no imports should be materialized)
     let uri_list: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/openapi/imports?team=e2e", api_addr).parse().unwrap();
     let req_list = hyper::Request::builder()
         .method(hyper::http::Method::GET)
         .uri(uri_list)
@@ -73,6 +75,7 @@ async fn negative_invalid_payload_rejected() {
     let res_list = client.request(req_list).await.unwrap();
     assert!(res_list.status().is_success());
     let bytes = res_list.into_body().collect().await.unwrap().to_bytes();
-    let arr: serde_json::Value = serde_json::from_slice(bytes.as_ref()).unwrap();
-    assert!(arr.as_array().unwrap().is_empty(), "no definitions should be materialized");
+    let json: serde_json::Value = serde_json::from_slice(bytes.as_ref()).unwrap();
+    let imports = json.get("imports").and_then(|v| v.as_array()).unwrap();
+    assert!(imports.is_empty(), "no imports should be materialized");
 }

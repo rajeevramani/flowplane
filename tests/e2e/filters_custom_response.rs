@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -56,6 +56,8 @@ async fn filters_custom_response_config_present() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     let token = create_pat(vec![
         "team:e2e:listeners:write",
         "team:e2e:listeners:read",
@@ -77,6 +79,7 @@ async fn filters_custom_response_config_present() {
     let cluster_uri: hyper::http::Uri =
         format!("http://{}/api/v1/clusters", api_addr).parse().unwrap();
     let cluster_body = serde_json::json!({
+        "team": "e2e",
         "name": namer.test_id(),
         "endpoints": [{"host": "127.0.0.1", "port": echo_addr.port()}]
     });
@@ -94,6 +97,7 @@ async fn filters_custom_response_config_present() {
     let route_name = format!("{}-routes", namer.test_id());
     let route_uri: hyper::http::Uri = format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
     let route_body = serde_json::json!({
+        "team": "e2e",
         "name": route_name,
         "virtualHosts": [{
             "name": format!("{}-vh", namer.test_id()),
@@ -120,6 +124,7 @@ async fn filters_custom_response_config_present() {
     let listener_uri: hyper::http::Uri =
         format!("http://{}/api/v1/listeners", api_addr).parse().unwrap();
     let listener_body = serde_json::json!({
+        "team": "e2e",
         "name": format!("{}-listener", namer.test_id()),
         "address": "127.0.0.1",
         "port": listener_port,
