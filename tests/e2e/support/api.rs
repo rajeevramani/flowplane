@@ -85,7 +85,8 @@ pub async fn post_create_api(
     let uri: Uri = format!(
         "http://{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener",
         api_addr, team, cluster_name
-    ).parse()?;
+    )
+    .parse()?;
 
     // Create a minimal OpenAPI 3.0 spec for import
     let openapi_spec = json!({
