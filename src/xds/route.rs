@@ -175,6 +175,9 @@ impl RouteRule {
 impl RouteMatchConfig {
     /// Convert REST API RouteMatchConfig to envoy-types RouteMatch
     pub fn to_envoy_route_match(&self) -> Result<RouteMatch, crate::Error> {
+        use envoy_types::pb::envoy::config::route::v3::header_matcher::HeaderMatchSpecifier;
+        use envoy_types::pb::envoy::config::route::v3::HeaderMatcher;
+
         let path_specifier = match &self.path {
             PathMatch::Exact(path) => PathSpecifier::Path(path.clone()),
             PathMatch::Prefix(prefix) => PathSpecifier::Prefix(prefix.clone()),
@@ -201,11 +204,58 @@ impl RouteMatchConfig {
             }
         };
 
-        let route_match = RouteMatch {
-            path_specifier: Some(path_specifier),
-            // TODO: Add header and query parameter matching
-            ..Default::default()
+        // Convert header matchers
+        let headers = if let Some(header_configs) = &self.headers {
+            header_configs
+                .iter()
+                .map(|h| {
+                    let header_match_specifier = if let Some(value) = &h.value {
+                        // Exact match - use string_match with exact
+                        Some(HeaderMatchSpecifier::StringMatch(
+                            envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                match_pattern: Some(
+                                    envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                        value.clone(),
+                                    ),
+                                ),
+                                ..Default::default()
+                            },
+                        ))
+                    } else if let Some(regex) = &h.regex {
+                        // Regex match
+                        Some(HeaderMatchSpecifier::StringMatch(
+                            envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                match_pattern: Some(
+                                    envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::SafeRegex(
+                                        envoy_types::pb::envoy::r#type::matcher::v3::RegexMatcher {
+                                            regex: regex.clone(),
+                                            ..Default::default()
+                                        },
+                                    ),
+                                ),
+                                ..Default::default()
+                            },
+                        ))
+                    } else if h.present.unwrap_or(false) {
+                        // Present match
+                        Some(HeaderMatchSpecifier::PresentMatch(true))
+                    } else {
+                        None
+                    };
+
+                    HeaderMatcher {
+                        name: h.name.clone(),
+                        header_match_specifier,
+                        ..Default::default()
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
         };
+
+        let route_match =
+            RouteMatch { path_specifier: Some(path_specifier), headers, ..Default::default() };
 
         Ok(route_match)
     }
@@ -576,5 +626,148 @@ mod tests {
 
         let route = &vhost.routes[0];
         assert!(route.typed_per_filter_config.contains_key("envoy.filters.http.local_ratelimit"));
+    }
+
+    #[test]
+    fn test_header_matcher_exact_conversion() {
+        // Test :method header matcher conversion for HTTP method matching
+        let match_config = RouteMatchConfig {
+            path: PathMatch::Prefix("/api".to_string()),
+            headers: Some(vec![HeaderMatchConfig {
+                name: ":method".to_string(),
+                value: Some("GET".to_string()),
+                regex: None,
+                present: None,
+            }]),
+            query_parameters: None,
+        };
+
+        let envoy_match = match_config.to_envoy_route_match().expect("conversion");
+
+        // Verify header matchers are included
+        assert_eq!(envoy_match.headers.len(), 1, "Expected 1 header matcher");
+        let header_matcher = &envoy_match.headers[0];
+        assert_eq!(header_matcher.name, ":method");
+
+        // Verify it's an exact match using StringMatch
+        use envoy_types::pb::envoy::config::route::v3::header_matcher::HeaderMatchSpecifier;
+        match &header_matcher.header_match_specifier {
+            Some(HeaderMatchSpecifier::StringMatch(string_match)) => {
+                use envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern;
+                match &string_match.match_pattern {
+                    Some(MatchPattern::Exact(value)) => {
+                        assert_eq!(value, "GET", "Expected GET method");
+                    }
+                    _ => panic!("Expected Exact match pattern"),
+                }
+            }
+            _ => panic!("Expected StringMatch header match specifier"),
+        }
+    }
+
+    #[test]
+    fn test_header_matcher_regex_conversion() {
+        let match_config = RouteMatchConfig {
+            path: PathMatch::Prefix("/api".to_string()),
+            headers: Some(vec![HeaderMatchConfig {
+                name: "X-Custom-Header".to_string(),
+                value: None,
+                regex: Some("^prefix-.*".to_string()),
+                present: None,
+            }]),
+            query_parameters: None,
+        };
+
+        let envoy_match = match_config.to_envoy_route_match().expect("conversion");
+
+        assert_eq!(envoy_match.headers.len(), 1);
+        let header_matcher = &envoy_match.headers[0];
+        assert_eq!(header_matcher.name, "X-Custom-Header");
+
+        use envoy_types::pb::envoy::config::route::v3::header_matcher::HeaderMatchSpecifier;
+        match &header_matcher.header_match_specifier {
+            Some(HeaderMatchSpecifier::StringMatch(string_match)) => {
+                use envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern;
+                match &string_match.match_pattern {
+                    Some(MatchPattern::SafeRegex(regex_matcher)) => {
+                        assert_eq!(regex_matcher.regex, "^prefix-.*");
+                    }
+                    _ => panic!("Expected SafeRegex match pattern"),
+                }
+            }
+            _ => panic!("Expected StringMatch header match specifier"),
+        }
+    }
+
+    #[test]
+    fn test_header_matcher_present_conversion() {
+        let match_config = RouteMatchConfig {
+            path: PathMatch::Prefix("/api".to_string()),
+            headers: Some(vec![HeaderMatchConfig {
+                name: "Authorization".to_string(),
+                value: None,
+                regex: None,
+                present: Some(true),
+            }]),
+            query_parameters: None,
+        };
+
+        let envoy_match = match_config.to_envoy_route_match().expect("conversion");
+
+        assert_eq!(envoy_match.headers.len(), 1);
+        let header_matcher = &envoy_match.headers[0];
+        assert_eq!(header_matcher.name, "Authorization");
+
+        use envoy_types::pb::envoy::config::route::v3::header_matcher::HeaderMatchSpecifier;
+        match &header_matcher.header_match_specifier {
+            Some(HeaderMatchSpecifier::PresentMatch(true)) => {}
+            _ => panic!("Expected PresentMatch(true) header match specifier"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_header_matchers() {
+        let match_config = RouteMatchConfig {
+            path: PathMatch::Prefix("/api".to_string()),
+            headers: Some(vec![
+                HeaderMatchConfig {
+                    name: ":method".to_string(),
+                    value: Some("POST".to_string()),
+                    regex: None,
+                    present: None,
+                },
+                HeaderMatchConfig {
+                    name: "Content-Type".to_string(),
+                    value: Some("application/json".to_string()),
+                    regex: None,
+                    present: None,
+                },
+            ]),
+            query_parameters: None,
+        };
+
+        let envoy_match = match_config.to_envoy_route_match().expect("conversion");
+
+        assert_eq!(envoy_match.headers.len(), 2, "Expected 2 header matchers");
+
+        let names: Vec<&str> = envoy_match.headers.iter().map(|h| h.name.as_str()).collect();
+        assert!(names.contains(&":method"));
+        assert!(names.contains(&"Content-Type"));
+    }
+
+    #[test]
+    fn test_no_headers_produces_empty_list() {
+        let match_config = RouteMatchConfig {
+            path: PathMatch::Prefix("/api".to_string()),
+            headers: None,
+            query_parameters: None,
+        };
+
+        let envoy_match = match_config.to_envoy_route_match().expect("conversion");
+
+        assert!(
+            envoy_match.headers.is_empty(),
+            "Expected empty header list when no headers specified"
+        );
     }
 }

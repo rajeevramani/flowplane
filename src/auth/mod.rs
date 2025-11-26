@@ -11,6 +11,7 @@ pub mod jwt;
 pub mod login_service;
 pub mod middleware;
 pub mod models;
+pub mod scope_registry;
 pub mod session;
 pub mod setup_token;
 pub mod team;

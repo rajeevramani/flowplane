@@ -54,6 +54,8 @@ pub(super) fn route_response_from_data(data: RouteData) -> Result<RouteResponse,
         team,
         path_prefix: data.path_prefix,
         cluster_targets: data.cluster_name,
+        import_id: data.import_id,
+        route_order: data.route_order,
         config,
     })
 }

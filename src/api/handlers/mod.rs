@@ -1,7 +1,6 @@
 //! HTTP request handlers organized by resource type
 
 pub mod aggregated_schemas;
-pub mod api_definitions;
 pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
@@ -9,8 +8,10 @@ pub mod clusters;
 pub mod health;
 pub mod learning_sessions;
 pub mod listeners;
+pub mod openapi_import;
 pub mod reporting;
 pub mod routes;
+pub mod scopes;
 pub mod teams;
 pub mod users;
 
@@ -19,15 +20,11 @@ pub use aggregated_schemas::{
     compare_aggregated_schemas_handler, export_aggregated_schema_handler,
     get_aggregated_schema_handler, list_aggregated_schemas_handler,
 };
-pub use api_definitions::{
-    append_route_handler, delete_api_definition_handler, get_api_definition_handler,
-    import_openapi_handler, list_api_definitions_handler, update_api_definition_handler,
-};
 pub use audit_log::list_audit_logs;
 pub use auth::{
-    create_session_handler, create_token_handler, get_session_info_handler, get_token_handler,
-    list_tokens_handler, login_handler, logout_handler, revoke_token_handler, rotate_token_handler,
-    update_token_handler,
+    change_password_handler, create_session_handler, create_token_handler,
+    get_session_info_handler, get_token_handler, list_tokens_handler, login_handler,
+    logout_handler, revoke_token_handler, rotate_token_handler, update_token_handler,
 };
 pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
@@ -43,11 +40,13 @@ pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,
     update_listener_handler,
 };
+pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use reporting::list_route_flows_handler;
 pub use routes::{
     create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
     update_route_handler,
 };
+pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
     get_team_bootstrap_handler, list_teams_handler,

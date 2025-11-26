@@ -4,7 +4,10 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, post_append_route, post_create_api, wait_http_ready};
+use support::api::{
+    create_pat, ensure_team_exists, post_append_route_to_listener, post_create_api_on_port,
+    wait_http_ready,
+};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -40,6 +43,7 @@ async fn config_update_add_route() {
     let mut ports = PortAllocator::new();
     let envoy_admin = ports.reserve_labeled("envoy-admin");
     let echo_upstream = ports.reserve_labeled("echo-upstream");
+    let listener_port = ports.reserve_labeled("listener");
 
     // Create per-test DB path and track for cleanup
     let db_dir = tempdir().expect("db dir");
@@ -63,44 +67,62 @@ async fn config_update_add_route() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     // Create token and initial API with route1
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:write",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");
     let endpoint = format!("127.0.0.1:{}", echo_addr.port());
-    let resp =
-        post_create_api(api_addr, &token, "e2e", &domain, &route1, &namer.test_id(), &endpoint)
-            .await
-            .expect("create api");
-    let api_id = resp["id"].as_str().expect("api id");
-
-    // Verify route1 works on the default gateway
-    let body =
-        envoy.wait_for_route(&domain, &route1, 200).await.expect("initial route did not converge");
-    assert!(body.starts_with("echo:"), "unexpected echo response");
-
-    // Append route2
-    let _ = post_append_route(
+    let resp = post_create_api_on_port(
         api_addr,
         &token,
-        api_id,
-        &route2,
+        "e2e",
+        &domain,
+        &route1,
         &namer.test_id(),
         &endpoint,
-        Some("add route2"),
+        listener_port,
     )
     .await
-    .expect("append route");
+    .expect("create api");
+    let _import_id = resp["importId"].as_str().expect("import id");
 
-    // Verify both route1 and route2 work
-    let body =
-        envoy.wait_for_route(&domain, &route2, 200).await.expect("appended route did not converge");
+    // Verify route1 works on the new listener port
+    let body = envoy
+        .wait_for_route_on_port(listener_port, &domain, &route1, 200)
+        .await
+        .expect("initial route did not converge");
+    assert!(body.starts_with("echo:"), "unexpected echo response");
+
+    // Append route2 to the same listener using OpenAPI import with listener_mode=existing
+    let listener_name = format!("{}-listener", namer.test_id());
+    let route2_cluster = format!("{}-route2", namer.test_id());
+    let _ = post_append_route_to_listener(
+        api_addr,
+        &token,
+        "e2e",
+        &listener_name,
+        &domain,
+        &route2,
+        &route2_cluster,
+        &endpoint,
+    )
+    .await
+    .expect("append route to listener");
+
+    // Verify both route1 and route2 work on the same listener port
+    let body = envoy
+        .wait_for_route_on_port(listener_port, &domain, &route2, 200)
+        .await
+        .expect("appended route did not converge");
     assert!(body.starts_with("echo:"), "unexpected echo response");
 
     // Optional: config_dump contains both paths

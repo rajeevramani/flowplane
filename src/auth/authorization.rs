@@ -87,7 +87,7 @@ pub fn check_resource_access(
         return true;
     }
 
-    // Check resource-level permission
+    // Check resource-level permission (exact match)
     let resource_scope = format!("{}:{}", resource, action);
     if context.has_scope(&resource_scope) {
         return true;
@@ -95,8 +95,20 @@ pub fn check_resource_access(
 
     // Check team-scoped permission if team is provided
     if let Some(team_name) = team {
+        // Check exact match first
         let team_scope = format!("team:{}:{}:{}", team_name, resource, action);
         if context.has_scope(&team_scope) {
+            return true;
+        }
+
+        // Check wildcard patterns: team:{team}:*:* or team:{team}:{resource}:*
+        let team_wildcard_all = format!("team:{}:*:*", team_name);
+        if context.has_scope(&team_wildcard_all) {
+            return true;
+        }
+
+        let team_wildcard_action = format!("team:{}:{}:*", team_name, resource);
+        if context.has_scope(&team_wildcard_action) {
             return true;
         }
     } else {
@@ -104,15 +116,50 @@ pub fn check_resource_access(
         // This allows team-scoped users to call handlers that will filter by their teams
         for scope in context.scopes() {
             if let Some(team_name) = parse_team_from_scope(scope) {
+                // Check exact match
                 let expected_scope = format!("team:{}:{}:{}", team_name, resource, action);
                 if *scope == expected_scope {
                     return true;
                 }
             }
+
+            // Check wildcard patterns
+            if let Some(team_name) = parse_team_wildcard_scope(scope) {
+                // User has team:X:*:* - grant access for this team
+                let _ = team_name; // Unused but indicates wildcard access exists
+                return true;
+            }
         }
     }
 
     false
+}
+
+/// Parse team name from a wildcard scope string.
+///
+/// Expected pattern: `team:{name}:*:*` or `team:{name}:{resource}:*`
+///
+/// # Arguments
+///
+/// * `scope` - The scope string to parse
+///
+/// # Returns
+///
+/// `Some(team_name)` if the scope is a wildcard team scope, `None` otherwise.
+pub fn parse_team_wildcard_scope(scope: &str) -> Option<String> {
+    let parts: Vec<&str> = scope.split(':').collect();
+
+    // Pattern: team:{name}:*:* (full wildcard)
+    if parts.len() == 4 && parts[0] == "team" && parts[2] == "*" && parts[3] == "*" {
+        return Some(parts[1].to_string());
+    }
+
+    // Pattern: team:{name}:{resource}:* (action wildcard)
+    if parts.len() == 4 && parts[0] == "team" && parts[3] == "*" {
+        return Some(parts[1].to_string());
+    }
+
+    None
 }
 
 /// Require resource access or return a 403 Forbidden error.
@@ -360,10 +407,17 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return None;
         }
 
-        // Special case: /api/v1/teams/{team}/bootstrap is an api-definitions resource
-        // This allows tokens with api-definitions:read to access team bootstrap
+        // Special case: /api/v1/teams/{team}/bootstrap uses generate-envoy-config resource
+        // This allows tokens with generate-envoy-config:read to access team bootstrap
         if parts[2] == "teams" && parts.len() >= 4 && parts.last() == Some(&"bootstrap") {
-            return Some("api-definitions");
+            return Some("generate-envoy-config");
+        }
+
+        // Special case: /api/v1/openapi/* routes use "openapi-import" resource
+        // The scope naming convention uses "openapi-import" (e.g., team:X:openapi-import:write)
+        // but the URL structure is /api/v1/openapi/import, /api/v1/openapi/imports, etc.
+        if parts[2] == "openapi" {
+            return Some("openapi-import");
         }
 
         Some(parts[2])
@@ -473,6 +527,42 @@ mod tests {
     }
 
     #[test]
+    fn extract_team_scopes_returns_empty_for_global_scopes() {
+        // This test verifies Bug 12 fix: users with only global scopes
+        // (not team-scoped) should get empty team list, preventing them
+        // from seeing all resources via the admin bypass logic
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("global-scopes-only"),
+            "bug-12-user".into(),
+            vec!["listeners:read".into(), "routes:read".into(), "clusters:read".into()],
+        );
+
+        let teams = extract_team_scopes(&ctx);
+        assert_eq!(teams.len(), 0, "Users with global scopes should NOT bypass team isolation");
+        assert!(!has_admin_bypass(&ctx), "Global scopes should not grant admin bypass");
+    }
+
+    #[test]
+    fn extract_team_scopes_correctly_parses_team_scoped_permissions() {
+        // This test verifies correct behavior: users with team-scoped permissions
+        // get their team list extracted properly for resource filtering
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("team-scoped"),
+            "correct-user".into(),
+            vec![
+                "team:engineering:listeners:read".into(),
+                "team:engineering:routes:read".into(),
+                "team:engineering:clusters:read".into(),
+            ],
+        );
+
+        let teams = extract_team_scopes(&ctx);
+        assert_eq!(teams.len(), 1);
+        assert!(teams.contains(&"engineering".to_string()));
+        assert!(!has_admin_bypass(&ctx));
+    }
+
+    #[test]
     fn require_resource_access_returns_ok_when_allowed() {
         let ctx = global_read_context();
         assert!(require_resource_access(&ctx, "routes", "read", None).is_ok());
@@ -497,6 +587,150 @@ mod tests {
         assert_eq!(action_from_http_method("UNKNOWN"), "read");
     }
 
+    // === Regression tests for admin-with-team-memberships bug ===
+    // These tests ensure admin bypass works correctly even when the admin
+    // also has team-scoped permissions from their team memberships.
+
+    /// Test that admin with ONLY admin:all scope can access any team's resources
+    #[test]
+    fn admin_only_can_access_any_team_resource() {
+        let ctx = admin_context(); // Only has admin:all
+
+        // Can access any team
+        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "openapi-import", "read", Some("platform")));
+        assert!(check_resource_access(&ctx, "openapi-import", "delete", Some("random-team")));
+
+        // require_resource_access also works
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
+    }
+
+    /// Test that admin with admin:all AND team memberships can still access any team
+    /// This was the root cause of the bug - admins with team memberships were being
+    /// restricted to only their membership teams.
+    #[test]
+    fn admin_with_team_membership_can_access_other_teams() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("admin-with-membership"),
+            "admin-with-teams".into(),
+            vec![
+                "admin:all".into(),
+                "team:platform-admin:routes:read".into(),
+                "team:platform-admin:clusters:write".into(),
+            ],
+        );
+
+        // Admin bypass should still work
+        assert!(has_admin_bypass(&ctx));
+
+        // Can access ANY team, not just platform-admin
+        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "openapi-import", "read", Some("payments")));
+        assert!(check_resource_access(&ctx, "routes", "write", Some("random-team")));
+
+        // require_resource_access also works for any team
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "read", Some("platform-admin")).is_ok()
+        );
+    }
+
+    /// Test that extract_team_scopes correctly extracts teams but ignores admin:all
+    #[test]
+    fn extract_team_scopes_ignores_admin_all_scope() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("admin-mixed"),
+            "admin".into(),
+            vec![
+                "admin:all".into(),
+                "team:engineering:routes:read".into(),
+                "team:platform:clusters:write".into(),
+            ],
+        );
+
+        let teams = extract_team_scopes(&ctx);
+
+        // Should contain the team names from team-scoped permissions
+        assert!(teams.contains(&"engineering".to_string()));
+        assert!(teams.contains(&"platform".to_string()));
+
+        // Should NOT contain "admin" - admin:all is not a team scope
+        assert!(!teams.contains(&"admin".to_string()));
+        assert!(!teams.contains(&"all".to_string()));
+    }
+
+    /// Test that user with team-scoped permission can access their team
+    #[test]
+    fn user_with_team_scope_can_access_own_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("eng-user"),
+            "eng-user".into(),
+            vec!["team:engineering:openapi-import:write".into()],
+        );
+
+        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+        );
+    }
+
+    /// Test that user with team-scoped permission CANNOT access other teams
+    #[test]
+    fn user_with_team_scope_cannot_access_other_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("eng-user"),
+            "eng-user".into(),
+            vec!["team:engineering:openapi-import:write".into()],
+        );
+
+        // Cannot access platform team
+        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
+        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("platform")).is_err());
+    }
+
+    /// Test that user with global resource scope (no team prefix) can access any team
+    #[test]
+    fn user_with_global_scope_can_access_any_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("global-user"),
+            "global".into(),
+            vec!["openapi-import:write".into()],
+        );
+
+        // Can access any team with global scope
+        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
+        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("random")).is_ok());
+    }
+
+    /// Test has_admin_bypass returns true only for admin:all scope
+    #[test]
+    fn has_admin_bypass_requires_exact_admin_all_scope() {
+        // Context with admin:all should bypass
+        let admin_ctx = admin_context();
+        assert!(has_admin_bypass(&admin_ctx));
+
+        // Context with only team scopes should NOT bypass
+        let team_ctx = platform_team_context();
+        assert!(!has_admin_bypass(&team_ctx));
+
+        // Context with global resource scopes should NOT bypass
+        let global_ctx = global_read_context();
+        assert!(!has_admin_bypass(&global_ctx));
+
+        // Context with "admin:" prefix but not "admin:all" should NOT bypass
+        let partial_admin_ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("partial"),
+            "partial".into(),
+            vec!["admin:users".into()],
+        );
+        assert!(!has_admin_bypass(&partial_admin_ctx));
+    }
+
     #[test]
     fn resource_from_path_extracts_resource_name() {
         assert_eq!(resource_from_path("/api/v1/routes"), Some("routes"));
@@ -508,16 +742,16 @@ mod tests {
         assert_eq!(resource_from_path("/health"), None);
         assert_eq!(resource_from_path("/api/v2/routes"), None); // Wrong version
 
-        // Special case: team bootstrap endpoint should be treated as api-definitions resource
+        // Special case: team bootstrap endpoint uses generate-envoy-config resource
         assert_eq!(
             resource_from_path("/api/v1/teams/payments/bootstrap"),
-            Some("api-definitions"),
-            "team bootstrap should be treated as api-definitions resource"
+            Some("generate-envoy-config"),
+            "team bootstrap should use generate-envoy-config resource"
         );
         assert_eq!(
             resource_from_path("/api/v1/teams/engineering/bootstrap"),
-            Some("api-definitions"),
-            "team bootstrap should be treated as api-definitions resource"
+            Some("generate-envoy-config"),
+            "team bootstrap should use generate-envoy-config resource"
         );
 
         // List teams endpoint should not require specific scope (accessible to all authenticated users)
@@ -538,5 +772,124 @@ mod tests {
             Some("teams"),
             "other team endpoints should return teams as resource"
         );
+
+        // OpenAPI import routes should map to "openapi-import" resource
+        // URL structure: /api/v1/openapi/import, /api/v1/openapi/imports
+        // Scope naming: team:X:openapi-import:write, openapi-import:read
+        assert_eq!(
+            resource_from_path("/api/v1/openapi/import"),
+            Some("openapi-import"),
+            "openapi import endpoint should use openapi-import resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/openapi/imports"),
+            Some("openapi-import"),
+            "openapi imports list endpoint should use openapi-import resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/openapi/imports/abc-123"),
+            Some("openapi-import"),
+            "openapi import detail endpoint should use openapi-import resource"
+        );
+    }
+
+    // === Wildcard scope matching tests ===
+
+    /// Test that team:X:*:* wildcard grants access to all resources
+    #[test]
+    fn wildcard_scope_grants_all_team_resources() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("wildcard-token"),
+            "wildcard".into(),
+            vec!["team:platform-admin:*:*".into()],
+        );
+
+        // Should have access to any resource with any action for this team
+        assert!(check_resource_access(&ctx, "api-definitions", "read", Some("platform-admin")));
+        assert!(check_resource_access(&ctx, "routes", "write", Some("platform-admin")));
+        assert!(check_resource_access(&ctx, "clusters", "delete", Some("platform-admin")));
+        assert!(check_resource_access(&ctx, "listeners", "read", Some("platform-admin")));
+
+        // But NOT for other teams
+        assert!(!check_resource_access(&ctx, "api-definitions", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "routes", "write", Some("other-team")));
+    }
+
+    /// Test that team:X:{resource}:* wildcard grants access to all actions on that resource
+    #[test]
+    fn wildcard_action_scope_grants_all_actions() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("action-wildcard"),
+            "action-wildcard".into(),
+            vec!["team:engineering:routes:*".into()],
+        );
+
+        // Should have access to all actions on routes for engineering team
+        assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
+        assert!(check_resource_access(&ctx, "routes", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "routes", "delete", Some("engineering")));
+
+        // But NOT for other resources
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "api-definitions", "read", Some("engineering")));
+
+        // And NOT for other teams
+        assert!(!check_resource_access(&ctx, "routes", "read", Some("platform")));
+    }
+
+    /// Test parse_team_wildcard_scope correctly identifies wildcard scopes
+    #[test]
+    fn parse_team_wildcard_scope_extracts_team() {
+        // Full wildcard: team:X:*:*
+        assert_eq!(
+            parse_team_wildcard_scope("team:platform-admin:*:*"),
+            Some("platform-admin".to_string())
+        );
+        assert_eq!(
+            parse_team_wildcard_scope("team:engineering:*:*"),
+            Some("engineering".to_string())
+        );
+
+        // Action wildcard: team:X:resource:*
+        assert_eq!(
+            parse_team_wildcard_scope("team:platform:routes:*"),
+            Some("platform".to_string())
+        );
+
+        // Non-wildcard scopes should return None
+        assert_eq!(parse_team_wildcard_scope("team:platform:routes:read"), None);
+        assert_eq!(parse_team_wildcard_scope("routes:read"), None);
+        assert_eq!(parse_team_wildcard_scope("admin:all"), None);
+    }
+
+    /// Test that wildcard scope allows access without specifying team
+    #[test]
+    fn wildcard_scope_allows_access_without_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("wildcard-no-team"),
+            "wildcard".into(),
+            vec!["team:platform-admin:*:*".into()],
+        );
+
+        // When no team is specified, should allow access if user has any team wildcard
+        assert!(check_resource_access(&ctx, "api-definitions", "read", None));
+        assert!(check_resource_access(&ctx, "routes", "write", None));
+    }
+
+    /// Test bootstrap endpoint access with wildcard scope
+    #[test]
+    fn bootstrap_access_with_wildcard_scope() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("bootstrap-test"),
+            "user-with-wildcard".into(),
+            vec!["team:engineering:*:*".into()],
+        );
+
+        // User should be able to access bootstrap for their team
+        // The bootstrap endpoint uses resource="generate-envoy-config", action="read"
+        assert!(check_resource_access(&ctx, "generate-envoy-config", "read", Some("engineering")));
+
+        // But not for other teams
+        assert!(!check_resource_access(&ctx, "generate-envoy-config", "read", Some("platform")));
     }
 }

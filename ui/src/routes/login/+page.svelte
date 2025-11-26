@@ -15,7 +15,7 @@
 		try {
 			await apiClient.login({ email, password });
 			// Login successful, redirect to dashboard
-			goto('/dashboard');
+			await goto('/dashboard');
 		} catch (error) {
 			// Error handling - show error message
 			errorMessage = error instanceof Error ? error.message : 'Login failed';

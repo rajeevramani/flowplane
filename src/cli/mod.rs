@@ -3,7 +3,6 @@
 //! Provides CLI commands for database management, personal access token administration,
 //! API definition management, and native resource management via HTTP client.
 
-pub mod api_definition;
 pub mod auth;
 pub mod client;
 pub mod clusters;
@@ -64,12 +63,6 @@ pub enum Commands {
     Auth {
         #[command(subcommand)]
         command: auth::AuthCommands,
-    },
-
-    /// API definition management commands
-    Api {
-        #[command(subcommand)]
-        command: api_definition::ApiCommands,
     },
 
     /// Cluster management commands
@@ -136,17 +129,6 @@ pub async fn run_cli() -> anyhow::Result<()> {
     match cli.command {
         Commands::Database { command } => handle_database_command(command, &database).await?,
         Commands::Auth { command } => auth::handle_auth_command(command, &database).await?,
-        Commands::Api { command } => {
-            api_definition::handle_api_command(
-                command,
-                cli.token,
-                cli.token_file,
-                cli.base_url,
-                cli.timeout,
-                cli.verbose,
-            )
-            .await?
-        }
         Commands::Cluster { command } => {
             let client = create_http_client(
                 cli.token,

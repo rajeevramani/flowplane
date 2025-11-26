@@ -6,10 +6,10 @@ use flowplane::auth::team::CreateTeamRequest;
 use flowplane::config::DatabaseConfig;
 use flowplane::storage::create_pool;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
+use flowplane::storage::repositories::{CreateImportMetadataRequest, ImportMetadataRepository};
 use flowplane::storage::repository::{
-    ApiDefinitionRepository, ClusterRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
-    CreateClusterRequest, CreateListenerRequest, CreateRouteRequest, ListenerRepository,
-    RouteRepository,
+    ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteRequest,
+    ListenerRepository, RouteRepository,
 };
 
 async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
@@ -62,6 +62,7 @@ async fn test_source_enum_constraint_on_routes() {
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -110,6 +111,7 @@ async fn test_valid_source_values_accepted() {
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "test"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -122,6 +124,7 @@ async fn test_valid_source_values_accepted() {
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();
@@ -135,6 +138,9 @@ async fn test_valid_source_values_accepted() {
             cluster_name: "test-cluster".to_string(),
             configuration: serde_json::json!({"name": "test"}),
             team: Some("test".into()),
+            import_id: None,
+            route_order: None,
+            headers: None,
         })
         .await
         .unwrap();
@@ -142,224 +148,257 @@ async fn test_valid_source_values_accepted() {
     assert_eq!(route.source, "native_api");
 }
 
+// ============================================================================
+// Import ID Column Tests (Phase 7 - Listener/Import Linkage Fix)
+// ============================================================================
+
 #[tokio::test]
-#[ignore] // TODO: generated_listener_id doesn't have FK constraint in schema - pre-existing issue
-async fn test_api_definition_listener_fk_on_delete_set_null() {
+async fn test_listener_created_with_import_id_stores_in_column() {
     let pool = create_test_pool().await;
     create_test_team(&pool, "test").await;
-    create_test_team(&pool, "test-team").await;
 
-    let api_repo = ApiDefinitionRepository::new(pool.clone());
+    // Create import metadata first
+    let import_repo = ImportMetadataRepository::new(pool.clone());
+    let import = import_repo
+        .create(CreateImportMetadataRequest {
+            spec_name: "test-api".to_string(),
+            spec_version: Some("1.0.0".to_string()),
+            spec_checksum: None,
+            team: "test".to_string(),
+            source_content: None,
+            listener_name: Some("imported-listener".to_string()),
+        })
+        .await
+        .unwrap();
+
+    // Create listener with import_id
     let listener_repo = ListenerRepository::new(pool.clone());
-
-    // Create a listener
     let listener = listener_repo
         .create(CreateListenerRequest {
-            name: "test-listener".to_string(),
+            name: "imported-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
-            configuration: serde_json::json!({"name": "test"}),
+            configuration: serde_json::json!({"name": "imported-listener"}),
             team: Some("test".into()),
+            import_id: Some(import.id.clone()),
         })
         .await
         .unwrap();
 
-    // Create an API definition
-    let api_def = api_repo
-        .create_definition(CreateApiDefinitionRequest {
-            team: "test-team".to_string(),
-            domain: "test.example.com".to_string(),
-            tls_config: None,
-            metadata: None,
-        })
-        .await
-        .unwrap();
+    // Verify import_id is stored in the column, not just JSON
+    assert_eq!(listener.import_id, Some(import.id.clone()));
 
-    // Manually update the API definition to reference the listener
-    sqlx::query("UPDATE api_definitions SET generated_listener_id = $1 WHERE id = $2")
-        .bind(&listener.id)
-        .bind(&api_def.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    // Verify the FK is set
-    let updated_def = api_repo.get_definition(&api_def.id).await.unwrap();
-    assert_eq!(updated_def.generated_listener_id, Some(listener.id.to_string()));
-
-    // Delete the listener - should set generated_listener_id to NULL
-    listener_repo.delete(&listener.id).await.unwrap();
-
-    // Verify the FK is now NULL
-    let final_def = api_repo.get_definition(&api_def.id).await.unwrap();
-    assert_eq!(final_def.generated_listener_id, None);
+    // Verify we can retrieve the listener and import_id is preserved
+    let retrieved = listener_repo.get_by_name("imported-listener").await.unwrap();
+    assert_eq!(retrieved.import_id, Some(import.id));
 }
 
 #[tokio::test]
-async fn test_api_route_fk_on_delete_set_null() {
+async fn test_listener_without_import_id_has_none() {
     let pool = create_test_pool().await;
     create_test_team(&pool, "test").await;
-    create_test_team(&pool, "test-team").await;
 
-    let api_repo = ApiDefinitionRepository::new(pool.clone());
-    let route_repo = RouteRepository::new(pool.clone());
-    let cluster_repo = ClusterRepository::new(pool.clone());
-
-    // Create a cluster first
-    let cluster = cluster_repo
-        .create(CreateClusterRequest {
-            name: "test-cluster".to_string(),
-            service_name: "test-service".to_string(),
-            configuration: serde_json::json!({"type": "EDS"}),
+    let listener_repo = ListenerRepository::new(pool.clone());
+    let listener = listener_repo
+        .create(CreateListenerRequest {
+            name: "native-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: Some(8081),
+            protocol: Some("HTTP".to_string()),
+            configuration: serde_json::json!({"name": "native-listener"}),
             team: Some("test".into()),
+            import_id: None,
         })
         .await
         .unwrap();
 
-    // Create a route
-    let route = route_repo
-        .create(CreateRouteRequest {
-            name: "test-route".to_string(),
-            path_prefix: "/api".to_string(),
-            cluster_name: "test-cluster".to_string(),
-            configuration: serde_json::json!({"name": "test"}),
-            team: Some("test".into()),
-        })
-        .await
-        .unwrap();
-
-    // Create an API definition
-    let api_def = api_repo
-        .create_definition(CreateApiDefinitionRequest {
-            team: "test-team".to_string(),
-            domain: "test.example.com".to_string(),
-            tls_config: None,
-            metadata: None,
-        })
-        .await
-        .unwrap();
-
-    // Create an API route
-    let api_route = api_repo
-        .create_route(CreateApiRouteRequest {
-            api_definition_id: api_def.id.to_string(),
-            match_type: "prefix".to_string(),
-            match_value: "/api".to_string(),
-            case_sensitive: true,
-            headers: None,
-            rewrite_prefix: None,
-            rewrite_regex: None,
-            rewrite_substitution: None,
-            upstream_targets: serde_json::json!({"targets": []}),
-            timeout_seconds: None,
-            override_config: None,
-            deployment_note: None,
-            route_order: 0,
-        })
-        .await
-        .unwrap();
-
-    // Manually update the API route to reference the route and cluster
-    sqlx::query(
-        "UPDATE api_routes SET generated_route_id = $1, generated_cluster_id = $2 WHERE id = $3",
-    )
-    .bind(&route.id)
-    .bind(&cluster.id)
-    .bind(&api_route.id)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Verify the FKs are set
-    let updated_route = api_repo.get_route(&api_route.id).await.unwrap();
-    assert_eq!(updated_route.generated_route_id, Some(route.id.to_string()));
-    assert_eq!(updated_route.generated_cluster_id, Some(cluster.id.to_string()));
-
-    // Delete the route - should set generated_route_id to NULL
-    route_repo.delete(&route.id).await.unwrap();
-
-    // Verify generated_route_id is now NULL
-    let after_route_delete = api_repo.get_route(&api_route.id).await.unwrap();
-    assert_eq!(after_route_delete.generated_route_id, None);
-    assert_eq!(after_route_delete.generated_cluster_id, Some(cluster.id.to_string()));
-
-    // Delete the cluster - should set generated_cluster_id to NULL
-    cluster_repo.delete(&cluster.id).await.unwrap();
-
-    // Verify generated_cluster_id is now NULL
-    let after_cluster_delete = api_repo.get_route(&api_route.id).await.unwrap();
-    assert_eq!(after_cluster_delete.generated_route_id, None);
-    assert_eq!(after_cluster_delete.generated_cluster_id, None);
+    assert_eq!(listener.import_id, None);
 }
 
 #[tokio::test]
-async fn test_api_definition_cascading_delete_to_routes() {
+async fn test_count_by_import_uses_column_not_json() {
     let pool = create_test_pool().await;
-    create_test_team(&pool, "test-team").await;
+    create_test_team(&pool, "test").await;
 
-    let api_repo = ApiDefinitionRepository::new(pool.clone());
-
-    // Create an API definition
-    let api_def = api_repo
-        .create_definition(CreateApiDefinitionRequest {
-            team: "test-team".to_string(),
-            domain: "test.example.com".to_string(),
-            tls_config: None,
-            metadata: None,
+    // Create two imports
+    let import_repo = ImportMetadataRepository::new(pool.clone());
+    let import1 = import_repo
+        .create(CreateImportMetadataRequest {
+            spec_name: "api-one".to_string(),
+            spec_version: Some("1.0.0".to_string()),
+            spec_checksum: None,
+            team: "test".to_string(),
+            source_content: None,
+            listener_name: Some("import1-listener".to_string()),
         })
         .await
         .unwrap();
 
-    // Create multiple API routes
-    for i in 0..3 {
-        api_repo
-            .create_route(CreateApiRouteRequest {
-                api_definition_id: api_def.id.to_string(),
-                match_type: "prefix".to_string(),
-                match_value: format!("/api{}", i),
-                case_sensitive: true,
-                headers: None,
-                rewrite_prefix: None,
-                rewrite_regex: None,
-                rewrite_substitution: None,
-                upstream_targets: serde_json::json!({"targets": []}),
-                timeout_seconds: None,
-                override_config: None,
-                deployment_note: None,
-                route_order: i,
+    let import2 = import_repo
+        .create(CreateImportMetadataRequest {
+            spec_name: "api-two".to_string(),
+            spec_version: Some("2.0.0".to_string()),
+            spec_checksum: None,
+            team: "test".to_string(),
+            source_content: None,
+            listener_name: Some("import2-listener".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let listener_repo = ListenerRepository::new(pool.clone());
+
+    // Create 2 listeners for import1
+    for i in 0..2 {
+        listener_repo
+            .create(CreateListenerRequest {
+                name: format!("import1-listener-{}", i),
+                address: "0.0.0.0".to_string(),
+                port: Some(8080 + i),
+                protocol: Some("HTTP".to_string()),
+                configuration: serde_json::json!({"name": format!("listener-{}", i)}),
+                team: Some("test".into()),
+                import_id: Some(import1.id.clone()),
             })
             .await
             .unwrap();
     }
 
-    // Verify routes exist
-    let routes = api_repo.list_routes(&api_def.id).await.unwrap();
-    assert_eq!(routes.len(), 3);
+    // Create 3 listeners for import2
+    for i in 0..3 {
+        listener_repo
+            .create(CreateListenerRequest {
+                name: format!("import2-listener-{}", i),
+                address: "0.0.0.0".to_string(),
+                port: Some(9080 + i),
+                protocol: Some("HTTP".to_string()),
+                configuration: serde_json::json!({"name": format!("listener-{}", i)}),
+                team: Some("test".into()),
+                import_id: Some(import2.id.clone()),
+            })
+            .await
+            .unwrap();
+    }
 
-    // Delete the API definition - should cascade to routes
-    api_repo.delete_definition(&api_def.id).await.unwrap();
+    // Verify counts are correct
+    let count1 = listener_repo.count_by_import(&import1.id).await.unwrap();
+    let count2 = listener_repo.count_by_import(&import2.id).await.unwrap();
 
-    // Verify API definition is deleted
-    let def_result = api_repo.get_definition(&api_def.id).await;
-    assert!(def_result.is_err());
-
-    // Verify routes are also deleted (cascading delete)
-    let routes_after = api_repo.list_routes(&api_def.id).await.unwrap();
-    assert_eq!(routes_after.len(), 0);
+    assert_eq!(count1, 2, "Import 1 should have 2 listeners");
+    assert_eq!(count2, 3, "Import 2 should have 3 listeners");
 }
 
 #[tokio::test]
-async fn test_referential_integrity_prevents_orphaned_records() {
+async fn test_cascade_delete_removes_listeners_when_import_deleted() {
     let pool = create_test_pool().await;
+    create_test_team(&pool, "test").await;
 
-    // Try to create an API route without a valid API definition (should fail)
-    let result = sqlx::query(
-        "INSERT INTO api_routes (id, api_definition_id, match_type, match_value, case_sensitive, upstream_targets, route_order, created_at, updated_at)
-         VALUES ('route-id', 'nonexistent-def-id', 'prefix', '/', 1, '{}', 0, datetime('now'), datetime('now'))"
-    )
-    .execute(&pool)
-    .await;
+    // Create import metadata
+    let import_repo = ImportMetadataRepository::new(pool.clone());
+    let import = import_repo
+        .create(CreateImportMetadataRequest {
+            spec_name: "cascade-test-api".to_string(),
+            spec_version: Some("1.0.0".to_string()),
+            spec_checksum: None,
+            team: "test".to_string(),
+            source_content: None,
+            listener_name: Some("cascade-listener".to_string()),
+        })
+        .await
+        .unwrap();
 
-    assert!(result.is_err(), "Should fail due to FK constraint violation");
+    let listener_repo = ListenerRepository::new(pool.clone());
+
+    // Create listeners linked to the import
+    for i in 0..3 {
+        listener_repo
+            .create(CreateListenerRequest {
+                name: format!("cascade-listener-{}", i),
+                address: "0.0.0.0".to_string(),
+                port: Some(8080 + i),
+                protocol: Some("HTTP".to_string()),
+                configuration: serde_json::json!({"name": format!("listener-{}", i)}),
+                team: Some("test".into()),
+                import_id: Some(import.id.clone()),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Verify listeners exist
+    let count_before = listener_repo.count_by_import(&import.id).await.unwrap();
+    assert_eq!(count_before, 3, "Should have 3 listeners before delete");
+
+    // Delete the import - CASCADE should remove linked listeners
+    import_repo.delete(&import.id).await.unwrap();
+
+    // Verify listeners are gone
+    let count_after = listener_repo.count_by_import(&import.id).await.unwrap();
+    assert_eq!(count_after, 0, "All listeners should be cascade deleted");
+
+    // Double-check by trying to fetch individual listeners - should return error (not found)
+    let listener0_result = listener_repo.get_by_name("cascade-listener-0").await;
+    assert!(listener0_result.is_err(), "Listener should not exist after cascade delete");
+}
+
+#[tokio::test]
+async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
+    let pool = create_test_pool().await;
+    create_test_team(&pool, "test").await;
+
+    // Create import metadata
+    let import_repo = ImportMetadataRepository::new(pool.clone());
+    let import = import_repo
+        .create(CreateImportMetadataRequest {
+            spec_name: "isolated-test-api".to_string(),
+            spec_version: Some("1.0.0".to_string()),
+            spec_checksum: None,
+            team: "test".to_string(),
+            source_content: None,
+            listener_name: Some("linked-listener".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let listener_repo = ListenerRepository::new(pool.clone());
+
+    // Create a linked listener
+    listener_repo
+        .create(CreateListenerRequest {
+            name: "linked-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: Some(8080),
+            protocol: Some("HTTP".to_string()),
+            configuration: serde_json::json!({"name": "linked"}),
+            team: Some("test".into()),
+            import_id: Some(import.id.clone()),
+        })
+        .await
+        .unwrap();
+
+    // Create an unlinked (native) listener
+    listener_repo
+        .create(CreateListenerRequest {
+            name: "unlinked-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: Some(8081),
+            protocol: Some("HTTP".to_string()),
+            configuration: serde_json::json!({"name": "unlinked"}),
+            team: Some("test".into()),
+            import_id: None,
+        })
+        .await
+        .unwrap();
+
+    // Delete the import
+    import_repo.delete(&import.id).await.unwrap();
+
+    // Linked listener should be gone (returns error if not found)
+    let linked_result = listener_repo.get_by_name("linked-listener").await;
+    assert!(linked_result.is_err(), "Linked listener should be cascade deleted");
+
+    // Unlinked listener should still exist (returns Ok if found)
+    let unlinked_result = listener_repo.get_by_name("unlinked-listener").await;
+    assert!(unlinked_result.is_ok(), "Unlinked listener should not be affected");
 }

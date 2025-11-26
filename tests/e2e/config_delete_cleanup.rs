@@ -9,7 +9,7 @@ use tempfile::tempdir;
 
 mod support;
 use http_body_util::BodyExt;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -61,14 +61,16 @@ async fn config_delete_cleanup() {
     let envoy = EnvoyHandle::start(envoy_admin, xds_addr.port()).expect("start envoy");
     envoy.wait_admin_ready().await;
 
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     let token = create_pat(vec![
-        "clusters:write",
-        "clusters:read",
-        "routes:write",
-        "routes:read",
-        "routes:delete",
-        "listeners:write",
-        "listeners:read",
+        "team:e2e:clusters:write",
+        "team:e2e:clusters:read",
+        "team:e2e:routes:write",
+        "team:e2e:routes:read",
+        "team:e2e:routes:delete",
+        "team:e2e:listeners:write",
+        "team:e2e:listeners:read",
     ])
     .await
     .expect("pat");
@@ -79,6 +81,7 @@ async fn config_delete_cleanup() {
 
     // Create cluster for our listener route
     let create_cluster = serde_json::json!({
+        "team": "e2e",
         "name": cluster_name,
         "endpoints": [ {"host": "127.0.0.1", "port": echo_addr.port()} ]
     });
@@ -92,10 +95,16 @@ async fn config_delete_cleanup() {
         .body(http_body_util::Full::<bytes::Bytes>::from(create_cluster.to_string()))
         .unwrap();
     let res = client.request(req).await.unwrap();
-    assert!(res.status().is_success());
+    if !res.status().is_success() {
+        let status = res.status();
+        let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        panic!("create cluster failed: {} - body: {}", status, body_str);
+    }
 
     // Create route configuration
     let create_route = serde_json::json!({
+        "team": "e2e",
         "name": route_name,
         "virtualHosts": [
             {"name": format!("{}-vh", namer.test_id()), "domains": ["*"], "routes": [
@@ -117,6 +126,7 @@ async fn config_delete_cleanup() {
 
     // Create listener referencing this route config
     let create_listener = serde_json::json!({
+        "team": "e2e",
         "name": listener_name,
         "address": "127.0.0.1",
         "port": listener_port,

@@ -148,7 +148,20 @@ pub fn compute_scopes_from_memberships(
     memberships: &[UserTeamMembership],
 ) -> Vec<String> {
     if user.is_admin {
-        return vec!["admin:all".to_string()];
+        // Admin users get admin:all scope plus team-scoped permissions
+        // This ensures extract_teams_from_scopes() can extract team names
+        // for dashboard and UI components that need team context
+        let mut scopes = vec!["admin:all".to_string()];
+
+        // Include team-scoped permissions from memberships
+        let team_scopes: Vec<String> =
+            memberships.iter().flat_map(|m| m.scopes.iter()).map(|s| s.to_string()).collect();
+
+        scopes.extend(team_scopes);
+        scopes.sort();
+        scopes.dedup();
+
+        return scopes;
     }
 
     // Collect all unique scopes from all team memberships
@@ -183,14 +196,17 @@ mod tests {
         let memberships = vec![UserTeamMembership {
             id: "m1".to_string(),
             user_id: user.id.clone(),
-            team: "team-a".to_string(),
-            scopes: vec!["clusters:read".to_string()],
+            team: "platform-admin".to_string(),
+            scopes: vec!["team:platform-admin:*:*".to_string()],
             created_at: Utc::now(),
         }];
 
         let scopes = compute_scopes_from_memberships(&user, &memberships);
 
-        assert_eq!(scopes, vec!["admin:all"]);
+        // Admin users should get both admin:all and team-scoped permissions
+        assert!(scopes.contains(&"admin:all".to_string()));
+        assert!(scopes.contains(&"team:platform-admin:*:*".to_string()));
+        assert_eq!(scopes.len(), 2);
     }
 
     #[test]
@@ -270,5 +286,38 @@ mod tests {
         let scopes = compute_scopes_from_memberships(&user, &memberships);
 
         assert_eq!(scopes, Vec::<String>::new());
+    }
+
+    #[test]
+    fn admin_scopes_work_with_extract_teams() {
+        use crate::auth::session::extract_teams_from_scopes;
+
+        let user = User {
+            id: UserId::new(),
+            email: "admin@example.com".to_string(),
+            name: "Admin User".to_string(),
+            status: UserStatus::Active,
+            is_admin: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let memberships = vec![UserTeamMembership {
+            id: "m1".to_string(),
+            user_id: user.id.clone(),
+            team: "platform-admin".to_string(),
+            scopes: vec!["team:platform-admin:*:*".to_string()],
+            created_at: Utc::now(),
+        }];
+
+        let scopes = compute_scopes_from_memberships(&user, &memberships);
+
+        // Verify scopes include both admin:all and team scopes
+        assert!(scopes.contains(&"admin:all".to_string()));
+        assert!(scopes.contains(&"team:platform-admin:*:*".to_string()));
+
+        // Verify extract_teams_from_scopes can extract team names
+        let teams = extract_teams_from_scopes(&scopes);
+        assert_eq!(teams, vec!["platform-admin"]);
     }
 }

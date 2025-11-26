@@ -73,6 +73,7 @@ impl ListenerService {
                 protocol: Some(protocol.clone()),
                 configuration,
                 team,
+                import_id: None,
             };
 
             let mut db_span = create_operation_span("db.listener.insert", SpanKind::Client);

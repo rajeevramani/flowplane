@@ -182,7 +182,7 @@ impl DatabaseAggregatedDiscoveryService {
 
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
-        let mut built = if let Some(repo) = &self.state.route_repository {
+        let built = if let Some(repo) = &self.state.route_repository {
             // Extract teams from scope for filtering
             // Default resources (team IS NULL) are always included
             let teams = match scope {
@@ -235,75 +235,6 @@ impl DatabaseAggregatedDiscoveryService {
             info!("No database repository available, using config-based routes");
             self.create_fallback_route_resources()?
         };
-
-        // Merge Platform API virtual hosts into the default gateway routes for non-isolated APIs only
-        // NOTE: We build route configs from database routes (not from API definitions) to ensure
-        // cluster names match what's actually in the database/cluster resources
-        if let Some(api_repo) = &self.state.api_definition_repository {
-            use envoy_types::pb::envoy::config::route::v3::RouteConfiguration;
-            use prost::Message;
-
-            let definitions = api_repo.list_definitions(None, None, None).await?;
-            let platform_routes = api_repo.list_all_routes().await?;
-
-            if !definitions.is_empty() && !platform_routes.is_empty() {
-                // Build Platform API route configs from database route entries (filtered by teams)
-                // This ensures cluster names match what's in the database clusters
-                let platform_teams = match scope {
-                    Scope::All => vec![],
-                    Scope::Team { team } => vec![team.clone()],
-                    Scope::Allowlist { .. } => vec![],
-                };
-
-                let platform_db_routes = if let Some(route_repo) = &self.state.route_repository {
-                    // Get routes filtered by teams, only including platform_api routes
-                    let all_team_routes =
-                        route_repo.list_by_teams(&platform_teams, true, Some(1000), None).await?;
-                    all_team_routes
-                        .into_iter()
-                        .filter(|r| r.source == "platform_api")
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-
-                let platform_resources = if !platform_db_routes.is_empty() {
-                    resources::routes_from_database_entries(platform_db_routes, "platform_merge")?
-                } else {
-                    // Fallback to generating from API definitions if no database routes
-                    resources::resources_from_api_definitions(definitions.clone(), platform_routes)?
-                };
-
-                let mut isolated_route_configs = Vec::new();
-
-                for res in platform_resources.into_iter() {
-                    if res.type_url() != resources::ROUTE_TYPE_URL {
-                        continue;
-                    }
-                    let rc =
-                        RouteConfiguration::decode(res.resource.value.as_slice()).map_err(|e| {
-                            crate::Error::internal(format!(
-                                "Failed to decode Platform API RouteConfiguration: {}",
-                                e
-                            ))
-                        })?;
-
-                    // All route configs are now isolated - add to isolated list
-                    let isolated_any = envoy_types::pb::google::protobuf::Any {
-                        type_url: resources::ROUTE_TYPE_URL.to_string(),
-                        value: rc.encode_to_vec(),
-                    };
-                    isolated_route_configs.push(resources::BuiltResource {
-                        name: rc.name.clone(),
-                        resource: isolated_any,
-                    });
-                }
-
-                // Add isolated route configs to the built list
-                // This happens regardless of whether DEFAULT_GATEWAY_ROUTES exists
-                built.extend(isolated_route_configs);
-            }
-        }
 
         Ok(built)
     }
@@ -530,9 +461,6 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
         if let Err(error) = state.refresh_clusters_from_repository().await {
             warn!(%error, "Failed to initialize cluster cache from repository");
         }
-        if let Err(error) = state.refresh_platform_api_resources().await {
-            warn!(%error, "Failed to prime Platform API resources after cluster refresh");
-        }
 
         // Track cluster state using count + last modification timestamp
         // This avoids false positives from PRAGMA data_version which can change
@@ -563,9 +491,6 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
                         if let Err(error) = state.refresh_clusters_from_repository().await {
                             warn!(%error, "Failed to refresh cluster cache from repository");
                         }
-                        if let Err(error) = state.refresh_platform_api_resources().await {
-                            warn!(%error, "Failed to refresh Platform API resources after cluster change");
-                        }
                     }
                     None => {
                         // First poll, just record the state without triggering update
@@ -588,9 +513,6 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
 
         if let Err(error) = state.refresh_routes_from_repository().await {
             warn!(%error, "Failed to initialize route cache from repository");
-        }
-        if let Err(error) = state.refresh_platform_api_resources().await {
-            warn!(%error, "Failed to prime Platform API resources after route refresh");
         }
 
         // Track route state using count + last modification timestamp
@@ -622,9 +544,6 @@ fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
                         if let Err(error) = state.refresh_routes_from_repository().await {
                             warn!(%error, "Failed to refresh route cache from repository");
                         }
-                        if let Err(error) = state.refresh_platform_api_resources().await {
-                            warn!(%error, "Failed to refresh Platform API resources after route change");
-                        }
                     }
                     None => {
                         // First poll, just record the state without triggering update
@@ -645,11 +564,8 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
-        // CRITICAL: Do NOT refresh listeners into global cache
-        // Listeners MUST be fetched per-team on each xDS request to maintain team isolation
-        // Only refresh Platform API resources which don't have the same port conflict issues
-        if let Err(error) = state.refresh_platform_api_resources().await {
-            warn!(%error, "Failed to prime Platform API resources at startup");
+        if let Err(error) = state.refresh_listeners_from_repository().await {
+            warn!(%error, "Failed to initialize listener cache from repository");
         }
 
         // Track listener state using count + last modification timestamp
@@ -673,20 +589,13 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                     }
                     Some(_) => {
                         last_listener_state = Some(current_state.clone());
-                        // Increment version to trigger xDS push notifications
-                        // Each connected Envoy will then fetch listeners with team filtering
-                        let new_version =
-                            state.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         info!(
-                            new_version,
                             listener_count = current_state.0,
                             last_updated = ?current_state.1,
-                            "Listener data changed, incremented xDS version to trigger team-scoped updates"
+                            "Listener data changed, refreshing listener cache"
                         );
-
-                        // Refresh Platform API resources (these are not team-isolated)
-                        if let Err(error) = state.refresh_platform_api_resources().await {
-                            warn!(%error, "Failed to refresh Platform API resources after listener change");
+                        if let Err(error) = state.refresh_listeners_from_repository().await {
+                            warn!(%error, "Failed to refresh listener cache from repository");
                         }
                     }
                     None => {

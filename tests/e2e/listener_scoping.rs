@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use tempfile::tempdir;
 
 mod support;
-use support::api::{create_pat, wait_http_ready};
+use support::api::{create_pat, ensure_team_exists, wait_http_ready};
 use support::echo::EchoServerHandle;
 use support::env::ControlPlaneHandle;
 use support::envoy::EnvoyHandle;
@@ -60,30 +60,56 @@ async fn listener_scoping_team_and_allowlist() {
         ControlPlaneHandle::start(db_path.clone(), api_addr, xds_addr).await.expect("start cp");
     wait_http_ready(api_addr).await;
 
+    // Ensure the e2e team exists before creating API definitions
+    ensure_team_exists("e2e").await.expect("create e2e team");
+
     // Create PAT
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");
 
-    // Create isolated API definition with a named listener for this team
+    // Create isolated listener with OpenAPI import
+    // In the new system, we create a listener via OpenAPI import with listener_mode=new
     let connector = hyper_util::client::legacy::connect::HttpConnector::new();
     let client: hyper_util::client::legacy::Client<_, _> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
-    let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+    let uri: hyper::http::Uri = format!(
+        "http://{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}&new_listener_address=127.0.0.1&new_listener_port={}",
+        api_addr, team, listener_name, iso_port
+    )
+    .parse()
+    .unwrap();
     let body = serde_json::json!({
-        "team": team,
-        "domain": domain,
-        "listenerIsolation": true,
-        "listener": { "name": listener_name, "bindAddress": "127.0.0.1", "port": iso_port, "protocol": "HTTP" },
-        "routes": [ { "match": {"prefix": route_path}, "cluster": {"name": namer.test_id(), "endpoint": format!("127.0.0.1:{}", echo_addr.port())}, "timeoutSeconds": 3 } ]
+        "openapi": "3.0.0",
+        "info": {
+            "title": "E2E Listener Scoping Test API",
+            "version": "1.0.0",
+            "x-flowplane-domain": domain
+        },
+        "servers": [
+            {
+                "url": format!("http://127.0.0.1:{}", echo_addr.port())
+            }
+        ],
+        "paths": {
+            route_path.clone(): {
+                "get": {
+                    "operationId": namer.test_id(),
+                    "responses": {
+                        "200": {
+                            "description": "Success"
+                        }
+                    }
+                }
+            }
+        }
     });
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)

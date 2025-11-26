@@ -15,7 +15,7 @@ async fn test_network_error_unreachable_server() {
 
     // Use an unreachable address
     let result = run_cli_command(&[
-        "api",
+        "cluster",
         "list",
         "--token",
         token,
@@ -45,7 +45,7 @@ async fn test_timeout_handling() {
 
     // Use a very short timeout (note: this may or may not trigger depending on server speed)
     let result = run_cli_command(&[
-        "api",
+        "cluster",
         "list",
         "--token",
         &token_response.token,
@@ -74,7 +74,7 @@ async fn test_invalid_output_format() {
     let token_response = server.issue_token("invalid-format-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
-        "api",
+        "cluster",
         "list",
         "--token",
         &token_response.token,
@@ -95,38 +95,14 @@ async fn test_invalid_output_format() {
 }
 
 #[tokio::test]
-async fn test_malformed_openapi_file() {
-    let malformed_yaml = r#"
-openapi: 3.0.0
-info:
-  title: Malformed API
-  this is not valid yaml syntax::
-    nested: [unclosed
-servers
-"#;
-    let openapi_file = TempOpenApiFile::new(malformed_yaml);
-
-    let result =
-        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
-
-    assert!(result.is_err(), "Should fail with malformed YAML");
-    let error = result.unwrap_err();
-    assert!(
-        error.contains("parse") || error.contains("YAML") || error.contains("invalid"),
-        "Error should indicate parsing failure: {}",
-        error
-    );
-}
-
-#[tokio::test]
 async fn test_missing_required_argument() {
-    // Try to import API without specifying file
-    let result = run_cli_command(&["api", "import-openapi", "--token", "test-token"]).await;
+    // Try to create cluster without specifying required fields
+    let result = run_cli_command(&["cluster", "create", "--token", "test-token"]).await;
 
     assert!(result.is_err(), "Should fail with missing required argument");
     let error = result.unwrap_err();
     assert!(
-        error.contains("required") || error.contains("--file") || error.contains("argument"),
+        error.contains("required") || error.contains("--name") || error.contains("argument"),
         "Error should mention missing argument: {}",
         error
     );
@@ -138,7 +114,7 @@ async fn test_invalid_base_url_format() {
     let token_response = server.issue_token("invalid-url-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
-        "api",
+        "cluster",
         "list",
         "--token",
         &token_response.token,
@@ -175,7 +151,7 @@ async fn test_empty_token_file() {
     let server = TestServer::start().await;
 
     let result = run_cli_command(&[
-        "api",
+        "cluster",
         "list",
         "--token-file",
         &empty_token_file.path_str(),
@@ -189,32 +165,6 @@ async fn test_empty_token_file() {
     assert!(
         error.contains("token") || error.contains("empty") || error.contains("authentication"),
         "Error should indicate token issue: {}",
-        error
-    );
-}
-
-#[tokio::test]
-async fn test_json_parse_error_in_openapi() {
-    let invalid_json = r#"
-{
-  "openapi": "3.0.0",
-  "info": {
-    "title": "Invalid JSON",
-    "version": "1.0.0"
-
-  "servers": []
-}
-"#; // Missing closing brace for info object
-    let openapi_file = TempOpenApiFile::new(invalid_json);
-
-    let result =
-        run_cli_command(&["api", "validate-filters", "--file", &openapi_file.path_str()]).await;
-
-    assert!(result.is_err(), "Should fail with invalid JSON");
-    let error = result.unwrap_err();
-    assert!(
-        error.contains("parse") || error.contains("JSON") || error.contains("invalid"),
-        "Error should indicate JSON parsing failure: {}",
         error
     );
 }
@@ -250,8 +200,7 @@ async fn test_version_flag() {
 #[tokio::test]
 async fn test_concurrent_requests_handling() {
     let server = TestServer::start().await;
-    let token_response =
-        server.issue_token("concurrent-test-token", &["api-definitions:read"]).await;
+    let token_response = server.issue_token("concurrent-test-token", &["clusters:read"]).await;
 
     // Make multiple concurrent requests
     let handles: Vec<_> = (0..5)
@@ -260,7 +209,7 @@ async fn test_concurrent_requests_handling() {
             let base_url = server.base_url();
             tokio::spawn(async move {
                 run_cli_command(&[
-                    "api",
+                    "cluster",
                     "list",
                     "--token",
                     &token,

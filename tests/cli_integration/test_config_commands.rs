@@ -6,7 +6,7 @@
 //! - config set
 //! - config path
 
-use super::support::{run_cli_command, TempConfig};
+use super::support::{run_cli_command, run_cli_command_with_env, TempConfig};
 use std::fs;
 
 #[tokio::test]
@@ -18,38 +18,28 @@ async fn test_config_init_creates_file() {
         fs::remove_file(&temp_config.path).ok();
     }
 
-    // Set HOME to temp directory so config init uses temp location
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
-
-    let result = run_cli_command(&["config", "init"]).await;
-
-    // Restore HOME
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let home_dir = temp_config.home_dir().to_str().unwrap();
+    let result = run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)])).await;
 
     assert!(result.is_ok(), "Config init should succeed: {:?}", result);
 }
 
 #[tokio::test]
-#[ignore = "Config test isolation issues - needs temp dir per test"]
 async fn test_config_set_token() {
     let temp_config = TempConfig::new();
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    // Initialize config
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    // Initialize config with isolated HOME
+    run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)]))
+        .await
+        .expect("init config");
 
-    run_cli_command(&["config", "init"]).await.expect("init config");
-
-    // Set token
-    let result = run_cli_command(&["config", "set", "token", "test-token-12345"]).await;
-
-    // Restore HOME
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    // Set token with isolated HOME
+    let result = run_cli_command_with_env(
+        &["config", "set", "token", "test-token-12345"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_ok(), "Config set token should succeed");
 
@@ -63,19 +53,19 @@ async fn test_config_set_token() {
 }
 
 #[tokio::test]
-#[ignore = "Config test isolation issues - needs temp dir per test"]
 async fn test_config_set_base_url() {
     let temp_config = TempConfig::new();
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    run_cli_command(&["config", "init"]).await.expect("init config");
+    run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)]))
+        .await
+        .expect("init config");
 
-    let result = run_cli_command(&["config", "set", "base_url", "https://api.custom.com"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(
+        &["config", "set", "base_url", "https://api.custom.com"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_ok(), "Config set base_url should succeed");
 
@@ -88,19 +78,17 @@ async fn test_config_set_base_url() {
 }
 
 #[tokio::test]
-#[ignore = "Config test isolation issues - needs temp dir per test"]
 async fn test_config_set_timeout() {
     let temp_config = TempConfig::new();
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    run_cli_command(&["config", "init"]).await.expect("init config");
+    run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)]))
+        .await
+        .expect("init config");
 
-    let result = run_cli_command(&["config", "set", "timeout", "60"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result =
+        run_cli_command_with_env(&["config", "set", "timeout", "60"], Some(&[("HOME", home_dir)]))
+            .await;
 
     assert!(result.is_ok(), "Config set timeout should succeed");
 
@@ -115,16 +103,17 @@ async fn test_config_set_timeout() {
 #[tokio::test]
 async fn test_config_set_invalid_timeout() {
     let temp_config = TempConfig::new();
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    run_cli_command(&["config", "init"]).await.expect("init config");
+    run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)]))
+        .await
+        .expect("init config");
 
-    let result = run_cli_command(&["config", "set", "timeout", "not-a-number"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(
+        &["config", "set", "timeout", "not-a-number"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_err(), "Config set should fail with invalid timeout value");
     let error = result.unwrap_err();
@@ -138,16 +127,17 @@ async fn test_config_set_invalid_timeout() {
 #[tokio::test]
 async fn test_config_set_unknown_key() {
     let temp_config = TempConfig::new();
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    run_cli_command(&["config", "init"]).await.expect("init config");
+    run_cli_command_with_env(&["config", "init"], Some(&[("HOME", home_dir)]))
+        .await
+        .expect("init config");
 
-    let result = run_cli_command(&["config", "set", "unknown_key", "value"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(
+        &["config", "set", "unknown_key", "value"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_err(), "Config set should fail with unknown key");
     let error = result.unwrap_err();
@@ -162,14 +152,13 @@ async fn test_config_set_unknown_key() {
 async fn test_config_show_json() {
     let temp_config = TempConfig::new();
     temp_config.write_config("show-test-token", "https://test.example.com");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    let result = run_cli_command(&["config", "show", "--output", "json"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(
+        &["config", "show", "--output", "json"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_ok(), "Config show should succeed");
     let output = result.unwrap();
@@ -184,14 +173,13 @@ async fn test_config_show_json() {
 async fn test_config_show_yaml() {
     let temp_config = TempConfig::new();
     temp_config.write_config("show-yaml-token", "https://yaml.example.com");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
-    let result = run_cli_command(&["config", "show", "--output", "yaml"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(
+        &["config", "show", "--output", "yaml"],
+        Some(&[("HOME", home_dir)]),
+    )
+    .await;
 
     assert!(result.is_ok(), "Config show with YAML should succeed");
     let output = result.unwrap();
@@ -216,19 +204,14 @@ async fn test_config_path() {
 }
 
 #[tokio::test]
-#[ignore = "Config test isolation issues - needs temp dir per test"]
 async fn test_config_init_force_overwrites() {
     let temp_config = TempConfig::new();
     temp_config.write_config("existing-token", "https://existing.com");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_config.home_dir());
+    let home_dir = temp_config.home_dir().to_str().unwrap();
 
     // Force reinitialize
-    let result = run_cli_command(&["config", "init", "--force"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result =
+        run_cli_command_with_env(&["config", "init", "--force"], Some(&[("HOME", home_dir)])).await;
 
     assert!(result.is_ok(), "Config init --force should succeed");
 
@@ -241,27 +224,30 @@ async fn test_config_init_force_overwrites() {
 }
 
 #[tokio::test]
-#[ignore = "Config test isolation issues - needs temp dir per test"]
 async fn test_config_show_nonexistent() {
     // Use a temp directory that definitely doesn't have a config
     let temp_dir = tempfile::tempdir().expect("create temp dir");
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp_dir.path());
+    let home_dir = temp_dir.path().to_str().unwrap();
 
-    let result = run_cli_command(&["config", "show"]).await;
-
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    }
+    let result = run_cli_command_with_env(&["config", "show"], Some(&[("HOME", home_dir)])).await;
 
     // Config show should handle missing config gracefully
+    // Either it returns an error, or it returns output containing "not found" or "No configuration file"
     match result {
-        Err(_) => {
-            // Error is expected when config doesn't exist
+        Err(error) => {
+            // Error is expected when config doesn't exist - verify message is helpful
+            assert!(
+                error.contains("not found") || error.contains("No configuration file"),
+                "Error should indicate config not found: {}",
+                error
+            );
         }
         Ok(output) => {
+            // If it succeeds, output should contain helpful message
             assert!(
-                output.contains("not found") || output.is_empty(),
+                output.contains("not found")
+                    || output.contains("No configuration file")
+                    || output.is_empty(),
                 "Config show should handle missing config: {}",
                 output
             );

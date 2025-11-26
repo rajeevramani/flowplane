@@ -129,7 +129,7 @@ Host: {{api_domain_2}}
 
 ### Step 3.1: Import OpenAPI with Listener Isolation
 # @name importApiDef3
-POST {{base_url}}/api/v1/api-definitions/from-openapi?team={{api_team_3}}&listenerIsolation=true&port={{envoy_port_api_def_test_3}}
+POST {{base_url}}/api/v1/api-definitions/from-openapi?team={{api_team_1}}&listenerIsolation=true&port={{envoy_port_api_def_test_1}}
 Authorization: Bearer {{token}}
 Content-Type: application/yaml
 
@@ -143,7 +143,7 @@ GET {{base_url}}/api/v1/api-definitions/{{api_definition_3_id}}/bootstrap
 Authorization: Bearer {{token}}
 
 ### Step 3.4: Test through Envoy - OpenAPI imported route
-GET http://localhost:{{envoy_port_api_def_test_3}}/get
+GET http://localhost:{{envoy_port_api_def_test_1}}/get
 Host: httpbin.org
 
 # =============================================================================

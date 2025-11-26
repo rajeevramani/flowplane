@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use flowplane::{
     api::start_api_server,
+    auth::scope_registry::init_scope_registry,
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
     services::{LearningSessionService, SchemaAggregator, WebhookService},
@@ -72,6 +73,10 @@ async fn main() -> Result<()> {
 
     // Handle first-time startup: auto-generate setup token if needed
     flowplane::startup::handle_first_time_startup(pool.clone()).await?;
+
+    // Initialize scope registry for scope validation
+    init_scope_registry(pool.clone()).await?;
+    info!("Scope registry initialized");
 
     // Create shutdown signal handler
     let simple_xds_config: SimpleXdsConfig = config.xds.clone();

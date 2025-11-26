@@ -59,11 +59,11 @@ async fn filters_cors_and_jwt_overrides() {
     ensure_team_exists("e2e").await.expect("create e2e team");
 
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("pat");
@@ -75,10 +75,13 @@ async fn filters_cors_and_jwt_overrides() {
     let client: hyper_util::client::legacy::Client<_, _> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
-    let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions/from-openapi?team=e2e", api_addr)
-            .parse()
-            .unwrap();
+    let uri: hyper::http::Uri = format!(
+        "http://{}/api/v1/openapi/import?team=e2e&listener_mode=new&new_listener_name={}-listener",
+        api_addr,
+        namer.test_id()
+    )
+    .parse()
+    .unwrap();
     let body = serde_json::json!({
         "openapi": "3.0.0",
         "info": {

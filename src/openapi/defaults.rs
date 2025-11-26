@@ -66,6 +66,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             service_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             configuration: cluster_config,
             team: None, // Default gateway cluster is not team-scoped
+            import_id: None,
         };
 
         cluster_repo.create(request).await?;
@@ -109,6 +110,9 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             cluster_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
             configuration: route_configuration,
             team: None, // Default gateway routes are not team-scoped
+            import_id: None,
+            route_order: None,
+            headers: None,
         };
 
         route_repo.create(request).await?;
@@ -178,6 +182,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             protocol: Some("HTTP".to_string()),
             configuration: listener_configuration,
             team: None, // Default gateway listener is not team-scoped
+            import_id: None,
         };
 
         listener_repo.create(request).await?;

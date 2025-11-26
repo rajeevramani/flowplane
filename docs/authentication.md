@@ -243,8 +243,7 @@ curl -sS \
       "team:platform:routes:write",
       "team:platform:clusters:read",
       "team:platform:clusters:write",
-      "team:platform:api-definitions:read",
-      "team:platform:api-definitions:write"
+      "team:platform:generate-envoy-config:read"
     ],
     "expiresAt": null
   }'

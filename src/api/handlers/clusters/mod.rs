@@ -20,7 +20,7 @@ use axum::{
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     services::ClusterService,
@@ -107,6 +107,7 @@ pub async fn create_cluster_handler(
             name: created.name.clone(),
             team: created.team.unwrap_or_else(|| "unknown".to_string()),
             service_name: created.service_name,
+            import_id: created.import_id,
             config,
         }),
     ))
@@ -134,7 +135,8 @@ pub async fn list_clusters_handler(
     require_resource_access(&context, "clusters", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     // Get repository and apply team filtering
     let repository = state
@@ -177,7 +179,8 @@ pub async fn get_cluster_handler(
     require_resource_access(&context, "clusters", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let service = ClusterService::new(state.xds_state.clone());
     let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;
@@ -225,7 +228,8 @@ pub async fn update_cluster_handler(
     }
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let service = ClusterService::new(state.xds_state.clone());
 
     // Get existing cluster to verify access
@@ -260,7 +264,8 @@ pub async fn delete_cluster_handler(
     require_resource_access(&context, "clusters", "write", None)?;
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let service = ClusterService::new(state.xds_state.clone());
 
     // Get existing cluster to verify access
@@ -323,8 +328,9 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -559,6 +565,7 @@ mod tests {
             service_name: name.to_string(),
             configuration: config,
             team: team.map(String::from),
+            import_id: None,
         };
 
         repo.create(request).await?;

@@ -15,6 +15,11 @@ export interface LoginResponse {
 	scopes: string[];
 }
 
+export interface ChangePasswordRequest {
+	currentPassword: string;
+	newPassword: string;
+}
+
 export interface BootstrapStatusResponse {
 	needsInitialization: boolean;
 	message: string;
@@ -87,7 +92,7 @@ export interface AdminListTeamsResponse {
 }
 
 export interface DashboardStats {
-	apiDefinitionsCount: number;
+	importsCount: number;
 	listenersCount: number;
 	routesCount: number;
 	clustersCount: number;
@@ -133,14 +138,21 @@ export interface UpdateTokenRequest {
 export interface ImportOpenApiRequest {
 	spec: string; // YAML or JSON string
 	team?: string;
-	listenerIsolation?: boolean;
-	port?: number;
+	listenerMode: 'existing' | 'new';
+	existingListenerName?: string; // when mode='existing'
+	newListenerName?: string; // when mode='new'
+	newListenerAddress?: string;
+	newListenerPort?: number;
 }
 
-export interface CreateApiDefinitionResponse {
-	id: string;
-	bootstrapUri: string;
-	routes: string[];
+export interface ImportResponse {
+	importId: string;
+	specName: string;
+	specVersion: string | null;
+	routesCreated: number;
+	clustersCreated: number;
+	clustersReused: number;
+	listenerName: string | null;
 }
 
 export interface OpenApiSpec {
@@ -158,16 +170,29 @@ export interface OpenApiSpec {
 	paths: Record<string, any>;
 }
 
-// API Definition types
-export interface ApiDefinitionSummary {
+// Import types (replacing API Definition types)
+export interface ImportSummary {
 	id: string;
+	specName: string;
+	specVersion: string | null;
 	team: string;
-	domain: string;
-	listenerIsolation: boolean;
-	bootstrapUri: string | null;
-	version: number;
-	createdAt: string;
+	listenerName: string | null;
+	importedAt: string;
 	updatedAt: string;
+}
+
+export interface ImportDetailsResponse {
+	id: string;
+	specName: string;
+	specVersion: string | null;
+	specChecksum: string | null;
+	team: string;
+	listenerName: string | null;
+	importedAt: string;
+	updatedAt: string;
+	routeCount: number;
+	clusterCount: number;
+	listenerCount: number;
 }
 
 // Listener types
@@ -178,6 +203,7 @@ export interface ListenerResponse {
 	port: number | null;
 	protocol: string;
 	version: number;
+	importId?: string;
 	config: any; // Full listener config
 }
 
@@ -187,14 +213,20 @@ export interface RouteResponse {
 	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
+	importId?: string;
+	routeOrder?: number;
 	config: any; // Full route config
 }
+
+// Legacy type - no longer used after API definitions removal
+// Routes are now accessed directly via RouteResponse
 
 // Cluster types
 export interface ClusterResponse {
 	name: string;
 	team: string;
 	serviceName: string;
+	importId?: string;
 	config: any; // Full cluster config
 }
 
@@ -293,4 +325,236 @@ export interface ListAuditLogsResponse {
 	total: number;
 	limit: number;
 	offset: number;
+}
+
+// === Create API Types ===
+
+// Cluster creation types
+export interface EndpointRequest {
+	host: string;
+	port: number;
+}
+
+export interface HealthCheckRequest {
+	type?: string;
+	path?: string;
+	host?: string;
+	method?: string;
+	intervalSeconds?: number;
+	timeoutSeconds?: number;
+	healthyThreshold?: number;
+	unhealthyThreshold?: number;
+	expectedStatuses?: number[];
+}
+
+export interface CircuitBreakerThresholdsRequest {
+	maxConnections?: number;
+	maxPendingRequests?: number;
+	maxRequests?: number;
+	maxRetries?: number;
+}
+
+export interface CircuitBreakersRequest {
+	default?: CircuitBreakerThresholdsRequest;
+	high?: CircuitBreakerThresholdsRequest;
+}
+
+export interface OutlierDetectionRequest {
+	consecutive5xx?: number;
+	intervalSeconds?: number;
+	baseEjectionTimeSeconds?: number;
+	maxEjectionPercent?: number;
+}
+
+export interface CreateClusterBody {
+	team: string;
+	name: string;
+	serviceName?: string;
+	endpoints: EndpointRequest[];
+	connectTimeoutSeconds?: number;
+	useTls?: boolean;
+	tlsServerName?: string;
+	dnsLookupFamily?: 'AUTO' | 'V4_ONLY' | 'V6_ONLY' | 'V4_PREFERRED' | 'ALL';
+	lbPolicy?: 'ROUND_ROBIN' | 'LEAST_REQUEST' | 'RANDOM' | 'RING_HASH' | 'MAGLEV' | 'CLUSTER_PROVIDED';
+	healthChecks?: HealthCheckRequest[];
+	circuitBreakers?: CircuitBreakersRequest;
+	outlierDetection?: OutlierDetectionRequest;
+}
+
+// Route creation types
+export type PathMatchType = 'exact' | 'prefix' | 'regex' | 'template';
+
+export interface PathMatchDefinition {
+	type: PathMatchType;
+	value?: string;
+	template?: string;
+}
+
+export interface HeaderMatchDefinition {
+	name: string;
+	value?: string;
+	regex?: string;
+	present?: boolean;
+}
+
+export interface QueryParameterMatchDefinition {
+	name: string;
+	value?: string;
+	regex?: string;
+	present?: boolean;
+}
+
+export interface RouteMatchDefinition {
+	path: PathMatchDefinition;
+	headers?: HeaderMatchDefinition[];
+	queryParameters?: QueryParameterMatchDefinition[];
+}
+
+export interface WeightedClusterDefinition {
+	name: string;
+	weight: number;
+}
+
+export type RouteActionDefinition =
+	| {
+			type: 'forward';
+			cluster: string;
+			timeoutSeconds?: number;
+			prefixRewrite?: string;
+			templateRewrite?: string;
+	  }
+	| {
+			type: 'weighted';
+			clusters: WeightedClusterDefinition[];
+			totalWeight?: number;
+	  }
+	| {
+			type: 'redirect';
+			hostRedirect?: string;
+			pathRedirect?: string;
+			responseCode?: number;
+	  };
+
+export interface RouteRuleDefinition {
+	name?: string;
+	match: RouteMatchDefinition;
+	action: RouteActionDefinition;
+}
+
+export interface VirtualHostDefinition {
+	name: string;
+	domains: string[];
+	routes: RouteRuleDefinition[];
+}
+
+export interface CreateRouteBody {
+	team: string;
+	name: string;
+	virtualHosts: VirtualHostDefinition[];
+}
+
+// UpdateRouteBody - full payload required for route updates
+// Note: team and name must match existing route
+export interface UpdateRouteBody {
+	team: string;
+	name: string;
+	virtualHosts: VirtualHostDefinition[];
+}
+
+// Listener creation types
+export interface ListenerTlsContextInput {
+	certChainFile?: string;
+	privateKeyFile?: string;
+	caCertFile?: string;
+	requireClientCertificate?: boolean;
+}
+
+export interface ListenerAccessLogInput {
+	path?: string;
+	format?: string;
+}
+
+export interface ListenerTracingInput {
+	provider: string;
+	config: Record<string, unknown>;
+}
+
+// HttpFilterKind - discriminated union for filter types
+export type HttpFilterKind =
+	| { type: 'router' }
+	| { type: 'cors'; config: unknown }
+	| { type: 'local_rate_limit'; config: unknown }
+	| { type: 'jwt_authn'; config: unknown }
+	| { type: 'rate_limit'; config: unknown }
+	| { type: 'header_mutation'; config: unknown }
+	| { type: 'health_check'; config: unknown };
+
+// HttpFilterConfigEntry - matches Rust HttpFilterConfigEntry
+export interface HttpFilterConfigEntry {
+	name?: string;
+	isOptional?: boolean;
+	disabled?: boolean;
+	filter: HttpFilterKind;
+}
+
+// ListenerFilterInput uses flattened structure - type discriminator is at the same level as name
+export type ListenerFilterInput =
+	| {
+			name: string;
+			type: 'httpConnectionManager';
+			routeConfigName?: string;
+			inlineRouteConfig?: unknown;
+			accessLog?: ListenerAccessLogInput;
+			tracing?: ListenerTracingInput;
+			httpFilters?: HttpFilterConfigEntry[];
+	  }
+	| {
+			name: string;
+			type: 'tcpProxy';
+			cluster: string;
+			accessLog?: ListenerAccessLogInput;
+	  };
+
+export interface ListenerFilterChainInput {
+	name?: string;
+	filters: ListenerFilterInput[];
+	tlsContext?: ListenerTlsContextInput;
+}
+
+export interface CreateListenerBody {
+	team: string;
+	name: string;
+	address: string;
+	port: number;
+	protocol?: string;
+	filterChains: ListenerFilterChainInput[];
+}
+
+// UpdateListenerBody - no name or team fields (from path param / existing listener)
+export interface UpdateListenerBody {
+	address: string;
+	port: number;
+	filterChains: ListenerFilterChainInput[];
+	protocol?: string;
+}
+
+// === Scope Types ===
+
+export interface ScopeDefinition {
+	id: string;
+	value: string;
+	resource: string;
+	action: string;
+	label: string;
+	description: string | null;
+	category: string;
+	visibleInUi: boolean;
+	enabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ListScopesResponse {
+	scopes: ScopeDefinition[];
+	count: number;
 }

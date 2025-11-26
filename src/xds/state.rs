@@ -3,16 +3,15 @@ use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
-    listeners_from_config, listeners_from_database_entries, resources_from_api_definitions,
-    routes_from_config, routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL,
-    LISTENER_TYPE_URL, ROUTE_TYPE_URL,
+    listeners_from_config, listeners_from_database_entries, routes_from_config,
+    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
+    ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
     services::LearningSessionService,
     storage::{
-        AggregatedSchemaRepository, ApiDefinitionRepository, ClusterRepository, DbPool,
-        ListenerRepository, RouteRepository,
+        AggregatedSchemaRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -62,7 +61,6 @@ pub struct XdsState {
     pub cluster_repository: Option<ClusterRepository>,
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
-    pub api_definition_repository: Option<ApiDefinitionRepository>,
     pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
@@ -80,7 +78,6 @@ impl XdsState {
             cluster_repository: None,
             route_repository: None,
             listener_repository: None,
-            api_definition_repository: None,
             aggregated_schema_repository: None,
             access_log_service: None,
             ext_proc_service: None,
@@ -95,7 +92,6 @@ impl XdsState {
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_repository = RouteRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
-        let api_definition_repository = ApiDefinitionRepository::new(pool.clone());
         let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
         Self {
             config,
@@ -103,7 +99,6 @@ impl XdsState {
             cluster_repository: Some(cluster_repository),
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
-            api_definition_repository: Some(api_definition_repository),
             aggregated_schema_repository: Some(aggregated_schema_repository),
             access_log_service: None,
             ext_proc_service: None,
@@ -268,38 +263,11 @@ impl XdsState {
 
         let route_rows = repository.list(Some(1000), None).await?;
 
-        let mut built = if route_rows.is_empty() {
+        let built = if route_rows.is_empty() {
             routes_from_config(&self.config)?
         } else {
             routes_from_database_entries(route_rows, "cache_refresh")?
         };
-
-        // IMPORTANT: Merge Platform API route configs with native routes
-        // Platform API routes are generated dynamically and not stored in the routes table
-        // If we don't merge them, they will be removed from the cache
-        if let Some(api_repo) = &self.api_definition_repository {
-            match (
-                api_repo.list_definitions(None, None, None).await,
-                api_repo.list_all_routes().await,
-            ) {
-                (Ok(definitions), Ok(api_routes)) if !definitions.is_empty() => {
-                    match resources_from_api_definitions(definitions, api_routes) {
-                        Ok(platform_resources) => {
-                            // Only include route resources (skip clusters and listeners)
-                            let platform_routes: Vec<_> = platform_resources
-                                .into_iter()
-                                .filter(|res| res.type_url() == ROUTE_TYPE_URL)
-                                .collect();
-                            built.extend(platform_routes);
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to build Platform API routes during refresh");
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
 
         let total_resources = built.len();
         match self.apply_built_resources(ROUTE_TYPE_URL, built) {
@@ -325,66 +293,6 @@ impl XdsState {
                 );
             }
         }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self), name = "xds_refresh_platform_api")]
-    pub async fn refresh_platform_api_resources(&self) -> Result<()> {
-        let repository = match &self.api_definition_repository {
-            Some(repo) => repo.clone(),
-            None => return Ok(()),
-        };
-
-        let definitions = repository.list_definitions(None, None, None).await?;
-        let routes = repository.list_all_routes().await?;
-
-        if definitions.is_empty() {
-            return Ok(());
-        }
-
-        let built = resources_from_api_definitions(definitions, routes)?;
-        if built.is_empty() {
-            return Ok(());
-        }
-
-        // IMPORTANT: Merge native routes with Platform API routes
-        // Native routes are stored in the routes table, Platform API routes are generated dynamically
-        // If we don't merge them, native routes will be removed from the cache
-        let mut route_resources: Vec<_> =
-            built.iter().filter(|res| res.type_url() == ROUTE_TYPE_URL).cloned().collect();
-
-        if !route_resources.is_empty() {
-            // Merge native routes from the database
-            if let Some(route_repo) = &self.route_repository {
-                match route_repo.list(Some(1000), None).await {
-                    Ok(route_rows) if !route_rows.is_empty() => {
-                        match routes_from_database_entries(route_rows, "platform_api_refresh") {
-                            Ok(native_routes) => {
-                                route_resources.extend(native_routes);
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Failed to load native routes during Platform API refresh");
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            self.apply_built_resources(ROUTE_TYPE_URL, route_resources);
-        }
-
-        let listener_resources: Vec<_> =
-            built.iter().filter(|res| res.type_url() == LISTENER_TYPE_URL).cloned().collect();
-        if !listener_resources.is_empty() {
-            self.apply_built_resources(LISTENER_TYPE_URL, listener_resources);
-        }
-
-        // NOTE: Cluster resources are NOT sent here to avoid duplicates
-        // Platform API clusters are created in the database by materialize_native_resources()
-        // and loaded via refresh_clusters_from_repository(), just like listeners.
-        // If we send them here too, Envoy will reject the update with "duplicate cluster" errors.
 
         Ok(())
     }

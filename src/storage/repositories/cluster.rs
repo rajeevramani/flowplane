@@ -20,6 +20,7 @@ struct ClusterRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -34,6 +35,7 @@ pub struct ClusterData {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -48,6 +50,7 @@ impl From<ClusterRow> for ClusterData {
             version: row.version,
             source: row.source,
             team: row.team,
+            import_id: row.import_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -61,6 +64,7 @@ pub struct CreateClusterRequest {
     pub service_name: String,
     pub configuration: serde_json::Value,
     pub team: Option<String>,
+    pub import_id: Option<String>,
 }
 
 /// Update cluster request
@@ -94,13 +98,14 @@ impl ClusterRepository {
 
         // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
         let result = sqlx::query(
-            "INSERT INTO clusters (id, name, service_name, configuration, version, team, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)"
+            "INSERT INTO clusters (id, name, service_name, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)"
         )
         .bind(&id)
         .bind(&request.name)
         .bind(&request.service_name)
         .bind(&configuration_json)
         .bind(&request.team)
+        .bind(&request.import_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -131,7 +136,7 @@ impl ClusterRepository {
     /// Get cluster by ID
     pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE id = $1"
+            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -156,7 +161,7 @@ impl ClusterRepository {
     #[instrument(skip(self), fields(cluster_name = %name), name = "db_get_cluster_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -185,7 +190,7 @@ impl ClusterRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -233,7 +238,7 @@ impl ClusterRepository {
         let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, service_name, configuration, version, source, team, created_at, updated_at \
+            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at \
              FROM clusters \
              {} \
              ORDER BY created_at DESC \

@@ -74,12 +74,10 @@ pub async fn get_team_bootstrap_handler(
     // Authorization: Check if user has permission to access bootstrap
     // Users need either:
     // 1. admin:all scope (bypass all checks)
-    // 2. api-definitions:read scope (global access)
-    // 3. team:{team}:api-definitions:read scope (team-specific access)
-    // Note: We don't pass the team to require_resource_access because:
-    // - Global scopes (api-definitions:read) should allow access to any team
-    // - Team-scoped tokens will be filtered server-side by xDS based on node metadata
-    require_resource_access(&context, "api-definitions", "read", None)?;
+    // 2. generate-envoy-config:read scope (global access to any team)
+    // 3. team:{team}:generate-envoy-config:read scope (team-specific access)
+    // 4. team:{team}:*:* scope (team wildcard - access to all resources for the team)
+    require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
 
@@ -194,8 +192,8 @@ pub struct ListTeamsResponse {
 /// List teams accessible to the current user
 ///
 /// Returns:
-/// - All teams (from team_memberships) if user is admin
-/// - Only user's teams if user is not admin
+/// - All teams (from teams table) if user is admin
+/// - Only user's teams (from memberships) if user is not admin
 #[utoipa::path(
     get,
     path = "/api/v1/teams",
@@ -219,13 +217,17 @@ pub async fn list_teams_handler(
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let pool = cluster_repo.pool().clone();
 
-    let membership_repo = SqlxTeamMembershipRepository::new(pool);
-
     let teams = if has_admin_bypass(&context) {
-        // Admin users see all teams
-        membership_repo.list_all_teams().await.map_err(|err| ApiError::from(Error::from(err)))?
+        // Admin users see all teams from the teams table
+        let team_repo = SqlxTeamRepository::new(pool);
+        let all_teams = team_repo
+            .list_teams(1000, 0) // Large limit to get all teams
+            .await
+            .map_err(|err| ApiError::from(Error::from(err)))?;
+        all_teams.into_iter().map(|t| t.name).collect()
     } else {
-        // Non-admin users see only their teams
+        // Non-admin users see only their teams from memberships
+        let membership_repo = SqlxTeamMembershipRepository::new(pool);
         if let Some(user_id) = &context.user_id {
             let memberships = membership_repo
                 .list_user_memberships(user_id)

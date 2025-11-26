@@ -221,7 +221,7 @@ flowplane-cli auth create-token \
 - `clusters:*` / `clusters:read` / `clusters:write`
 - `routes:*` / `routes:read` / `routes:write`
 - `listeners:*` / `listeners:read` / `listeners:write`
-- `api-definitions:*` / `api-definitions:read` / `api-definitions:write`
+- `generate-envoy-config:*` / `generate-envoy-config:read`
 - `tokens:*` / `tokens:read` / `tokens:write`
 
 ### List Tokens

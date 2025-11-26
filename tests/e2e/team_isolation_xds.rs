@@ -74,16 +74,16 @@ async fn team_isolation_clusters_routes_listeners() {
 
     // Create PAT token
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");
 
-    // Create API definition for Team A
+    // Create OpenAPI import for Team A
     let endpoint_a = format!("127.0.0.1:{}", echo_addr_a.port());
     let _resp_a = post_create_api(
         api_addr,
@@ -97,7 +97,7 @@ async fn team_isolation_clusters_routes_listeners() {
     .await
     .expect("create api for team a");
 
-    // Create API definition for Team B
+    // Create OpenAPI import for Team B
     let endpoint_b = format!("127.0.0.1:{}", echo_addr_b.port());
     let _resp_b = post_create_api(
         api_addr,
@@ -229,11 +229,11 @@ async fn team_isolation_route_filtering() {
     wait_http_ready(api_addr).await;
 
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");
@@ -341,11 +341,11 @@ async fn team_isolation_listener_filtering() {
     wait_http_ready(api_addr).await;
 
     let token = create_pat(vec![
-        "api-definitions:write",
-        "api-definitions:read",
-        "routes:read",
-        "listeners:read",
-        "clusters:read",
+        "team:e2e:openapi-import:write",
+        "team:e2e:openapi-import:read",
+        "team:e2e:routes:read",
+        "team:e2e:listeners:read",
+        "team:e2e:clusters:read",
     ])
     .await
     .expect("create pat");
@@ -356,8 +356,9 @@ async fn team_isolation_listener_filtering() {
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
 
-    let uri: hyper::http::Uri =
-        format!("http://{}/api/v1/api-definitions", api_addr).parse().unwrap();
+    // Note: This test uses the deprecated native API approach
+    // It should be updated to use the new OpenAPI import endpoint
+    let uri: hyper::http::Uri = format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
     let body_x = serde_json::json!({
         "team": team_x,
         "domain": domain_x,

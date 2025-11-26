@@ -87,6 +87,7 @@ impl TestServer {
     }
 
     /// Create a team via direct database access (for test setup)
+    #[allow(dead_code)]
     pub async fn create_team(&self, team_name: &str) {
         use flowplane::auth::CreateTeamRequest;
         use flowplane::storage::repositories::{SqlxTeamRepository, TeamRepository};
@@ -133,22 +134,45 @@ fn get_cli_binary_path() -> &'static PathBuf {
 }
 
 /// Run a CLI command and capture output
-pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
+///
+/// # Arguments
+/// * `args` - Command line arguments to pass to the CLI
+/// * `env_overrides` - Optional environment variables to set for this command (e.g., HOME)
+pub async fn run_cli_command_with_env(
+    args: &[&str],
+    env_overrides: Option<&[(&str, &str)]>,
+) -> Result<String, String> {
     use std::process::Command;
 
-    // Capture environment BEFORE spawning thread to ensure test env is captured
-    let current_env: Vec<(String, String)> = std::env::vars().collect();
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let cli_path = get_cli_binary_path().clone();
+    let env_overrides_owned: Option<Vec<(String, String)>> = env_overrides
+        .map(|overrides| overrides.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
 
     tokio::task::spawn_blocking(move || {
         let mut cmd = Command::new(cli_path);
         cmd.args(&args_owned);
 
-        // Set captured environment vars (this adds/overrides, doesn't replace)
-        for (key, value) in current_env {
-            cmd.env(key, value);
+        // Apply environment overrides if provided
+        if let Some(overrides) = env_overrides_owned {
+            // Clear inherited environment to ensure only specified vars are set
+            cmd.env_clear();
+
+            // Restore only PATH (essential for finding binaries)
+            if let Ok(path) = std::env::var("PATH") {
+                cmd.env("PATH", path);
+            }
+
+            // Apply the requested environment overrides
+            for (key, value) in overrides {
+                cmd.env(key, value);
+            }
+
+            // Note: We intentionally do NOT restore HOME/USERPROFILE automatically
+            // Tests that need these variables should pass them explicitly
+            // This prevents config file interference in auth tests
         }
+        // If no overrides specified, inherit parent environment (default behavior)
 
         let output = cmd.output().expect("failed to execute CLI command");
 
@@ -160,6 +184,13 @@ pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
     })
     .await
     .expect("task join error")
+}
+
+/// Run a CLI command and capture output (without environment overrides)
+///
+/// This is a convenience wrapper around run_cli_command_with_env for backwards compatibility.
+pub async fn run_cli_command(args: &[&str]) -> Result<String, String> {
+    run_cli_command_with_env(args, None).await
 }
 
 /// Create a temporary config file for testing

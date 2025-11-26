@@ -1,8 +1,10 @@
 // API client with CSRF token handling
 import { goto } from '$app/navigation';
+import { env } from '$env/dynamic/public';
 import type {
 	LoginRequest,
 	LoginResponse,
+	ChangePasswordRequest,
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
@@ -14,8 +16,9 @@ import type {
 	TokenSecretResponse,
 	UpdateTokenRequest,
 	ImportOpenApiRequest,
-	CreateApiDefinitionResponse,
-	ApiDefinitionSummary,
+	ImportResponse,
+	ImportSummary,
+	ImportDetailsResponse,
 	ListenerResponse,
 	RouteResponse,
 	ClusterResponse,
@@ -34,10 +37,16 @@ import type {
 	CreateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
-	ListAuditLogsResponse
+	ListAuditLogsResponse,
+	CreateClusterBody,
+	CreateRouteBody,
+	UpdateRouteBody,
+	CreateListenerBody,
+	UpdateListenerBody,
+	ListScopesResponse
 } from './types';
 
-const API_BASE = 'http://localhost:8080';
+const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
 
 class ApiClient {
 	private csrfToken: string | null = null;
@@ -140,6 +149,17 @@ class ApiClient {
 		});
 
 		return this.handleResponse<SessionInfoResponse>(response);
+	}
+
+	async changePassword(request: ChangePasswordRequest): Promise<void> {
+		const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
+			method: 'POST',
+			headers: this.getHeaders(true), // Include CSRF token
+			body: JSON.stringify(request),
+			credentials: 'include',
+		});
+
+		await this.handleResponse<void>(response);
 	}
 
 	clearAuth() {
@@ -246,15 +266,20 @@ class ApiClient {
 	}
 
 	// OpenAPI import
-	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<CreateApiDefinitionResponse> {
+	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
 		if (request.team) params.append('team', request.team);
-		if (request.listenerIsolation !== undefined) {
-			params.append('listenerIsolation', request.listenerIsolation.toString());
+		params.append('listener_mode', request.listenerMode);
+		if (request.listenerMode === 'existing' && request.existingListenerName) {
+			params.append('existing_listener_name', request.existingListenerName);
 		}
-		if (request.port) params.append('port', request.port.toString());
+		if (request.listenerMode === 'new') {
+			if (request.newListenerName) params.append('new_listener_name', request.newListenerName);
+			if (request.newListenerAddress) params.append('new_listener_address', request.newListenerAddress);
+			if (request.newListenerPort) params.append('new_listener_port', request.newListenerPort.toString());
+		}
 
-		const path = `/api/v1/api-definitions/from-openapi${params.toString() ? `?${params.toString()}` : ''}`;
+		const path = `/api/v1/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
 
 		// Determine content type based on spec format
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
@@ -270,34 +295,29 @@ class ApiClient {
 			credentials: 'include'
 		});
 
-		return this.handleResponse<CreateApiDefinitionResponse>(response);
+		return this.handleResponse<ImportResponse>(response);
 	}
 
-	// API Definition methods
-	async listApiDefinitions(params?: {
-		team?: string;
-		domain?: string;
-		limit?: number;
-		offset?: number;
-	}): Promise<ApiDefinitionSummary[]> {
-		let path = '/api/v1/api-definitions';
-		const searchParams = new URLSearchParams();
-		if (params?.team) searchParams.append('team', params.team);
-		if (params?.domain) searchParams.append('domain', params.domain);
-		if (params?.limit) searchParams.append('limit', params.limit.toString());
-		if (params?.offset) searchParams.append('offset', params.offset.toString());
-		if (searchParams.toString()) path += `?${searchParams.toString()}`;
-
-		return this.get<ApiDefinitionSummary[]>(path);
+	// Import methods (replacing API Definition methods)
+	async listImports(team: string): Promise<ImportSummary[]> {
+		const path = `/api/v1/openapi/imports?team=${encodeURIComponent(team)}`;
+		const response = await this.get<{ imports: ImportSummary[] }>(path);
+		return response.imports;
 	}
 
-	async getApiDefinition(id: string): Promise<ApiDefinitionSummary> {
-		return this.get<ApiDefinitionSummary>(`/api/v1/api-definitions/${id}`);
+	// List all imports across all teams (admin only)
+	async listAllImports(): Promise<ImportSummary[]> {
+		const path = '/api/v1/openapi/imports';
+		const response = await this.get<{ imports: ImportSummary[] }>(path);
+		return response.imports;
 	}
 
-	async deleteApiDefinition(id: string): Promise<void> {
-		// Note: DELETE endpoint not yet implemented in backend
-		return this.delete<void>(`/api/v1/api-definitions/${id}`);
+	async getImport(id: string): Promise<ImportDetailsResponse> {
+		return this.get<ImportDetailsResponse>(`/api/v1/openapi/imports/${id}`);
+	}
+
+	async deleteImport(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/openapi/imports/${id}`);
 	}
 
 	// Listener methods
@@ -338,6 +358,10 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/routes/${name}`);
 	}
 
+	async updateRoute(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/routes/${name}`, body);
+	}
+
 	// Cluster methods
 	async listClusters(params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
 		let path = '/api/v1/clusters';
@@ -355,6 +379,22 @@ class ApiClient {
 
 	async deleteCluster(name: string): Promise<void> {
 		return this.delete<void>(`/api/v1/clusters/${name}`);
+	}
+
+	async createCluster(body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.post<ClusterResponse>('/api/v1/clusters', body);
+	}
+
+	async createRoute(body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>('/api/v1/routes', body);
+	}
+
+	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
+		return this.post<ListenerResponse>('/api/v1/listeners', body);
+	}
+
+	async updateListener(name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
+		return this.put<ListenerResponse>(`/api/v1/listeners/${name}`, body);
 	}
 
 	// Bootstrap configuration methods
@@ -459,6 +499,22 @@ class ApiClient {
 		if (query.offset !== undefined) params.append('offset', query.offset.toString());
 
 		return this.get<ListAuditLogsResponse>(`/api/v1/audit-logs?${params.toString()}`);
+	}
+
+	// Scope methods (public - no auth required)
+	async listScopes(): Promise<ListScopesResponse> {
+		// This endpoint is public, no credentials needed
+		const response = await fetch(`${API_BASE}/api/v1/scopes`, {
+			method: 'GET',
+			headers: { 'Content-Type': 'application/json' }
+		});
+
+		return this.handleResponse<ListScopesResponse>(response);
+	}
+
+	// Admin scope methods
+	async listAllScopes(): Promise<ListScopesResponse> {
+		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
 	}
 }
 

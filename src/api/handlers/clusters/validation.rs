@@ -114,6 +114,7 @@ pub(super) fn cluster_response_from_data(
         name: data.name,
         team: data.team.unwrap_or_else(|| "unknown".to_string()),
         service_name: data.service_name,
+        import_id: data.import_id,
         config,
     })
 }

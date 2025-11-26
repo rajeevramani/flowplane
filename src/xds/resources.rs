@@ -1,13 +1,12 @@
 use std::{collections::HashMap, net::IpAddr};
 
-use crate::platform_api::filter_overrides::typed_per_filter_config;
 use crate::xds::{
     CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, HealthCheckSpec,
     OutlierDetectionSpec,
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ApiDefinitionData, ApiRouteData, ClusterData, ListenerData, RouteData},
+    storage::{ClusterData, ListenerData, RouteData},
     Error, Result,
 };
 use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
@@ -40,7 +39,6 @@ use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::{
 use envoy_types::pb::envoy::r#type::v3::Int64Range;
 use envoy_types::pb::google::protobuf::{Any, Duration, UInt32Value, UInt64Value};
 use prost::Message;
-use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
@@ -51,7 +49,6 @@ pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.Rout
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
 pub const HTTP_PROTOCOL_OPTIONS_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions";
-pub const PLATFORM_ROUTE_PREFIX: &str = "platform-api";
 
 fn strip_gateway_tags(value: &mut Value) {
     match value {
@@ -137,332 +134,6 @@ pub fn clusters_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResourc
         name: cluster.name.clone(),
         resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
     }])
-}
-
-/// Build resources derived from Platform API definitions and their routes.
-pub fn resources_from_api_definitions(
-    definitions: Vec<ApiDefinitionData>,
-    routes: Vec<ApiRouteData>,
-) -> Result<Vec<BuiltResource>> {
-    let mut routes_by_definition: HashMap<String, Vec<ApiRouteData>> = HashMap::new();
-    for route in routes {
-        routes_by_definition.entry(route.api_definition_id.to_string()).or_default().push(route);
-    }
-
-    let mut built_resources = Vec::new();
-    let mut cluster_resources = Vec::new();
-
-    for definition in definitions {
-        let definition_routes = match routes_by_definition.remove(&definition.id.to_string()) {
-            Some(mut list) => {
-                list.sort_by_key(|r| r.route_order);
-                list
-            }
-            None => continue,
-        };
-
-        if definition_routes.is_empty() {
-            continue;
-        }
-
-        // Generate route configs for all API definitions (all listeners are now isolated)
-        let mut virtual_host = crate::xds::route::VirtualHostConfig {
-            name: format!("{}-vhost", short_id(definition.id.as_str())),
-            domains: vec![definition.domain.clone()],
-            routes: Vec::with_capacity(definition_routes.len()),
-            typed_per_filter_config: HashMap::new(),
-        };
-
-        // Step 1: Deduplicate upstream targets across all routes (same as materializer.rs)
-        // Extract unique upstream endpoints to create ONE cluster per unique endpoint
-        let mut unique_upstreams: HashMap<String, Vec<ParsedTarget>> = HashMap::new();
-
-        for route in &definition_routes {
-            let targets = parse_upstream_targets(route)?;
-            if targets.is_empty() {
-                continue;
-            }
-
-            // Create endpoint key from first target (assuming single endpoint per route for now)
-            if let Some(first_target) = targets.first() {
-                let endpoint_key = format!("{}:{}", first_target.host, first_target.port);
-                unique_upstreams.entry(endpoint_key).or_default().extend(targets);
-            }
-        }
-
-        // Step 2: Create ONE cluster per unique endpoint
-        let mut endpoint_to_cluster: HashMap<String, String> = HashMap::new();
-
-        for (endpoint_key, targets) in unique_upstreams {
-            // Build cluster name based on endpoint (matches materializer.rs logic)
-            let cluster_name = format!(
-                "platform-{}-{}",
-                short_id(definition.id.as_str()),
-                endpoint_key.replace(":", "-").replace(".", "-")
-            );
-
-            let cluster_resource = build_platform_cluster(&cluster_name, &targets)?;
-            cluster_resources.push(cluster_resource);
-
-            endpoint_to_cluster.insert(endpoint_key, cluster_name);
-        }
-
-        // Step 3: Build routes referencing the deduplicated clusters
-        for route in definition_routes {
-            let targets = parse_upstream_targets(&route)?;
-            if targets.is_empty() {
-                continue;
-            }
-
-            // Find the cluster for this route's upstream target
-            let cluster_name = if let Some(first_target) = targets.first() {
-                let endpoint_key = format!("{}:{}", first_target.host, first_target.port);
-                endpoint_to_cluster.get(&endpoint_key).cloned().ok_or_else(|| {
-                    Error::internal(format!("No cluster found for endpoint {}", endpoint_key))
-                })?
-            } else {
-                continue;
-            };
-
-            let action = crate::xds::route::RouteActionConfig::Cluster {
-                name: cluster_name.clone(),
-                timeout: route.timeout_seconds.map(|t| t as u64),
-                prefix_rewrite: route.rewrite_prefix.clone(),
-                path_template_rewrite: route.rewrite_regex.clone(),
-            };
-
-            let path_match = match route.match_type.to_lowercase().as_str() {
-                "prefix" => crate::xds::route::PathMatch::Prefix(route.match_value.clone()),
-                "path" | "exact" => crate::xds::route::PathMatch::Exact(route.match_value.clone()),
-                "template" => crate::xds::route::PathMatch::Template(route.match_value.clone()),
-                other => {
-                    return Err(Error::validation(format!(
-                        "Unsupported route match type '{}'",
-                        other
-                    )));
-                }
-            };
-
-            if route.rewrite_regex.is_some() || route.rewrite_substitution.is_some() {
-                warn!(
-                    route = %route.id,
-                    "Regex-based rewrites are not yet supported for Platform API routes; ignoring configuration"
-                );
-            }
-
-            virtual_host.routes.push(crate::xds::route::RouteRule {
-                name: Some(format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(route.id.as_str()))),
-                r#match: crate::xds::route::RouteMatchConfig {
-                    path: path_match,
-                    headers: None,
-                    query_parameters: None,
-                },
-                action,
-                typed_per_filter_config: typed_per_filter_config(&route.override_config)?,
-            });
-        }
-
-        if virtual_host.routes.is_empty() {
-            continue;
-        }
-
-        let route_config_name =
-            format!("{}-{}", PLATFORM_ROUTE_PREFIX, short_id(definition.id.as_str()));
-        tracing::debug!(
-            route_config_name = %route_config_name,
-            definition_id = %definition.id,
-            num_routes = virtual_host.routes.len(),
-            "resources_from_api_definitions: Creating Platform API route config"
-        );
-        let route_config = crate::xds::route::RouteConfig {
-            name: route_config_name.clone(),
-            virtual_hosts: vec![virtual_host],
-        };
-
-        let envoy_route = route_config.to_envoy_route_configuration()?;
-        built_resources.push(BuiltResource {
-            name: route_config_name.clone(),
-            resource: Any {
-                type_url: ROUTE_TYPE_URL.to_string(),
-                value: envoy_route.encode_to_vec(),
-            },
-        });
-
-        // NOTE: Listeners for Platform API definitions are created in the database by
-        // materialize_isolated_listener() and loaded via refresh_listeners_from_repository().
-        // We don't create listeners here to avoid duplicates.
-
-        // NOTE: Clusters for Platform API definitions are created in the database by
-        // materialize_native_resources() and loaded via refresh_clusters_from_repository().
-        // We include them here for dynamic generation, but refresh_platform_api_resources()
-        // will NOT send them to Envoy to avoid duplicates (they're sent by refresh_clusters_from_repository()).
-    }
-
-    built_resources.extend(cluster_resources);
-    Ok(built_resources)
-}
-
-#[derive(Debug)]
-struct ParsedTarget {
-    host: String,
-    port: u16,
-    weight: Option<u32>,
-}
-
-fn parse_upstream_targets(route: &ApiRouteData) -> Result<Vec<ParsedTarget>> {
-    #[derive(Deserialize)]
-    struct StoredTargets {
-        targets: Vec<StoredTarget>,
-    }
-
-    #[derive(Deserialize)]
-    #[allow(dead_code)]
-    struct StoredTarget {
-        name: Option<String>,
-        endpoint: String,
-        weight: Option<u32>,
-    }
-
-    let stored: StoredTargets =
-        serde_json::from_value(route.upstream_targets.clone()).map_err(|err| {
-            Error::internal(format!(
-                "Failed to parse stored upstream targets for route {}: {}",
-                route.id, err
-            ))
-        })?;
-
-    if stored.targets.is_empty() {
-        return Err(Error::internal(format!(
-            "Route '{}' does not contain any upstream targets",
-            route.id
-        )));
-    }
-
-    let mut parsed = Vec::with_capacity(stored.targets.len());
-    for target in stored.targets {
-        let (host, port) = split_host_port(&target.endpoint)?;
-        parsed.push(ParsedTarget { host, port, weight: target.weight });
-    }
-
-    Ok(parsed)
-}
-
-fn split_host_port(endpoint: &str) -> Result<(String, u16)> {
-    let (host, port_str) = endpoint.rsplit_once(':').ok_or_else(|| {
-        Error::internal(format!("Invalid upstream endpoint '{}': expected host:port", endpoint))
-    })?;
-    let port: u16 = port_str.parse().map_err(|_| {
-        Error::internal(format!("Invalid upstream endpoint '{}': port must be numeric", endpoint))
-    })?;
-    Ok((host.to_string(), port))
-}
-
-fn short_id(id: &str) -> String {
-    // Preserve a slightly longer slice to keep route suffixes distinctive while remaining readable.
-    let candidate: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(12).collect();
-    if candidate.is_empty() {
-        "platform".into()
-    } else {
-        candidate.to_lowercase()
-    }
-}
-
-fn build_platform_cluster(cluster_name: &str, targets: &[ParsedTarget]) -> Result<BuiltResource> {
-    let mut has_hostname = false;
-    let mut first_hostname: Option<String> = None;
-    let mut tls_candidate_host: Option<String> = None;
-    let mut has_tls_port = false;
-
-    let lb_endpoints: Vec<LbEndpoint> = targets
-        .iter()
-        .map(|target| {
-            // Track TLS and hostname hints
-            if target.host.parse::<std::net::IpAddr>().is_err() {
-                has_hostname = true;
-                if first_hostname.is_none() {
-                    first_hostname = Some(target.host.clone());
-                }
-            }
-            if target.port == 443 {
-                has_tls_port = true;
-                if tls_candidate_host.is_none() && target.host.parse::<std::net::IpAddr>().is_err()
-                {
-                    tls_candidate_host = Some(target.host.clone());
-                }
-            }
-
-            let socket = SocketAddress {
-                address: target.host.clone(),
-                port_specifier: Some(socket_address::PortSpecifier::PortValue(target.port as u32)),
-                protocol: Protocol::Tcp as i32,
-                ..Default::default()
-            };
-            let address = Address {
-                address: Some(
-                    envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
-                        socket,
-                    ),
-                ),
-            };
-            let endpoint = Endpoint { address: Some(address), ..Default::default() };
-            let mut lb_endpoint = LbEndpoint {
-                host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(endpoint)),
-                ..Default::default()
-            };
-            if let Some(weight) = target.weight {
-                lb_endpoint.load_balancing_weight = Some(UInt32Value { value: weight });
-            }
-            Ok::<LbEndpoint, Error>(lb_endpoint)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let locality = LocalityLbEndpoints { lb_endpoints, ..Default::default() };
-    let mut cluster = Cluster {
-        name: cluster_name.to_string(),
-        connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
-        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::StrictDns as i32)),
-        load_assignment: Some(ClusterLoadAssignment {
-            cluster_name: cluster_name.to_string(),
-            endpoints: vec![locality],
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    // Infer TLS for HTTPS upstreams (hostname + port 443)
-    if has_tls_port {
-        let mut tls_context = UpstreamTlsContext {
-            common_tls_context: Some(CommonTlsContext::default()),
-            ..Default::default()
-        };
-
-        // Determine SNI: prefer hostname on 443, then first hostname if any
-        let sni = tls_candidate_host.or_else(|| first_hostname.clone());
-        if let Some(server_name) = sni {
-            tls_context.sni = server_name;
-        } else if has_hostname {
-            // Hostname present but none chosen; warn at build time (best-effort)
-            warn!(cluster = %cluster_name, "TLS inferred but no SNI hostname resolved; upstream verification may fail");
-        }
-
-        let tls_any = Any {
-            type_url:
-                "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
-                    .to_string(),
-            value: tls_context.encode_to_vec(),
-        };
-
-        cluster.transport_socket = Some(TransportSocket {
-            name: "envoy.transport_sockets.tls".to_string(),
-            config_type: Some(TransportSocketConfigType::TypedConfig(tls_any)),
-        });
-    }
-
-    let encoded = cluster.encode_to_vec();
-    Ok(BuiltResource {
-        name: cluster.name.clone(),
-        resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
-    })
 }
 
 /// Build route configuration resources from the static configuration
@@ -1289,9 +960,7 @@ pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform_api::filter_overrides::canonicalize_filter_overrides;
-    use crate::storage::{ApiDefinitionData, ApiRouteData, ListenerData};
-    use crate::xds::filters::http::cors::FILTER_CORS_POLICY_TYPE_URL;
+    use crate::storage::ListenerData;
     use crate::xds::{
         listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         CircuitBreakerThresholdsSpec, CircuitBreakersSpec, ClusterSpec, EndpointSpec,
@@ -1310,103 +979,6 @@ mod tests {
             None => panic!("missing typed config"),
         };
         UpstreamTlsContext::decode(&*typed.value).expect("decode tls context")
-    }
-
-    #[test]
-    fn platform_api_route_generates_clusters_and_routes() {
-        let definition = ApiDefinitionData {
-            id: crate::domain::ApiDefinitionId::from_str_unchecked("def-1234"),
-            team: "payments".into(),
-            domain: "payments.flowplane.dev".into(),
-            tls_config: None,
-            metadata: None,
-            bootstrap_uri: None,
-            bootstrap_revision: 1,
-            generated_listener_id: None,
-            version: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        let override_config = canonicalize_filter_overrides(Some(json!({
-            "cors": "allow-authenticated"
-        })))
-        .expect("canonicalize");
-
-        let route = ApiRouteData {
-            id: crate::domain::ApiRouteId::from_str_unchecked("route-1234"),
-            api_definition_id: definition.id.clone(),
-            match_type: "prefix".into(),
-            match_value: "/api".into(),
-            case_sensitive: true,
-            headers: None,
-            rewrite_prefix: None,
-            rewrite_regex: None,
-            rewrite_substitution: None,
-            upstream_targets: json!({
-                "targets": [
-                    { "name": "blue", "endpoint": "blue.svc.local:8080", "weight": 80 },
-                    { "name": "green", "endpoint": "green.svc.local:8080", "weight": 20 }
-                ]
-            }),
-            timeout_seconds: Some(15),
-            override_config,
-            deployment_note: None,
-            route_order: 0,
-            generated_route_id: None,
-            generated_cluster_id: None,
-            filter_config: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        let resources =
-            resources_from_api_definitions(vec![definition.clone()], vec![route.clone()])
-                .expect("build resources");
-
-        let route_any = resources
-            .iter()
-            .find(|res| res.resource.type_url == ROUTE_TYPE_URL)
-            .expect("route resource present");
-        let route_config = RouteConfiguration::decode(route_any.resource.value.as_slice())
-            .expect("decode route config");
-        assert_eq!(route_config.virtual_hosts.len(), 1);
-        let route_rule = route_config.virtual_hosts[0].routes.first().expect("route rule");
-        assert_eq!(route_rule.name, format!("{}-{}", PLATFORM_ROUTE_PREFIX, "route1234"));
-        let cluster_name = match &route_rule.action {
-            Some(envoy_types::pb::envoy::config::route::v3::route::Action::Route(action)) => {
-                match &action.cluster_specifier {
-                    Some(envoy_types::pb::envoy::config::route::v3::route_action::ClusterSpecifier::Cluster(name)) => name.clone(),
-                    other => panic!("unexpected cluster specifier: {:?}", other),
-                }
-            }
-            other => panic!("unexpected route action: {:?}", other),
-        };
-
-        let cors_any = route_rule
-            .typed_per_filter_config
-            .get("envoy.filters.http.cors")
-            .expect("cors override present");
-        assert_eq!(cors_any.type_url, FILTER_CORS_POLICY_TYPE_URL);
-
-        let cluster_any = resources
-            .iter()
-            .find(|res| res.resource.type_url == CLUSTER_TYPE_URL)
-            .expect("cluster resource");
-        let cluster = Cluster::decode(cluster_any.resource.value.as_slice()).expect("cluster");
-        assert_eq!(cluster.name, cluster_name);
-        let endpoints =
-            &cluster.load_assignment.as_ref().expect("assignment").endpoints[0].lb_endpoints;
-        assert_eq!(endpoints.len(), 2);
-        assert_eq!(endpoints[0].load_balancing_weight.as_ref().unwrap().value, 80);
-        assert_eq!(endpoints[1].load_balancing_weight.as_ref().unwrap().value, 20);
-
-        // Note: Listeners are NOT generated by resources_from_api_definitions.
-        // They are created separately via the database materialization process.
-        assert!(
-            !resources.iter().any(|res| res.resource.type_url == LISTENER_TYPE_URL),
-            "No listener should be generated by resources_from_api_definitions"
-        );
     }
 
     #[test]
@@ -1629,6 +1201,7 @@ mod tests {
             version: 1,
             source: "native_api".to_string(),
             team: None,
+            import_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

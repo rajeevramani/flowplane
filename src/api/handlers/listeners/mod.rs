@@ -22,7 +22,7 @@ use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_listener,
@@ -113,6 +113,7 @@ pub async fn create_listener_handler(
         protocol: payload.protocol.clone(),
         configuration,
         team,
+        import_id: None,
     };
 
     let created = repository.create(request).await.map_err(ApiError::from)?;
@@ -149,7 +150,8 @@ pub async fn list_listeners_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let rows = repository
@@ -185,7 +187,8 @@ pub async fn get_listener_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -222,7 +225,8 @@ pub async fn update_listener_handler(
     validate_update_listener_body(&payload)?;
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -283,7 +287,8 @@ pub async fn delete_listener_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -354,7 +359,7 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -374,7 +379,7 @@ mod tests {
                 cluster_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -395,8 +400,9 @@ mod tests {
                 protocol TEXT NOT NULL DEFAULT 'HTTP',
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )

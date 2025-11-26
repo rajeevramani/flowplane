@@ -1,5 +1,10 @@
 //! Validation helpers and request DTOs for personal access token endpoints.
+//!
+//! Scope validation is now database-driven via the ScopeRegistry.
+//! When the registry is initialized, scopes are validated against the database.
+//! When not initialized (e.g., in tests), falls back to format-only validation.
 
+use crate::auth::scope_registry::validate_scope_sync;
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -7,15 +12,8 @@ use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError, ValidationErrors};
 
 lazy_static! {
-    static ref NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]{3,64}$")
-        .expect("NAME_REGEX should be a valid regex pattern");
-    // Scope patterns:
-    // - admin:all (global admin)
-    // - {resource}:{action} (e.g., routes:read, api-definitions:write)
-    // - team:{team}:{resource}:{action} (e.g., team:platform:routes:read, team:team-test-1:clusters:read)
-    // Team names can contain lowercase letters, digits, and hyphens
-    static ref SCOPE_REGEX: Regex = Regex::new(r"^(team:[a-z0-9-]+:[a-z-]+:[a-z]+|[a-z-]+:[a-z]+)$")
-        .expect("SCOPE_REGEX should be a valid regex pattern");
+    static ref NAME_REGEX: Regex =
+        Regex::new(r"^[a-zA-Z0-9_-]{3,64}$").expect("NAME_REGEX should be a valid regex pattern");
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -96,11 +94,21 @@ pub fn validate_token_name(name: &str) -> Result<(), ValidationError> {
     }
 }
 
+/// Validate a scope string against the scope registry
+///
+/// When the scope registry is initialized (normal operation), validates against
+/// the database-defined scopes. When not initialized (tests), falls back to
+/// format-only validation.
 pub fn validate_scope(scope: &str) -> Result<(), ValidationError> {
-    if SCOPE_REGEX.is_match(scope) {
+    if validate_scope_sync(scope) {
         Ok(())
     } else {
-        Err(ValidationError::new("invalid_scope"))
+        let mut err = ValidationError::new("invalid_scope");
+        err.message = Some(
+            format!("Invalid scope: '{}'. Use GET /api/v1/scopes to see valid scopes.", scope)
+                .into(),
+        );
+        Err(err)
     }
 }
 

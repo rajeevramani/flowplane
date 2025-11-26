@@ -22,7 +22,7 @@ use tracing::{error, info};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
@@ -110,6 +110,9 @@ pub async fn create_route_handler(
         cluster_name: cluster_summary,
         configuration,
         team,
+        import_id: None,
+        route_order: None,
+        headers: None,
     };
 
     let created = route_repository.create(request).await.map_err(ApiError::from)?;
@@ -126,6 +129,8 @@ pub async fn create_route_handler(
         team: created.team.unwrap_or_default(),
         path_prefix: created.path_prefix,
         cluster_targets: created.cluster_name,
+        import_id: created.import_id,
+        route_order: created.route_order,
         config: payload,
     };
 
@@ -154,7 +159,8 @@ pub async fn list_routes_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let rows = repository
@@ -190,7 +196,8 @@ pub async fn get_route_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -233,7 +240,8 @@ pub async fn update_route_handler(
     }
 
     // Extract team scopes and verify access before updating
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
@@ -268,6 +276,8 @@ pub async fn update_route_handler(
         team: updated.team.unwrap_or_default(),
         path_prefix,
         cluster_targets: cluster_summary,
+        import_id: updated.import_id,
+        route_order: updated.route_order,
         config: payload,
     };
 
@@ -300,7 +310,8 @@ pub async fn delete_route_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
     let repository = require_route_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
@@ -375,8 +386,9 @@ mod tests {
                 service_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -389,8 +401,11 @@ mod tests {
                 cluster_name TEXT NOT NULL,
                 configuration TEXT NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
+                import_id TEXT,
+                route_order INTEGER,
+                headers TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -415,6 +430,7 @@ mod tests {
                     "endpoints": ["127.0.0.1:8080"]
                 }),
                 team: None, // Test cluster without team assignment
+                import_id: None,
             })
             .await
             .expect("seed cluster");
@@ -427,6 +443,7 @@ mod tests {
                     "endpoints": ["127.0.0.1:8181"]
                 }),
                 team: None, // Test cluster without team assignment
+                import_id: None,
             })
             .await
             .expect("seed shadow cluster");

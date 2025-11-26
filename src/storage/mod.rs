@@ -19,12 +19,10 @@ pub use repositories::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
 };
 pub use repository::{
-    ApiDefinitionData, ApiDefinitionRepository, ApiRouteData, AuditEvent, AuditLogRepository,
-    ClusterData, ClusterRepository, CreateApiDefinitionRequest, CreateApiRouteRequest,
-    CreateClusterRequest, CreateListenerRequest,
-    CreateRouteRequest as CreateRouteRepositoryRequest, ListenerData, ListenerRepository,
-    RouteData, RouteRepository, UpdateBootstrapMetadataRequest, UpdateClusterRequest,
-    UpdateListenerRequest, UpdateRouteRequest as UpdateRouteRepositoryRequest,
+    AuditEvent, AuditLogRepository, ClusterData, ClusterRepository, CreateClusterRequest,
+    CreateListenerRequest, CreateRouteRequest as CreateRouteRepositoryRequest, ListenerData,
+    ListenerRepository, RouteData, RouteRepository, UpdateClusterRequest, UpdateListenerRequest,
+    UpdateRouteRequest as UpdateRouteRepositoryRequest,
 };
 
 use crate::errors::{FlowplaneError, Result};

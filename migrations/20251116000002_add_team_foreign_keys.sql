@@ -44,44 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_user_team_memberships_team
     ON user_team_memberships(team);
 
 -- ============================================================================
--- 2. api_definitions - RESTRICT delete (core resource, prevent accidental loss)
--- ============================================================================
-
-CREATE TABLE api_definitions_new (
-    id TEXT PRIMARY KEY,
-    team TEXT NOT NULL,
-    domain TEXT NOT NULL,
-    listener_isolation INTEGER NOT NULL DEFAULT 0,
-    tls_config TEXT,
-    metadata TEXT,
-    bootstrap_uri TEXT,
-    bootstrap_revision INTEGER NOT NULL DEFAULT 0,
-    generated_listener_id TEXT,
-    target_listeners TEXT,
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(team, domain),
-    FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT
-);
-
-INSERT INTO api_definitions_new
-SELECT id, team, domain, listener_isolation, tls_config, metadata,
-       bootstrap_uri, bootstrap_revision, generated_listener_id, target_listeners,
-       version, created_at, updated_at
-FROM api_definitions;
-
-DROP TABLE api_definitions;
-ALTER TABLE api_definitions_new RENAME TO api_definitions;
-
-CREATE INDEX IF NOT EXISTS idx_api_definitions_team ON api_definitions(team);
-CREATE INDEX IF NOT EXISTS idx_api_definitions_domain ON api_definitions(domain);
-CREATE INDEX IF NOT EXISTS idx_api_definitions_updated_at ON api_definitions(updated_at);
-CREATE INDEX IF NOT EXISTS idx_api_definitions_listener ON api_definitions(generated_listener_id);
-CREATE INDEX IF NOT EXISTS idx_api_definitions_target_listeners ON api_definitions(target_listeners) WHERE target_listeners IS NOT NULL;
-
--- ============================================================================
--- 3. clusters - RESTRICT delete (core resource, conditional FK for NULL teams)
+-- 2. clusters - RESTRICT delete (core resource, conditional FK for NULL teams)
 -- ============================================================================
 
 -- Note: clusters.team is nullable (for global resources)
@@ -95,14 +58,14 @@ CREATE TABLE clusters_new (
     version INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
     team TEXT,
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(name, version)
 );
 
-INSERT INTO clusters_new
-SELECT id, name, service_name, configuration, version, created_at, updated_at, source, team
+INSERT INTO clusters_new (id, name, service_name, configuration, version, created_at, updated_at, team)
+SELECT id, name, service_name, configuration, version, created_at, updated_at, team
 FROM clusters;
 
 DROP TABLE clusters;
@@ -112,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_clusters_team ON clusters(team);
 CREATE INDEX IF NOT EXISTS idx_clusters_team_name ON clusters(team, name) WHERE team IS NOT NULL;
 
 -- ============================================================================
--- 4. routes - RESTRICT delete (core resource, conditional FK for NULL teams)
+-- 3. routes - RESTRICT delete (core resource, conditional FK for NULL teams)
 -- ============================================================================
 
 CREATE TABLE routes_new (
@@ -124,15 +87,15 @@ CREATE TABLE routes_new (
     version INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
     team TEXT,
     FOREIGN KEY (cluster_name) REFERENCES clusters(name) ON DELETE CASCADE,
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(name, version)
 );
 
-INSERT INTO routes_new
-SELECT id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at, source, team
+INSERT INTO routes_new (id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at, team)
+SELECT id, name, path_prefix, cluster_name, configuration, version, created_at, updated_at, team
 FROM routes;
 
 DROP TABLE routes;
@@ -142,7 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team);
 CREATE INDEX IF NOT EXISTS idx_routes_team_name ON routes(team, name) WHERE team IS NOT NULL;
 
 -- ============================================================================
--- 5. listeners - RESTRICT delete (core resource, conditional FK for NULL teams)
+-- 4. listeners - RESTRICT delete (core resource, conditional FK for NULL teams)
 -- ============================================================================
 
 CREATE TABLE listeners_new (
@@ -155,14 +118,14 @@ CREATE TABLE listeners_new (
     version INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'platform_api')),
+    source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
     team TEXT,
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(name, version)
 );
 
-INSERT INTO listeners_new
-SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at, source, team
+INSERT INTO listeners_new (id, name, address, port, protocol, configuration, version, created_at, updated_at, team)
+SELECT id, name, address, port, protocol, configuration, version, created_at, updated_at, team
 FROM listeners;
 
 DROP TABLE listeners;
@@ -172,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_listeners_team ON listeners(team);
 CREATE INDEX IF NOT EXISTS idx_listeners_team_name ON listeners(team, name) WHERE team IS NOT NULL;
 
 -- ============================================================================
--- 6. learning_sessions - CASCADE delete (ephemeral data, can be recreated)
+-- 5. learning_sessions - CASCADE delete (ephemeral data, can be recreated)
 -- ============================================================================
 
 CREATE TABLE learning_sessions_new (
@@ -209,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_learning_sessions_team ON learning_sessions(team)
 CREATE INDEX IF NOT EXISTS idx_learning_sessions_status ON learning_sessions(status);
 
 -- ============================================================================
--- 7. inferred_schemas - CASCADE delete (ephemeral data, derived from learning)
+-- 6. inferred_schemas - CASCADE delete (ephemeral data, derived from learning)
 -- ============================================================================
 
 CREATE TABLE inferred_schemas_new (
@@ -244,7 +207,7 @@ CREATE INDEX IF NOT EXISTS idx_inferred_schemas_team ON inferred_schemas(team);
 CREATE INDEX IF NOT EXISTS idx_inferred_schemas_session ON inferred_schemas(session_id);
 
 -- ============================================================================
--- 8. aggregated_api_schemas - CASCADE delete (ephemeral data, derived from schemas)
+-- 7. aggregated_api_schemas - CASCADE delete (ephemeral data, derived from schemas)
 -- ============================================================================
 
 CREATE TABLE aggregated_api_schemas_new (

@@ -68,6 +68,9 @@ impl RouteService {
                 cluster_name: cluster_summary,
                 configuration: config,
                 team,
+                import_id: None,
+                route_order: None,
+                headers: None,
             };
 
             let mut db_span = create_operation_span("db.route.insert", SpanKind::Client);
