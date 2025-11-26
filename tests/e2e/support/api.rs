@@ -85,7 +85,7 @@ pub async fn post_create_api(
         .await
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub async fn post_create_api_on_port(
     api_addr: SocketAddr,
     bearer: &str,
@@ -151,7 +151,7 @@ pub async fn post_create_api_on_port(
 
 /// Append a route to an existing listener using OpenAPI import with listener_mode=existing.
 /// This is the proper way to add routes to an existing listener.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub async fn post_append_route_to_listener(
     api_addr: SocketAddr,
     bearer: &str,
@@ -219,7 +219,7 @@ pub async fn post_append_route_to_listener(
     Ok(json)
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub async fn post_append_route(
     api_addr: SocketAddr,
     bearer: &str,
