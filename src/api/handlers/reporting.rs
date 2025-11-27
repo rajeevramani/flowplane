@@ -14,6 +14,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::api::error::ApiError;
@@ -108,6 +109,7 @@ pub struct ListRouteFlowsResponse {
     security(("bearerAuth" = [])),
     tag = "reports"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, team = ?params.team))]
 pub async fn list_route_flows_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

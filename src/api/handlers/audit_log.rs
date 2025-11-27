@@ -8,6 +8,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -70,6 +71,7 @@ pub struct ListAuditLogsResponse {
     security(("bearerAuth" = ["admin:all"])),
     tag = "audit"
 )]
+#[instrument(skip(state), fields(user_id = ?auth_context.user_id, resource_type = ?query.resource_type, action = ?query.action))]
 pub async fn list_audit_logs(
     State(state): State<ApiState>,
     Extension(auth_context): Extension<AuthContext>,

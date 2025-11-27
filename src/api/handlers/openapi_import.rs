@@ -20,6 +20,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -167,6 +168,7 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state, request), fields(team = %params.team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -345,6 +347,7 @@ pub async fn import_openapi_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state, query), fields(user_id = ?context.user_id))]
 pub async fn list_imports_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -412,6 +415,7 @@ pub async fn list_imports_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn get_import_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -488,6 +492,7 @@ pub async fn get_import_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn delete_import_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

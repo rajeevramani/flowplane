@@ -6,6 +6,7 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -108,6 +109,7 @@ fn convert_error(err: Error) -> ApiError {
     ),
     tag = "bootstrap"
 )]
+#[instrument(skip(state, payload), fields(email = %payload.email))]
 pub async fn bootstrap_initialize_handler(
     State(state): State<ApiState>,
     Json(payload): Json<BootstrapInitializeRequest>,
@@ -339,6 +341,7 @@ pub async fn bootstrap_initialize_handler(
     ),
     tag = "bootstrap"
 )]
+#[instrument(skip(state))]
 pub async fn bootstrap_status_handler(
     State(state): State<ApiState>,
 ) -> Result<Json<BootstrapStatusResponse>, ApiError> {

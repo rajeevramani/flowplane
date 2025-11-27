@@ -9,6 +9,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -186,6 +187,7 @@ async fn verify_session_access(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state, payload), fields(route_pattern = %payload.route_pattern, user_id = ?context.user_id))]
 pub async fn create_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -272,6 +274,7 @@ pub async fn create_learning_session_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, status = ?query.status))]
 pub async fn list_learning_sessions_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -331,6 +334,7 @@ pub async fn list_learning_sessions_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn get_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -385,6 +389,7 @@ pub async fn get_learning_session_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn delete_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

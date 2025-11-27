@@ -8,6 +8,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -65,6 +66,7 @@ pub struct BootstrapQuery {
     ),
     tag = "teams"
 )]
+#[instrument(skip(state, q), fields(team = %team, user_id = ?context.user_id, format = ?q.format))]
 pub async fn get_team_bootstrap_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -204,6 +206,7 @@ pub struct ListTeamsResponse {
     ),
     tag = "teams"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id))]
 pub async fn list_teams_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -307,6 +310,7 @@ pub struct AdminListTeamsResponse {
     security(("bearer_auth" = ["admin:all"])),
     tag = "admin"
 )]
+#[instrument(skip(state, payload), fields(team_name = %payload.name, user_id = ?context.user_id))]
 pub async fn admin_create_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -355,6 +359,7 @@ pub async fn admin_create_team(
     security(("bearer_auth" = ["admin:all"])),
     tag = "admin"
 )]
+#[instrument(skip(state), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_get_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -389,6 +394,7 @@ pub async fn admin_get_team(
     security(("bearer_auth" = ["admin:all"])),
     tag = "admin"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = %query.limit, offset = %query.offset))]
 pub async fn admin_list_teams(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -424,6 +430,7 @@ pub async fn admin_list_teams(
     security(("bearer_auth" = ["admin:all"])),
     tag = "admin"
 )]
+#[instrument(skip(state, payload), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_update_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -465,6 +472,7 @@ pub async fn admin_update_team(
     security(("bearer_auth" = ["admin:all"])),
     tag = "admin"
 )]
+#[instrument(skip(state), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_delete_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

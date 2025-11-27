@@ -9,6 +9,7 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -130,6 +131,7 @@ fn convert_error(err: Error) -> ApiError {
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state, payload), fields(token_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -160,6 +162,7 @@ pub async fn create_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -195,6 +198,7 @@ pub async fn list_tokens_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn get_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -222,6 +226,7 @@ pub async fn get_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state, payload), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn update_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -252,6 +257,7 @@ pub async fn update_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn revoke_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -277,6 +283,7 @@ pub async fn revoke_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn rotate_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -353,6 +360,7 @@ impl IntoResponse for SessionCreatedResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, payload))]
 pub async fn create_session_handler(
     State(state): State<ApiState>,
     Json(payload): Json<CreateSessionBody>,
@@ -420,6 +428,7 @@ pub struct SessionInfoResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, jar, headers))]
 pub async fn get_session_info_handler(
     State(state): State<ApiState>,
     jar: CookieJar,
@@ -545,6 +554,7 @@ impl IntoResponse for LogoutResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, jar, headers))]
 pub async fn logout_handler(
     State(state): State<ApiState>,
     jar: CookieJar,
@@ -663,6 +673,7 @@ impl IntoResponse for LoginResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, payload), fields(email = %payload.email))]
 pub async fn login_handler(
     State(state): State<ApiState>,
     Json(payload): Json<LoginBody>,
@@ -751,6 +762,7 @@ pub struct ChangePasswordBody {
     security(("session" = [])),
     tag = "auth"
 )]
+#[instrument(skip(state, payload), fields(user_id = ?context.user_id))]
 pub async fn change_password_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
