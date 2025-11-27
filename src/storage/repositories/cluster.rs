@@ -134,6 +134,7 @@ impl ClusterRepository {
     }
 
     /// Get cluster by ID
+    #[instrument(skip(self), fields(cluster_id = %id), name = "db_get_cluster_by_id")]
     pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
         let row = sqlx::query_as::<Sqlite, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE id = $1"
@@ -209,6 +210,7 @@ impl ClusterRepository {
 
     /// List clusters filtered by team names (for team-scoped tokens)
     /// If teams list is empty, returns all clusters (for admin:all or resource-level scopes)
+    #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_clusters_by_teams")]
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -270,6 +272,7 @@ impl ClusterRepository {
     }
 
     /// Update cluster
+    #[instrument(skip(self, request), fields(cluster_id = %id), name = "db_update_cluster")]
     pub async fn update(
         &self,
         id: &ClusterId,
@@ -329,6 +332,7 @@ impl ClusterRepository {
     }
 
     /// Delete cluster
+    #[instrument(skip(self), fields(cluster_id = %id), name = "db_delete_cluster")]
     pub async fn delete(&self, id: &ClusterId) -> Result<()> {
         // Check if cluster exists first
         let cluster = self.get_by_id(id).await?;
@@ -362,6 +366,7 @@ impl ClusterRepository {
     }
 
     /// Check if cluster exists by name
+    #[instrument(skip(self), fields(cluster_name = %name), name = "db_exists_cluster_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clusters WHERE name = $1")
             .bind(name)
@@ -378,6 +383,7 @@ impl ClusterRepository {
         Ok(count > 0)
     }
 
+    #[instrument(skip(self), fields(cluster_name = %name), name = "db_delete_cluster_by_name")]
     pub async fn delete_by_name(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM clusters WHERE name = $1")
             .bind(name)
@@ -395,6 +401,7 @@ impl ClusterRepository {
     }
 
     /// Get cluster count
+    #[instrument(skip(self), name = "db_count_clusters")]
     pub async fn count(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clusters")
             .fetch_one(&self.pool)

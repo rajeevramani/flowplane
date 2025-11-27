@@ -8,6 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Internal database row structure for listeners.
 ///
@@ -186,6 +187,7 @@ impl ListenerRepository {
     ///
     /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
     /// - [`FlowplaneError::Database`] if insertion fails (e.g., duplicate name)
+    #[instrument(skip(self, request), fields(listener_name = %request.name, team = ?request.team), name = "db_create_listener")]
     pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
         let id = ListenerId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
@@ -240,6 +242,7 @@ impl ListenerRepository {
     ///
     /// - [`FlowplaneError::NotFound`] if no listener exists with the given ID
     /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE id = $1"
@@ -263,6 +266,7 @@ impl ListenerRepository {
         }
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
@@ -287,6 +291,7 @@ impl ListenerRepository {
         }
     }
 
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_listeners")]
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<ListenerData>> {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
@@ -352,6 +357,7 @@ impl ListenerRepository {
     /// # Errors
     ///
     /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_listeners_by_teams")]
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -411,6 +417,7 @@ impl ListenerRepository {
     }
 
     /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
+    #[instrument(skip(self), fields(import_id = %import_id), name = "db_count_listeners_by_import")]
     pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
         sqlx::query_scalar::<Sqlite, i64>(
             "SELECT COUNT(*) FROM listeners WHERE import_id = $1",
@@ -427,6 +434,7 @@ impl ListenerRepository {
         })
     }
 
+    #[instrument(skip(self, request), fields(listener_id = %id), name = "db_update_listener")]
     pub async fn update(
         &self,
         id: &ListenerId,
@@ -490,6 +498,7 @@ impl ListenerRepository {
         self.get_by_id(id).await
     }
 
+    #[instrument(skip(self), fields(listener_id = %id), name = "db_delete_listener")]
     pub async fn delete(&self, id: &ListenerId) -> Result<()> {
         let listener = self.get_by_id(id).await?;
 
@@ -517,6 +526,7 @@ impl ListenerRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_delete_listener_by_name")]
     pub async fn delete_by_name(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM listeners WHERE name = $1")
             .bind(name)
@@ -533,6 +543,7 @@ impl ListenerRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_exists_listener_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
             .bind(name)
@@ -549,6 +560,7 @@ impl ListenerRepository {
         Ok(count > 0)
     }
 
+    #[instrument(skip(self), name = "db_count_listeners")]
     pub async fn count(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners")
             .fetch_one(&self.pool)

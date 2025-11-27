@@ -205,6 +205,7 @@ impl RouteRepository {
         self.get_by_id(&id).await
     }
 
+    #[instrument(skip(self), fields(route_id = %id), name = "db_get_route_by_id")]
     pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
             "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE id = $1"
@@ -226,6 +227,7 @@ impl RouteRepository {
         }
     }
 
+    #[instrument(skip(self), fields(route_name = %name), name = "db_get_route_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
             "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
@@ -249,6 +251,7 @@ impl RouteRepository {
         }
     }
 
+    #[instrument(skip(self), fields(route_name = %name), name = "db_exists_route_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<Sqlite, i64>(
             "SELECT COUNT(*) FROM routes WHERE name = $1",
@@ -305,6 +308,7 @@ impl RouteRepository {
     /// # Errors
     ///
     /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_routes_by_teams")]
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -397,6 +401,7 @@ impl RouteRepository {
         Ok(rows.into_iter().map(RouteData::from).collect())
     }
 
+    #[instrument(skip(self, request), fields(route_id = %id), name = "db_update_route")]
     pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {
         let current = self.get_by_id(id).await?;
 
@@ -443,6 +448,7 @@ impl RouteRepository {
         self.get_by_id(id).await
     }
 
+    #[instrument(skip(self), fields(route_id = %id), name = "db_delete_route")]
     pub async fn delete(&self, id: &RouteId) -> Result<()> {
         let route = self.get_by_id(id).await?;
 
@@ -467,6 +473,7 @@ impl RouteRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(route_name = %name), name = "db_delete_route_by_name")]
     pub async fn delete_by_name(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM routes WHERE name = $1")
             .bind(name)

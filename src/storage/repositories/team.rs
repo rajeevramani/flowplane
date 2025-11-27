@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use std::str::FromStr;
+use tracing::instrument;
 
 // Database row structure
 
@@ -108,6 +109,7 @@ impl SqlxTeamRepository {
 
 #[async_trait]
 impl TeamRepository for SqlxTeamRepository {
+    #[instrument(skip(self, request), fields(team_name = %request.name), name = "db_create_team")]
     async fn create_team(&self, request: CreateTeamRequest) -> Result<Team> {
         let id = TeamId::new();
         let now = Utc::now();
@@ -143,6 +145,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.try_into()
     }
 
+    #[instrument(skip(self), fields(team_id = %id), name = "db_get_team_by_id")]
     async fn get_team_by_id(&self, id: &TeamId) -> Result<Option<Team>> {
         let row = sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE id = $1")
             .bind(id.as_str())
@@ -156,6 +159,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.map(|r| r.try_into()).transpose()
     }
 
+    #[instrument(skip(self), fields(team_name = %name), name = "db_get_team_by_name")]
     async fn get_team_by_name(&self, name: &str) -> Result<Option<Team>> {
         let row = sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE name = $1")
             .bind(name)
@@ -169,6 +173,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.map(|r| r.try_into()).transpose()
     }
 
+    #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_teams")]
     async fn list_teams(&self, limit: i64, offset: i64) -> Result<Vec<Team>> {
         let rows = sqlx::query_as::<_, TeamRow>(
             "SELECT * FROM teams ORDER BY created_at DESC LIMIT $1 OFFSET $2",
@@ -185,6 +190,7 @@ impl TeamRepository for SqlxTeamRepository {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    #[instrument(skip(self), fields(status = %status, limit = limit, offset = offset), name = "db_list_teams_by_status")]
     async fn list_teams_by_status(
         &self,
         status: TeamStatus,
@@ -207,6 +213,7 @@ impl TeamRepository for SqlxTeamRepository {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    #[instrument(skip(self), name = "db_count_teams")]
     async fn count_teams(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams")
             .fetch_one(&self.pool)
@@ -219,6 +226,7 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self, update), fields(team_id = %id), name = "db_update_team")]
     async fn update_team(&self, id: &TeamId, update: UpdateTeamRequest) -> Result<Team> {
         // Fetch current team
         let current = self
@@ -266,6 +274,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.try_into()
     }
 
+    #[instrument(skip(self), fields(team_id = %id), name = "db_delete_team")]
     async fn delete_team(&self, id: &TeamId) -> Result<()> {
         let result = sqlx::query("DELETE FROM teams WHERE id = $1")
             .bind(id.as_str())
@@ -283,6 +292,7 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(team_name = %name), name = "db_is_team_name_available")]
     async fn is_name_available(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE name = $1")
             .bind(name)

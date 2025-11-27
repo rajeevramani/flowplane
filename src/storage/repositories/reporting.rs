@@ -7,6 +7,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Route flow data combining information from routes, clusters, and listeners
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -48,6 +49,7 @@ impl ReportingRepository {
     ///
     /// # Returns
     /// Tuple of (route_flows, total_count)
+    #[instrument(skip(self), fields(teams = ?teams, limit = limit, offset = offset), name = "db_list_route_flows")]
     pub async fn list_route_flows(
         &self,
         teams: &[String],
@@ -159,6 +161,7 @@ impl ReportingRepository {
     }
 
     /// Count total route flows (for pagination)
+    #[instrument(skip(self), fields(teams = ?teams), name = "db_count_route_flows")]
     async fn count_route_flows(&self, teams: &[String]) -> Result<i64> {
         let count = if teams.is_empty() {
             // Admin query - count all routes
