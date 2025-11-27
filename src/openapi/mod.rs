@@ -333,6 +333,7 @@ fn cluster_from_server(
         circuit_breakers: None,
         health_checks: Vec::new(),
         outlier_detection: None,
+        protocol_type: None,
     };
 
     let mut configuration =

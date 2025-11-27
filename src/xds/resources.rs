@@ -569,6 +569,20 @@ fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
         cluster.outlier_detection = Some(build_outlier_detection(outlier));
     }
 
+    // Add HTTP/2 protocol options for gRPC clusters
+    if let Some(protocol) = &spec.protocol_type {
+        let protocol_upper = protocol.to_uppercase();
+        if protocol_upper == "HTTP2" || protocol_upper == "GRPC" {
+            cluster.typed_extension_protocol_options =
+                create_http2_typed_extension_protocol_options()?;
+            debug!(
+                cluster = %name,
+                protocol = %protocol_upper,
+                "Configured HTTP/2 protocol options for cluster"
+            );
+        }
+    }
+
     Ok(cluster)
 }
 

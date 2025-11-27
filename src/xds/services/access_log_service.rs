@@ -77,6 +77,24 @@ pub struct ProcessedLogEntry {
     pub start_time_seconds: i64,
     /// Request duration in milliseconds
     pub duration_ms: i64,
+    /// Distributed trace context for correlation with application traces
+    pub trace_context: Option<TraceContext>,
+}
+
+/// W3C TraceContext extracted from access log headers
+///
+/// This enables correlation between Envoy access logs and application-level
+/// distributed traces in Jaeger/Zipkin/OpenTelemetry.
+#[derive(Debug, Clone)]
+pub struct TraceContext {
+    /// W3C Trace ID (32 hex characters)
+    pub trace_id: String,
+    /// W3C Span ID (16 hex characters)
+    pub span_id: String,
+    /// Trace flags (e.g., "01" for sampled)
+    pub trace_flags: String,
+    /// Optional tracestate header for vendor-specific context
+    pub trace_state: Option<String>,
 }
 
 impl LearningSession {
@@ -267,6 +285,91 @@ impl FlowplaneAccessLogService {
             .cloned()
     }
 
+    /// Extract W3C TraceContext from request headers for distributed tracing correlation
+    ///
+    /// Parses the `traceparent` header in format: `{version}-{trace-id}-{span-id}-{trace-flags}`
+    /// Example: `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`
+    ///
+    /// Also extracts the optional `tracestate` header for vendor-specific context.
+    ///
+    /// Reference: https://www.w3.org/TR/trace-context/
+    fn extract_trace_context(
+        request_headers: &std::collections::HashMap<String, String>,
+    ) -> Option<TraceContext> {
+        // Try to get traceparent header (W3C standard)
+        let traceparent = request_headers.get("traceparent")?;
+
+        // Parse traceparent format: {version}-{trace-id}-{span-id}-{trace-flags}
+        // Example: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        let parts: Vec<&str> = traceparent.split('-').collect();
+        if parts.len() != 4 {
+            debug!(
+                traceparent = %traceparent,
+                "Invalid traceparent format, expected 4 parts separated by '-'"
+            );
+            return None;
+        }
+
+        let version = parts[0];
+        let trace_id = parts[1];
+        let span_id = parts[2];
+        let trace_flags = parts[3];
+
+        // Validate version (currently only "00" is defined)
+        if version != "00" {
+            debug!(
+                version = %version,
+                "Unsupported traceparent version, expected '00'"
+            );
+            // Continue anyway - future versions should be backward compatible
+        }
+
+        // Validate trace_id (32 hex chars)
+        if trace_id.len() != 32 || !trace_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            debug!(
+                trace_id = %trace_id,
+                "Invalid trace_id format, expected 32 hex characters"
+            );
+            return None;
+        }
+
+        // Validate span_id (16 hex chars)
+        if span_id.len() != 16 || !span_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            debug!(
+                span_id = %span_id,
+                "Invalid span_id format, expected 16 hex characters"
+            );
+            return None;
+        }
+
+        // Validate trace_flags (2 hex chars)
+        if trace_flags.len() != 2 || !trace_flags.chars().all(|c| c.is_ascii_hexdigit()) {
+            debug!(
+                trace_flags = %trace_flags,
+                "Invalid trace_flags format, expected 2 hex characters"
+            );
+            return None;
+        }
+
+        // Get optional tracestate header
+        let trace_state = request_headers.get("tracestate").cloned();
+
+        debug!(
+            trace_id = %trace_id,
+            span_id = %span_id,
+            trace_flags = %trace_flags,
+            has_tracestate = trace_state.is_some(),
+            "Extracted W3C TraceContext from access log"
+        );
+
+        Some(TraceContext {
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            trace_flags: trace_flags.to_string(),
+            trace_state,
+        })
+    }
+
     #[allow(dead_code)] // Will be used once we determine exact wire format
     fn process_http_log_entry(
         entry: &HttpAccessLogEntry,
@@ -274,44 +377,57 @@ impl FlowplaneAccessLogService {
         team: String,
     ) -> ProcessedLogEntry {
         // Extract request details
-        let (method, path, request_headers, request_body, request_body_size, request_id) =
-            if let Some(request) = &entry.request {
-                let method = request.request_method;
-                let path = request.path.clone();
+        let (
+            method,
+            path,
+            request_headers,
+            request_body,
+            request_body_size,
+            request_id,
+            trace_context,
+        ) = if let Some(request) = &entry.request {
+            let method = request.request_method;
+            let path = request.path.clone();
 
-                // Extract limited headers (first 20 headers to avoid excessive memory)
-                // Note: Actual header structure will be validated with real Envoy
-                let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
+            // Extract limited headers (first 20 headers to avoid excessive memory)
+            // Note: Actual header structure will be validated with real Envoy
+            let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
 
-                // Extract x-request-id for correlation with ExtProc body captures
-                let headers_map: std::collections::HashMap<String, String> =
-                    request.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                let request_id = Self::extract_request_id_from_headers(&headers_map);
+            // Build headers map for correlation extraction
+            let headers_map: std::collections::HashMap<String, String> =
+                request.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-                // TODO: Extract request body (up to 10KB for schema inference)
-                // Note: The HttpRequestProperties protobuf from Envoy does NOT include
-                // the actual body content by default. To capture bodies, we need to:
-                // 1. Enable body buffering in Envoy's HTTP connection manager
-                // 2. Use the `body` field in access log format configuration
-                // For now, bodies are not available in the protobuf message.
-                let body = None;
+            // Extract x-request-id for correlation with ExtProc body captures
+            let request_id = Self::extract_request_id_from_headers(&headers_map);
 
-                let body_size = request.request_body_bytes;
+            // Extract W3C TraceContext for distributed tracing correlation
+            let trace_context = Self::extract_trace_context(&headers_map);
 
-                debug!(
-                    method = method,
-                    path = %path,
-                    headers_count = headers.len(),
-                    body_bytes = body_size,
-                    has_body = body.is_some(),
-                    request_id = ?request_id,
-                    "HTTP request extracted"
-                );
+            // TODO: Extract request body (up to 10KB for schema inference)
+            // Note: The HttpRequestProperties protobuf from Envoy does NOT include
+            // the actual body content by default. To capture bodies, we need to:
+            // 1. Enable body buffering in Envoy's HTTP connection manager
+            // 2. Use the `body` field in access log format configuration
+            // For now, bodies are not available in the protobuf message.
+            let body = None;
 
-                (method, path, headers, body, body_size, request_id)
-            } else {
-                (0, String::new(), Vec::new(), None, 0, None)
-            };
+            let body_size = request.request_body_bytes;
+
+            debug!(
+                method = method,
+                path = %path,
+                headers_count = headers.len(),
+                body_bytes = body_size,
+                has_body = body.is_some(),
+                request_id = ?request_id,
+                has_trace_context = trace_context.is_some(),
+                "HTTP request extracted"
+            );
+
+            (method, path, headers, body, body_size, request_id, trace_context)
+        } else {
+            (0, String::new(), Vec::new(), None, 0, None, None)
+        };
 
         // Extract response details
         let (response_status, response_headers, response_body, response_body_size) =
@@ -375,6 +491,7 @@ impl FlowplaneAccessLogService {
             response_body_size,
             start_time_seconds,
             duration_ms,
+            trace_context,
         }
     }
 }
@@ -909,5 +1026,173 @@ mod tests {
         // Should match the first one added (session-1)
         let result = service.find_matching_session("/api/users/123", "GET").await;
         assert_eq!(result, Some("session-1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_trace_context_valid() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
+        );
+        headers.insert("tracestate".to_string(), "vendor1=value1,vendor2=value2".to_string());
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_some());
+
+        let ctx = trace_context.unwrap();
+        assert_eq!(ctx.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(ctx.span_id, "00f067aa0ba902b7");
+        assert_eq!(ctx.trace_flags, "01");
+        assert_eq!(ctx.trace_state.as_deref(), Some("vendor1=value1,vendor2=value2"));
+    }
+
+    #[test]
+    fn test_extract_trace_context_no_tracestate() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "traceparent".to_string(),
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00".to_string(),
+        );
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_some());
+
+        let ctx = trace_context.unwrap();
+        assert_eq!(ctx.trace_id, "0af7651916cd43dd8448eb211c80319c");
+        assert_eq!(ctx.span_id, "b7ad6b7169203331");
+        assert_eq!(ctx.trace_flags, "00"); // Not sampled
+        assert!(ctx.trace_state.is_none());
+    }
+
+    #[test]
+    fn test_extract_trace_context_missing_header() {
+        let headers = std::collections::HashMap::new();
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_none());
+    }
+
+    #[test]
+    fn test_extract_trace_context_invalid_format() {
+        let mut headers = std::collections::HashMap::new();
+        // Invalid: only 3 parts instead of 4
+        headers.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7".to_string(),
+        );
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_none());
+    }
+
+    #[test]
+    fn test_extract_trace_context_invalid_trace_id() {
+        let mut headers = std::collections::HashMap::new();
+        // Invalid: trace_id too short (only 16 chars instead of 32)
+        headers.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6-00f067aa0ba902b7-01".to_string(),
+        );
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_none());
+    }
+
+    #[test]
+    fn test_extract_trace_context_invalid_span_id() {
+        let mut headers = std::collections::HashMap::new();
+        // Invalid: span_id too short (only 8 chars instead of 16)
+        headers.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa-01".to_string(),
+        );
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_none());
+    }
+
+    #[test]
+    fn test_extract_trace_context_non_hex_chars() {
+        let mut headers = std::collections::HashMap::new();
+        // Invalid: contains non-hex characters 'xyz'
+        headers.insert(
+            "traceparent".to_string(),
+            "00-4bf92f3577b34da6a3ce929d0e0xyz36-00f067aa0ba902b7-01".to_string(),
+        );
+
+        let trace_context = FlowplaneAccessLogService::extract_trace_context(&headers);
+        assert!(trace_context.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_process_http_log_entry_with_trace_context() {
+        use envoy_types::pb::envoy::data::accesslog::v3::HttpRequestProperties;
+        use envoy_types::pb::envoy::data::accesslog::v3::HttpResponseProperties;
+        use envoy_types::pb::google::protobuf::UInt32Value;
+
+        // Create HTTP access log entry with traceparent header
+        let mut request = HttpRequestProperties {
+            request_method: 1, // GET
+            path: "/api/traced".to_string(),
+            ..Default::default()
+        };
+        request.request_headers.insert(
+            "traceparent".to_string(),
+            "00-12345678901234567890123456789012-abcdef1234567890-01".to_string(),
+        );
+        request.request_headers.insert("tracestate".to_string(), "flowplane=test".to_string());
+
+        let entry = HttpAccessLogEntry {
+            request: Some(request),
+            response: Some(HttpResponseProperties {
+                response_code: Some(UInt32Value { value: 200 }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let processed = FlowplaneAccessLogService::process_http_log_entry(
+            &entry,
+            "test-session".to_string(),
+            "test-team".to_string(),
+        );
+
+        // Verify trace context was extracted
+        assert!(processed.trace_context.is_some());
+        let ctx = processed.trace_context.unwrap();
+        assert_eq!(ctx.trace_id, "12345678901234567890123456789012");
+        assert_eq!(ctx.span_id, "abcdef1234567890");
+        assert_eq!(ctx.trace_flags, "01");
+        assert_eq!(ctx.trace_state.as_deref(), Some("flowplane=test"));
+    }
+
+    #[tokio::test]
+    async fn test_process_http_log_entry_without_trace_context() {
+        use envoy_types::pb::envoy::data::accesslog::v3::HttpRequestProperties;
+        use envoy_types::pb::envoy::data::accesslog::v3::HttpResponseProperties;
+        use envoy_types::pb::google::protobuf::UInt32Value;
+
+        // Create HTTP access log entry without traceparent header
+        let entry = HttpAccessLogEntry {
+            request: Some(HttpRequestProperties {
+                request_method: 2, // POST
+                path: "/api/untraced".to_string(),
+                ..Default::default()
+            }),
+            response: Some(HttpResponseProperties {
+                response_code: Some(UInt32Value { value: 201 }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let processed = FlowplaneAccessLogService::process_http_log_entry(
+            &entry,
+            "test-session".to_string(),
+            "test-team".to_string(),
+        );
+
+        // Verify no trace context since header was missing
+        assert!(processed.trace_context.is_none());
     }
 }

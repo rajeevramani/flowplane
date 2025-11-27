@@ -1,12 +1,12 @@
 //! # Structured Logging
 //!
-//! Provides structured logging setup using the tracing ecosystem.
+//! Provides structured logging macros and utilities using the tracing ecosystem.
 //!
 //! # Trace-Log Correlation
 //!
 //! When OpenTelemetry tracing is enabled, all log entries automatically include
 //! trace context (trace ID and span ID) for correlation. This is handled by the
-//! `tracing-opentelemetry` layer.
+//! `tracing-opentelemetry` layer which bridges `#[instrument]` spans to OpenTelemetry.
 //!
 //! In JSON logging mode, trace context is included as fields in the JSON output:
 //! - `trace_id`: W3C trace ID (32 hex characters)
@@ -14,76 +14,6 @@
 //!
 //! This enables searching logs by trace ID in your logging system and correlating
 //! logs with distributed traces in your tracing backend (Jaeger, Zipkin, etc.).
-
-use crate::config::ObservabilityConfig;
-use crate::errors::{FlowplaneError, Result};
-use once_cell::sync::OnceCell;
-use tracing_subscriber::{
-    fmt::{self, format::JsonFields},
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-};
-
-static LOGGING_INITIALIZED: OnceCell<()> = OnceCell::new();
-
-/// Initialize structured logging based on configuration
-///
-/// Note: This only sets up logging (tracing crate for structured logs).
-/// OpenTelemetry distributed tracing is handled separately in init_tracing().
-pub fn init_logging(config: &ObservabilityConfig) -> Result<()> {
-    let env_filter = parse_env_filter(&config.log_level)?;
-
-    LOGGING_INITIALIZED.get_or_try_init(|| configure_logging(config, env_filter)).map(|_| ())
-}
-
-fn configure_logging(config: &ObservabilityConfig, env_filter: EnvFilter) -> Result<()> {
-    // Build subscriber layers based on configuration
-    // Note: We only handle logging here. OpenTelemetry tracing is separate.
-    if config.json_logging {
-        let json_layer = fmt::layer()
-            .json()
-            .flatten_event(true)
-            .with_current_span(true)
-            .with_span_list(false)
-            .fmt_fields(JsonFields::new());
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(json_layer)
-            .try_init()
-            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
-    } else {
-        let pretty_layer =
-            fmt::layer().pretty().with_target(true).with_thread_ids(true).with_thread_names(true);
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(pretty_layer)
-            .try_init()
-            .map_err(|e| FlowplaneError::config(format!("Failed to initialize logging: {}", e)))?;
-    }
-
-    Ok(())
-}
-
-fn parse_env_filter(level: &str) -> Result<EnvFilter> {
-    let normalized = level.trim();
-    let lower = normalized.to_ascii_lowercase();
-
-    match lower.as_str() {
-        "trace" | "debug" | "info" | "warn" | "error" => {}
-        _ => {
-            return Err(FlowplaneError::config(format!(
-                "Invalid log level '{}': must be one of trace, debug, info, warn, error",
-                level
-            )));
-        }
-    }
-
-    EnvFilter::try_new(normalized)
-        .map_err(|e| FlowplaneError::config(format!("Invalid log level '{}': {}", level, e)))
-}
 
 /// Create a tracing span for request tracking
 #[macro_export]
@@ -167,41 +97,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_init_logging_pretty() {
-        let config = ObservabilityConfig {
-            log_level: "debug".to_string(),
-            json_logging: false,
-            ..Default::default()
-        };
-
-        // This should not panic
-        let result = init_logging(&config);
-        assert!(result.is_ok() || result.is_err()); // tracing_subscriber might be already initialized
-    }
-
-    #[test]
-    fn test_init_logging_json() {
-        let config = ObservabilityConfig {
-            log_level: "info".to_string(),
-            json_logging: true,
-            ..Default::default()
-        };
-
-        // This should not panic
-        let result = init_logging(&config);
-        assert!(result.is_ok() || result.is_err()); // tracing_subscriber might be already initialized
-    }
-
-    #[test]
-    fn test_invalid_log_level() {
-        let config =
-            ObservabilityConfig { log_level: "invalid_level".to_string(), ..Default::default() };
-
-        let result = init_logging(&config);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_macros_compile() {
         // Test that our macros compile correctly
         let _span = request_span!("GET", "/api/clusters");
@@ -218,23 +113,5 @@ mod tests {
 
         // This should not panic
         log_config_info(&config);
-    }
-
-    #[tokio::test]
-    async fn test_logging_json() {
-        // Test that JSON logging can be initialized
-        let config = crate::config::ObservabilityConfig {
-            enable_tracing: false,
-            enable_metrics: false,
-            json_logging: true,
-            log_level: "info".to_string(),
-            ..Default::default()
-        };
-
-        // Initialize logging
-        let result = init_logging(&config);
-
-        // May succeed or fail if already initialized - both are acceptable
-        assert!(result.is_ok() || result.is_err());
     }
 }

@@ -73,10 +73,13 @@ impl<'a> Extractor for MetadataExtractor<'a> {
     }
 
     fn keys(&self) -> Vec<&str> {
-        self.0.keys().filter_map(|k| match k {
-            tonic::metadata::KeyRef::Ascii(key) => Some(key.as_str()),
-            tonic::metadata::KeyRef::Binary(_) => None,
-        }).collect()
+        self.0
+            .keys()
+            .filter_map(|k| match k {
+                tonic::metadata::KeyRef::Ascii(key) => Some(key.as_str()),
+                tonic::metadata::KeyRef::Binary(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -280,14 +283,17 @@ where
                                 }
 
                                 if let Some(error_detail) = discovery_request.error_detail.as_ref() {
-                                    warn!(
+                                    // Record NACK as an error event for trace visibility
+                                    error!(
+                                        name = "xds.nack",
                                         type_url = %discovery_request.type_url,
                                         nonce = %discovery_request.response_nonce,
-                                        error_code = error_detail.code,
-                                        error_message = %error_detail.message,
+                                        error.type = "envoy_rejection",
+                                        error.code = error_detail.code,
+                                        error.message = %error_detail.message,
                                         node_id = ?node_id,
                                         stream = %label_for_task,
-                                        "[NACK] Envoy rejected previous response"
+                                        "Envoy rejected previous xDS response"
                                     );
                                 }
 
@@ -560,15 +566,18 @@ where
 
                                 if is_ack_or_nack {
                                     if let Some(error_detail) = &delta_request.error_detail {
-                                        warn!(
-                                        nonce = %delta_request.response_nonce,
-                                        error_code = error_detail.code,
-                                        error_message = %error_detail.message,
-                                        type_url = %delta_request.type_url,
-                                        stream = %label,
-                                        "[NACK] Delta request rejected by Envoy"
-                                    );
-                                } else {
+                                        // Record delta NACK as an error event for trace visibility
+                                        error!(
+                                            name = "xds.delta_nack",
+                                            nonce = %delta_request.response_nonce,
+                                            error.type = "envoy_delta_rejection",
+                                            error.code = error_detail.code,
+                                            error.message = %error_detail.message,
+                                            type_url = %delta_request.type_url,
+                                            stream = %label,
+                                            "Envoy rejected previous delta xDS response"
+                                        );
+                                    } else {
                                     info!(
                                         nonce = %delta_request.response_nonce,
                                         type_url = %delta_request.type_url,

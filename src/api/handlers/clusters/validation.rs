@@ -29,6 +29,7 @@ pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConf
         health_checks,
         circuit_breakers,
         outlier_detection,
+        protocol_type,
     } = payload;
 
     let service_name = service_name.unwrap_or_else(|| name.clone());
@@ -98,6 +99,7 @@ pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConf
             base_ejection_time_seconds: od.base_ejection_time_seconds,
             max_ejection_percent: od.max_ejection_percent,
         }),
+        protocol_type,
         ..Default::default()
     };
 

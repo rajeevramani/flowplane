@@ -57,6 +57,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             circuit_breakers: None,
             health_checks: Vec::new(),
             outlier_detection: None,
+            protocol_type: None,
         };
 
         let cluster_config = cluster_spec.to_value()?;

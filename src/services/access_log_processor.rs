@@ -1050,6 +1050,7 @@ mod tests {
             response_body_size: 1024,
             start_time_seconds: 1234567890,
             duration_ms: 42,
+            trace_context: None,
         };
 
         tx.send(entry).unwrap();
@@ -1121,6 +1122,7 @@ mod tests {
                 response_body_size: 0,
                 start_time_seconds: 1234567890,
                 duration_ms: 10,
+                trace_context: None,
             };
             tx.send(entry).unwrap();
         }
@@ -1169,6 +1171,7 @@ mod tests {
             response_body_size: response_json.len() as u64,
             start_time_seconds: 1234567890,
             duration_ms: 42,
+            trace_context: None,
         };
 
         tx.send(entry).unwrap();
@@ -1214,6 +1217,7 @@ mod tests {
             response_body_size: 0,
             start_time_seconds: 1234567890,
             duration_ms: 42,
+            trace_context: None,
         };
 
         tx.send(entry).unwrap();
@@ -1259,6 +1263,7 @@ mod tests {
             response_body_size: 0,
             start_time_seconds: 1234567890,
             duration_ms: 42,
+            trace_context: None,
         };
 
         tx.send(entry).unwrap();
@@ -1332,6 +1337,7 @@ mod tests {
             response_body_size: response_json.len() as u64,
             start_time_seconds: 1234567890,
             duration_ms: 42,
+            trace_context: None,
         };
 
         tx.send(entry).unwrap();
@@ -1380,6 +1386,7 @@ mod tests {
                 response_body_size: 0,
                 start_time_seconds: 1234567890,
                 duration_ms: 10,
+                trace_context: None,
             };
             tx.send(entry).unwrap();
         }

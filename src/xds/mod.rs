@@ -16,6 +16,7 @@ pub mod route;
 pub mod services;
 mod state;
 
+use crate::observability::GrpcTracingLayer;
 use crate::{config::SimpleXdsConfig, storage::DbPool, Result};
 use std::future::Future;
 use std::sync::Arc;
@@ -65,9 +66,11 @@ where
 
     // Build and start the gRPC server with ADS service, AccessLogService, and ExtProcService
     // This serves actual Envoy resources (clusters, routes, listeners, endpoints)
-    let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
+    let server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
+    // Apply gRPC tracing layer for automatic instrumentation
     let server = server_builder
+        .layer(GrpcTracingLayer::new())
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .add_service(AccessLogServiceServer::new(access_log_service))
         .add_service(ExternalProcessorServer::new(ext_proc_service))
@@ -75,7 +78,7 @@ where
 
     info!(
         address = %addr,
-        "XDS server with AccessLogService and ExtProcService listening"
+        "XDS server with AccessLogService, ExtProcService and tracing listening"
     );
 
     // Start the server with graceful shutdown
@@ -132,7 +135,7 @@ where
 
     let ads_service = DatabaseAggregatedDiscoveryService::new(state.clone());
 
-    let mut server_builder = configure_server_builder(Server::builder(), &state.config)?;
+    let server_builder = configure_server_builder(Server::builder(), &state.config)?;
 
     // Use the AccessLogService from state if available, otherwise create a new one
     let access_log_service = if let Some(service) = &state.access_log_service {
@@ -150,7 +153,9 @@ where
         Arc::new(service)
     };
 
+    // Apply gRPC tracing layer for automatic instrumentation
     let server = server_builder
+        .layer(GrpcTracingLayer::new())
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .add_service(AccessLogServiceServer::new(
             // Clone the service (shares the inner Arc<RwLock<...>> with learning session service)
@@ -164,7 +169,7 @@ where
 
     info!(
         address = %addr,
-        "Database-enabled XDS server with AccessLogService and ExtProcService listening"
+        "Database-enabled XDS server with AccessLogService, ExtProcService and tracing listening"
     );
 
     server

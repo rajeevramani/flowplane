@@ -108,6 +108,13 @@ pub struct CreateClusterBody {
     /// Passive outlier detection configuration.
     #[serde(default)]
     pub outlier_detection: Option<OutlierDetectionRequest>,
+
+    /// Protocol type for upstream connections.
+    /// Use "HTTP2" or "GRPC" for gRPC/HTTP2 upstreams (e.g., OTEL collectors, gRPC services).
+    /// Defaults to HTTP/1.1 if not specified.
+    #[serde(default)]
+    #[schema(example = "GRPC")]
+    pub protocol_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
