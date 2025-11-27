@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -82,6 +82,7 @@ async fn verify_route_access(
     ),
     tag = "routes"
 )]
+#[instrument(skip(state, payload), fields(team = %payload.team, route_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_route_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -150,6 +151,7 @@ pub async fn create_route_handler(
     ),
     tag = "routes"
 )]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_routes_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -187,6 +189,7 @@ pub async fn list_routes_handler(
     ),
     tag = "routes"
 )]
+#[instrument(skip(state), fields(route_name = %name, user_id = ?context.user_id))]
 pub async fn get_route_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -221,6 +224,7 @@ pub async fn get_route_handler(
     ),
     tag = "routes"
 )]
+#[instrument(skip(state, payload), fields(route_name = %name, user_id = ?context.user_id))]
 pub async fn update_route_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -295,6 +299,7 @@ pub async fn update_route_handler(
     ),
     tag = "routes"
 )]
+#[instrument(skip(state), fields(route_name = %name, user_id = ?context.user_id))]
 pub async fn delete_route_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

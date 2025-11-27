@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -84,6 +84,7 @@ async fn verify_listener_access(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state, payload), fields(team = %payload.team, listener_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -178,6 +179,7 @@ pub async fn list_listeners_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn get_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -213,6 +215,7 @@ pub async fn get_listener_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state, payload), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn update_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -272,6 +275,7 @@ pub async fn update_listener_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn delete_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
