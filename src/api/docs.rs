@@ -27,7 +27,10 @@ use crate::xds::{
 #[openapi(
     paths(
         crate::api::handlers::health::health_handler,
+        // Bootstrap endpoints
         crate::api::handlers::bootstrap::bootstrap_initialize_handler,
+        crate::api::handlers::bootstrap::bootstrap_status_handler,
+        // Auth endpoints
         crate::api::handlers::auth::create_token_handler,
         crate::api::handlers::auth::list_tokens_handler,
         crate::api::handlers::auth::get_token_handler,
@@ -37,22 +40,54 @@ use crate::xds::{
         crate::api::handlers::auth::create_session_handler,
         crate::api::handlers::auth::get_session_info_handler,
         crate::api::handlers::auth::logout_handler,
+        crate::api::handlers::auth::login_handler,
+        crate::api::handlers::auth::change_password_handler,
+        // Cluster endpoints
         crate::api::handlers::clusters::create_cluster_handler,
         crate::api::handlers::clusters::list_clusters_handler,
         crate::api::handlers::clusters::get_cluster_handler,
         crate::api::handlers::clusters::update_cluster_handler,
         crate::api::handlers::clusters::delete_cluster_handler,
+        // Route endpoints
         crate::api::handlers::routes::create_route_handler,
         crate::api::handlers::routes::list_routes_handler,
         crate::api::handlers::routes::get_route_handler,
         crate::api::handlers::routes::update_route_handler,
         crate::api::handlers::routes::delete_route_handler,
+        // Listener endpoints
         crate::api::handlers::listeners::create_listener_handler,
         crate::api::handlers::listeners::list_listeners_handler,
         crate::api::handlers::listeners::get_listener_handler,
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
+        // Team endpoints
         crate::api::handlers::teams::get_team_bootstrap_handler,
+        crate::api::handlers::teams::list_teams_handler,
+        crate::api::handlers::teams::admin_create_team,
+        crate::api::handlers::teams::admin_list_teams,
+        crate::api::handlers::teams::admin_get_team,
+        crate::api::handlers::teams::admin_update_team,
+        crate::api::handlers::teams::admin_delete_team,
+        // User management endpoints
+        crate::api::handlers::users::create_user,
+        crate::api::handlers::users::list_users,
+        crate::api::handlers::users::get_user,
+        crate::api::handlers::users::update_user,
+        crate::api::handlers::users::delete_user,
+        crate::api::handlers::users::list_user_teams,
+        crate::api::handlers::users::add_team_membership,
+        crate::api::handlers::users::remove_team_membership,
+        // Scope endpoints
+        crate::api::handlers::scopes::list_scopes_handler,
+        crate::api::handlers::scopes::list_all_scopes_handler,
+        // OpenAPI import endpoints
+        crate::api::handlers::openapi_import::import_openapi_handler,
+        crate::api::handlers::openapi_import::list_imports_handler,
+        crate::api::handlers::openapi_import::get_import_handler,
+        crate::api::handlers::openapi_import::delete_import_handler,
+        // Audit log endpoints
+        crate::api::handlers::audit_log::list_audit_logs,
+        // Reporting endpoints
         crate::api::handlers::reporting::list_route_flows_handler,
         // Learning session endpoints
         crate::api::handlers::learning_sessions::create_learning_session_handler,
@@ -68,8 +103,11 @@ use crate::xds::{
     components(
         schemas(
             crate::api::handlers::health::HealthResponse,
+            // Bootstrap schemas
             crate::api::handlers::bootstrap::BootstrapInitializeRequest,
             crate::api::handlers::bootstrap::BootstrapInitializeResponse,
+            crate::api::handlers::bootstrap::BootstrapStatusResponse,
+            // Cluster schemas
             CreateClusterBody,
             EndpointRequest,
             HealthCheckRequest,
@@ -77,6 +115,13 @@ use crate::xds::{
             CircuitBreakerThresholdsRequest,
             OutlierDetectionRequest,
             ClusterResponse,
+            ClusterSpec,
+            EndpointSpec,
+            CircuitBreakersSpec,
+            CircuitBreakerThresholdsSpec,
+            HealthCheckSpec,
+            OutlierDetectionSpec,
+            // Auth/Token schemas
             CreateTokenBody,
             UpdateTokenBody,
             PersonalAccessToken,
@@ -84,12 +129,10 @@ use crate::xds::{
             crate::api::handlers::auth::CreateSessionBody,
             crate::api::handlers::auth::CreateSessionResponseBody,
             crate::api::handlers::auth::SessionInfoResponse,
-            ClusterSpec,
-            EndpointSpec,
-            CircuitBreakersSpec,
-            CircuitBreakerThresholdsSpec,
-            HealthCheckSpec,
-            OutlierDetectionSpec,
+            crate::api::handlers::auth::LoginBody,
+            crate::api::handlers::auth::LoginResponseBody,
+            crate::api::handlers::auth::ChangePasswordBody,
+            // Route schemas
             crate::api::handlers::routes::RouteDefinition,
             crate::api::handlers::routes::VirtualHostDefinition,
             crate::api::handlers::routes::RouteRuleDefinition,
@@ -98,10 +141,37 @@ use crate::xds::{
             crate::api::handlers::routes::RouteActionDefinition,
             crate::api::handlers::routes::WeightedClusterDefinition,
             crate::api::handlers::routes::RouteResponse,
+            // Listener schemas
             crate::api::handlers::listeners::ListenerResponse,
             crate::api::handlers::listeners::CreateListenerBody,
             crate::api::handlers::listeners::UpdateListenerBody,
+            // Team schemas
             crate::api::handlers::teams::BootstrapQuery,
+            crate::api::handlers::teams::ListTeamsResponse,
+            crate::api::handlers::teams::AdminListTeamsResponse,
+            crate::auth::team::Team,
+            crate::auth::team::CreateTeamRequest,
+            crate::auth::team::UpdateTeamRequest,
+            // User management schemas
+            crate::api::handlers::users::ListUsersResponse,
+            crate::auth::user::CreateUserRequest,
+            crate::auth::user::UpdateUserRequest,
+            crate::auth::user::UserResponse,
+            crate::auth::user::UserWithTeamsResponse,
+            crate::auth::user::CreateTeamMembershipRequest,
+            crate::auth::user::UserTeamMembership,
+            // Scope schemas
+            crate::api::handlers::scopes::ListScopesResponse,
+            crate::storage::repositories::ScopeDefinition,
+            // OpenAPI import schemas
+            crate::api::handlers::openapi_import::ImportResponse,
+            crate::api::handlers::openapi_import::ListImportsResponse,
+            crate::api::handlers::openapi_import::ImportSummary,
+            crate::api::handlers::openapi_import::ImportDetailsResponse,
+            crate::api::handlers::openapi_import::OpenApiSpecBody,
+            // Audit log schemas
+            crate::api::handlers::audit_log::ListAuditLogsResponse,
+            crate::storage::repositories::AuditLogEntry,
             // Commonly used HTTP filter configurations
             CorsPolicyConfig,
             CustomResponseConfig,
@@ -133,8 +203,15 @@ use crate::xds::{
         (name = "auth", description = "Authentication and session management"),
         (name = "bootstrap", description = "Bootstrap initialization for first-time setup"),
         (name = "clusters", description = "Operations for managing Envoy clusters"),
+        (name = "routes", description = "Operations for managing Envoy routes"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
+        (name = "teams", description = "Team management and bootstrap configuration"),
+        (name = "admin", description = "Administrative operations for teams and system management"),
+        (name = "users", description = "User management operations (admin only)"),
+        (name = "scopes", description = "Scope discovery and management"),
+        (name = "openapi-import", description = "Import OpenAPI specifications to create routes and clusters"),
+        (name = "audit", description = "Audit log queries (admin only)"),
         (name = "reports", description = "Platform visibility and reporting endpoints"),
         (name = "learning-sessions", description = "API schema learning and traffic observation"),
         (name = "aggregated-schemas", description = "Learned API schemas and catalog management")
@@ -201,13 +278,17 @@ mod tests {
         let openapi = ApiDoc::openapi();
         let paths = &openapi.paths.paths;
 
-        // Bootstrap endpoint (1)
+        // Bootstrap endpoints (2)
         assert!(
             paths.contains_key("/api/v1/bootstrap/initialize"),
             "Missing POST /api/v1/bootstrap/initialize"
         );
+        assert!(
+            paths.contains_key("/api/v1/bootstrap/status"),
+            "Missing GET /api/v1/bootstrap/status"
+        );
 
-        // Auth/Session endpoints (3)
+        // Auth/Session endpoints (5)
         assert!(paths.contains_key("/api/v1/auth/sessions"), "Missing POST /api/v1/auth/sessions");
         assert!(
             paths.contains_key("/api/v1/auth/sessions/me"),
@@ -216,6 +297,11 @@ mod tests {
         assert!(
             paths.contains_key("/api/v1/auth/sessions/logout"),
             "Missing POST /api/v1/auth/sessions/logout"
+        );
+        assert!(paths.contains_key("/api/v1/auth/login"), "Missing POST /api/v1/auth/login");
+        assert!(
+            paths.contains_key("/api/v1/auth/change-password"),
+            "Missing POST /api/v1/auth/change-password"
         );
 
         // Token endpoints (6)
@@ -250,11 +336,53 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
         );
 
-        // Team endpoints (1)
+        // Team endpoints (7)
+        assert!(paths.contains_key("/api/v1/teams"), "Missing GET /api/v1/teams");
         assert!(
             paths.contains_key("/api/v1/teams/{team}/bootstrap"),
             "Missing GET /api/v1/teams/{{team}}/bootstrap"
         );
+        assert!(paths.contains_key("/api/v1/admin/teams"), "Missing GET/POST /api/v1/admin/teams");
+        assert!(
+            paths.contains_key("/api/v1/admin/teams/{id}"),
+            "Missing GET/PUT/DELETE /api/v1/admin/teams/{{id}}"
+        );
+
+        // User management endpoints (8)
+        assert!(paths.contains_key("/api/v1/users"), "Missing GET/POST /api/v1/users");
+        assert!(
+            paths.contains_key("/api/v1/users/{id}"),
+            "Missing GET/PUT/DELETE /api/v1/users/{{id}}"
+        );
+        assert!(
+            paths.contains_key("/api/v1/users/{id}/teams"),
+            "Missing GET/POST /api/v1/users/{{id}}/teams"
+        );
+        assert!(
+            paths.contains_key("/api/v1/users/{id}/teams/{team}"),
+            "Missing DELETE /api/v1/users/{{id}}/teams/{{team}}"
+        );
+
+        // Scope endpoints (2)
+        assert!(paths.contains_key("/api/v1/scopes"), "Missing GET /api/v1/scopes");
+        assert!(paths.contains_key("/api/v1/admin/scopes"), "Missing GET /api/v1/admin/scopes");
+
+        // OpenAPI import endpoints (4)
+        assert!(
+            paths.contains_key("/api/v1/openapi/import"),
+            "Missing POST /api/v1/openapi/import"
+        );
+        assert!(
+            paths.contains_key("/api/v1/openapi/imports"),
+            "Missing GET /api/v1/openapi/imports"
+        );
+        assert!(
+            paths.contains_key("/api/v1/openapi/imports/{id}"),
+            "Missing GET/DELETE /api/v1/openapi/imports/{{id}}"
+        );
+
+        // Audit log endpoints (1)
+        assert!(paths.contains_key("/api/v1/audit-logs"), "Missing GET /api/v1/audit-logs");
 
         // Learning session endpoints (4)
         assert!(
@@ -305,6 +433,10 @@ mod tests {
             schemas.contains_key("BootstrapInitializeResponse"),
             "Missing BootstrapInitializeResponse schema"
         );
+        assert!(
+            schemas.contains_key("BootstrapStatusResponse"),
+            "Missing BootstrapStatusResponse schema"
+        );
 
         // Cluster schemas
         assert!(schemas.contains_key("CreateClusterBody"), "Missing CreateClusterBody schema");
@@ -351,6 +483,9 @@ mod tests {
             "Missing CreateSessionResponseBody schema"
         );
         assert!(schemas.contains_key("SessionInfoResponse"), "Missing SessionInfoResponse schema");
+        assert!(schemas.contains_key("LoginBody"), "Missing LoginBody schema");
+        assert!(schemas.contains_key("LoginResponseBody"), "Missing LoginResponseBody schema");
+        assert!(schemas.contains_key("ChangePasswordBody"), "Missing ChangePasswordBody schema");
 
         // Route schemas
         assert!(schemas.contains_key("RouteDefinition"), "Missing RouteDefinition schema");
@@ -381,6 +516,50 @@ mod tests {
 
         // Team schemas
         assert!(schemas.contains_key("BootstrapQuery"), "Missing BootstrapQuery schema");
+        assert!(schemas.contains_key("ListTeamsResponse"), "Missing ListTeamsResponse schema");
+        assert!(
+            schemas.contains_key("AdminListTeamsResponse"),
+            "Missing AdminListTeamsResponse schema"
+        );
+        assert!(schemas.contains_key("Team"), "Missing Team schema");
+        assert!(schemas.contains_key("CreateTeamRequest"), "Missing CreateTeamRequest schema");
+        assert!(schemas.contains_key("UpdateTeamRequest"), "Missing UpdateTeamRequest schema");
+
+        // User management schemas
+        assert!(schemas.contains_key("ListUsersResponse"), "Missing ListUsersResponse schema");
+        assert!(schemas.contains_key("CreateUserRequest"), "Missing CreateUserRequest schema");
+        assert!(schemas.contains_key("UpdateUserRequest"), "Missing UpdateUserRequest schema");
+        assert!(schemas.contains_key("UserResponse"), "Missing UserResponse schema");
+        assert!(
+            schemas.contains_key("UserWithTeamsResponse"),
+            "Missing UserWithTeamsResponse schema"
+        );
+        assert!(
+            schemas.contains_key("CreateTeamMembershipRequest"),
+            "Missing CreateTeamMembershipRequest schema"
+        );
+        assert!(schemas.contains_key("UserTeamMembership"), "Missing UserTeamMembership schema");
+
+        // Scope schemas
+        assert!(schemas.contains_key("ListScopesResponse"), "Missing ListScopesResponse schema");
+        assert!(schemas.contains_key("ScopeDefinition"), "Missing ScopeDefinition schema");
+
+        // OpenAPI import schemas
+        assert!(schemas.contains_key("ImportResponse"), "Missing ImportResponse schema");
+        assert!(schemas.contains_key("ListImportsResponse"), "Missing ListImportsResponse schema");
+        assert!(schemas.contains_key("ImportSummary"), "Missing ImportSummary schema");
+        assert!(
+            schemas.contains_key("ImportDetailsResponse"),
+            "Missing ImportDetailsResponse schema"
+        );
+        assert!(schemas.contains_key("OpenApiSpecBody"), "Missing OpenApiSpecBody schema");
+
+        // Audit log schemas
+        assert!(
+            schemas.contains_key("ListAuditLogsResponse"),
+            "Missing ListAuditLogsResponse schema"
+        );
+        assert!(schemas.contains_key("AuditLogEntry"), "Missing AuditLogEntry schema");
 
         // HTTP filter schemas
         assert!(schemas.contains_key("CorsPolicyConfig"), "Missing CorsPolicyConfig schema");
@@ -446,8 +625,15 @@ mod tests {
         assert!(tag_names.contains(&"auth"), "Missing 'auth' tag");
         assert!(tag_names.contains(&"bootstrap"), "Missing 'bootstrap' tag");
         assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
+        assert!(tag_names.contains(&"routes"), "Missing 'routes' tag");
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
         assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");
+        assert!(tag_names.contains(&"teams"), "Missing 'teams' tag");
+        assert!(tag_names.contains(&"admin"), "Missing 'admin' tag");
+        assert!(tag_names.contains(&"users"), "Missing 'users' tag");
+        assert!(tag_names.contains(&"scopes"), "Missing 'scopes' tag");
+        assert!(tag_names.contains(&"openapi-import"), "Missing 'openapi-import' tag");
+        assert!(tag_names.contains(&"audit"), "Missing 'audit' tag");
         assert!(tag_names.contains(&"reports"), "Missing 'reports' tag");
         assert!(tag_names.contains(&"learning-sessions"), "Missing 'learning-sessions' tag");
         assert!(tag_names.contains(&"aggregated-schemas"), "Missing 'aggregated-schemas' tag");

@@ -8,6 +8,7 @@ use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use utoipa::ToSchema;
 
 /// Audit event descriptor for authentication activity logging.
 #[derive(Debug, Clone)]
@@ -80,7 +81,8 @@ impl AuditEvent {
 }
 
 /// Audit log entry returned from database queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
     pub id: i64,
     pub resource_type: String,
