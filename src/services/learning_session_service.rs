@@ -415,6 +415,7 @@ impl LearningSessionService {
     /// Background worker that checks all active sessions for completion
     ///
     /// This should be called periodically (e.g., every 30 seconds)
+    #[instrument(skip(self), name = "bg_check_active_sessions")]
     pub async fn check_all_active_sessions(&self) -> Result<Vec<String>> {
         let active_sessions = self.repository.list_active().await?;
 
@@ -452,6 +453,7 @@ impl LearningSessionService {
     /// Sync all active sessions with the Access Log Service
     ///
     /// This is useful for recovery after restarts
+    #[instrument(skip(self), name = "bg_sync_sessions_with_als")]
     pub async fn sync_active_sessions_with_access_log_service(&self) -> Result<usize> {
         let Some(access_log_service) = &self.access_log_service else {
             warn!("Access Log Service not configured, skipping sync");

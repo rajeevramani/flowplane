@@ -116,6 +116,10 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
     ) -> std::result::Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
         info!("New ADS stream connection established");
 
+        // Extract trace context from gRPC metadata for distributed tracing
+        let parent_context =
+            crate::xds::services::stream::extract_trace_context(request.metadata());
+
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
             let service = MinimalAggregatedDiscoveryService { state };
             Box::pin(async move { service.create_resource_response(&request) })
@@ -127,6 +131,7 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
             request.into_inner(),
             responder,
             "minimal",
+            Some(parent_context),
         );
 
         Ok(Response::new(Box::pin(stream)))
@@ -137,6 +142,10 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
         request: Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> std::result::Result<Response<Self::DeltaAggregatedResourcesStream>, Status> {
         info!("Delta ADS stream connection established");
+
+        // Extract trace context from gRPC metadata for distributed tracing
+        let parent_context =
+            crate::xds::services::stream::extract_trace_context(request.metadata());
 
         let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
             let service = MinimalAggregatedDiscoveryService { state };
@@ -149,6 +158,7 @@ impl AggregatedDiscoveryService for MinimalAggregatedDiscoveryService {
             request.into_inner(),
             responder,
             "minimal",
+            Some(parent_context),
         );
 
         Ok(Response::new(Box::pin(stream)))

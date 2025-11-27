@@ -52,6 +52,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
@@ -61,6 +63,31 @@ use crate::xds::state::XdsState;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
+
+/// Extractor for gRPC metadata to extract W3C TraceContext headers
+struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+impl<'a> Extractor for MetadataExtractor<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().filter_map(|k| match k {
+            tonic::metadata::KeyRef::Ascii(key) => Some(key.as_str()),
+            tonic::metadata::KeyRef::Binary(_) => None,
+        }).collect()
+    }
+}
+
+/// Extract OpenTelemetry trace context from gRPC metadata
+///
+/// This extracts W3C TraceContext headers (traceparent, tracestate) from
+/// the incoming gRPC request metadata to link xDS streams with upstream traces.
+pub fn extract_trace_context(metadata: &tonic::metadata::MetadataMap) -> opentelemetry::Context {
+    let propagator = TraceContextPropagator::new();
+    propagator.extract(&MetadataExtractor(metadata))
+}
 
 /// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
@@ -128,6 +155,7 @@ pub fn run_stream_loop<F>(
     mut in_stream: tonic::Streaming<DiscoveryRequest>,
     responder: F,
     label: &str,
+    parent_context: Option<opentelemetry::Context>,
 ) -> ReceiverStream<std::result::Result<DiscoveryResponse, Status>>
 where
     F: Fn(
@@ -154,7 +182,14 @@ where
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
         Arc::new(Mutex::new(None));
 
+    // Store parent context for trace propagation - will be used to create child spans
+    let stream_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
     tokio::spawn(async move {
+        // Store the parent context for creating child spans
+        // Note: We can't use .attach() across awaits since ContextGuard is !Send
+        let _parent_context = stream_context;
+
         // Run the stream loop and ensure cleanup happens
         async {
             loop {
@@ -440,6 +475,7 @@ where
 /// * `in_stream` - Incoming stream of DeltaDiscoveryRequest messages from Envoy
 /// * `responder` - Async function that builds DeltaDiscoveryResponse for a given request
 /// * `label` - Human-readable label for logging (e.g., "Delta-ADS")
+/// * `parent_context` - Optional parent trace context for distributed tracing
 ///
 /// # Returns
 ///
@@ -449,6 +485,7 @@ pub fn run_delta_loop<F>(
     mut in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
     responder: F,
     label: &str,
+    parent_context: Option<opentelemetry::Context>,
 ) -> ReceiverStream<std::result::Result<DeltaDiscoveryResponse, Status>>
 where
     F: Fn(
@@ -473,7 +510,14 @@ where
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
         Arc::new(Mutex::new(None));
 
+    // Store parent context for trace propagation - will be used to create child spans
+    let stream_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
     tokio::spawn(async move {
+        // Store the parent context for creating child spans
+        // Note: We can't use .attach() across awaits since ContextGuard is !Send
+        let _parent_context = stream_context;
+
         let mut pending_types: HashSet<String> = HashSet::new();
 
         async {
