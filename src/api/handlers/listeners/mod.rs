@@ -458,6 +458,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],

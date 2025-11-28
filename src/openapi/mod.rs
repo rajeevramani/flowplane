@@ -161,6 +161,7 @@ pub fn build_gateway_plan(
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: Default::default(),
                 };

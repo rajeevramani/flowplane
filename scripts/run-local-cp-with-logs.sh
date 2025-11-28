@@ -21,7 +21,7 @@ cargo clean
 
   FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
   FLOWPLANE_UI_ORIGIN=http://localhost:5173 \
-  # FLOWPLANE_OTLP_ENDPOINT=http://localhost:4317 \
+  FLOWPLANE_OTLP_ENDPOINT=http://localhost:4317 \
   FLOWPLANE_LOG_LEVEL=info \
   FLOWPLANE_ENABLE_METRICS=false \
   FLOWPLANE_API_BIND_ADDRESS=127.0.0.1 \

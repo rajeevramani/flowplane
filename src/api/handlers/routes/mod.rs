@@ -475,6 +475,7 @@ mod tests {
                         timeout_seconds: Some(5),
                         prefix_rewrite: None,
                         template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],
@@ -674,6 +675,7 @@ mod tests {
             timeout_seconds: Some(5),
             prefix_rewrite: None,
             template_rewrite: Some("/users/{user_id}".into()),
+            retry_policy: None,
         };
 
         let (status, Json(created)) = create_route_handler(

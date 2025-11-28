@@ -87,6 +87,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
                 timeout: Some(15),
                 prefix_rewrite: None,
                 path_template_rewrite: None,
+                retry_policy: None,
             },
             typed_per_filter_config: Default::default(),
         };

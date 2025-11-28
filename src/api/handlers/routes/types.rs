@@ -12,9 +12,9 @@ use crate::{
     xds::route::{
         HeaderMatchConfig as XdsHeaderMatchConfig, PathMatch as XdsPathMatch,
         QueryParameterMatchConfig as XdsQueryParameterMatchConfig,
-        RouteActionConfig as XdsRouteActionConfig, RouteConfig as XdsRouteConfig,
-        RouteMatchConfig as XdsRouteMatchConfig, RouteRule as XdsRouteRule,
-        VirtualHostConfig as XdsVirtualHostConfig,
+        RetryPolicyConfig as XdsRetryPolicyConfig, RouteActionConfig as XdsRouteActionConfig,
+        RouteConfig as XdsRouteConfig, RouteMatchConfig as XdsRouteMatchConfig,
+        RouteRule as XdsRouteRule, VirtualHostConfig as XdsVirtualHostConfig,
         WeightedClusterConfig as XdsWeightedClusterConfig,
     },
 };
@@ -138,6 +138,45 @@ pub struct QueryParameterMatchDefinition {
     pub present: Option<bool>,
 }
 
+/// Retry policy configuration for route actions
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryPolicyDefinition {
+    /// Maximum number of retries (1-10)
+    #[validate(range(min = 1, max = 10))]
+    #[schema(example = 3)]
+    pub max_retries: Option<u32>,
+
+    /// Conditions that trigger a retry: "5xx", "reset", "connect-failure", "retriable-4xx", "refused-stream", "gateway-error"
+    #[serde(default)]
+    #[schema(example = json!(["5xx", "reset", "connect-failure"]))]
+    pub retry_on: Vec<String>,
+
+    /// Timeout per retry attempt in seconds
+    #[serde(default)]
+    #[schema(example = 10)]
+    pub per_try_timeout_seconds: Option<u64>,
+
+    /// Exponential backoff configuration
+    #[serde(default)]
+    pub backoff: Option<BackoffConfig>,
+}
+
+/// Exponential backoff configuration for retries
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackoffConfig {
+    /// Base interval in milliseconds (default: 100)
+    #[serde(default)]
+    #[schema(example = 100)]
+    pub base_interval_ms: Option<u64>,
+
+    /// Maximum interval in milliseconds (default: 1000)
+    #[serde(default)]
+    #[schema(example = 1000)]
+    pub max_interval_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RouteActionDefinition {
@@ -154,6 +193,9 @@ pub enum RouteActionDefinition {
         #[serde(default)]
         #[schema(example = "/users/{user_id}")]
         template_rewrite: Option<String>,
+        /// Retry policy for failed requests
+        #[serde(default)]
+        retry_policy: Option<RetryPolicyDefinition>,
     },
     #[serde(rename_all = "camelCase")]
     Weighted {
@@ -389,11 +431,19 @@ impl RouteActionDefinition {
                 timeout_seconds,
                 prefix_rewrite,
                 template_rewrite,
+                retry_policy,
             } => Ok(XdsRouteActionConfig::Cluster {
                 name: cluster.clone(),
                 timeout: *timeout_seconds,
                 prefix_rewrite: prefix_rewrite.clone(),
                 path_template_rewrite: template_rewrite.clone(),
+                retry_policy: retry_policy.as_ref().map(|rp| XdsRetryPolicyConfig {
+                    num_retries: rp.max_retries,
+                    retry_on: rp.retry_on.clone(),
+                    per_try_timeout_seconds: rp.per_try_timeout_seconds,
+                    base_interval_ms: rp.backoff.as_ref().and_then(|b| b.base_interval_ms),
+                    max_interval_ms: rp.backoff.as_ref().and_then(|b| b.max_interval_ms),
+                }),
             }),
             RouteActionDefinition::Weighted { clusters, total_weight } => {
                 if clusters.is_empty() {
@@ -433,11 +483,25 @@ impl RouteActionDefinition {
                 timeout,
                 prefix_rewrite,
                 path_template_rewrite,
+                retry_policy,
             } => RouteActionDefinition::Forward {
                 cluster: name.clone(),
                 timeout_seconds: *timeout,
                 prefix_rewrite: prefix_rewrite.clone(),
                 template_rewrite: path_template_rewrite.clone(),
+                retry_policy: retry_policy.as_ref().map(|rp| RetryPolicyDefinition {
+                    max_retries: rp.num_retries,
+                    retry_on: rp.retry_on.clone(),
+                    per_try_timeout_seconds: rp.per_try_timeout_seconds,
+                    backoff: if rp.base_interval_ms.is_some() || rp.max_interval_ms.is_some() {
+                        Some(BackoffConfig {
+                            base_interval_ms: rp.base_interval_ms,
+                            max_interval_ms: rp.max_interval_ms,
+                        })
+                    } else {
+                        None
+                    },
+                }),
             },
             XdsRouteActionConfig::WeightedClusters { clusters, total_weight } => {
                 RouteActionDefinition::Weighted {

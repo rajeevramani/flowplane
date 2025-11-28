@@ -28,6 +28,7 @@ impl From<ValidatedCreateRouteRequest> for route::RouteConfig {
                     timeout: validated.timeout_seconds,
                     prefix_rewrite: validated.prefix_rewrite,
                     path_template_rewrite: validated.uri_template_rewrite,
+                    retry_policy: None,
                 },
                 typed_per_filter_config: HashMap::new(),
             }],
@@ -108,6 +109,7 @@ impl From<ValidatedRouteActionRequest> for route::RouteActionConfig {
                 timeout: timeout_seconds,
                 prefix_rewrite: None,
                 path_template_rewrite: None,
+                retry_policy: None,
             },
             ValidatedRouteActionType::WeightedClusters {
                 clusters,
