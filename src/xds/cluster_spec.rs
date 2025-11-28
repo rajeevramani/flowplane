@@ -252,6 +252,8 @@ pub struct OutlierDetectionSpec {
     pub base_ejection_time_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_ejection_percent: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_hosts: Option<u32>,
 }
 
 impl std::fmt::Display for HealthCheckSpec {

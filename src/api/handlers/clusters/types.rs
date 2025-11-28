@@ -209,7 +209,8 @@ pub struct CircuitBreakerThresholdsRequest {
     "consecutive5xx": 5,
     "intervalSeconds": 30,
     "baseEjectionTimeSeconds": 30,
-    "maxEjectionPercent": 50
+    "maxEjectionPercent": 50,
+    "minHosts": 3
 }))]
 pub struct OutlierDetectionRequest {
     /// Number of consecutive 5xx responses before ejecting a host.
@@ -220,6 +221,8 @@ pub struct OutlierDetectionRequest {
     pub base_ejection_time_seconds: Option<u64>,
     /// Maximum percentage of hosts that can be ejected simultaneously.
     pub max_ejection_percent: Option<u32>,
+    /// Minimum number of hosts required before ejection is allowed.
+    pub min_hosts: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

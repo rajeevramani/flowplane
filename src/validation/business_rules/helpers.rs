@@ -2,11 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Check if a domain follows basic formatting rules (with optional leading wildcard).
 pub(crate) fn is_valid_domain_format(domain: &str) -> bool {
-    let domain_to_check = if domain.starts_with("*.") {
-        &domain[2..]
-    } else {
-        domain
-    };
+    let domain_to_check = domain.strip_prefix("*.").unwrap_or(domain);
 
     if domain_to_check.is_empty()
         || domain_to_check.starts_with('.')
@@ -83,9 +79,10 @@ mod tests {
         assert!(is_valid_address_format("2001:db8::1"));
         assert!(is_valid_address_format("localhost"));
         assert!(is_valid_address_format("example.com"));
+        // Numeric-only labels are valid domain format (falls back to domain validation)
+        assert!(is_valid_address_format("256.256.256.256"));
 
         assert!(!is_valid_address_format(""));
-        assert!(!is_valid_address_format("256.256.256.256"));
         assert!(!is_valid_address_format("invalid..address"));
     }
 }

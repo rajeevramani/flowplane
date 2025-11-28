@@ -790,6 +790,7 @@ fn build_outlier_detection(spec: &OutlierDetectionSpec) -> OutlierDetection {
         interval: optional_duration(spec.interval_seconds),
         base_ejection_time: optional_duration(spec.base_ejection_time_seconds),
         max_ejection_percent: uint32(spec.max_ejection_percent),
+        success_rate_minimum_hosts: uint32(spec.min_hosts),
         ..Default::default()
     }
 }
@@ -1175,6 +1176,7 @@ mod tests {
                 interval_seconds: Some(5),
                 base_ejection_time_seconds: Some(30),
                 max_ejection_percent: Some(50),
+                min_hosts: Some(3),
             }),
             ..Default::default()
         };
@@ -1184,6 +1186,7 @@ mod tests {
         let outlier = cluster.outlier_detection.expect("outlier detection");
         assert_eq!(outlier.consecutive_5xx.unwrap().value, 7);
         assert_eq!(outlier.max_ejection_percent.unwrap().value, 50);
+        assert_eq!(outlier.success_rate_minimum_hosts.unwrap().value, 3);
     }
 
     #[test]

@@ -98,6 +98,7 @@ pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConf
             interval_seconds: od.interval_seconds,
             base_ejection_time_seconds: od.base_ejection_time_seconds,
             max_ejection_percent: od.max_ejection_percent,
+            min_hosts: od.min_hosts,
         }),
         protocol_type,
         ..Default::default()

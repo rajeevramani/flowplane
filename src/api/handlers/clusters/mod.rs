@@ -386,6 +386,7 @@ mod tests {
                 interval_seconds: Some(10),
                 base_ejection_time_seconds: Some(60),
                 max_ejection_percent: Some(50),
+                min_hosts: Some(3),
             }),
             protocol_type: None,
         }
