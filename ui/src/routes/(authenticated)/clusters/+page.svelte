@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Eye, Trash2, MoreVertical } from 'lucide-svelte';
+	import { Eye } from 'lucide-svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import FeatureBadges from '$lib/components/FeatureBadges.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
@@ -28,9 +28,7 @@
 	let drawerOpen = $state(false);
 	let selectedCluster = $state<ClusterResponse | null>(null);
 
-	// Action menu state
-	let openMenuId = $state<string | null>(null);
-
+	
 	onMount(async () => {
 		unsubscribe = selectedTeam.subscribe(async (team) => {
 			if (team && team !== currentTeam) {
@@ -136,16 +134,6 @@
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete cluster';
 		}
-		openMenuId = null;
-	}
-
-	function toggleMenu(e: MouseEvent, id: string) {
-		e.stopPropagation();
-		openMenuId = openMenuId === id ? null : id;
-	}
-
-	function closeAllMenus() {
-		openMenuId = null;
 	}
 
 	// Get routes using this cluster
@@ -162,8 +150,6 @@
 		return policy.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 </script>
-
-<svelte:window onclick={closeAllMenus} />
 
 <!-- Page Header -->
 <div class="mb-6 flex items-center justify-between">
@@ -229,36 +215,16 @@
 	{/snippet}
 
 	{#snippet actions({ row })}
-		<div class="relative">
-			<button
-				onclick={(e) => toggleMenu(e, row.id as string)}
-				class="p-1 rounded hover:bg-gray-100"
-			>
-				<MoreVertical class="h-4 w-4 text-gray-500" />
-			</button>
-
-			{#if openMenuId === row.id}
-				<div
-					class="absolute right-0 mt-1 w-36 bg-white rounded-md shadow-lg border border-gray-200 z-10"
-					onclick={(e) => e.stopPropagation()}
-				>
-					<button
-						onclick={() => openDrawer(row)}
-						class="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-					>
-						<Eye class="h-4 w-4" />
-						View Details
-					</button>
-					<button
-						onclick={() => handleDelete(row.name as string)}
-						class="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-					>
-						<Trash2 class="h-4 w-4" />
-						Delete
-					</button>
-				</div>
-			{/if}
-		</div>
+		<button
+			onclick={(e) => {
+				e.stopPropagation();
+				openDrawer(row);
+			}}
+			class="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-blue-600 transition-colors"
+			title="View details"
+		>
+			<Eye class="h-4 w-4" />
+		</button>
 	{/snippet}
 </DataTable>
 

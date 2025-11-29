@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Plus, Eye, Trash2, MoreVertical } from 'lucide-svelte';
+	import { Plus, Eye } from 'lucide-svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
 	import ConfigCard from '$lib/components/ConfigCard.svelte';
 	import Button from '$lib/components/Button.svelte';
@@ -49,10 +49,6 @@
 	// Drawer state
 	let drawerOpen = $state(false);
 	let selectedRoute = $state<RouteResponse | null>(null);
-
-	// Action menu state
-	let openMenuId = $state<string | null>(null);
-
 
 	onMount(async () => {
 		unsubscribe = selectedTeam.subscribe(async (team) => {
@@ -308,16 +304,6 @@
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete route';
 		}
-		openMenuId = null;
-	}
-
-	function toggleMenu(e: MouseEvent, id: string) {
-		e.stopPropagation();
-		openMenuId = openMenuId === id ? null : id;
-	}
-
-	function closeAllMenus() {
-		openMenuId = null;
 	}
 
 	function getListenerForRoute(route: RouteResponse): ListenerResponse | undefined {
@@ -390,8 +376,6 @@
 	}
 </script>
 
-<svelte:window onclick={closeAllMenus} />
-
 <!-- Page Header -->
 <div class="mb-6 flex items-center justify-between">
 	<div>
@@ -456,7 +440,7 @@
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rewrite</th>
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Retries</th>
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Timeout</th>
-						<th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-10"></th>
+						<th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-16">Actions</th>
 					</tr>
 				</thead>
 				<tbody class="bg-white divide-y divide-gray-200">
@@ -522,37 +506,17 @@
 									{detail.timeout ? `${detail.timeout}s` : '-'}
 								</span>
 							</td>
-							<td class="px-4 py-3 text-right">
-								<div class="relative">
-									<button
-										onclick={(e) => toggleMenu(e, rowId)}
-										class="p-1 rounded hover:bg-gray-100"
-									>
-										<MoreVertical class="h-4 w-4 text-gray-500" />
-									</button>
-
-									{#if openMenuId === rowId}
-										<div
-											class="absolute right-0 mt-1 w-36 bg-white rounded-md shadow-lg border border-gray-200 z-10"
-											onclick={(e) => e.stopPropagation()}
-										>
-											<button
-												onclick={() => openDrawer(detail.sourceRoute)}
-												class="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-											>
-												<Eye class="h-4 w-4" />
-												View Details
-											</button>
-											<button
-												onclick={() => handleDelete(detail.apiName)}
-												class="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-											>
-												<Trash2 class="h-4 w-4" />
-												Delete API
-											</button>
-										</div>
-									{/if}
-								</div>
+							<td class="px-4 py-3 text-center">
+								<button
+									onclick={(e) => {
+										e.stopPropagation();
+										openDrawer(detail.sourceRoute);
+									}}
+									class="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-blue-600 transition-colors"
+									title="View details"
+								>
+									<Eye class="h-4 w-4" />
+								</button>
 							</td>
 						</tr>
 					{/each}
