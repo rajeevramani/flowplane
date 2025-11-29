@@ -40,6 +40,12 @@ impl LoginService {
 
     /// Authenticate user with email and password, returning user and computed scopes.
     ///
+    /// # Arguments
+    ///
+    /// * `request` - Login request with email and password
+    /// * `client_ip` - Optional client IP address for audit logging
+    /// * `user_agent` - Optional user agent string for audit logging
+    ///
     /// # Errors
     ///
     /// Returns error if:
@@ -47,8 +53,13 @@ impl LoginService {
     /// - Password is incorrect
     /// - User account is not active
     /// - User account is suspended
-    #[instrument(skip(self, request), fields(email = %request.email))]
-    pub async fn login(&self, request: &LoginRequest) -> Result<(User, Vec<String>)> {
+    #[instrument(skip(self, request, client_ip, user_agent), fields(email = %request.email))]
+    pub async fn login(
+        &self,
+        request: &LoginRequest,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<(User, Vec<String>)> {
         // Normalize email
         let email = User::normalize_email(&request.email);
 
@@ -72,12 +83,19 @@ impl LoginService {
 
             // Audit failed login
             self.audit_repository
-                .record_auth_event(AuditEvent::token(
-                    "auth.login.failed",
-                    Some(user.id.as_str()),
-                    Some(&user.email),
-                    serde_json::json!({ "reason": "invalid_password" }),
-                ))
+                .record_auth_event(
+                    AuditEvent::token(
+                        "auth.login.failed",
+                        Some(user.id.as_str()),
+                        Some(&user.email),
+                        serde_json::json!({ "reason": "invalid_password" }),
+                    )
+                    .with_user_context(
+                        Some(user.id.to_string()),
+                        client_ip.clone(),
+                        user_agent.clone(),
+                    ),
+                )
                 .await?;
 
             return Err(Error::auth(
@@ -99,12 +117,19 @@ impl LoginService {
 
             // Audit failed login
             self.audit_repository
-                .record_auth_event(AuditEvent::token(
-                    "auth.login.failed",
-                    Some(user.id.as_str()),
-                    Some(&user.email),
-                    serde_json::json!({ "reason": "account_not_active", "status": status_str }),
-                ))
+                .record_auth_event(
+                    AuditEvent::token(
+                        "auth.login.failed",
+                        Some(user.id.as_str()),
+                        Some(&user.email),
+                        serde_json::json!({ "reason": "account_not_active", "status": status_str }),
+                    )
+                    .with_user_context(
+                        Some(user.id.to_string()),
+                        client_ip.clone(),
+                        user_agent.clone(),
+                    ),
+                )
                 .await?;
 
             return Err(Error::auth(
@@ -121,15 +146,22 @@ impl LoginService {
 
         // Audit successful login
         self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "auth.login.success",
-                Some(user.id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "teams": memberships.iter().map(|m| &m.team).collect::<Vec<_>>(),
-                    "scope_count": scopes.len(),
-                }),
-            ))
+            .record_auth_event(
+                AuditEvent::token(
+                    "auth.login.success",
+                    Some(user.id.as_str()),
+                    Some(&user.email),
+                    serde_json::json!({
+                        "teams": memberships.iter().map(|m| &m.team).collect::<Vec<_>>(),
+                        "scope_count": scopes.len(),
+                    }),
+                )
+                .with_user_context(
+                    Some(user.id.to_string()),
+                    client_ip,
+                    user_agent,
+                ),
+            )
             .await?;
 
         metrics::record_authentication("success").await;

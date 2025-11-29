@@ -109,7 +109,8 @@ async fn create_token_returns_secret_and_persists() {
     let (service, repo, _, _) = setup_service().await;
     let request = sample_create_request();
 
-    let TokenSecretResponse { id, token } = service.create_token(request.clone()).await.unwrap();
+    let TokenSecretResponse { id, token } =
+        service.create_token(request.clone(), None).await.unwrap();
     assert!(token.starts_with("fp_pat_"));
 
     let stored =
@@ -131,7 +132,7 @@ async fn create_token_without_expiry_defaults_to_30_days() {
         user_email: None,
     };
 
-    let TokenSecretResponse { id, .. } = service.create_token(request).await.unwrap();
+    let TokenSecretResponse { id, .. } = service.create_token(request, None).await.unwrap();
     let stored =
         repo.get_token(&flowplane::domain::TokenId::from_str_unchecked(&id)).await.unwrap();
 
@@ -153,7 +154,7 @@ async fn create_token_without_expiry_defaults_to_30_days() {
 #[tokio::test]
 async fn update_and_revoke_token() {
     let (service, repo, _, _) = setup_service().await;
-    let secret = service.create_token(sample_create_request()).await.unwrap();
+    let secret = service.create_token(sample_create_request(), None).await.unwrap();
 
     let update_payload = UpdateTokenRequest {
         name: Some("renamed".into()),
@@ -164,11 +165,11 @@ async fn update_and_revoke_token() {
     };
     update_payload.validate().unwrap();
 
-    let updated = service.update_token(&secret.id, update_payload).await.unwrap();
+    let updated = service.update_token(&secret.id, update_payload, None).await.unwrap();
     assert_eq!(updated.name, "renamed");
     assert!(updated.has_scope("routes:read"));
 
-    let revoked = service.revoke_token(&secret.id).await.unwrap();
+    let revoked = service.revoke_token(&secret.id, None).await.unwrap();
     assert_eq!(revoked.status, TokenStatus::Revoked);
     assert!(!revoked.has_scope("routes:read"));
 
@@ -181,9 +182,9 @@ async fn update_and_revoke_token() {
 #[tokio::test]
 async fn rotate_generates_new_secret() {
     let (service, repo, _, _) = setup_service().await;
-    let created = service.create_token(sample_create_request()).await.unwrap();
+    let created = service.create_token(sample_create_request(), None).await.unwrap();
 
-    let rotated = service.rotate_token(&created.id).await.unwrap();
+    let rotated = service.rotate_token(&created.id, None).await.unwrap();
     assert_ne!(created.token, rotated.token);
 
     let parts: Vec<&str> = rotated.token.split('.').collect();

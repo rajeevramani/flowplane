@@ -3,7 +3,11 @@
 //! This module provides the `/api/v1/bootstrap/initialize` endpoint that allows
 //! system administrators to generate a one-time setup token for initial bootstrap.
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{header, StatusCode},
+    Json,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -80,6 +84,23 @@ fn convert_error(err: Error) -> ApiError {
     ApiError::from(err)
 }
 
+/// Extract client IP from headers, preferring X-Forwarded-For
+fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
+    // Try X-Forwarded-For header first (for proxied requests)
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(value) = forwarded.to_str() {
+            // X-Forwarded-For can contain multiple IPs; the first is the original client
+            return value.split(',').next().map(|s| s.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Extract User-Agent header
+fn extract_user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+}
+
 /// Bootstrap initialization endpoint
 ///
 /// This endpoint generates a one-time setup token for initial system bootstrap.
@@ -109,13 +130,18 @@ fn convert_error(err: Error) -> ApiError {
     ),
     tag = "bootstrap"
 )]
-#[instrument(skip(state, payload), fields(email = %payload.email))]
+#[instrument(skip(state, payload, headers), fields(email = %payload.email))]
 pub async fn bootstrap_initialize_handler(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<BootstrapInitializeRequest>,
 ) -> Result<(StatusCode, Json<BootstrapInitializeResponse>), ApiError> {
     // Validate request
     payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Extract client context from headers for audit logging
+    let client_ip = extract_client_ip(&headers);
+    let user_agent = extract_user_agent(&headers);
 
     // Get database pool
     let cluster_repo = state
@@ -167,17 +193,24 @@ pub async fn bootstrap_initialize_handler(
 
     let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
 
-    // Log admin user creation
+    // Log admin user creation with user context
     audit_repository
-        .record_auth_event(AuditEvent::token(
-            "bootstrap.admin_user_created",
-            Some(admin_user.id.as_str()),
-            Some(&admin_user.email),
-            serde_json::json!({
-                "name": admin_user.name,
-                "is_admin": admin_user.is_admin,
-            }),
-        ))
+        .record_auth_event(
+            AuditEvent::token(
+                "bootstrap.admin_user_created",
+                Some(admin_user.id.as_str()),
+                Some(&admin_user.email),
+                serde_json::json!({
+                    "name": admin_user.name,
+                    "is_admin": admin_user.is_admin,
+                }),
+            )
+            .with_user_context(
+                Some(admin_user.id.to_string()),
+                client_ip.clone(),
+                user_agent.clone(),
+            ),
+        )
         .await
         .map_err(convert_error)?;
 
@@ -212,19 +245,26 @@ pub async fn bootstrap_initialize_handler(
 
             membership_repo.create_membership(membership).await.map_err(convert_error)?;
 
-            // Log team creation
+            // Log team creation with user context
             audit_repository
-                .record_auth_event(AuditEvent::token(
-                    "bootstrap.platform_admin_team_created",
-                    Some(created_team.id.as_str()),
-                    Some("platform-admin"),
-                    serde_json::json!({
-                        "name": "platform-admin",
-                        "display_name": "Platform Admin",
-                        "owner": admin_user.id.to_string(),
-                        "admin_email": admin_user.email,
-                    }),
-                ))
+                .record_auth_event(
+                    AuditEvent::token(
+                        "bootstrap.platform_admin_team_created",
+                        Some(created_team.id.as_str()),
+                        Some("platform-admin"),
+                        serde_json::json!({
+                            "name": "platform-admin",
+                            "display_name": "Platform Admin",
+                            "owner": admin_user.id.to_string(),
+                            "admin_email": admin_user.email,
+                        }),
+                    )
+                    .with_user_context(
+                        Some(admin_user.id.to_string()),
+                        client_ip.clone(),
+                        user_agent.clone(),
+                    ),
+                )
                 .await
                 .map_err(convert_error)?;
         }
@@ -278,21 +318,24 @@ pub async fn bootstrap_initialize_handler(
 
     token_repo.create_token(new_token).await.map_err(convert_error)?;
 
-    // Log audit event for setup token generation
+    // Log audit event for setup token generation with user context
     audit_repository
-        .record_auth_event(AuditEvent::token(
-            "bootstrap.setup_token_generated",
-            Some(token_id),
-            Some(&format!("bootstrap-setup-token-{}", &payload.email)),
-            serde_json::json!({
-                "admin_email": payload.email,
-                "admin_user_id": admin_user.id.to_string(),
-                "admin_name": payload.name,
-                "ttl_days": ttl_days,
-                "max_usage": max_usage,
-                "expires_at": expires_at,
-            }),
-        ))
+        .record_auth_event(
+            AuditEvent::token(
+                "bootstrap.setup_token_generated",
+                Some(token_id),
+                Some(&format!("bootstrap-setup-token-{}", &payload.email)),
+                serde_json::json!({
+                    "admin_email": payload.email,
+                    "admin_user_id": admin_user.id.to_string(),
+                    "admin_name": payload.name,
+                    "ttl_days": ttl_days,
+                    "max_usage": max_usage,
+                    "expires_at": expires_at,
+                }),
+            )
+            .with_user_context(Some(admin_user.id.to_string()), client_ip, user_agent),
+        )
         .await
         .map_err(convert_error)?;
 

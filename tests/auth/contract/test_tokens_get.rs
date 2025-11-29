@@ -11,15 +11,18 @@ async fn contract_get_tokens_id_returns_token() {
 
     let created = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "get-token".into(),
-            description: Some("sample".into()),
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "get-token".into(),
+                description: Some("sample".into()),
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

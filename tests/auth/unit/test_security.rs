@@ -84,15 +84,18 @@ async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
     let service = TokenService::new(repo.clone(), audit);
 
     let secret = service
-        .create_token(CreateTokenRequest {
-            name: "security-test".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["tokens:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            CreateTokenRequest {
+                name: "security-test".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["tokens:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -130,9 +133,9 @@ async fn token_verification_timing_within_bounds() {
     );
 
     // Ensure revoked tokens short-circuit before verification to prevent further use.
-    let _ = service.revoke_token(id).await.unwrap();
+    let _ = service.revoke_token(id, None).await.unwrap();
     assert!(matches!(
-        service.revoke_token(id).await.unwrap().status,
+        service.revoke_token(id, None).await.unwrap().status,
         flowplane::auth::models::TokenStatus::Revoked
     ));
 }
