@@ -6,7 +6,7 @@
 		ClusterResponse,
 		EndpointRequest
 	} from '$lib/api/types';
-	import type { RouteRule, RouteActionType, WeightedCluster } from './EditableRoutesTable.svelte';
+	import type { RouteRule, RouteActionType, WeightedCluster, RetryPolicy } from './EditableRoutesTable.svelte';
 	import ClusterSelector, { type ClusterConfig } from './ClusterSelector.svelte';
 	import HeaderMatcherList from './HeaderMatcherList.svelte';
 	import QueryParamMatcherList from './QueryParamMatcherList.svelte';
@@ -42,6 +42,25 @@
 		{ value: 308, label: '308 - Permanent Redirect' }
 	];
 
+	// Retry presets
+	type RetryPreset = '5xx' | 'connection' | 'gateway' | 'all' | 'custom';
+	const retryPresets: { value: RetryPreset; label: string; conditions: string[] }[] = [
+		{ value: '5xx', label: '5xx Server Errors', conditions: ['5xx'] },
+		{ value: 'connection', label: 'Connection Failures', conditions: ['reset', 'connect-failure'] },
+		{ value: 'gateway', label: 'Gateway Errors', conditions: ['gateway-error'] },
+		{ value: 'all', label: 'All Retriable', conditions: ['5xx', 'reset', 'connect-failure', 'retriable-4xx', 'refused-stream', 'gateway-error'] },
+		{ value: 'custom', label: 'Custom...', conditions: [] }
+	];
+	const retryConditions = [
+		{ value: '5xx', label: '5xx Server Errors' },
+		{ value: 'reset', label: 'Connection Reset' },
+		{ value: 'connect-failure', label: 'Connect Failure' },
+		{ value: 'retriable-4xx', label: 'Retriable 4xx' },
+		{ value: 'refused-stream', label: 'Refused Stream' },
+		{ value: 'gateway-error', label: 'Gateway Error' }
+	];
+	type ForwardSubTab = 'target' | 'resilience';
+
 	// Form state
 	let method = $state('GET');
 	let path = $state('/');
@@ -60,8 +79,18 @@
 	let hostRedirect = $state('');
 	let pathRedirect = $state('');
 	let responseCode = $state(302);
+	// Retry policy state (Forward action only)
+	let retryEnabled = $state(false);
+	let retryMaxRetries = $state(3);
+	let retryPreset = $state<RetryPreset>('5xx');
+	let retryOnCustom = $state<string[]>([]);
+	let retryPerTryTimeout = $state<number | null>(null);
+	let showBackoff = $state(false);
+	let backoffBaseInterval = $state(100);
+	let backoffMaxInterval = $state(1000);
 	// UI state
 	let showAdvanced = $state(false);
+	let forwardSubTab = $state<ForwardSubTab>('target');
 
 	// Derived: check if rewrite is allowed based on path type
 	let canUsePrefixRewrite = $derived(pathType === 'prefix' || pathType === 'exact');
@@ -69,6 +98,38 @@
 
 	// Derived: calculate total weight
 	let totalWeight = $derived(weightedClusters.reduce((sum, c) => sum + (c.weight || 0), 0));
+
+	// Derived: get actual retry conditions based on preset or custom
+	let actualRetryConditions = $derived(() => {
+		if (retryPreset === 'custom') {
+			return retryOnCustom;
+		}
+		const preset = retryPresets.find(p => p.value === retryPreset);
+		return preset?.conditions || [];
+	});
+
+	// Helper: detect preset from conditions array
+	function detectPresetFromConditions(conditions: string[]): RetryPreset {
+		const sorted = [...conditions].sort();
+		for (const preset of retryPresets) {
+			if (preset.value === 'custom') continue;
+			const presetSorted = [...preset.conditions].sort();
+			if (sorted.length === presetSorted.length &&
+				sorted.every((c, i) => c === presetSorted[i])) {
+				return preset.value;
+			}
+		}
+		return 'custom';
+	}
+
+	// Helper: toggle retry condition in custom mode
+	function toggleRetryCondition(condition: string) {
+		if (retryOnCustom.includes(condition)) {
+			retryOnCustom = retryOnCustom.filter(c => c !== condition);
+		} else {
+			retryOnCustom = [...retryOnCustom, condition];
+		}
+	}
 
 	// Reset form when route changes
 	$effect(() => {
@@ -92,6 +153,36 @@
 				pathRedirect = route.pathRedirect || '';
 				responseCode = route.responseCode || 302;
 				showAdvanced = (route.headers?.length || 0) > 0 || (route.queryParams?.length || 0) > 0;
+				// Load retry policy
+				if (route.retryPolicy) {
+					retryEnabled = true;
+					retryMaxRetries = route.retryPolicy.maxRetries;
+					const detectedPreset = detectPresetFromConditions(route.retryPolicy.retryOn);
+					retryPreset = detectedPreset;
+					if (detectedPreset === 'custom') {
+						retryOnCustom = [...route.retryPolicy.retryOn];
+					}
+					retryPerTryTimeout = route.retryPolicy.perTryTimeoutSeconds || null;
+					if (route.retryPolicy.backoff) {
+						showBackoff = true;
+						backoffBaseInterval = route.retryPolicy.backoff.baseIntervalMs || 100;
+						backoffMaxInterval = route.retryPolicy.backoff.maxIntervalMs || 1000;
+					} else {
+						showBackoff = false;
+						backoffBaseInterval = 100;
+						backoffMaxInterval = 1000;
+					}
+				} else {
+					retryEnabled = false;
+					retryMaxRetries = 3;
+					retryPreset = '5xx';
+					retryOnCustom = [];
+					retryPerTryTimeout = null;
+					showBackoff = false;
+					backoffBaseInterval = 100;
+					backoffMaxInterval = 1000;
+				}
+				forwardSubTab = 'target';
 			} else {
 				// Creating new route
 				method = 'GET';
@@ -109,6 +200,16 @@
 				pathRedirect = '';
 				responseCode = 302;
 				showAdvanced = false;
+				// Reset retry policy
+				retryEnabled = false;
+				retryMaxRetries = 3;
+				retryPreset = '5xx';
+				retryOnCustom = [];
+				retryPerTryTimeout = null;
+				showBackoff = false;
+				backoffBaseInterval = 100;
+				backoffMaxInterval = 1000;
+				forwardSubTab = 'target';
 			}
 		}
 	});
@@ -151,6 +252,24 @@
 					? clusterConfig.existingClusterName || ''
 					: clusterConfig.newClusterConfig?.name || '';
 
+			// Build retry policy if enabled
+			let retryPolicy: RetryPolicy | undefined = undefined;
+			if (retryEnabled) {
+				const conditions = retryPreset === 'custom'
+					? retryOnCustom
+					: retryPresets.find(p => p.value === retryPreset)?.conditions || [];
+
+				retryPolicy = {
+					maxRetries: retryMaxRetries,
+					retryOn: conditions,
+					perTryTimeoutSeconds: retryPerTryTimeout || undefined,
+					backoff: showBackoff ? {
+						baseIntervalMs: backoffBaseInterval,
+						maxIntervalMs: backoffMaxInterval
+					} : undefined
+				};
+			}
+
 			savedRoute = {
 				id: route?.id || crypto.randomUUID(),
 				method,
@@ -161,6 +280,7 @@
 				prefixRewrite: prefixRewrite || undefined,
 				templateRewrite: templateRewrite || undefined,
 				timeoutSeconds,
+				retryPolicy,
 				headers: headers.length > 0 ? headers : undefined,
 				queryParams: queryParams.length > 0 ? queryParams : undefined
 			};
@@ -300,79 +420,271 @@
 					<!-- Tab Content -->
 					<div class="pt-4 space-y-4">
 						{#if actionType === 'forward'}
-							<!-- Forward Tab Content -->
-							<div>
-								<label class="block text-sm font-medium text-gray-700 mb-2">Target Cluster</label>
-								<ClusterSelector
-									{clusters}
-									config={clusterConfig}
-									onConfigChange={(c) => (clusterConfig = c)}
-								/>
-							</div>
-
-							<!-- Timeout -->
-							<div>
-								<label for="route-timeout" class="block text-sm font-medium text-gray-700 mb-1"
-									>Timeout (seconds)</label
+							<!-- Forward Sub-tabs -->
+							<div class="flex gap-4 border-b border-gray-100 mb-4">
+								<button
+									type="button"
+									onclick={() => forwardSubTab = 'target'}
+									class="pb-2 text-sm font-medium transition-colors {forwardSubTab === 'target'
+										? 'text-blue-600 border-b-2 border-blue-600 -mb-px'
+										: 'text-gray-500 hover:text-gray-700'}"
 								>
-								<input
-									id="route-timeout"
-									type="number"
-									min="1"
-									max="3600"
-									bind:value={timeoutSeconds}
-									class="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-								/>
+									Target
+								</button>
+								<button
+									type="button"
+									onclick={() => forwardSubTab = 'resilience'}
+									class="pb-2 text-sm font-medium transition-colors {forwardSubTab === 'resilience'
+										? 'text-blue-600 border-b-2 border-blue-600 -mb-px'
+										: 'text-gray-500 hover:text-gray-700'}"
+								>
+									Resilience
+									{#if retryEnabled}
+										<span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+											Retry
+										</span>
+									{/if}
+								</button>
 							</div>
 
-							<!-- Path Rewrite Section -->
-							{#key pathType}
-								{#if pathType === 'prefix' || pathType === 'exact'}
-									<div class="border-t border-gray-200 pt-4">
-										<label class="block text-sm font-medium text-gray-700 mb-2">Path Rewrite (Optional)</label>
-										<div>
-											<label for="prefix-rewrite" class="block text-sm text-gray-600 mb-1">
-												Prefix Rewrite
-												<span class="text-xs text-gray-400">(replaces matched prefix)</span>
-											</label>
-											<input
-												id="prefix-rewrite"
-												type="text"
-												bind:value={prefixRewrite}
-												placeholder="/new-prefix"
-												class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-											/>
-											<p class="mt-1 text-xs text-gray-500">
-												E.g., path "/api/v1" with prefix rewrite "/internal" turns "/api/v1/users" into "/internal/users"
-											</p>
+							{#if forwardSubTab === 'target'}
+								<!-- Target Sub-tab Content -->
+								<div>
+									<label class="block text-sm font-medium text-gray-700 mb-2">Target Cluster</label>
+									<ClusterSelector
+										{clusters}
+										config={clusterConfig}
+										onConfigChange={(c) => (clusterConfig = c)}
+									/>
+								</div>
+
+								<!-- Timeout -->
+								<div>
+									<label for="route-timeout" class="block text-sm font-medium text-gray-700 mb-1"
+										>Timeout (seconds)</label
+									>
+									<input
+										id="route-timeout"
+										type="number"
+										min="1"
+										max="3600"
+										bind:value={timeoutSeconds}
+										class="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+									/>
+								</div>
+
+								<!-- Path Rewrite Section -->
+								{#key pathType}
+									{#if pathType === 'prefix' || pathType === 'exact'}
+										<div class="border-t border-gray-200 pt-4">
+											<label class="block text-sm font-medium text-gray-700 mb-2">Path Rewrite (Optional)</label>
+											<div>
+												<label for="prefix-rewrite" class="block text-sm text-gray-600 mb-1">
+													Prefix Rewrite
+													<span class="text-xs text-gray-400">(replaces matched prefix)</span>
+												</label>
+												<input
+													id="prefix-rewrite"
+													type="text"
+													bind:value={prefixRewrite}
+													placeholder="/new-prefix"
+													class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+												/>
+												<p class="mt-1 text-xs text-gray-500">
+													E.g., path "/api/v1" with prefix rewrite "/internal" turns "/api/v1/users" into "/internal/users"
+												</p>
+											</div>
 										</div>
-									</div>
-								{:else if pathType === 'template'}
-									<div class="border-t border-gray-200 pt-4">
-										<label class="block text-sm font-medium text-gray-700 mb-2">Path Rewrite (Optional)</label>
-										<div>
-											<label for="template-rewrite" class="block text-sm text-gray-600 mb-1">
-												Template Rewrite
-												<span class="text-xs text-gray-400">(uses captured variables)</span>
-											</label>
-											<input
-												id="template-rewrite"
-												type="text"
-												bind:value={templateRewrite}
-												placeholder="/users/{'{'}id{'}'}/profile"
-												class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-											/>
-											<p class="mt-1 text-xs text-gray-500">
-												E.g., template "/users/{'{'}user_id{'}'}" with rewrite "/v2/users/{'{'}user_id{'}'}"
-											</p>
+									{:else if pathType === 'template'}
+										<div class="border-t border-gray-200 pt-4">
+											<label class="block text-sm font-medium text-gray-700 mb-2">Path Rewrite (Optional)</label>
+											<div>
+												<label for="template-rewrite" class="block text-sm text-gray-600 mb-1">
+													Template Rewrite
+													<span class="text-xs text-gray-400">(uses captured variables)</span>
+												</label>
+												<input
+													id="template-rewrite"
+													type="text"
+													bind:value={templateRewrite}
+													placeholder="/users/{'{'}id{'}'}/profile"
+													class="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+												/>
+												<p class="mt-1 text-xs text-gray-500">
+													E.g., template "/users/{'{'}user_id{'}'}" with rewrite "/v2/users/{'{'}user_id{'}'}"
+												</p>
+											</div>
 										</div>
+									{:else if pathType === 'regex'}
+										<p class="text-sm text-gray-500 italic">
+											Path rewrites are not available for regex path matching.
+										</p>
+									{/if}
+								{/key}
+							{:else}
+								<!-- Resilience Sub-tab Content -->
+								<div class="space-y-4">
+									<!-- Retry Policy Toggle -->
+									<div class="flex items-center gap-3">
+										<input
+											type="checkbox"
+											id="retry-enabled"
+											bind:checked={retryEnabled}
+											class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+										/>
+										<label for="retry-enabled" class="text-sm font-medium text-gray-700">
+											Enable Retry Policy
+										</label>
 									</div>
-								{:else if pathType === 'regex'}
-									<p class="text-sm text-gray-500 italic">
-										Path rewrites are not available for regex path matching.
-									</p>
-								{/if}
-							{/key}
+
+									{#if retryEnabled}
+										<div class="pl-7 space-y-4">
+											<!-- Max Retries -->
+											<div class="flex items-center gap-4">
+												<div>
+													<label for="max-retries" class="block text-sm font-medium text-gray-700 mb-1">
+														Max Retries
+													</label>
+													<select
+														id="max-retries"
+														bind:value={retryMaxRetries}
+														class="w-20 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+													>
+														{#each [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as n}
+															<option value={n}>{n}</option>
+														{/each}
+													</select>
+												</div>
+											</div>
+
+											<!-- Retry Preset -->
+											<div>
+												<label for="retry-preset" class="block text-sm font-medium text-gray-700 mb-1">
+													Retry On
+												</label>
+												<select
+													id="retry-preset"
+													bind:value={retryPreset}
+													class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+												>
+													{#each retryPresets as preset}
+														<option value={preset.value}>{preset.label}</option>
+													{/each}
+												</select>
+											</div>
+
+											<!-- Custom Conditions -->
+											{#if retryPreset === 'custom'}
+												<div class="bg-gray-50 p-3 rounded-md">
+													<label class="block text-sm font-medium text-gray-700 mb-2">
+														Select Retry Conditions
+													</label>
+													<div class="grid grid-cols-2 gap-2">
+														{#each retryConditions as condition}
+															<label class="flex items-center gap-2 text-sm">
+																<input
+																	type="checkbox"
+																	checked={retryOnCustom.includes(condition.value)}
+																	onchange={() => toggleRetryCondition(condition.value)}
+																	class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+																/>
+																{condition.label}
+															</label>
+														{/each}
+													</div>
+													{#if retryOnCustom.length === 0}
+														<p class="mt-2 text-xs text-amber-600">
+															Select at least one retry condition
+														</p>
+													{/if}
+												</div>
+											{/if}
+
+											<!-- Per-Try Timeout -->
+											<div>
+												<label for="per-try-timeout" class="block text-sm font-medium text-gray-700 mb-1">
+													Per-Try Timeout
+													<span class="text-xs text-gray-400">(optional, seconds)</span>
+												</label>
+												<input
+													id="per-try-timeout"
+													type="number"
+													min="1"
+													max="300"
+													bind:value={retryPerTryTimeout}
+													placeholder="Use route timeout"
+													class="w-32 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+												/>
+											</div>
+
+											<!-- Backoff Settings (Collapsible) -->
+											<div class="border-t border-gray-200 pt-4">
+												<button
+													type="button"
+													onclick={() => showBackoff = !showBackoff}
+													class="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+												>
+													<svg
+														class="h-4 w-4 transition-transform {showBackoff ? 'rotate-90' : ''}"
+														fill="none"
+														stroke="currentColor"
+														viewBox="0 0 24 24"
+													>
+														<path
+															stroke-linecap="round"
+															stroke-linejoin="round"
+															stroke-width="2"
+															d="M9 5l7 7-7 7"
+														/>
+													</svg>
+													Backoff Settings
+													<span class="text-xs text-gray-400">(optional)</span>
+												</button>
+
+												{#if showBackoff}
+													<div class="mt-3 pl-6 space-y-3">
+														<div>
+															<label for="backoff-base" class="block text-sm text-gray-600 mb-1">
+																Base Interval (ms)
+															</label>
+															<input
+																id="backoff-base"
+																type="number"
+																min="10"
+																max="10000"
+																bind:value={backoffBaseInterval}
+																class="w-28 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+															/>
+														</div>
+														<div>
+															<label for="backoff-max" class="block text-sm text-gray-600 mb-1">
+																Max Interval (ms)
+															</label>
+															<input
+																id="backoff-max"
+																type="number"
+																min="100"
+																max="60000"
+																bind:value={backoffMaxInterval}
+																class="w-28 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+															/>
+														</div>
+														{#if backoffBaseInterval >= backoffMaxInterval}
+															<p class="text-xs text-amber-600">
+																Base interval should be less than max interval
+															</p>
+														{/if}
+													</div>
+												{/if}
+											</div>
+										</div>
+									{:else}
+										<p class="pl-7 text-sm text-gray-500">
+											Enable retry policy to configure automatic request retries on failures.
+										</p>
+									{/if}
+								</div>
+							{/if}
 
 						{:else if actionType === 'weighted'}
 							<!-- Weighted Tab Content -->

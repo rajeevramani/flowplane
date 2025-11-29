@@ -175,6 +175,15 @@
 		prefixRewrite?: string;
 		templateRewrite?: string;
 		timeoutSeconds?: number;
+		retryPolicy?: {
+			maxRetries: number;
+			retryOn: string[];
+			perTryTimeoutSeconds?: number;
+			backoff?: {
+				baseIntervalMs?: number;
+				maxIntervalMs?: number;
+			};
+		};
 		weightedClusters?: Array<{ name: string; weight: number }>;
 		totalWeight?: number;
 		hostRedirect?: string;
@@ -189,12 +198,32 @@
 
 		// Handle tagged enum format from API
 		if (action.type === 'forward') {
+			// Parse retry policy if present
+			let retryPolicy = undefined;
+			if (action.retryPolicy && typeof action.retryPolicy === 'object') {
+				const rp = action.retryPolicy as Record<string, unknown>;
+				retryPolicy = {
+					maxRetries: typeof rp.maxRetries === 'number' ? rp.maxRetries : 3,
+					retryOn: Array.isArray(rp.retryOn) ? rp.retryOn : [],
+					perTryTimeoutSeconds: typeof rp.perTryTimeoutSeconds === 'number' ? rp.perTryTimeoutSeconds : undefined,
+					backoff: rp.backoff && typeof rp.backoff === 'object' ? {
+						baseIntervalMs: typeof (rp.backoff as Record<string, unknown>).baseIntervalMs === 'number'
+							? (rp.backoff as Record<string, unknown>).baseIntervalMs as number
+							: undefined,
+						maxIntervalMs: typeof (rp.backoff as Record<string, unknown>).maxIntervalMs === 'number'
+							? (rp.backoff as Record<string, unknown>).maxIntervalMs as number
+							: undefined
+					} : undefined
+				};
+			}
+
 			return {
 				actionType: 'forward',
 				cluster: typeof action.cluster === 'string' ? action.cluster : '',
 				prefixRewrite: typeof action.prefixRewrite === 'string' ? action.prefixRewrite : undefined,
 				templateRewrite: typeof action.templateRewrite === 'string' ? action.templateRewrite : undefined,
-				timeoutSeconds: typeof action.timeoutSeconds === 'number' ? action.timeoutSeconds : undefined
+				timeoutSeconds: typeof action.timeoutSeconds === 'number' ? action.timeoutSeconds : undefined,
+				retryPolicy
 			};
 		}
 
@@ -273,6 +302,7 @@
 				prefixRewrite: actionData.prefixRewrite,
 				templateRewrite: actionData.templateRewrite,
 				timeoutSeconds: actionData.timeoutSeconds,
+				retryPolicy: actionData.retryPolicy,
 				// Weighted fields
 				weightedClusters: actionData.weightedClusters,
 				totalWeight: actionData.totalWeight,
@@ -425,7 +455,16 @@
 						cluster: route.cluster || '',
 						timeoutSeconds: route.timeoutSeconds || 15,
 						prefixRewrite: route.prefixRewrite || undefined,
-						templateRewrite: route.templateRewrite || undefined
+						templateRewrite: route.templateRewrite || undefined,
+						retryPolicy: route.retryPolicy ? {
+							maxRetries: route.retryPolicy.maxRetries,
+							retryOn: route.retryPolicy.retryOn,
+							perTryTimeoutSeconds: route.retryPolicy.perTryTimeoutSeconds || undefined,
+							backoff: route.retryPolicy.backoff ? {
+								baseIntervalMs: route.retryPolicy.backoff.baseIntervalMs,
+								maxIntervalMs: route.retryPolicy.backoff.maxIntervalMs
+							} : undefined
+						} : undefined
 					};
 				} else if (actionType === 'weighted') {
 					action = {

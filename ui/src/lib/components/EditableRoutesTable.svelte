@@ -14,6 +14,18 @@
 		weight: number;
 	}
 
+	export interface RetryBackoff {
+		baseIntervalMs?: number;
+		maxIntervalMs?: number;
+	}
+
+	export interface RetryPolicy {
+		maxRetries: number;
+		retryOn: string[];
+		perTryTimeoutSeconds?: number;
+		backoff?: RetryBackoff;
+	}
+
 	export interface RouteRule {
 		id: string;
 		method: string;
@@ -25,6 +37,7 @@
 		prefixRewrite?: string;
 		templateRewrite?: string;
 		timeoutSeconds?: number;
+		retryPolicy?: RetryPolicy;
 		// Weighted action fields
 		weightedClusters?: WeightedCluster[];
 		totalWeight?: number;
@@ -168,9 +181,22 @@
 							<span class="text-sm text-gray-600">{route.pathType}</span>
 						</td>
 						<td class="px-4 py-3 whitespace-nowrap">
-							<Badge variant={getActionBadgeVariant(route.actionType || 'forward')}>
-								{(route.actionType || 'forward').charAt(0).toUpperCase() + (route.actionType || 'forward').slice(1)}
-							</Badge>
+							<div class="flex items-center gap-1.5">
+								<Badge variant={getActionBadgeVariant(route.actionType || 'forward')}>
+									{(route.actionType || 'forward').charAt(0).toUpperCase() + (route.actionType || 'forward').slice(1)}
+								</Badge>
+								{#if route.retryPolicy}
+									<span
+										class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700"
+										title="Retry: {route.retryPolicy.maxRetries}x on {route.retryPolicy.retryOn.join(', ')}"
+									>
+										<svg class="h-3 w-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+										</svg>
+										{route.retryPolicy.maxRetries}
+									</span>
+								{/if}
+							</div>
 						</td>
 						<td class="px-4 py-3">
 							<span class="text-sm text-gray-900 truncate max-w-xs block" title={getTargetDisplay(route)}>{getTargetDisplay(route)}</span>
