@@ -93,8 +93,8 @@
 				const config = listener.config || {};
 
 				// Check for TLS
-				const hasTls = config.filterChains?.some(
-					(fc: { transportSocket?: unknown }) => fc.transportSocket
+				const hasTls = config.filter_chains?.some(
+					(fc: { tls_context?: unknown }) => fc.tls_context
 				);
 
 				// Count routes associated with this listener
@@ -123,11 +123,12 @@
 	function getRoutesForListener(listener: ListenerResponse): RouteResponse[] {
 		const routeNames = new Set<string>();
 
-		listener.config?.filterChains?.forEach(
-			(fc: { filters?: { routeConfigName?: string }[] }) => {
+		listener.config?.filter_chains?.forEach(
+			(fc: { filters?: { filter_type?: { HttpConnectionManager?: { route_config_name?: string } } }[] }) => {
 				fc.filters?.forEach((f) => {
-					if (f.routeConfigName) {
-						routeNames.add(f.routeConfigName);
+					const routeConfigName = f.filter_type?.HttpConnectionManager?.route_config_name;
+					if (routeConfigName) {
+						routeNames.add(routeConfigName);
 					}
 				});
 			}
@@ -275,25 +276,26 @@
 			</ConfigCard>
 
 			<!-- Filter Chains -->
-			{#if config.filterChains?.length}
+			{#if config.filter_chains?.length}
 				<ConfigCard title="Filter Chains" variant="blue">
 					<div class="space-y-3">
-						{#each config.filterChains as fc, i}
+						{#each config.filter_chains as fc, i}
 							<div class="p-3 bg-white rounded border border-blue-200">
-								<div class="font-medium text-gray-900">Chain {i + 1}</div>
+								<div class="font-medium text-gray-900">{fc.name || `Chain ${i + 1}`}</div>
 								{#if fc.filters?.length}
 									<div class="mt-2 space-y-1">
 										{#each fc.filters as filter}
+											{@const routeConfigName = filter.filter_type?.HttpConnectionManager?.route_config_name}
 											<div class="text-sm text-gray-600">
-												{filter.name || filter.typedConfig?.['@type']?.split('.').pop() || 'Filter'}
-												{#if filter.routeConfigName}
-													<span class="text-gray-400"> → {filter.routeConfigName}</span>
+												{filter.name || (filter.filter_type?.HttpConnectionManager ? 'HttpConnectionManager' : 'Filter')}
+												{#if routeConfigName}
+													<span class="text-gray-400"> → {routeConfigName}</span>
 												{/if}
 											</div>
 										{/each}
 									</div>
 								{/if}
-								{#if fc.transportSocket}
+								{#if fc.tls_context}
 									<div class="mt-2 flex items-center gap-1 text-green-600 text-sm">
 										<Lock class="h-3 w-3" />
 										TLS Enabled

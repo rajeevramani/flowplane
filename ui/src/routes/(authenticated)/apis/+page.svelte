@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Plus, Eye } from 'lucide-svelte';
+	import { Plus, Eye, Lock, LockOpen } from 'lucide-svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
 	import ConfigCard from '$lib/components/ConfigCard.svelte';
 	import Button from '$lib/components/Button.svelte';
@@ -308,8 +308,8 @@
 
 	function getListenerForRoute(route: RouteResponse): ListenerResponse | undefined {
 		return listeners.find((l) =>
-			l.config?.filterChains?.some((fc: { filters?: { routeConfigName?: string }[] }) =>
-				fc.filters?.some((f) => f.routeConfigName === route.name)
+			l.config?.filter_chains?.some((fc: { filters?: { filter_type?: { HttpConnectionManager?: { route_config_name?: string } } }[] }) =>
+				fc.filters?.some((f) => f.filter_type?.HttpConnectionManager?.route_config_name === route.name)
 			)
 		);
 	}
@@ -373,6 +373,371 @@
 
 	function getUniqueRowId(detail: RouteDetail, index: number): string {
 		return `${detail.apiName}-${detail.name || index}-${detail.method}-${detail.path}`;
+	}
+
+	// ============================================
+	// Cluster Configuration Extraction Functions
+	// ============================================
+
+	interface ClusterEndpoint {
+		address: string;
+		port: number;
+	}
+
+	interface HealthCheckInfo {
+		type: string;
+		path?: string;
+		interval: string;
+		timeout: string;
+		healthyThreshold?: number;
+		unhealthyThreshold?: number;
+	}
+
+	interface CircuitBreakerInfo {
+		maxConnections: number;
+		maxPendingRequests: number;
+		maxRequests: number;
+		maxRetries: number;
+	}
+
+	interface OutlierDetectionInfo {
+		consecutive5xx: number;
+		interval: string;
+		baseEjectionTime: string;
+		maxEjectionPercent: number;
+	}
+
+	interface ClusterTlsInfo {
+		serverName?: string;
+		verifyCertificate?: boolean;
+		minTlsVersion?: string;
+	}
+
+	function extractClusterEndpoints(cluster: ClusterResponse): ClusterEndpoint[] {
+		const config = cluster.config || {};
+		const endpoints: ClusterEndpoint[] = [];
+		const lbEndpoints = config.loadAssignment?.endpoints?.[0]?.lbEndpoints || [];
+
+		for (const ep of lbEndpoints) {
+			const addr = ep.endpoint?.address?.socketAddress;
+			if (addr) {
+				endpoints.push({
+					address: addr.address,
+					port: addr.portValue
+				});
+			}
+		}
+
+		return endpoints;
+	}
+
+	function extractLoadBalancingPolicy(config: Record<string, unknown>): { policy: string; params?: string } {
+		const policy = (config.lbPolicy as string) || 'ROUND_ROBIN';
+		let params: string | undefined;
+
+		// Extract LB-specific params
+		if (policy === 'LEAST_REQUEST' && config.leastRequestLbConfig) {
+			const lrConfig = config.leastRequestLbConfig as { choiceCount?: number };
+			params = `Choice count: ${lrConfig.choiceCount || 2}`;
+		} else if (policy === 'RING_HASH' && config.ringHashLbConfig) {
+			const rhConfig = config.ringHashLbConfig as { minimumRingSize?: number };
+			params = `Min ring size: ${rhConfig.minimumRingSize || 1024}`;
+		}
+
+		return { policy, params };
+	}
+
+	function formatLbPolicy(policy: string): string {
+		return policy.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+	}
+
+	function extractHealthChecks(config: Record<string, unknown>): HealthCheckInfo[] {
+		const healthChecks: HealthCheckInfo[] = [];
+		const hcList = config.healthChecks as Array<{
+			httpHealthCheck?: { path?: string };
+			tcpHealthCheck?: unknown;
+			grpcHealthCheck?: { serviceName?: string };
+			interval?: string;
+			timeout?: string;
+			healthyThreshold?: number;
+			unhealthyThreshold?: number;
+		}> || [];
+
+		for (const hc of hcList) {
+			let type = 'TCP';
+			let path: string | undefined;
+
+			if (hc.httpHealthCheck) {
+				type = 'HTTP';
+				path = hc.httpHealthCheck.path;
+			} else if (hc.grpcHealthCheck) {
+				type = 'gRPC';
+				path = hc.grpcHealthCheck.serviceName;
+			}
+
+			healthChecks.push({
+				type,
+				path,
+				interval: hc.interval || '5s',
+				timeout: hc.timeout || '5s',
+				healthyThreshold: hc.healthyThreshold,
+				unhealthyThreshold: hc.unhealthyThreshold
+			});
+		}
+
+		return healthChecks;
+	}
+
+	function extractCircuitBreaker(config: Record<string, unknown>): CircuitBreakerInfo | null {
+		const cb = config.circuitBreakers as { thresholds?: Array<{
+			maxConnections?: number;
+			maxPendingRequests?: number;
+			maxRequests?: number;
+			maxRetries?: number;
+		}> };
+
+		if (!cb?.thresholds?.[0]) return null;
+
+		const thresholds = cb.thresholds[0];
+		return {
+			maxConnections: thresholds.maxConnections || 1024,
+			maxPendingRequests: thresholds.maxPendingRequests || 1024,
+			maxRequests: thresholds.maxRequests || 1024,
+			maxRetries: thresholds.maxRetries || 3
+		};
+	}
+
+	function extractOutlierDetection(config: Record<string, unknown>): OutlierDetectionInfo | null {
+		const od = config.outlierDetection as {
+			consecutive5xx?: number;
+			interval?: string;
+			baseEjectionTime?: string;
+			maxEjectionPercent?: number;
+		};
+
+		if (!od) return null;
+
+		return {
+			consecutive5xx: od.consecutive5xx || 5,
+			interval: od.interval || '10s',
+			baseEjectionTime: od.baseEjectionTime || '30s',
+			maxEjectionPercent: od.maxEjectionPercent || 10
+		};
+	}
+
+	function extractClusterTls(config: Record<string, unknown>): ClusterTlsInfo | null {
+		const transportSocket = config.transportSocket as {
+			typedConfig?: {
+				sni?: string;
+				commonTlsContext?: {
+					tlsParams?: { tlsMinimumProtocolVersion?: string };
+					validationContext?: unknown;
+				};
+			};
+		};
+
+		if (!transportSocket?.typedConfig) return null;
+
+		const tlsConfig = transportSocket.typedConfig;
+		return {
+			serverName: tlsConfig.sni,
+			verifyCertificate: Boolean(tlsConfig.commonTlsContext?.validationContext),
+			minTlsVersion: tlsConfig.commonTlsContext?.tlsParams?.tlsMinimumProtocolVersion
+		};
+	}
+
+	// ============================================
+	// Listener Configuration Extraction Functions
+	// ============================================
+
+	interface ListenerTlsInfo {
+		requireClientCert?: boolean;
+		minTlsVersion?: string;
+		hasCertificate: boolean;
+	}
+
+	interface FilterChainInfo {
+		name: string;
+		filters: string[];
+		hasTls: boolean;
+		routeConfigName?: string;
+	}
+
+	interface TracingInfo {
+		provider: string;
+		samplingRate?: number;
+	}
+
+	interface AccessLogInfo {
+		path?: string;
+		format?: string;
+	}
+
+	function extractListenerTls(listener: ListenerResponse): ListenerTlsInfo | null {
+		const config = listener.config || {};
+		const filterChains = config.filter_chains as Array<{
+			tls_context?: {
+				require_client_certificate?: boolean;
+				cert_chain_file?: string;
+			};
+		}> || [];
+
+		// Check if any filter chain has TLS
+		for (const fc of filterChains) {
+			const tls = fc.tls_context;
+			if (tls) {
+				return {
+					requireClientCert: tls.require_client_certificate,
+					minTlsVersion: undefined, // Not stored in our config format
+					hasCertificate: Boolean(tls.cert_chain_file)
+				};
+			}
+		}
+
+		return null;
+	}
+
+	function extractFilterChains(listener: ListenerResponse): FilterChainInfo[] {
+		const config = listener.config || {};
+		const filterChains = config.filter_chains as Array<{
+			name?: string;
+			tls_context?: unknown;
+			filters?: Array<{
+				name?: string;
+				filter_type?: {
+					HttpConnectionManager?: { route_config_name?: string };
+					TcpProxy?: { cluster?: string };
+				};
+			}>;
+		}> || [];
+
+		return filterChains.map((fc, i) => {
+			const filters = (fc.filters || []).map((f) => {
+				if (f.name) return f.name;
+				if (f.filter_type?.HttpConnectionManager) return 'HttpConnectionManager';
+				if (f.filter_type?.TcpProxy) return 'TcpProxy';
+				return 'Filter';
+			});
+
+			const routeConfigName = fc.filters?.find((f) => f.filter_type?.HttpConnectionManager?.route_config_name)
+				?.filter_type?.HttpConnectionManager?.route_config_name;
+
+			return {
+				name: fc.name || `Chain ${i + 1}`,
+				filters,
+				hasTls: Boolean(fc.tls_context),
+				routeConfigName
+			};
+		});
+	}
+
+	function extractHttpFilters(listener: ListenerResponse): string[] {
+		const config = listener.config || {};
+		const filterChains = config.filter_chains as Array<{
+			filters?: Array<{
+				filter_type?: {
+					HttpConnectionManager?: {
+						http_filters?: Array<{
+							name?: string;
+							filter?: { type?: string };
+						}>;
+					};
+				};
+			}>;
+		}> || [];
+
+		const httpFilters: string[] = [];
+
+		for (const fc of filterChains) {
+			for (const filter of fc.filters || []) {
+				const hcmFilters = filter.filter_type?.HttpConnectionManager?.http_filters || [];
+				for (const hf of hcmFilters) {
+					const name = hf.name || hf.filter?.type || 'unknown';
+					if (!httpFilters.includes(name) && name !== 'router' && name !== 'envoy.filters.http.router') {
+						httpFilters.push(name);
+					}
+				}
+			}
+		}
+
+		return httpFilters;
+	}
+
+	function extractTracingConfig(listener: ListenerResponse): TracingInfo | null {
+		const config = listener.config || {};
+		const filterChains = config.filter_chains as Array<{
+			filters?: Array<{
+				filter_type?: {
+					HttpConnectionManager?: {
+						tracing?: {
+							provider?: { type?: string };
+							random_sampling_percentage?: number;
+						};
+					};
+				};
+			}>;
+		}> || [];
+
+		for (const fc of filterChains) {
+			for (const filter of fc.filters || []) {
+				const tracing = filter.filter_type?.HttpConnectionManager?.tracing;
+				if (tracing) {
+					// Extract provider type from the enum structure
+					const providerType = tracing.provider?.type || 'Unknown';
+					return {
+						provider: providerType.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+						samplingRate: tracing.random_sampling_percentage
+					};
+				}
+			}
+		}
+
+		return null;
+	}
+
+	function extractAccessLogConfig(listener: ListenerResponse): AccessLogInfo | null {
+		const config = listener.config || {};
+		const filterChains = config.filter_chains as Array<{
+			filters?: Array<{
+				filter_type?: {
+					HttpConnectionManager?: {
+						access_log?: {
+							path?: string;
+							format?: string;
+						};
+					};
+					TcpProxy?: {
+						access_log?: {
+							path?: string;
+							format?: string;
+						};
+					};
+				};
+			}>;
+		}> || [];
+
+		for (const fc of filterChains) {
+			for (const filter of fc.filters || []) {
+				const accessLog = filter.filter_type?.HttpConnectionManager?.access_log ||
+					filter.filter_type?.TcpProxy?.access_log;
+				if (accessLog) {
+					return {
+						path: accessLog.path,
+						format: accessLog.format ? 'Custom' : 'Default'
+					};
+				}
+			}
+		}
+
+		return null;
+	}
+
+	function formatHttpFilterName(name: string): string {
+		// Convert envoy filter names to readable format
+		return name
+			.replace('envoy.filters.http.', '')
+			.replace(/_/g, ' ')
+			.replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 </script>
 
@@ -534,6 +899,14 @@
 	onClose={closeDrawer}
 >
 	{#if selectedRoute}
+		{@const listener = getListenerForRoute(selectedRoute)}
+		{@const routeClusters = getClustersForRoute(selectedRoute)}
+		{@const listenerTls = listener ? extractListenerTls(listener) : null}
+		{@const filterChains = listener ? extractFilterChains(listener) : []}
+		{@const httpFilters = listener ? extractHttpFilters(listener) : []}
+		{@const tracingConfig = listener ? extractTracingConfig(listener) : null}
+		{@const accessLogConfig = listener ? extractAccessLogConfig(listener) : null}
+
 		<div class="space-y-6">
 			<!-- Overview -->
 			<ConfigCard title="Overview" variant="gray">
@@ -561,40 +934,324 @@
 				</dl>
 			</ConfigCard>
 
-			<!-- Listener -->
-			{#if getListenerForRoute(selectedRoute)}
-				{@const listener = getListenerForRoute(selectedRoute)}
+			<!-- ============================================ -->
+			<!-- Enhanced Listener Section -->
+			<!-- ============================================ -->
+			{#if listener}
 				<ConfigCard title="Listener" variant="blue">
 					<dl class="grid grid-cols-2 gap-4 text-sm">
 						<div>
 							<dt class="text-gray-500">Name</dt>
-							<dd class="text-gray-900">{listener?.name}</dd>
+							<dd class="text-gray-900">{listener.name}</dd>
 						</div>
 						<div>
 							<dt class="text-gray-500">Address</dt>
-							<dd class="font-mono text-gray-900">{listener?.address}:{listener?.port}</dd>
+							<dd class="font-mono text-gray-900">{listener.address}:{listener.port}</dd>
 						</div>
 						<div>
 							<dt class="text-gray-500">Protocol</dt>
-							<dd class="text-gray-900">{listener?.protocol}</dd>
+							<dd class="text-gray-900">{listener.protocol || 'HTTP'}</dd>
+						</div>
+						<div>
+							<dt class="text-gray-500">TLS</dt>
+							<dd class="text-gray-900">
+								{#if listenerTls}
+									<span class="flex items-center gap-1 text-green-600">
+										<Lock class="h-3 w-3" />
+										Enabled
+									</span>
+								{:else}
+									<span class="flex items-center gap-1 text-gray-400">
+										<LockOpen class="h-3 w-3" />
+										Disabled
+									</span>
+								{/if}
+							</dd>
 						</div>
 					</dl>
 				</ConfigCard>
+
+				<!-- Listener TLS Configuration -->
+				{#if listenerTls}
+					<ConfigCard title="Listener TLS" variant="blue">
+						<dl class="grid grid-cols-2 gap-4 text-sm">
+							<div>
+								<dt class="text-gray-500">Certificate</dt>
+								<dd class="text-gray-900">{listenerTls.hasCertificate ? 'Configured' : 'Not configured'}</dd>
+							</div>
+							<div>
+								<dt class="text-gray-500">Client Cert Required</dt>
+								<dd class="text-gray-900">{listenerTls.requireClientCert ? 'Yes (mTLS)' : 'No'}</dd>
+							</div>
+							{#if listenerTls.minTlsVersion}
+								<div>
+									<dt class="text-gray-500">Min TLS Version</dt>
+									<dd class="text-gray-900">{listenerTls.minTlsVersion}</dd>
+								</div>
+							{/if}
+						</dl>
+					</ConfigCard>
+				{/if}
+
+				<!-- HTTP Filters -->
+				{#if httpFilters.length > 0}
+					<ConfigCard title="HTTP Filters" variant="blue">
+						<div class="flex flex-wrap gap-2">
+							{#each httpFilters as filter}
+								<span class="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+									{formatHttpFilterName(filter)}
+								</span>
+							{/each}
+						</div>
+					</ConfigCard>
+				{/if}
+
+				<!-- Filter Chains (collapsible if multiple) -->
+				{#if filterChains.length > 1}
+					<ConfigCard title="Filter Chains" variant="blue" collapsible defaultCollapsed>
+						<div class="space-y-3">
+							{#each filterChains as fc, i}
+								<div class="p-3 bg-white rounded border border-blue-200">
+									<div class="font-medium text-gray-900">{fc.name}</div>
+									{#if fc.filters.length > 0}
+										<div class="mt-2 space-y-1">
+											{#each fc.filters as filter}
+												<div class="text-sm text-gray-600">
+													{filter}
+													{#if fc.routeConfigName}
+														<span class="text-gray-400"> &rarr; {fc.routeConfigName}</span>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
+									{#if fc.hasTls}
+										<div class="mt-2 flex items-center gap-1 text-green-600 text-sm">
+											<Lock class="h-3 w-3" />
+											TLS Enabled
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</ConfigCard>
+				{/if}
+
+				<!-- Tracing Configuration -->
+				{#if tracingConfig}
+					<ConfigCard title="Tracing" variant="blue">
+						<dl class="grid grid-cols-2 gap-4 text-sm">
+							<div>
+								<dt class="text-gray-500">Provider</dt>
+								<dd class="text-gray-900">{tracingConfig.provider}</dd>
+							</div>
+							{#if tracingConfig.samplingRate !== undefined}
+								<div>
+									<dt class="text-gray-500">Sampling Rate</dt>
+									<dd class="text-gray-900">{tracingConfig.samplingRate}%</dd>
+								</div>
+							{/if}
+						</dl>
+					</ConfigCard>
+				{/if}
+
+				<!-- Access Logging -->
+				{#if accessLogConfig}
+					<ConfigCard title="Access Logging" variant="blue">
+						<dl class="grid grid-cols-2 gap-4 text-sm">
+							{#if accessLogConfig.path}
+								<div>
+									<dt class="text-gray-500">Path</dt>
+									<dd class="font-mono text-gray-900">{accessLogConfig.path}</dd>
+								</div>
+							{/if}
+							<div>
+								<dt class="text-gray-500">Format</dt>
+								<dd class="text-gray-900">{accessLogConfig.format}</dd>
+							</div>
+						</dl>
+					</ConfigCard>
+				{/if}
 			{/if}
 
-			<!-- Clusters -->
-			{#if getClustersForRoute(selectedRoute).length > 0}
-				{@const routeClusters = getClustersForRoute(selectedRoute)}
-				<ConfigCard title="Clusters" variant="green">
-					<div class="space-y-3">
-						{#each routeClusters as cluster}
-							<div class="p-3 bg-white rounded border border-green-200">
-								<div class="font-medium text-gray-900">{cluster.serviceName}</div>
-								<div class="text-sm text-gray-500">{cluster.name}</div>
+			<!-- ============================================ -->
+			<!-- Enhanced Clusters Section -->
+			<!-- ============================================ -->
+			{#if routeClusters.length > 0}
+				{#each routeClusters as cluster}
+					{@const clusterConfig = cluster.config || {}}
+					{@const endpoints = extractClusterEndpoints(cluster)}
+					{@const lbPolicy = extractLoadBalancingPolicy(clusterConfig)}
+					{@const healthChecks = extractHealthChecks(clusterConfig)}
+					{@const circuitBreaker = extractCircuitBreaker(clusterConfig)}
+					{@const outlierDetection = extractOutlierDetection(clusterConfig)}
+					{@const clusterTls = extractClusterTls(clusterConfig)}
+
+					<!-- Cluster Overview -->
+					<ConfigCard title="Cluster: {cluster.serviceName}" variant="green">
+						<dl class="grid grid-cols-2 gap-4 text-sm">
+							<div>
+								<dt class="text-gray-500">Cluster Name</dt>
+								<dd class="font-mono text-gray-900">{cluster.name}</dd>
 							</div>
-						{/each}
-					</div>
-				</ConfigCard>
+							<div>
+								<dt class="text-gray-500">LB Policy</dt>
+								<dd class="text-gray-900">
+									{formatLbPolicy(lbPolicy.policy)}
+									{#if lbPolicy.params}
+										<span class="text-gray-500 text-xs ml-1">({lbPolicy.params})</span>
+									{/if}
+								</dd>
+							</div>
+							<div>
+								<dt class="text-gray-500">Connect Timeout</dt>
+								<dd class="text-gray-900">{clusterConfig.connectTimeout || '5s'}</dd>
+							</div>
+							<div>
+								<dt class="text-gray-500">TLS</dt>
+								<dd class="text-gray-900">
+									{#if clusterTls}
+										<span class="flex items-center gap-1 text-green-600">
+											<Lock class="h-3 w-3" />
+											Enabled
+										</span>
+									{:else}
+										<span class="flex items-center gap-1 text-gray-400">
+											<LockOpen class="h-3 w-3" />
+											Disabled
+										</span>
+									{/if}
+								</dd>
+							</div>
+						</dl>
+					</ConfigCard>
+
+					<!-- Endpoints -->
+					{#if endpoints.length > 0}
+						<ConfigCard title="Endpoints" variant="green">
+							<div class="space-y-2">
+								{#each endpoints as ep}
+									<div class="flex items-center justify-between p-2 bg-white rounded border border-green-200">
+										<span class="font-mono text-gray-900">{ep.address}:{ep.port}</span>
+										<span class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">Active</span>
+									</div>
+								{/each}
+							</div>
+						</ConfigCard>
+					{/if}
+
+					<!-- Health Checks -->
+					{#if healthChecks.length > 0}
+						<ConfigCard title="Health Checks" variant="green">
+							{#each healthChecks as hc}
+								<dl class="grid grid-cols-2 gap-4 text-sm">
+									<div>
+										<dt class="text-gray-500">Type</dt>
+										<dd class="text-gray-900">{hc.type}</dd>
+									</div>
+									{#if hc.path}
+										<div>
+											<dt class="text-gray-500">Path</dt>
+											<dd class="font-mono text-gray-900">{hc.path}</dd>
+										</div>
+									{/if}
+									<div>
+										<dt class="text-gray-500">Interval</dt>
+										<dd class="text-gray-900">{hc.interval}</dd>
+									</div>
+									<div>
+										<dt class="text-gray-500">Timeout</dt>
+										<dd class="text-gray-900">{hc.timeout}</dd>
+									</div>
+									{#if hc.healthyThreshold}
+										<div>
+											<dt class="text-gray-500">Healthy Threshold</dt>
+											<dd class="text-gray-900">{hc.healthyThreshold}</dd>
+										</div>
+									{/if}
+									{#if hc.unhealthyThreshold}
+										<div>
+											<dt class="text-gray-500">Unhealthy Threshold</dt>
+											<dd class="text-gray-900">{hc.unhealthyThreshold}</dd>
+										</div>
+									{/if}
+								</dl>
+							{/each}
+						</ConfigCard>
+					{/if}
+
+					<!-- Circuit Breaker -->
+					{#if circuitBreaker}
+						<ConfigCard title="Circuit Breaker" variant="yellow">
+							<dl class="grid grid-cols-2 gap-4 text-sm">
+								<div>
+									<dt class="text-gray-500">Max Connections</dt>
+									<dd class="text-gray-900">{circuitBreaker.maxConnections}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Max Pending Requests</dt>
+									<dd class="text-gray-900">{circuitBreaker.maxPendingRequests}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Max Requests</dt>
+									<dd class="text-gray-900">{circuitBreaker.maxRequests}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Max Retries</dt>
+									<dd class="text-gray-900">{circuitBreaker.maxRetries}</dd>
+								</div>
+							</dl>
+						</ConfigCard>
+					{/if}
+
+					<!-- Outlier Detection -->
+					{#if outlierDetection}
+						<ConfigCard title="Outlier Detection" variant="orange">
+							<dl class="grid grid-cols-2 gap-4 text-sm">
+								<div>
+									<dt class="text-gray-500">Consecutive 5xx</dt>
+									<dd class="text-gray-900">{outlierDetection.consecutive5xx}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Interval</dt>
+									<dd class="text-gray-900">{outlierDetection.interval}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Base Ejection Time</dt>
+									<dd class="text-gray-900">{outlierDetection.baseEjectionTime}</dd>
+								</div>
+								<div>
+									<dt class="text-gray-500">Max Ejection %</dt>
+									<dd class="text-gray-900">{outlierDetection.maxEjectionPercent}%</dd>
+								</div>
+							</dl>
+						</ConfigCard>
+					{/if}
+
+					<!-- Cluster TLS Configuration -->
+					{#if clusterTls}
+						<ConfigCard title="Upstream TLS" variant="green">
+							<dl class="grid grid-cols-2 gap-4 text-sm">
+								{#if clusterTls.serverName}
+									<div>
+										<dt class="text-gray-500">Server Name (SNI)</dt>
+										<dd class="font-mono text-gray-900">{clusterTls.serverName}</dd>
+									</div>
+								{/if}
+								<div>
+									<dt class="text-gray-500">Verify Certificate</dt>
+									<dd class="text-gray-900">{clusterTls.verifyCertificate ? 'Yes' : 'No'}</dd>
+								</div>
+								{#if clusterTls.minTlsVersion}
+									<div>
+										<dt class="text-gray-500">Min TLS Version</dt>
+										<dd class="text-gray-900">{clusterTls.minTlsVersion}</dd>
+									</div>
+								{/if}
+							</dl>
+						</ConfigCard>
+					{/if}
+				{/each}
 			{/if}
 
 			<!-- Retry Policies -->
