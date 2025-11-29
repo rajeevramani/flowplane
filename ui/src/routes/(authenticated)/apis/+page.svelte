@@ -53,8 +53,6 @@
 	// Action menu state
 	let openMenuId = $state<string | null>(null);
 
-	// Retry config popover state
-	let openRetryPopoverId = $state<string | null>(null);
 
 	onMount(async () => {
 		unsubscribe = selectedTeam.subscribe(async (team) => {
@@ -318,14 +316,8 @@
 		openMenuId = openMenuId === id ? null : id;
 	}
 
-	function toggleRetryPopover(e: MouseEvent, id: string) {
-		e.stopPropagation();
-		openRetryPopoverId = openRetryPopoverId === id ? null : id;
-	}
-
 	function closeAllMenus() {
 		openMenuId = null;
-		openRetryPopoverId = null;
 	}
 
 	function getListenerForRoute(route: RouteResponse): ListenerResponse | undefined {
@@ -334,6 +326,58 @@
 				fc.filters?.some((f) => f.routeConfigName === route.name)
 			)
 		);
+	}
+
+	function getRetryPoliciesForRoute(route: RouteResponse): Array<{ routeName: string; policy: RouteDetail['retryPolicy'] }> {
+		const policies: Array<{ routeName: string; policy: RouteDetail['retryPolicy'] }> = [];
+
+		if (route.config?.virtualHosts) {
+			for (const vh of route.config.virtualHosts) {
+				for (const r of vh.routes || []) {
+					const clusterAction = r.action?.Cluster || r.action;
+					const rawRetryPolicy = clusterAction?.retry_policy || clusterAction?.retryPolicy;
+
+					if (rawRetryPolicy) {
+						const retryOn = rawRetryPolicy.retry_on || rawRetryPolicy.retryOn;
+						const retryOnStr = Array.isArray(retryOn) ? retryOn.join(', ') : retryOn;
+
+						let perTryTimeout: string | undefined;
+						if (rawRetryPolicy.per_try_timeout_seconds) {
+							perTryTimeout = `${rawRetryPolicy.per_try_timeout_seconds}s`;
+						} else if (rawRetryPolicy.perTryTimeoutSeconds) {
+							perTryTimeout = `${rawRetryPolicy.perTryTimeoutSeconds}s`;
+						} else if (rawRetryPolicy.perTryTimeout) {
+							perTryTimeout = rawRetryPolicy.perTryTimeout;
+						}
+
+						let retryBackOff: RouteDetail['retryPolicy']['retryBackOff'] | undefined;
+						if (rawRetryPolicy.backoff) {
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.backoff.baseIntervalMs ? `${rawRetryPolicy.backoff.baseIntervalMs}ms` : undefined,
+								maxInterval: rawRetryPolicy.backoff.maxIntervalMs ? `${rawRetryPolicy.backoff.maxIntervalMs}ms` : undefined
+							};
+						} else if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
+								maxInterval: rawRetryPolicy.max_interval_ms ? `${rawRetryPolicy.max_interval_ms}ms` : undefined
+							};
+						}
+
+						policies.push({
+							routeName: r.name || 'unnamed',
+							policy: {
+								numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries ?? rawRetryPolicy.maxRetries,
+								retryOn: retryOnStr,
+								perTryTimeout,
+								retryBackOff
+							}
+						});
+					}
+				}
+			}
+		}
+
+		return policies;
 	}
 
 	function getClustersForRoute(route: RouteResponse): ClusterResponse[] {
@@ -466,42 +510,9 @@
 							</td>
 							<td class="px-4 py-3">
 								{#if detail.retryPolicy && detail.retryPolicy.numRetries}
-									<div class="relative">
-										<button
-											onclick={(e) => toggleRetryPopover(e, rowId)}
-											class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 hover:bg-orange-200"
-										>
-											{detail.retryPolicy.numRetries}
-											<MoreVertical class="h-3 w-3" />
-										</button>
-
-										{#if openRetryPopoverId === rowId}
-											<div
-												class="absolute left-0 bottom-full mb-1 w-56 bg-white rounded-md shadow-lg border border-gray-200 z-20 p-3"
-												onclick={(e) => e.stopPropagation()}
-											>
-												<div class="text-xs font-semibold text-gray-700 mb-2 pb-1 border-b">Retry Configuration</div>
-												<div class="space-y-2 text-xs">
-													<div class="flex justify-between gap-2">
-														<span class="text-gray-500">Max Retries:</span>
-														<span class="font-medium text-gray-900">{detail.retryPolicy.numRetries}</span>
-													</div>
-													<div class="flex justify-between gap-2">
-														<span class="text-gray-500">Retry On:</span>
-														<span class="font-medium text-gray-900 text-right">{formatRetryOn(detail.retryPolicy.retryOn)}</span>
-													</div>
-													<div class="flex justify-between gap-2">
-														<span class="text-gray-500">Per Try Timeout:</span>
-														<span class="font-medium text-gray-900">{detail.retryPolicy.perTryTimeout || '-'}</span>
-													</div>
-													<div class="flex justify-between gap-2">
-														<span class="text-gray-500">Backoff:</span>
-														<span class="font-medium text-gray-900">{formatBackoff(detail.retryPolicy)}</span>
-													</div>
-												</div>
-											</div>
-										{/if}
-									</div>
+									<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+										{detail.retryPolicy.numRetries}
+									</span>
 								{:else}
 									<span class="text-gray-400">-</span>
 								{/if}
@@ -616,6 +627,40 @@
 							<div class="p-3 bg-white rounded border border-green-200">
 								<div class="font-medium text-gray-900">{cluster.serviceName}</div>
 								<div class="text-sm text-gray-500">{cluster.name}</div>
+							</div>
+						{/each}
+					</div>
+				</ConfigCard>
+			{/if}
+
+			<!-- Retry Policies -->
+			{#if getRetryPoliciesForRoute(selectedRoute).length > 0}
+				{@const retryPolicies = getRetryPoliciesForRoute(selectedRoute)}
+				<ConfigCard title="Retry Policies" variant="orange">
+					<div class="space-y-3">
+						{#each retryPolicies as { routeName, policy }}
+							<div class="p-3 bg-white rounded border border-orange-200">
+								<div class="font-medium text-gray-900 text-sm mb-2">{routeName}</div>
+								<dl class="grid grid-cols-2 gap-2 text-sm">
+									<div>
+										<dt class="text-gray-500">Max Retries</dt>
+										<dd class="font-medium text-gray-900">{policy.numRetries}</dd>
+									</div>
+									<div>
+										<dt class="text-gray-500">Per Try Timeout</dt>
+										<dd class="font-medium text-gray-900">{policy.perTryTimeout || '-'}</dd>
+									</div>
+									<div class="col-span-2">
+										<dt class="text-gray-500">Retry On</dt>
+										<dd class="font-medium text-gray-900">{formatRetryOn(policy.retryOn)}</dd>
+									</div>
+									{#if policy.retryBackOff}
+										<div class="col-span-2">
+											<dt class="text-gray-500">Backoff</dt>
+											<dd class="font-medium text-gray-900">{formatBackoff(policy)}</dd>
+										</div>
+									{/if}
+								</dl>
 							</div>
 						{/each}
 					</div>
