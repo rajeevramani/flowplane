@@ -118,6 +118,7 @@ pub async fn create_user(
             payload.name,
             payload.is_admin,
             Some(context.token_id.to_string()),
+            Some(&context),
         )
         .await
         .map_err(convert_error)?;
@@ -244,7 +245,7 @@ pub async fn update_user(
     // Update user
     let service = user_service_for_state(&state)?;
     let user = service
-        .update_user(&user_id, update, Some(context.token_id.to_string()))
+        .update_user(&user_id, update, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 
@@ -281,7 +282,7 @@ pub async fn delete_user(
     // Delete user
     let service = user_service_for_state(&state)?;
     service
-        .delete_user(&user_id, Some(context.token_id.to_string()))
+        .delete_user(&user_id, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 
@@ -335,6 +336,7 @@ pub async fn add_team_membership(
             payload.team,
             payload.scopes,
             Some(context.token_id.to_string()),
+            Some(&context),
         )
         .await
         .map_err(convert_error)?;
@@ -373,7 +375,7 @@ pub async fn remove_team_membership(
     // Remove team membership
     let service = user_service_for_state(&state)?;
     service
-        .remove_team_membership(&user_id, &team, Some(context.token_id.to_string()))
+        .remove_team_membership(&user_id, &team, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 

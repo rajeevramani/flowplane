@@ -11,15 +11,18 @@ async fn contract_post_tokens_rotate_creates_new_secret() {
 
     let created = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "rotate-me".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "rotate-me".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

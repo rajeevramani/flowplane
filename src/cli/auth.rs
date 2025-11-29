@@ -232,7 +232,7 @@ async fn handle_create_token_db(
         return Err(describe_validation_error(err));
     }
 
-    let response = service.create_token(request).await?;
+    let response = service.create_token(request, None).await?;
     let token = service.get_token(&response.id).await?;
 
     print_token_secret_from_service(&response, &token);
@@ -263,7 +263,7 @@ async fn handle_revoke_token_db(id: &str, database: &DatabaseConfig) -> anyhow::
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
     let service = TokenService::with_sqlx(pool, audit_repository);
 
-    let token = service.revoke_token(id).await?;
+    let token = service.revoke_token(id, None).await?;
     println!("{}", format!("Token '{}' ({}) revoked", token.name, token.id).bright_red());
     Ok(())
 }
@@ -273,7 +273,7 @@ async fn handle_rotate_token_db(id: &str, database: &DatabaseConfig) -> anyhow::
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
     let service = TokenService::with_sqlx(pool, audit_repository);
 
-    let secret = service.rotate_token(id).await?;
+    let secret = service.rotate_token(id, None).await?;
     let token = service.get_token(id).await?;
 
     println!("{}", "Token rotated successfully".green());

@@ -34,15 +34,18 @@ impl TestApp {
 
     pub async fn issue_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
         self.token_service
-            .create_token(CreateTokenRequest {
-                name: name.to_string(),
-                description: None,
-                expires_at: None,
-                scopes: scopes.iter().map(|s| s.to_string()).collect(),
-                created_by: Some("tests".into()),
-                user_id: None,
-                user_email: None,
-            })
+            .create_token(
+                CreateTokenRequest {
+                    name: name.to_string(),
+                    description: None,
+                    expires_at: None,
+                    scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                    created_by: Some("tests".into()),
+                    user_id: None,
+                    user_email: None,
+                },
+                None,
+            )
             .await
             .expect("create token")
     }

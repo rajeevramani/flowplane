@@ -49,7 +49,7 @@ pub async fn create_pat(scopes: Vec<&str>) -> anyhow::Result<String> {
         scopes.into_iter().map(|s| s.to_string()).collect(),
         Some("e2e".into()),
     );
-    let secret = svc.create_token(req).await?.token;
+    let secret = svc.create_token(req, None).await?.token;
     Ok(secret)
 }
 

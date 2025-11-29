@@ -125,6 +125,8 @@ pub struct AuthContext {
     pub token_name: String,
     pub user_id: Option<UserId>,
     pub user_email: Option<String>,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
     scopes: HashSet<String>,
 }
 
@@ -135,6 +137,8 @@ impl AuthContext {
             token_name,
             user_id: None,
             user_email: None,
+            client_ip: None,
+            user_agent: None,
             scopes: scopes.into_iter().collect(),
         }
     }
@@ -151,8 +155,33 @@ impl AuthContext {
             token_name,
             user_id: Some(user_id),
             user_email: Some(user_email),
+            client_ip: None,
+            user_agent: None,
             scopes: scopes.into_iter().collect(),
         }
+    }
+
+    /// Set the client IP and user agent for this context.
+    pub fn with_request_context(
+        mut self,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> Self {
+        self.client_ip = client_ip;
+        self.user_agent = user_agent;
+        self
+    }
+
+    /// Extract user context for audit logging.
+    ///
+    /// Returns a tuple of (user_id, client_ip, user_agent) suitable for
+    /// use with `AuditEvent::with_user_context()`.
+    pub fn to_audit_context(&self) -> (Option<String>, Option<String>, Option<String>) {
+        (
+            self.user_id.as_ref().map(|id| id.to_string()),
+            self.client_ip.clone(),
+            self.user_agent.clone(),
+        )
     }
 
     pub fn has_scope(&self, scope: &str) -> bool {
