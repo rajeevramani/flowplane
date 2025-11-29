@@ -2,14 +2,22 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import Navigation from '$lib/components/Navigation.svelte';
+	import AppShell from '$lib/components/AppShell.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
+
+	interface ResourceCounts {
+		apis: number;
+		clusters: number;
+		listeners: number;
+		imports: number;
+	}
 
 	let isLoading = $state(true);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
+	let resourceCounts = $state<ResourceCounts>({ apis: 0, clusters: 0, listeners: 0, imports: 0 });
 
 	let { children } = $props();
 
@@ -29,6 +37,9 @@
 			// Initialize selected team from store/sessionStorage or first team
 			initializeSelectedTeam(availableTeams);
 
+			// Load resource counts
+			await loadResourceCounts();
+
 			isLoading = false;
 		} catch (error) {
 			// Not authenticated, redirect to login
@@ -36,25 +47,52 @@
 		}
 	});
 
+	async function loadResourceCounts() {
+		try {
+			const [routes, clusters, listeners, imports] = await Promise.all([
+				apiClient.listRoutes(),
+				apiClient.listClusters(),
+				apiClient.listListeners(),
+				sessionInfo?.isAdmin
+					? apiClient.listAllImports()
+					: currentTeam
+						? apiClient.listImports(currentTeam)
+						: Promise.resolve([])
+			]);
+
+			resourceCounts = {
+				apis: routes.length,
+				clusters: clusters.length,
+				listeners: listeners.length,
+				imports: imports.length
+			};
+		} catch (error) {
+			console.error('Failed to load resource counts:', error);
+		}
+	}
+
 	function handleTeamChange(team: string) {
 		setSelectedTeam(team);
+		// Reload counts when team changes
+		loadResourceCounts();
 	}
 </script>
 
 {#if isLoading}
-	<div class="min-h-screen bg-gray-50 flex items-center justify-center">
-		<div class="text-gray-600">Loading...</div>
+	<div class="min-h-screen bg-gray-100 flex items-center justify-center">
+		<div class="flex flex-col items-center gap-3">
+			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+			<span class="text-sm text-gray-600">Loading...</span>
+		</div>
 	</div>
 {:else if sessionInfo}
-	<div class="min-h-screen bg-gray-50">
-		<Navigation
-			{sessionInfo}
-			selectedTeam={currentTeam}
-			{availableTeams}
-			onTeamChange={handleTeamChange}
-		/>
-		<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-			{@render children()}
-		</main>
-	</div>
+	<AppShell
+		{sessionInfo}
+		selectedTeam={currentTeam}
+		{availableTeams}
+		onTeamChange={handleTeamChange}
+		{resourceCounts}
+	>
+		{@render children()}
+	</AppShell>
 {/if}
