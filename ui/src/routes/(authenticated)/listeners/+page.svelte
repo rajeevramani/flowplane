@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Eye, Trash2, MoreVertical, Radio, Lock, LockOpen } from 'lucide-svelte';
+	import { Eye, Trash2, MoreVertical, Lock, LockOpen } from 'lucide-svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
@@ -80,6 +80,10 @@
 	let tableData = $derived(
 		listeners
 			.filter((listener) => {
+				// Filter by team if a team is selected
+				if (currentTeam && listener.team !== currentTeam) return false;
+
+				// Filter by search query
 				if (!searchQuery) return true;
 				const query = searchQuery.toLowerCase();
 				return (
@@ -205,10 +209,7 @@
 >
 	{#snippet cell({ row, column })}
 		{#if column.key === 'name'}
-			<div class="flex items-center gap-2">
-				<Radio class="h-4 w-4 text-gray-400" />
-				<span class="font-medium text-blue-600 hover:text-blue-800">{row.name}</span>
-			</div>
+			<span class="font-medium text-blue-600 hover:text-blue-800">{row.name}</span>
 		{:else if column.key === 'team'}
 			<Badge variant="indigo">{row.team}</Badge>
 		{:else if column.key === 'address'}

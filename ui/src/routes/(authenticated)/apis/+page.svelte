@@ -2,16 +2,37 @@
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
 	import { Plus, Eye, Trash2, MoreVertical } from 'lucide-svelte';
-	import DataTable from '$lib/components/DataTable.svelte';
-	import FeatureBadges from '$lib/components/FeatureBadges.svelte';
-	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
 	import ConfigCard from '$lib/components/ConfigCard.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import Tooltip from '$lib/components/Tooltip.svelte';
 	import type { RouteResponse, ClusterResponse, ListenerResponse, ImportSummary } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { Unsubscriber } from 'svelte/store';
+
+	interface RouteDetail {
+		name: string;
+		apiName: string;
+		team: string;
+		method: string;
+		path: string;
+		matchType: 'exact' | 'prefix' | 'template' | 'regex';
+		cluster: string;
+		timeout?: number;
+		prefixRewrite?: string;
+		templateRewrite?: string;
+		retryPolicy?: {
+			numRetries?: number;
+			retryOn?: string;
+			perTryTimeout?: string;
+			retryBackOff?: {
+				baseInterval?: string;
+				maxInterval?: string;
+			};
+		};
+		sourceRoute: RouteResponse;
+	}
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -31,6 +52,9 @@
 
 	// Action menu state
 	let openMenuId = $state<string | null>(null);
+
+	// Retry config popover state
+	let openRetryPopoverId = $state<string | null>(null);
 
 	onMount(async () => {
 		unsubscribe = selectedTeam.subscribe(async (team) => {
@@ -61,6 +85,9 @@
 			clusters = clustersData;
 			listeners = listenersData;
 			imports = importsData;
+
+			// Console log the route data for debugging
+			console.log('Routes data:', routesData);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load data';
 		} finally {
@@ -68,67 +95,189 @@
 		}
 	}
 
-	// Table columns
-	const columns = [
-		{ key: 'name', label: 'Name', sortable: true },
-		{ key: 'team', label: 'Team', sortable: true },
-		{ key: 'routes', label: 'Routes' },
-		{ key: 'features', label: 'Features' },
-		{ key: 'status', label: 'Status' },
-		{ key: 'source', label: 'Source' }
-	];
+	// Extract and flatten all route details from all routes
+	function extractAllRouteDetails(routes: RouteResponse[]): RouteDetail[] {
+		const allDetails: RouteDetail[] = [];
 
-	// Transform routes for table display
-	let tableData = $derived(
-		routes
-			.filter((route) => {
-				if (!searchQuery) return true;
-				const query = searchQuery.toLowerCase();
-				return (
-					route.name.toLowerCase().includes(query) ||
-					route.team.toLowerCase().includes(query) ||
-					route.pathPrefix.toLowerCase().includes(query)
-				);
-			})
-			.map((route) => {
-				// Count routes from virtual hosts
-				const routeCount = route.config?.virtualHosts?.reduce(
-					(sum: number, vh: { routes?: unknown[] }) => sum + (vh.routes?.length || 0),
-					0
-				) || 1;
+		for (const route of routes) {
+			const config = route.config;
 
-				// Get source info
-				const importRecord = route.importId
-					? imports.find((i) => i.id === route.importId)
-					: null;
+			if (config?.virtualHosts) {
+				for (const vh of config.virtualHosts) {
+					for (const r of vh.routes || []) {
+						const methodHeader = r.match?.headers?.find((h: { name: string }) => h.name === ':method');
+						const method = methodHeader?.value || '*';
 
-				return {
-					id: route.name,
-					name: route.name,
-					team: route.team,
-					routes: routeCount,
-					hasRetry: hasRetryPolicy(route),
-					hasCircuitBreaker: false,
-					hasOutlierDetection: false,
-					hasHealthCheck: false,
-					source: importRecord ? importRecord.specName : 'Manual',
-					sourceType: importRecord ? 'import' : 'manual',
-					_raw: route
-				};
-			})
-	);
+						const pathMatch = r.match?.path;
+						let path = '';
+						let matchType: RouteDetail['matchType'] = 'exact';
 
-	function hasRetryPolicy(route: RouteResponse): boolean {
-		const config = route.config;
-		if (!config?.virtualHosts) return false;
+						if (pathMatch) {
+							matchType = pathMatch.type || 'exact';
+							path = pathMatch.value || pathMatch.template || '';
+						}
 
-		return config.virtualHosts.some((vh: { routes?: { route?: { retryPolicy?: unknown } }[] }) =>
-			vh.routes?.some((r) => r.route?.retryPolicy)
-		);
+						// Handle Rust enum serialization
+						const clusterAction = r.action?.Cluster || r.action;
+						const weightedAction = r.action?.WeightedClusters;
+
+						// Extract cluster name
+						let cluster = '';
+						if (clusterAction?.name) {
+							cluster = clusterAction.name;
+						} else if (weightedAction?.clusters) {
+							cluster = weightedAction.clusters.map((c: { name: string }) => c.name).join(', ');
+						} else if (r.route?.cluster) {
+							cluster = r.route.cluster;
+						}
+
+						// Extract rewrite info
+						const prefixRewrite = clusterAction?.prefix_rewrite || clusterAction?.prefixRewrite || r.route?.prefixRewrite;
+						const templateRewrite = clusterAction?.path_template_rewrite || clusterAction?.templateRewrite || r.route?.regexRewrite?.substitution;
+
+						// Extract retry policy
+						const rawRetryPolicy = clusterAction?.retry_policy || clusterAction?.retryPolicy || r.route?.retryPolicy;
+						let retryPolicy: RouteDetail['retryPolicy'] | undefined;
+
+						if (rawRetryPolicy) {
+							const retryOn = rawRetryPolicy.retry_on || rawRetryPolicy.retryOn;
+							const retryOnStr = Array.isArray(retryOn) ? retryOn.join(', ') : retryOn;
+
+							const perTryTimeout = rawRetryPolicy.per_try_timeout_seconds
+								? `${rawRetryPolicy.per_try_timeout_seconds}s`
+								: rawRetryPolicy.perTryTimeout;
+
+							let retryBackOff: RouteDetail['retryPolicy']['retryBackOff'] | undefined;
+							if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
+								retryBackOff = {
+									baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
+									maxInterval: rawRetryPolicy.max_interval_ms ? `${rawRetryPolicy.max_interval_ms}ms` : undefined
+								};
+							} else if (rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off) {
+								retryBackOff = rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off;
+							}
+
+							retryPolicy = {
+								numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries,
+								retryOn: retryOnStr,
+								perTryTimeout,
+								retryBackOff
+							};
+						}
+
+						// Extract timeout
+						const timeout = clusterAction?.timeout ?? clusterAction?.timeoutSeconds ?? r.route?.timeout;
+
+						allDetails.push({
+							name: r.name,
+							apiName: route.name,
+							team: route.team,
+							method,
+							path,
+							matchType,
+							cluster,
+							timeout,
+							prefixRewrite,
+							templateRewrite,
+							retryPolicy,
+							sourceRoute: route
+						});
+					}
+				}
+			}
+		}
+
+		return allDetails;
 	}
 
-	function openDrawer(row: Record<string, unknown>) {
-		selectedRoute = (row._raw as RouteResponse) || null;
+	// Filter routes by team and search, then flatten
+	let filteredRouteDetails = $derived(() => {
+		const teamFiltered = routes.filter((route) => {
+			if (currentTeam && route.team !== currentTeam) return false;
+			return true;
+		});
+
+		const allDetails = extractAllRouteDetails(teamFiltered);
+
+		if (!searchQuery) return allDetails;
+
+		const query = searchQuery.toLowerCase();
+		return allDetails.filter((detail) =>
+			detail.apiName.toLowerCase().includes(query) ||
+			detail.team.toLowerCase().includes(query) ||
+			detail.path.toLowerCase().includes(query) ||
+			detail.cluster.toLowerCase().includes(query)
+		);
+	});
+
+	function getClusterNamesForRoute(route: RouteResponse): Set<string> {
+		const clusterNames = new Set<string>();
+		route.config?.virtualHosts?.forEach((vh: { routes?: unknown[] }) => {
+			vh.routes?.forEach((r: unknown) => {
+				const route = r as { action?: { Cluster?: { name?: string }, WeightedClusters?: { clusters?: { name: string }[] }, cluster?: string }, route?: { cluster?: string } };
+				const clusterAction = route.action?.Cluster;
+				const weightedAction = route.action?.WeightedClusters;
+
+				if (clusterAction?.name) {
+					clusterNames.add(clusterAction.name);
+				} else if (weightedAction?.clusters) {
+					weightedAction.clusters.forEach((c) => clusterNames.add(c.name));
+				} else if (route.action?.cluster) {
+					clusterNames.add(route.action.cluster);
+				} else if (route.route?.cluster) {
+					clusterNames.add(route.route.cluster);
+				}
+			});
+		});
+		return clusterNames;
+	}
+
+	function getMethodBadgeVariant(method: string): 'green' | 'blue' | 'yellow' | 'red' | 'gray' {
+		switch (method.toUpperCase()) {
+			case 'GET': return 'green';
+			case 'POST': return 'blue';
+			case 'PUT':
+			case 'PATCH': return 'yellow';
+			case 'DELETE': return 'red';
+			default: return 'gray';
+		}
+	}
+
+	function getMatchTypeLabel(matchType: string): string {
+		switch (matchType) {
+			case 'exact': return 'Exact';
+			case 'prefix': return 'Prefix';
+			case 'template': return 'Template';
+			case 'regex': return 'Regex';
+			default: return matchType;
+		}
+	}
+
+	function truncateText(text: string, maxLength: number = 25): string {
+		if (text.length <= maxLength) return text;
+		return text.substring(0, maxLength) + '...';
+	}
+
+	function formatRewrite(detail: RouteDetail): string | null {
+		if (detail.prefixRewrite) return detail.prefixRewrite;
+		if (detail.templateRewrite) return detail.templateRewrite;
+		return null;
+	}
+
+	function formatRetryOn(retryOn: string | undefined): string {
+		if (!retryOn) return '-';
+		return retryOn.split(',').map((s) => s.trim()).join(', ');
+	}
+
+	function formatBackoff(policy: RouteDetail['retryPolicy']): string {
+		if (!policy?.retryBackOff) return '-';
+		const base = policy.retryBackOff.baseInterval || '25ms';
+		const max = policy.retryBackOff.maxInterval || '250ms';
+		return `${base} - ${max}`;
+	}
+
+	function openDrawer(route: RouteResponse) {
+		selectedRoute = route;
 		drawerOpen = true;
 	}
 
@@ -154,11 +303,16 @@
 		openMenuId = openMenuId === id ? null : id;
 	}
 
-	function closeAllMenus() {
-		openMenuId = null;
+	function toggleRetryPopover(e: MouseEvent, id: string) {
+		e.stopPropagation();
+		openRetryPopoverId = openRetryPopoverId === id ? null : id;
 	}
 
-	// Get listener for route
+	function closeAllMenus() {
+		openMenuId = null;
+		openRetryPopoverId = null;
+	}
+
 	function getListenerForRoute(route: RouteResponse): ListenerResponse | undefined {
 		return listeners.find((l) =>
 			l.config?.filterChains?.some((fc: { filters?: { routeConfigName?: string }[] }) =>
@@ -167,19 +321,13 @@
 		);
 	}
 
-	// Get clusters used by route
 	function getClustersForRoute(route: RouteResponse): ClusterResponse[] {
-		const clusterNames = new Set<string>();
-
-		route.config?.virtualHosts?.forEach((vh: { routes?: { route?: { cluster?: string } }[] }) => {
-			vh.routes?.forEach((r) => {
-				if (r.route?.cluster) {
-					clusterNames.add(r.route.cluster);
-				}
-			});
-		});
-
+		const clusterNames = getClusterNamesForRoute(route);
 		return clusters.filter((c) => clusterNames.has(c.name));
+	}
+
+	function getUniqueRowId(detail: RouteDetail, index: number): string {
+		return `${detail.apiName}-${detail.name || index}-${detail.method}-${detail.path}`;
 	}
 </script>
 
@@ -225,75 +373,168 @@
 	/>
 </div>
 
-<!-- Data Table -->
-<DataTable
-	{columns}
-	data={tableData}
-	loading={isLoading}
-	emptyMessage="No APIs found. Create one to get started."
-	rowKey="id"
-	onRowClick={openDrawer}
->
-	{#snippet cell({ row, column })}
-		{#if column.key === 'name'}
-			<span class="font-medium text-blue-600 hover:text-blue-800">{row.name}</span>
-		{:else if column.key === 'team'}
-			<Badge variant="indigo">{row.team}</Badge>
-		{:else if column.key === 'routes'}
-			<span class="text-gray-600">{row.routes} route{row.routes !== 1 ? 's' : ''}</span>
-		{:else if column.key === 'features'}
-			<FeatureBadges
-				hasRetry={row.hasRetry as boolean}
-				hasCircuitBreaker={row.hasCircuitBreaker as boolean}
-				hasOutlierDetection={row.hasOutlierDetection as boolean}
-				hasHealthCheck={row.hasHealthCheck as boolean}
-			/>
-		{:else if column.key === 'status'}
-			<StatusIndicator status="active" />
-		{:else if column.key === 'source'}
-			{#if row.sourceType === 'import'}
-				<Badge variant="purple">{row.source}</Badge>
-			{:else}
-				<span class="text-gray-500">{row.source}</span>
-			{/if}
-		{:else}
-			{String(row[column.key] ?? '')}
-		{/if}
-	{/snippet}
-
-	{#snippet actions({ row })}
-		<div class="relative">
-			<button
-				onclick={(e) => toggleMenu(e, row.id as string)}
-				class="p-1 rounded hover:bg-gray-100"
-			>
-				<MoreVertical class="h-4 w-4 text-gray-500" />
-			</button>
-
-			{#if openMenuId === row.id}
-				<div
-					class="absolute right-0 mt-1 w-36 bg-white rounded-md shadow-lg border border-gray-200 z-10"
-					onclick={(e) => e.stopPropagation()}
-				>
-					<button
-						onclick={() => openDrawer(row)}
-						class="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-					>
-						<Eye class="h-4 w-4" />
-						View Details
-					</button>
-					<button
-						onclick={() => handleDelete(row.name as string)}
-						class="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-					>
-						<Trash2 class="h-4 w-4" />
-						Delete
-					</button>
-				</div>
-			{/if}
+<!-- APIs Table -->
+<div class="bg-white rounded-lg shadow overflow-hidden">
+	{#if isLoading}
+		<div class="flex items-center justify-center py-12">
+			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
 		</div>
-	{/snippet}
-</DataTable>
+	{:else if filteredRouteDetails().length === 0}
+		<div class="text-center py-12 text-gray-500">
+			No APIs found. Create one to get started.
+		</div>
+	{:else}
+		<div class="overflow-x-auto">
+			<table class="min-w-full divide-y divide-gray-200">
+				<thead class="bg-gray-50">
+					<tr>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Method</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Path</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Match</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rewrite</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Retries</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Timeout</th>
+						<th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-10"></th>
+					</tr>
+				</thead>
+				<tbody class="bg-white divide-y divide-gray-200">
+					{#each filteredRouteDetails() as detail, index (getUniqueRowId(detail, index))}
+						{@const rewrite = formatRewrite(detail)}
+						{@const rowId = getUniqueRowId(detail, index)}
+
+						<tr class="hover:bg-gray-50 transition-colors">
+							<td class="px-4 py-3">
+								<button
+									onclick={() => openDrawer(detail.sourceRoute)}
+									class="font-medium text-blue-600 hover:text-blue-800 hover:underline text-left"
+								>
+									{truncateText(detail.apiName, 20)}
+								</button>
+							</td>
+							<td class="px-4 py-3">
+								<Badge variant="indigo" size="sm">{detail.team}</Badge>
+							</td>
+							<td class="px-4 py-3">
+								<Badge variant={getMethodBadgeVariant(detail.method)} size="sm">
+									{detail.method.toUpperCase()}
+								</Badge>
+							</td>
+							<td class="px-4 py-3">
+								<code class="text-sm text-gray-800 bg-gray-100 px-2 py-0.5 rounded font-mono" title={detail.path}>
+									{truncateText(detail.path || '/', 30)}
+								</code>
+							</td>
+							<td class="px-4 py-3">
+								<span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">
+									{getMatchTypeLabel(detail.matchType)}
+								</span>
+							</td>
+							<td class="px-4 py-3">
+								<span class="text-sm text-gray-600" title={detail.cluster}>
+									{truncateText(detail.cluster, 25)}
+								</span>
+							</td>
+							<td class="px-4 py-3">
+								{#if rewrite}
+									<span class="text-sm text-gray-600 flex items-center gap-1">
+										<span class="text-gray-400">&rarr;</span>
+										<code class="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded" title={rewrite}>
+											{truncateText(rewrite, 20)}
+										</code>
+									</span>
+								{:else}
+									<span class="text-gray-400">-</span>
+								{/if}
+							</td>
+							<td class="px-4 py-3">
+								{#if detail.retryPolicy && detail.retryPolicy.numRetries}
+									<div class="relative">
+										<button
+											onclick={(e) => toggleRetryPopover(e, rowId)}
+											class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 hover:bg-orange-200"
+										>
+											{detail.retryPolicy.numRetries}
+											<MoreVertical class="h-3 w-3" />
+										</button>
+
+										{#if openRetryPopoverId === rowId}
+											<div
+												class="absolute left-0 mt-1 w-56 bg-white rounded-md shadow-lg border border-gray-200 z-20 p-3"
+												onclick={(e) => e.stopPropagation()}
+											>
+												<div class="text-xs font-semibold text-gray-700 mb-2 pb-1 border-b">Retry Configuration</div>
+												<div class="space-y-2 text-xs">
+													<div class="flex justify-between gap-2">
+														<span class="text-gray-500">Max Retries:</span>
+														<span class="font-medium text-gray-900">{detail.retryPolicy.numRetries}</span>
+													</div>
+													<div class="flex justify-between gap-2">
+														<span class="text-gray-500">Retry On:</span>
+														<span class="font-medium text-gray-900 text-right">{formatRetryOn(detail.retryPolicy.retryOn)}</span>
+													</div>
+													<div class="flex justify-between gap-2">
+														<span class="text-gray-500">Per Try Timeout:</span>
+														<span class="font-medium text-gray-900">{detail.retryPolicy.perTryTimeout || '-'}</span>
+													</div>
+													<div class="flex justify-between gap-2">
+														<span class="text-gray-500">Backoff:</span>
+														<span class="font-medium text-gray-900">{formatBackoff(detail.retryPolicy)}</span>
+													</div>
+												</div>
+											</div>
+										{/if}
+									</div>
+								{:else}
+									<span class="text-gray-400">-</span>
+								{/if}
+							</td>
+							<td class="px-4 py-3 text-center">
+								<span class="text-sm text-gray-500">
+									{detail.timeout ? `${detail.timeout}s` : '-'}
+								</span>
+							</td>
+							<td class="px-4 py-3 text-right">
+								<div class="relative">
+									<button
+										onclick={(e) => toggleMenu(e, rowId)}
+										class="p-1 rounded hover:bg-gray-100"
+									>
+										<MoreVertical class="h-4 w-4 text-gray-500" />
+									</button>
+
+									{#if openMenuId === rowId}
+										<div
+											class="absolute right-0 mt-1 w-36 bg-white rounded-md shadow-lg border border-gray-200 z-10"
+											onclick={(e) => e.stopPropagation()}
+										>
+											<button
+												onclick={() => openDrawer(detail.sourceRoute)}
+												class="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+											>
+												<Eye class="h-4 w-4" />
+												View Details
+											</button>
+											<button
+												onclick={() => handleDelete(detail.apiName)}
+												class="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+											>
+												<Trash2 class="h-4 w-4" />
+												Delete API
+											</button>
+										</div>
+									{/if}
+								</div>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	{/if}
+</div>
 
 <!-- Detail Drawer -->
 <DetailDrawer
@@ -366,15 +607,15 @@
 				</ConfigCard>
 			{/if}
 
-			<!-- Virtual Hosts -->
+			<!-- Domains -->
 			{#if selectedRoute.config?.virtualHosts}
-				<ConfigCard title="Virtual Hosts" variant="gray" collapsible defaultCollapsed>
+				<ConfigCard title="Domains" variant="gray" collapsible defaultCollapsed>
 					<div class="space-y-4">
 						{#each selectedRoute.config.virtualHosts as vh}
 							<div class="p-3 bg-white rounded border border-gray-200">
 								<div class="font-medium text-gray-900">{vh.name}</div>
 								<div class="text-sm text-gray-500 mt-1">
-									Domains: {vh.domains?.join(', ') || '*'}
+									{vh.domains?.join(', ') || '*'}
 								</div>
 								{#if vh.routes}
 									<div class="mt-2 text-sm text-gray-600">

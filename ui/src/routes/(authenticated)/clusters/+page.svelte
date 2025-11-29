@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Eye, Trash2, MoreVertical, Server } from 'lucide-svelte';
+	import { Eye, Trash2, MoreVertical } from 'lucide-svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import FeatureBadges from '$lib/components/FeatureBadges.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
@@ -80,6 +80,10 @@
 	let tableData = $derived(
 		clusters
 			.filter((cluster) => {
+				// Filter by team if a team is selected
+				if (currentTeam && cluster.team !== currentTeam) return false;
+
+				// Filter by search query
 				if (!searchQuery) return true;
 				const query = searchQuery.toLowerCase();
 				return (
@@ -197,10 +201,7 @@
 >
 	{#snippet cell({ row, column })}
 		{#if column.key === 'serviceName'}
-			<div class="flex items-center gap-2">
-				<Server class="h-4 w-4 text-gray-400" />
-				<span class="font-medium text-blue-600 hover:text-blue-800">{row.serviceName}</span>
-			</div>
+			<span class="font-medium text-blue-600 hover:text-blue-800">{row.serviceName}</span>
 		{:else if column.key === 'team'}
 			<Badge variant="indigo">{row.team}</Badge>
 		{:else if column.key === 'endpoints'}

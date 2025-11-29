@@ -70,12 +70,11 @@
 							<label for="teamSelect" class="text-sm font-medium text-gray-600">Team:</label>
 							<select
 								id="teamSelect"
-								value={selectedTeam}
 								onchange={(e) => handleTeamSelect(e.currentTarget.value)}
-								class="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								class="min-w-[150px] px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
 							>
-								{#each availableTeams as team}
-									<option value={team}>{team}</option>
+								{#each availableTeams as team (team)}
+									<option value={team} selected={team === selectedTeam}>{team}</option>
 								{/each}
 							</select>
 						</div>

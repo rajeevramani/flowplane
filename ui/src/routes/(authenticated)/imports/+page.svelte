@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Plus, Eye, Trash2, MoreVertical, FileUp, FileJson } from 'lucide-svelte';
+	import { Plus, Eye, Trash2, MoreVertical } from 'lucide-svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
@@ -100,6 +100,10 @@
 	let tableData = $derived(
 		imports
 			.filter((imp) => {
+				// Filter by team if a team is selected (non-admin users)
+				if (!sessionInfo?.isAdmin && currentTeam && imp.team !== currentTeam) return false;
+
+				// Filter by search query
 				if (!searchQuery) return true;
 				const query = searchQuery.toLowerCase();
 				return (
@@ -239,10 +243,7 @@
 >
 	{#snippet cell({ row, column })}
 		{#if column.key === 'specName'}
-			<div class="flex items-center gap-2">
-				<FileJson class="h-4 w-4 text-gray-400" />
-				<span class="font-medium text-blue-600 hover:text-blue-800">{row.specName}</span>
-			</div>
+			<span class="font-medium text-blue-600 hover:text-blue-800">{row.specName}</span>
 		{:else if column.key === 'version'}
 			{#if row.version !== '-'}
 				<Badge variant="gray">v{row.version}</Badge>

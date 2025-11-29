@@ -73,13 +73,70 @@
 						path = pathMatch.value || pathMatch.template || '';
 					}
 
+					// Handle Rust enum serialization: action is { "Cluster": {...} } or { "WeightedClusters": {...} }
+					const clusterAction = r.action?.Cluster || r.action;
+					const weightedAction = r.action?.WeightedClusters;
+
+					// Extract cluster name
+					let cluster = '';
+					if (clusterAction?.name) {
+						cluster = clusterAction.name;
+					} else if (weightedAction?.clusters) {
+						cluster = weightedAction.clusters.map((c: { name: string }) => c.name).join(', ');
+					} else if (r.route?.cluster) {
+						cluster = r.route.cluster;
+					}
+
+					// Extract rewrite info (from Cluster variant or flat structure)
+					const prefixRewrite = clusterAction?.prefix_rewrite || clusterAction?.prefixRewrite || r.route?.prefixRewrite;
+					const templateRewrite = clusterAction?.path_template_rewrite || clusterAction?.templateRewrite || r.route?.regexRewrite?.substitution;
+
+					// Extract retry policy (from Cluster variant or flat structure)
+					const rawRetryPolicy = clusterAction?.retry_policy || clusterAction?.retryPolicy || r.route?.retryPolicy;
+					let retryPolicy: RouteDetail['retryPolicy'] | undefined;
+
+					if (rawRetryPolicy) {
+						// Handle retry_on as array (backend) or string (legacy)
+						const retryOn = rawRetryPolicy.retry_on || rawRetryPolicy.retryOn;
+						const retryOnStr = Array.isArray(retryOn) ? retryOn.join(', ') : retryOn;
+
+						// Handle per_try_timeout_seconds (backend) or perTryTimeout (legacy)
+						const perTryTimeout = rawRetryPolicy.per_try_timeout_seconds
+							? `${rawRetryPolicy.per_try_timeout_seconds}s`
+							: rawRetryPolicy.perTryTimeout;
+
+						// Handle base_interval_ms/max_interval_ms (backend) or retryBackOff (legacy)
+						let retryBackOff: RouteDetail['retryPolicy']['retryBackOff'] | undefined;
+						if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
+								maxInterval: rawRetryPolicy.max_interval_ms ? `${rawRetryPolicy.max_interval_ms}ms` : undefined
+							};
+						} else if (rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off) {
+							retryBackOff = rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off;
+						}
+
+						retryPolicy = {
+							numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries,
+							retryOn: retryOnStr,
+							perTryTimeout,
+							retryBackOff
+						};
+					}
+
+					// Extract timeout (from Cluster variant or flat structure)
+					const timeout = clusterAction?.timeout ?? clusterAction?.timeoutSeconds ?? r.route?.timeout;
+
 					details.push({
 						name: r.name,
 						method,
 						path,
 						matchType,
-						cluster: r.action?.cluster || '',
-						timeout: r.action?.timeoutSeconds
+						cluster,
+						timeout,
+						prefixRewrite,
+						templateRewrite,
+						retryPolicy
 					});
 				}
 			}
