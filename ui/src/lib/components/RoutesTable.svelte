@@ -100,24 +100,35 @@
 						const retryOn = rawRetryPolicy.retry_on || rawRetryPolicy.retryOn;
 						const retryOnStr = Array.isArray(retryOn) ? retryOn.join(', ') : retryOn;
 
-						// Handle per_try_timeout_seconds (backend) or perTryTimeout (legacy)
-						const perTryTimeout = rawRetryPolicy.per_try_timeout_seconds
-							? `${rawRetryPolicy.per_try_timeout_seconds}s`
-							: rawRetryPolicy.perTryTimeout;
+						// Handle perTryTimeout from multiple possible field names
+						let perTryTimeout: string | undefined;
+						if (rawRetryPolicy.per_try_timeout_seconds) {
+							perTryTimeout = `${rawRetryPolicy.per_try_timeout_seconds}s`;
+						} else if (rawRetryPolicy.perTryTimeoutSeconds) {
+							perTryTimeout = `${rawRetryPolicy.perTryTimeoutSeconds}s`;
+						} else if (rawRetryPolicy.perTryTimeout) {
+							perTryTimeout = rawRetryPolicy.perTryTimeout;
+						}
 
-						// Handle base_interval_ms/max_interval_ms (backend) or retryBackOff (legacy)
+						// Handle backoff from multiple possible structures
 						let retryBackOff: RouteDetail['retryPolicy']['retryBackOff'] | undefined;
 						if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
 							retryBackOff = {
 								baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
 								maxInterval: rawRetryPolicy.max_interval_ms ? `${rawRetryPolicy.max_interval_ms}ms` : undefined
 							};
+						} else if (rawRetryPolicy.backoff) {
+							// Handle camelCase backoff object from API
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.backoff.baseIntervalMs ? `${rawRetryPolicy.backoff.baseIntervalMs}ms` : undefined,
+								maxInterval: rawRetryPolicy.backoff.maxIntervalMs ? `${rawRetryPolicy.backoff.maxIntervalMs}ms` : undefined
+							};
 						} else if (rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off) {
 							retryBackOff = rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off;
 						}
 
 						retryPolicy = {
-							numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries,
+							numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries ?? rawRetryPolicy.maxRetries,
 							retryOn: retryOnStr,
 							perTryTimeout,
 							retryBackOff
