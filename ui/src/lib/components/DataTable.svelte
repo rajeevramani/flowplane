@@ -82,7 +82,7 @@
 	);
 </script>
 
-<div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+<div class="bg-white rounded-lg shadow-sm border border-gray-200">
 	{#if loading}
 		<!-- Loading skeleton -->
 		<div class="animate-pulse">
