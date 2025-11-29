@@ -298,16 +298,16 @@ export interface ListUsersResponse {
 // Audit Log Types
 export interface AuditLogEntry {
 	id: number;
-	resource_type: string;
-	resource_id: string | null;
-	resource_name: string | null;
+	resourceType: string;
+	resourceId: string | null;
+	resourceName: string | null;
 	action: string;
-	old_configuration: string | null;
-	new_configuration: string | null;
-	user_id: string | null;
-	client_ip: string | null;
-	user_agent: string | null;
-	created_at: string;
+	oldConfiguration: string | null;
+	newConfiguration: string | null;
+	userId: string | null;
+	clientIp: string | null;
+	userAgent: string | null;
+	createdAt: string;
 }
 
 export interface ListAuditLogsQuery {

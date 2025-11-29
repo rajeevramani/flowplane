@@ -76,8 +76,10 @@
 
 	let totalPages = $derived.by(() => Math.ceil(total / pageSize));
 
-	function formatDate(dateString: string): string {
+	function formatDate(dateString: string | undefined): string {
+		if (!dateString) return '-';
 		const date = new Date(dateString);
+		if (isNaN(date.getTime())) return '-';
 		return date.toLocaleString('en-US', {
 			year: 'numeric',
 			month: 'short',
@@ -94,7 +96,8 @@
 		return date.toISOString().slice(0, 16);
 	}
 
-	function getActionColor(action: string): string {
+	function getActionColor(action: string | undefined): string {
+		if (!action) return 'bg-gray-100 text-gray-800';
 		const lowerAction = action.toLowerCase();
 		if (lowerAction.includes('create')) return 'bg-green-100 text-green-800';
 		if (lowerAction.includes('update') || lowerAction.includes('modify'))
@@ -106,7 +109,8 @@
 		return 'bg-gray-100 text-gray-800';
 	}
 
-	function getResourceTypeColor(resourceType: string): string {
+	function getResourceTypeColor(resourceType: string | undefined): string {
+		if (!resourceType) return 'bg-gray-100 text-gray-800';
 		if (resourceType.includes('auth')) return 'bg-purple-100 text-purple-800';
 		if (resourceType.includes('platform')) return 'bg-blue-100 text-blue-800';
 		if (resourceType.includes('secrets')) return 'bg-yellow-100 text-yellow-800';
@@ -147,14 +151,14 @@
 
 		// Build CSV rows
 		const rows = entries.map((entry) => [
-			entry.created_at,
-			entry.resource_type,
-			entry.resource_id || '',
-			entry.resource_name || '',
+			entry.createdAt,
+			entry.resourceType,
+			entry.resourceId || '',
+			entry.resourceName || '',
 			entry.action,
-			entry.user_id || '',
-			entry.client_ip || '',
-			entry.user_agent || ''
+			entry.userId || '',
+			entry.clientIp || '',
+			entry.userAgent || ''
 		]);
 
 		// Convert to CSV string
@@ -370,19 +374,19 @@
 						{#each entries as entry (entry.id)}
 							<tr class="hover:bg-gray-50 cursor-pointer" onclick={() => openDetailModal(entry)}>
 								<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-									{formatDate(entry.created_at)}
+									{formatDate(entry.createdAt)}
 								</td>
 								<td class="px-6 py-4 whitespace-nowrap">
 									<span
 										class="px-2 py-1 text-xs font-semibold rounded-full {getResourceTypeColor(
-											entry.resource_type
+											entry.resourceType
 										)}"
 									>
-										{entry.resource_type}
+										{entry.resourceType}
 									</span>
 								</td>
 								<td class="px-6 py-4 text-sm text-gray-900">
-									<div class="max-w-xs truncate">{entry.resource_name || entry.resource_id || '-'}</div>
+									<div class="max-w-xs truncate">{entry.resourceName || entry.resourceId || '-'}</div>
 								</td>
 								<td class="px-6 py-4 whitespace-nowrap">
 									<span
@@ -392,10 +396,10 @@
 									</span>
 								</td>
 								<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-									{entry.user_id || '-'}
+									{entry.userId || '-'}
 								</td>
 								<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-									{entry.client_ip || '-'}
+									{entry.clientIp || '-'}
 								</td>
 								<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
 									<button
@@ -473,17 +477,17 @@
 								<div class="grid grid-cols-2 gap-4 pb-4 border-b border-gray-200">
 									<div>
 										<p class="text-sm font-medium text-gray-500">Timestamp</p>
-										<p class="mt-1 text-sm text-gray-900">{formatDate(selectedEntry.created_at)}</p>
+										<p class="mt-1 text-sm text-gray-900">{formatDate(selectedEntry.createdAt)}</p>
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">Resource Type</p>
 										<p class="mt-1">
 											<span
 												class="px-2 py-1 text-xs font-semibold rounded-full {getResourceTypeColor(
-													selectedEntry.resource_type
+													selectedEntry.resourceType
 												)}"
 											>
-												{selectedEntry.resource_type}
+												{selectedEntry.resourceType}
 											</span>
 										</p>
 									</div>
@@ -501,43 +505,43 @@
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">Resource ID</p>
-										<p class="mt-1 text-sm text-gray-900">{selectedEntry.resource_id || '-'}</p>
+										<p class="mt-1 text-sm text-gray-900">{selectedEntry.resourceId || '-'}</p>
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">Resource Name</p>
-										<p class="mt-1 text-sm text-gray-900">{selectedEntry.resource_name || '-'}</p>
+										<p class="mt-1 text-sm text-gray-900">{selectedEntry.resourceName || '-'}</p>
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">User ID</p>
-										<p class="mt-1 text-sm text-gray-900">{selectedEntry.user_id || '-'}</p>
+										<p class="mt-1 text-sm text-gray-900">{selectedEntry.userId || '-'}</p>
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">Client IP</p>
-										<p class="mt-1 text-sm text-gray-900">{selectedEntry.client_ip || '-'}</p>
+										<p class="mt-1 text-sm text-gray-900">{selectedEntry.clientIp || '-'}</p>
 									</div>
 									<div>
 										<p class="text-sm font-medium text-gray-500">User Agent</p>
 										<p class="mt-1 text-sm text-gray-900 truncate">
-											{selectedEntry.user_agent || '-'}
+											{selectedEntry.userAgent || '-'}
 										</p>
 									</div>
 								</div>
 
 								<!-- Configuration Changes -->
-								{#if selectedEntry.old_configuration || selectedEntry.new_configuration}
+								{#if selectedEntry.oldConfiguration || selectedEntry.newConfiguration}
 									<div class="space-y-4">
-										{#if selectedEntry.old_configuration}
+										{#if selectedEntry.oldConfiguration}
 											<div>
 												<p class="text-sm font-medium text-gray-500 mb-2">Old Configuration</p>
 												<pre
-													class="bg-gray-50 border border-gray-200 rounded p-3 text-xs overflow-x-auto max-h-64"><code>{JSON.stringify(tryParseJSON(selectedEntry.old_configuration), null, 2)}</code></pre>
+													class="bg-gray-50 border border-gray-200 rounded p-3 text-xs overflow-x-auto max-h-64"><code>{JSON.stringify(tryParseJSON(selectedEntry.oldConfiguration), null, 2)}</code></pre>
 											</div>
 										{/if}
-										{#if selectedEntry.new_configuration}
+										{#if selectedEntry.newConfiguration}
 											<div>
 												<p class="text-sm font-medium text-gray-500 mb-2">New Configuration</p>
 												<pre
-													class="bg-gray-50 border border-gray-200 rounded p-3 text-xs overflow-x-auto max-h-64"><code>{JSON.stringify(tryParseJSON(selectedEntry.new_configuration), null, 2)}</code></pre>
+													class="bg-gray-50 border border-gray-200 rounded p-3 text-xs overflow-x-auto max-h-64"><code>{JSON.stringify(tryParseJSON(selectedEntry.newConfiguration), null, 2)}</code></pre>
 											</div>
 										{/if}
 									</div>
