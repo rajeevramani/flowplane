@@ -77,10 +77,12 @@
 					const clusterAction = r.action?.Cluster || r.action;
 					const weightedAction = r.action?.WeightedClusters;
 
-					// Extract cluster name
+					// Extract cluster name (handle both 'name' and 'cluster' field names)
 					let cluster = '';
 					if (clusterAction?.name) {
 						cluster = clusterAction.name;
+					} else if (clusterAction?.cluster) {
+						cluster = clusterAction.cluster;
 					} else if (weightedAction?.clusters) {
 						cluster = weightedAction.clusters.map((c: { name: string }) => c.name).join(', ');
 					} else if (r.route?.cluster) {

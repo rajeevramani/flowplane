@@ -121,10 +121,12 @@
 						const clusterAction = r.action?.Cluster || r.action;
 						const weightedAction = r.action?.WeightedClusters;
 
-						// Extract cluster name
+						// Extract cluster name (handle both 'name' and 'cluster' field names)
 						let cluster = '';
 						if (clusterAction?.name) {
 							cluster = clusterAction.name;
+						} else if (clusterAction?.cluster) {
+							cluster = clusterAction.cluster;
 						} else if (weightedAction?.clusters) {
 							cluster = weightedAction.clusters.map((c: { name: string }) => c.name).join(', ');
 						} else if (r.route?.cluster) {
@@ -475,7 +477,7 @@
 
 										{#if openRetryPopoverId === rowId}
 											<div
-												class="absolute left-0 mt-1 w-56 bg-white rounded-md shadow-lg border border-gray-200 z-20 p-3"
+												class="absolute left-0 bottom-full mb-1 w-56 bg-white rounded-md shadow-lg border border-gray-200 z-20 p-3"
 												onclick={(e) => e.stopPropagation()}
 											>
 												<div class="text-xs font-semibold text-gray-700 mb-2 pb-1 border-b">Retry Configuration</div>
