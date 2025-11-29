@@ -7,15 +7,34 @@
 	} from '$lib/api/types';
 	import Badge from './Badge.svelte';
 
+	export type RouteActionType = 'forward' | 'weighted' | 'redirect';
+
+	export interface WeightedCluster {
+		name: string;
+		weight: number;
+	}
+
 	export interface RouteRule {
 		id: string;
 		method: string;
 		path: string;
 		pathType: PathMatchType;
-		cluster: string;
+		actionType: RouteActionType;
+		// Forward action fields
+		cluster?: string;
+		prefixRewrite?: string;
+		templateRewrite?: string;
+		timeoutSeconds?: number;
+		// Weighted action fields
+		weightedClusters?: WeightedCluster[];
+		totalWeight?: number;
+		// Redirect action fields
+		hostRedirect?: string;
+		pathRedirect?: string;
+		responseCode?: number;
+		// Common matchers
 		headers?: HeaderMatchDefinition[];
 		queryParams?: QueryParameterMatchDefinition[];
-		timeoutSeconds?: number;
 	}
 
 	interface Props {
@@ -55,6 +74,43 @@
 		}
 		return clusterName;
 	}
+
+	function getActionBadgeVariant(actionType: RouteActionType): 'primary' | 'success' | 'warning' | 'error' | 'default' {
+		switch (actionType) {
+			case 'forward':
+				return 'primary';
+			case 'weighted':
+				return 'warning';
+			case 'redirect':
+				return 'default';
+			default:
+				return 'default';
+		}
+	}
+
+	function getTargetDisplay(route: RouteRule): string {
+		const actionType = route.actionType || 'forward';
+		switch (actionType) {
+			case 'forward':
+				const cluster = route.cluster ? getClusterDisplay(route.cluster) : '-';
+				const rewrite = route.prefixRewrite || route.templateRewrite;
+				return rewrite ? `${cluster} (rewrite: ${rewrite})` : cluster;
+			case 'weighted':
+				if (route.weightedClusters && route.weightedClusters.length > 0) {
+					const totalWeight = route.totalWeight || route.weightedClusters.reduce((sum, c) => sum + c.weight, 0);
+					return route.weightedClusters.map(c => `${c.name}: ${Math.round(c.weight / totalWeight * 100)}%`).join(', ');
+				}
+				return '-';
+			case 'redirect':
+				const parts = [];
+				if (route.hostRedirect) parts.push(route.hostRedirect);
+				if (route.pathRedirect) parts.push(route.pathRedirect);
+				const code = route.responseCode || 302;
+				return parts.length > 0 ? `${code} -> ${parts.join('')}` : `${code} redirect`;
+			default:
+				return route.cluster || '-';
+		}
+	}
 </script>
 
 {#if routes.length === 0}
@@ -80,11 +136,15 @@
 					>
 					<th
 						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-						>Cluster</th
+						>Action</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Target</th
 					>
 					<th
 						class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"
-						>Actions</th
+						></th
 					>
 				</tr>
 			</thead>
@@ -108,7 +168,12 @@
 							<span class="text-sm text-gray-600">{route.pathType}</span>
 						</td>
 						<td class="px-4 py-3 whitespace-nowrap">
-							<span class="text-sm text-gray-900">{getClusterDisplay(route.cluster)}</span>
+							<Badge variant={getActionBadgeVariant(route.actionType || 'forward')}>
+								{(route.actionType || 'forward').charAt(0).toUpperCase() + (route.actionType || 'forward').slice(1)}
+							</Badge>
+						</td>
+						<td class="px-4 py-3">
+							<span class="text-sm text-gray-900 truncate max-w-xs block" title={getTargetDisplay(route)}>{getTargetDisplay(route)}</span>
 						</td>
 						<td class="px-4 py-3 whitespace-nowrap text-right">
 							<div class="flex items-center justify-end gap-1">

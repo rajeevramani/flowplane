@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import type {
 		RouteResponse,
 		ClusterResponse,
@@ -21,10 +21,12 @@
 	import RouteEditor from '$lib/components/RouteEditor.svelte';
 	import type { RouteRule } from '$lib/components/EditableRoutesTable.svelte';
 	import type { ClusterConfig } from '$lib/components/ClusterSelector.svelte';
+	import { selectedTeam } from '$lib/stores/team';
+	import type { Unsubscriber } from 'svelte/store';
 
-	// Session state
-	let userTeams = $state<string[]>([]);
-	let isAdmin = $state(false);
+	// Session state - use global team from navigation
+	let currentTeam = $state<string>('');
+	let unsubscribe: Unsubscriber;
 	let isLoading = $state(true);
 
 	// Listener selection state
@@ -72,28 +74,20 @@
 	let error = $state<string | null>(null);
 	let success = $state<string | null>(null);
 
-	onMount(async () => {
-		try {
-			const session = await apiClient.getSessionInfo();
-			isAdmin = session.isAdmin || false;
-			const teamsResponse = await apiClient.listTeams();
-
-			// For admins, prepend "All Teams" option (empty string)
-			if (isAdmin) {
-				userTeams = ['', ...(teamsResponse.teams || [])];
-			} else {
-				userTeams = teamsResponse.teams || [];
+	onMount(() => {
+		// Subscribe to global team selection from navigation
+		unsubscribe = selectedTeam.subscribe((team) => {
+			if (team && team !== currentTeam) {
+				currentTeam = team;
+				// Sync with listener config
+				listenerConfig = { ...listenerConfig, selectedTeam: team };
 			}
-
-			// Auto-select team if only one (developers only)
-			if (!isAdmin && userTeams.length === 1) {
-				listenerConfig = { ...listenerConfig, selectedTeam: userTeams[0] };
-			}
-		} catch (e) {
-			console.error('Failed to load session info:', e);
-		} finally {
 			isLoading = false;
-		}
+		});
+	});
+
+	onDestroy(() => {
+		if (unsubscribe) unsubscribe();
 	});
 
 	function handleListenerConfigChange(config: ListenerFirstConfig) {
@@ -172,19 +166,58 @@
 	/**
 	 * Parse RouteAction from Rust tagged enum format.
 	 * API returns: {"type": "forward", "cluster": "x", "timeoutSeconds": 5}
+	 * Or: {"type": "weighted", "clusters": [...], "totalWeight": 100}
+	 * Or: {"type": "redirect", "hostRedirect": "...", "pathRedirect": "...", "responseCode": 302}
 	 */
-	function parseRouteAction(actionObj: unknown): { cluster: string; timeoutSeconds?: number } {
+	function parseRouteAction(actionObj: unknown): {
+		actionType: 'forward' | 'weighted' | 'redirect';
+		cluster?: string;
+		prefixRewrite?: string;
+		templateRewrite?: string;
+		timeoutSeconds?: number;
+		weightedClusters?: Array<{ name: string; weight: number }>;
+		totalWeight?: number;
+		hostRedirect?: string;
+		pathRedirect?: string;
+		responseCode?: number;
+	} {
 		if (!actionObj || typeof actionObj !== 'object') {
-			return { cluster: '' };
+			return { actionType: 'forward', cluster: '' };
 		}
 
 		const action = actionObj as Record<string, unknown>;
 
-		// Handle tagged enum format from API: {"type": "forward", "cluster": "x"}
-		if (action.type === 'forward' && typeof action.cluster === 'string') {
+		// Handle tagged enum format from API
+		if (action.type === 'forward') {
 			return {
-				cluster: action.cluster,
+				actionType: 'forward',
+				cluster: typeof action.cluster === 'string' ? action.cluster : '',
+				prefixRewrite: typeof action.prefixRewrite === 'string' ? action.prefixRewrite : undefined,
+				templateRewrite: typeof action.templateRewrite === 'string' ? action.templateRewrite : undefined,
 				timeoutSeconds: typeof action.timeoutSeconds === 'number' ? action.timeoutSeconds : undefined
+			};
+		}
+
+		if (action.type === 'weighted') {
+			const clusters = Array.isArray(action.clusters)
+				? action.clusters.map((c: { name?: string; weight?: number }) => ({
+						name: c.name || '',
+						weight: c.weight || 0
+				  }))
+				: [];
+			return {
+				actionType: 'weighted',
+				weightedClusters: clusters,
+				totalWeight: typeof action.totalWeight === 'number' ? action.totalWeight : undefined
+			};
+		}
+
+		if (action.type === 'redirect') {
+			return {
+				actionType: 'redirect',
+				hostRedirect: typeof action.hostRedirect === 'string' ? action.hostRedirect : undefined,
+				pathRedirect: typeof action.pathRedirect === 'string' ? action.pathRedirect : undefined,
+				responseCode: typeof action.responseCode === 'number' ? action.responseCode : 302
 			};
 		}
 
@@ -192,13 +225,14 @@
 		if ('Forward' in action && typeof action.Forward === 'object' && action.Forward !== null) {
 			const forward = action.Forward as Record<string, unknown>;
 			return {
+				actionType: 'forward',
 				cluster: typeof forward.cluster === 'string' ? forward.cluster : '',
 				timeoutSeconds:
 					typeof forward.timeout_seconds === 'number' ? forward.timeout_seconds : undefined
 			};
 		}
 
-		return { cluster: '' };
+		return { actionType: 'forward', cluster: '' };
 	}
 
 	function transformRoutesToRules(routes: unknown[]): RouteRule[] {
@@ -219,7 +253,7 @@
 			};
 			const match = route.match || {};
 			const { pathType, pathValue } = parsePathMatch(match.path);
-			const { cluster, timeoutSeconds } = parseRouteAction(route.action);
+			const actionData = parseRouteAction(route.action);
 
 			// Extract method from headers if present (looks for :method header)
 			const methodHeader = match.headers?.find((h) => h.name === ':method');
@@ -233,10 +267,22 @@
 				method,
 				path: pathValue,
 				pathType,
-				cluster,
+				actionType: actionData.actionType,
+				// Forward fields
+				cluster: actionData.cluster,
+				prefixRewrite: actionData.prefixRewrite,
+				templateRewrite: actionData.templateRewrite,
+				timeoutSeconds: actionData.timeoutSeconds,
+				// Weighted fields
+				weightedClusters: actionData.weightedClusters,
+				totalWeight: actionData.totalWeight,
+				// Redirect fields
+				hostRedirect: actionData.hostRedirect,
+				pathRedirect: actionData.pathRedirect,
+				responseCode: actionData.responseCode,
+				// Common matchers
 				headers: displayHeaders.length > 0 ? displayHeaders : undefined,
-				queryParams: match.queryParameters?.length ? match.queryParameters : undefined,
-				timeoutSeconds
+				queryParams: match.queryParameters?.length ? match.queryParameters : undefined
 			};
 		});
 	}
@@ -370,6 +416,35 @@
 					headers.push(...route.headers);
 				}
 
+				// Build action based on action type
+				let action;
+				const actionType = route.actionType || 'forward';
+				if (actionType === 'forward') {
+					action = {
+						type: 'forward' as const,
+						cluster: route.cluster || '',
+						timeoutSeconds: route.timeoutSeconds || 15,
+						prefixRewrite: route.prefixRewrite || undefined,
+						templateRewrite: route.templateRewrite || undefined
+					};
+				} else if (actionType === 'weighted') {
+					action = {
+						type: 'weighted' as const,
+						clusters: (route.weightedClusters || []).map((c) => ({
+							name: c.name,
+							weight: c.weight
+						})),
+						totalWeight: route.totalWeight
+					};
+				} else {
+					action = {
+						type: 'redirect' as const,
+						hostRedirect: route.hostRedirect || undefined,
+						pathRedirect: route.pathRedirect || undefined,
+						responseCode: route.responseCode || 302
+					};
+				}
+
 				return {
 					name: `route-${route.method}-${route.path}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase(),
 					match: {
@@ -380,11 +455,7 @@
 						headers: headers.length > 0 ? headers : undefined,
 						queryParameters: route.queryParams?.length ? route.queryParams : undefined
 					},
-					action: {
-						type: 'forward' as const,
-						cluster: route.cluster,
-						timeoutSeconds: route.timeoutSeconds || 15
-					}
+					action
 				};
 			})
 		}));
@@ -408,11 +479,22 @@
 			return;
 		}
 
-		// Validate all routes have clusters
+		// Validate all routes have proper targets based on action type
 		for (const group of domainGroups) {
 			for (const route of group.routes) {
-				if (!route.cluster) {
+				const actionType = route.actionType || 'forward';
+				if (actionType === 'forward' && !route.cluster) {
 					error = `Route ${route.method} ${route.path} in ${group.domains[0]} needs a target cluster`;
+					isSubmitting = false;
+					return;
+				}
+				if (actionType === 'weighted' && (!route.weightedClusters || route.weightedClusters.length === 0)) {
+					error = `Route ${route.method} ${route.path} in ${group.domains[0]} needs at least one weighted cluster`;
+					isSubmitting = false;
+					return;
+				}
+				if (actionType === 'redirect' && !route.hostRedirect && !route.pathRedirect) {
+					error = `Route ${route.method} ${route.path} in ${group.domains[0]} needs a host or path redirect`;
 					isSubmitting = false;
 					return;
 				}
@@ -551,9 +633,9 @@
 		</div>
 	{:else}
 		<div class="bg-white rounded-lg shadow-md p-6 space-y-8">
-			<!-- Step 1: Listener Selection -->
+			<!-- Step 1: Listener Selection (team from global navigation) -->
 			<ListenerFirstSelector
-				teams={userTeams}
+				teams={currentTeam ? [currentTeam] : []}
 				config={listenerConfig}
 				onConfigChange={handleListenerConfigChange}
 				onRouteConfigLoaded={handleRouteConfigLoaded}
