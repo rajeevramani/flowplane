@@ -385,6 +385,10 @@ class ApiClient {
 		return this.post<ClusterResponse>('/api/v1/clusters', body);
 	}
 
+	async updateCluster(name: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.put<ClusterResponse>(`/api/v1/clusters/${name}`, body);
+	}
+
 	async createRoute(body: CreateRouteBody): Promise<RouteResponse> {
 		return this.post<RouteResponse>('/api/v1/routes', body);
 	}

@@ -364,6 +364,7 @@ export interface OutlierDetectionRequest {
 	intervalSeconds?: number;
 	baseEjectionTimeSeconds?: number;
 	maxEjectionPercent?: number;
+	minHosts?: number;
 }
 
 export interface CreateClusterBody {

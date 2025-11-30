@@ -396,7 +396,10 @@
 					lbPolicy:
 						newCluster.newClusterConfig.endpoints.length > 1
 							? (newCluster.newClusterConfig.lbPolicy as CreateClusterBody['lbPolicy'])
-							: undefined
+							: undefined,
+					healthChecks: newCluster.newClusterConfig.healthChecks,
+					circuitBreakers: newCluster.newClusterConfig.circuitBreakers,
+					outlierDetection: newCluster.newClusterConfig.outlierDetection
 				};
 				pendingClusters = [...pendingClusters, clusterBody];
 			}
