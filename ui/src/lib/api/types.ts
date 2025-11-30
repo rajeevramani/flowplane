@@ -440,6 +440,9 @@ export interface RouteRuleDefinition {
 	name?: string;
 	match: RouteMatchDefinition;
 	action: RouteActionDefinition;
+	typedPerFilterConfig?: {
+		'envoy.filters.http.header_mutation'?: HeaderMutationPerRouteConfig;
+	};
 }
 
 export interface VirtualHostDefinition {
@@ -481,6 +484,27 @@ export interface ListenerTracingInput {
 	config: Record<string, unknown>;
 }
 
+// Header Mutation Filter Types
+export interface HeaderMutationEntry {
+	key: string;
+	value: string;
+	append: boolean;
+}
+
+export interface HeaderMutationConfig {
+	requestHeadersToAdd?: HeaderMutationEntry[];
+	requestHeadersToRemove?: string[];
+	responseHeadersToAdd?: HeaderMutationEntry[];
+	responseHeadersToRemove?: string[];
+}
+
+export interface HeaderMutationPerRouteConfig {
+	requestHeadersToAdd?: HeaderMutationEntry[];
+	requestHeadersToRemove?: string[];
+	responseHeadersToAdd?: HeaderMutationEntry[];
+	responseHeadersToRemove?: string[];
+}
+
 // HttpFilterKind - discriminated union for filter types
 export type HttpFilterKind =
 	| { type: 'router' }
@@ -488,7 +512,7 @@ export type HttpFilterKind =
 	| { type: 'local_rate_limit'; config: unknown }
 	| { type: 'jwt_authn'; config: unknown }
 	| { type: 'rate_limit'; config: unknown }
-	| { type: 'header_mutation'; config: unknown }
+	| { type: 'header_mutation'; config: HeaderMutationConfig }
 	| { type: 'health_check'; config: unknown };
 
 // HttpFilterConfigEntry - matches Rust HttpFilterConfigEntry

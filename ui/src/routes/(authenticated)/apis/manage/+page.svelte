@@ -279,6 +279,14 @@
 					}[];
 				};
 				action?: unknown;
+				typedPerFilterConfig?: {
+					'envoy.filters.http.header_mutation'?: {
+						requestHeadersToAdd?: { key: string; value: string; append: boolean }[];
+						requestHeadersToRemove?: string[];
+						responseHeadersToAdd?: { key: string; value: string; append: boolean }[];
+						responseHeadersToRemove?: string[];
+					};
+				};
 			};
 			const match = route.match || {};
 			const { pathType, pathValue } = parsePathMatch(match.path);
@@ -290,6 +298,9 @@
 
 			// Filter out :method from headers for display
 			const displayHeaders = match.headers?.filter((h) => h.name !== ':method') || [];
+
+			// Extract header mutation config
+			const headerMutationConfig = route.typedPerFilterConfig?.['envoy.filters.http.header_mutation'] || null;
 
 			return {
 				id: crypto.randomUUID(),
@@ -312,8 +323,10 @@
 				responseCode: actionData.responseCode,
 				// Common matchers
 				headers: displayHeaders.length > 0 ? displayHeaders : undefined,
-				queryParams: match.queryParameters?.length ? match.queryParameters : undefined
-			};
+				queryParams: match.queryParameters?.length ? match.queryParameters : undefined,
+				// Filters
+				headerMutationConfig
+			} as any;
 		});
 	}
 
@@ -487,6 +500,13 @@
 					};
 				}
 
+				// Build typedPerFilterConfig if header mutation is configured
+				const typedPerFilterConfig = (route as any).headerMutationConfig
+					? {
+							'envoy.filters.http.header_mutation': (route as any).headerMutationConfig
+					  }
+					: undefined;
+
 				return {
 					name: `route-${route.method}-${route.path}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase(),
 					match: {
@@ -497,7 +517,8 @@
 						headers: headers.length > 0 ? headers : undefined,
 						queryParameters: route.queryParams?.length ? route.queryParams : undefined
 					},
-					action
+					action,
+					typedPerFilterConfig
 				};
 			})
 		}));

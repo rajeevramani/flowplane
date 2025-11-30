@@ -1,7 +1,8 @@
 <script lang="ts">
-	import type { ListenerFilterChainInput, ListenerTlsContextInput } from '$lib/api/types';
+	import type { ListenerFilterChainInput, ListenerTlsContextInput, HttpFilterConfigEntry } from '$lib/api/types';
 	import { Lock, LockOpen, ChevronDown, ChevronRight } from 'lucide-svelte';
 	import TlsConfigForm from './TlsConfigForm.svelte';
+	import HttpFiltersEditor from '../filters/HttpFiltersEditor.svelte';
 
 	interface Props {
 		filterChains: ListenerFilterChainInput[];
@@ -28,6 +29,28 @@
 				? { ...chain, tlsContext: context || undefined }
 				: chain
 		);
+		onFilterChainsChange(updatedChains);
+	}
+
+	function handleHttpFiltersChange(chainIndex: number, filterIndex: number, httpFilters: HttpFilterConfigEntry[]) {
+		const updatedChains = filterChains.map((chain, ci) => {
+			if (ci === chainIndex) {
+				const updatedFilters = chain.filters.map((filter, fi) => {
+					if (fi === filterIndex && 'type' in filter && filter.type === 'httpConnectionManager') {
+						return {
+							...filter,
+							httpFilters
+						};
+					}
+					return filter;
+				});
+				return {
+					...chain,
+					filters: updatedFilters
+				};
+			}
+			return chain;
+		});
 		onFilterChainsChange(updatedChains);
 	}
 
@@ -125,26 +148,33 @@
 					</div>
 				{/if}
 
-				<!-- TLS Configuration (expandable) -->
+				<!-- Expanded Configuration (TLS + HTTP Filters) -->
 				{#if isExpanded}
-					<div class="p-4 border-t border-gray-200 bg-blue-50">
-						<h4 class="text-sm font-medium text-gray-700 mb-3">TLS Configuration</h4>
-						<TlsConfigForm
-							tlsContext={chain.tlsContext || null}
-							onTlsContextChange={(context) => handleTlsContextChange(index, context)}
-							compact={compact}
-						/>
+					<div class="border-t border-gray-200 space-y-4">
+						<!-- TLS Configuration -->
+						<div class="p-4 bg-blue-50">
+							<h4 class="text-sm font-medium text-gray-700 mb-3">TLS Configuration</h4>
+							<TlsConfigForm
+								tlsContext={chain.tlsContext || null}
+								onTlsContextChange={(context) => handleTlsContextChange(index, context)}
+								compact={compact}
+							/>
+						</div>
+
+						<!-- HTTP Filters Configuration (only for HttpConnectionManager) -->
+						{#each chain.filters as filter, filterIndex}
+							{#if 'type' in filter && filter.type === 'httpConnectionManager'}
+								<div class="p-4 bg-gray-50">
+									<HttpFiltersEditor
+										filters={filter.httpFilters || []}
+										onUpdate={(httpFilters) => handleHttpFiltersChange(index, filterIndex, httpFilters)}
+									/>
+								</div>
+							{/if}
+						{/each}
 					</div>
 				{/if}
 			</div>
 		{/each}
-	{/if}
-
-	<!-- Phase 1 Note -->
-	{#if !compact && filterChains.length > 0}
-		<div class="text-xs text-gray-500 italic p-3 bg-gray-50 rounded-md">
-			<strong>Note:</strong> In this version, you can only edit TLS configuration for existing filter chains.
-			Adding/removing filter chains and configuring HTTP filters will be available in a future update.
-		</div>
 	{/if}
 </div>

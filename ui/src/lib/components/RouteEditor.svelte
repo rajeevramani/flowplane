@@ -4,12 +4,14 @@
 		HeaderMatchDefinition,
 		QueryParameterMatchDefinition,
 		ClusterResponse,
-		EndpointRequest
+		EndpointRequest,
+		HeaderMutationPerRouteConfig
 	} from '$lib/api/types';
 	import type { RouteRule, RouteActionType, WeightedCluster, RetryPolicy } from './EditableRoutesTable.svelte';
 	import ClusterSelector, { type ClusterConfig } from './ClusterSelector.svelte';
 	import HeaderMatcherList from './HeaderMatcherList.svelte';
 	import QueryParamMatcherList from './QueryParamMatcherList.svelte';
+	import HeaderMutationPerRouteForm from './filters/HeaderMutationPerRouteForm.svelte';
 
 	interface Props {
 		show: boolean;
@@ -88,8 +90,11 @@
 	let showBackoff = $state(false);
 	let backoffBaseInterval = $state(100);
 	let backoffMaxInterval = $state(1000);
+	// Filter state
+	let headerMutationConfig = $state<HeaderMutationPerRouteConfig | null>(null);
 	// UI state
 	let showAdvanced = $state(false);
+	let showFilters = $state(false);
 	let forwardSubTab = $state<ForwardSubTab>('target');
 
 	// Derived: check if rewrite is allowed based on path type
@@ -182,6 +187,9 @@
 					backoffBaseInterval = 100;
 					backoffMaxInterval = 1000;
 				}
+				// Load filter config (will add to RouteRule type)
+				headerMutationConfig = (route as any).headerMutationConfig || null;
+				showFilters = headerMutationConfig !== null;
 				forwardSubTab = 'target';
 			} else {
 				// Creating new route
@@ -209,6 +217,9 @@
 				showBackoff = false;
 				backoffBaseInterval = 100;
 				backoffMaxInterval = 1000;
+				// Reset filter config
+				headerMutationConfig = null;
+				showFilters = false;
 				forwardSubTab = 'target';
 			}
 		}
@@ -282,8 +293,9 @@
 				timeoutSeconds,
 				retryPolicy,
 				headers: headers.length > 0 ? headers : undefined,
-				queryParams: queryParams.length > 0 ? queryParams : undefined
-			};
+				queryParams: queryParams.length > 0 ? queryParams : undefined,
+				headerMutationConfig: headerMutationConfig || undefined
+			} as any;
 		} else if (actionType === 'weighted') {
 			const validClusters = weightedClusters.filter(c => c.name && c.weight > 0);
 			savedRoute = {
@@ -295,8 +307,9 @@
 				weightedClusters: validClusters,
 				totalWeight: validClusters.reduce((sum, c) => sum + c.weight, 0),
 				headers: headers.length > 0 ? headers : undefined,
-				queryParams: queryParams.length > 0 ? queryParams : undefined
-			};
+				queryParams: queryParams.length > 0 ? queryParams : undefined,
+				headerMutationConfig: headerMutationConfig || undefined
+			} as any;
 		} else {
 			savedRoute = {
 				id: route?.id || crypto.randomUUID(),
@@ -308,8 +321,9 @@
 				pathRedirect: pathRedirect || undefined,
 				responseCode,
 				headers: headers.length > 0 ? headers : undefined,
-				queryParams: queryParams.length > 0 ? queryParams : undefined
-			};
+				queryParams: queryParams.length > 0 ? queryParams : undefined,
+				headerMutationConfig: headerMutationConfig || undefined
+			} as any;
 		}
 
 		const newCluster = actionType === 'forward' && clusterConfig.mode === 'new' ? clusterConfig : null;
@@ -837,6 +851,39 @@
 							<QueryParamMatcherList
 								params={queryParams}
 								onParamsChange={(p) => (queryParams = p)}
+							/>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Filters (collapsible) -->
+				<div class="border-t border-gray-200 pt-4">
+					<button
+						type="button"
+						onclick={() => (showFilters = !showFilters)}
+						class="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+					>
+						<svg
+							class="h-4 w-4 transition-transform {showFilters ? 'rotate-90' : ''}"
+							fill="none"
+							stroke="currentColor"
+							viewBox="0 0 24 24"
+						>
+							<path
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="2"
+								d="M9 5l7 7-7 7"
+							/>
+						</svg>
+						Filters (Header Mutation)
+					</button>
+
+					{#if showFilters}
+						<div class="mt-4 pl-6">
+							<HeaderMutationPerRouteForm
+								config={headerMutationConfig}
+								onUpdate={(config) => (headerMutationConfig = config)}
 							/>
 						</div>
 					{/if}
