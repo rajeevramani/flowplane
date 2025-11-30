@@ -586,7 +586,6 @@ impl SessionService {
 
         self.audit_repository.record_auth_event(event).await
     }
-
 }
 
 #[cfg(test)]

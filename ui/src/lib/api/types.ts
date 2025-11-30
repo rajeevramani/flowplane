@@ -468,6 +468,7 @@ export interface ListenerTlsContextInput {
 	privateKeyFile?: string;
 	caCertFile?: string;
 	requireClientCertificate?: boolean;
+	minTlsVersion?: 'V1_0' | 'V1_1' | 'V1_2' | 'V1_3';
 }
 
 export interface ListenerAccessLogInput {

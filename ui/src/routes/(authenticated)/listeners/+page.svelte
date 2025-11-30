@@ -1,14 +1,22 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { onMount, onDestroy } from 'svelte';
-	import { Eye, Lock, LockOpen } from 'lucide-svelte';
+	import { Eye, Lock, LockOpen, Pencil } from 'lucide-svelte';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
 	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
 	import ConfigCard from '$lib/components/ConfigCard.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import type { ListenerResponse, RouteResponse, ImportSummary } from '$lib/api/types';
+	import ListenerConfigEditor from '$lib/components/ListenerConfigEditor.svelte';
+	import type {
+		ListenerResponse,
+		RouteResponse,
+		ImportSummary,
+		ListenerFilterChainInput,
+		ListenerFilterInput,
+		UpdateListenerBody
+	} from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { Unsubscriber } from 'svelte/store';
 
@@ -26,6 +34,15 @@
 	// Drawer state
 	let drawerOpen = $state(false);
 	let selectedListener = $state<ListenerResponse | null>(null);
+
+	// Edit mode state
+	let editMode = $state(false);
+	let isSaving = $state(false);
+	let saveError = $state<string | null>(null);
+	let editedAddress = $state('');
+	let editedPort = $state(8080);
+	let editedProtocol = $state('HTTP');
+	let editedFilterChains = $state<ListenerFilterChainInput[]>([]);
 
 	onMount(async () => {
 		unsubscribe = selectedTeam.subscribe(async (team) => {
@@ -145,6 +162,99 @@
 	function closeDrawer() {
 		drawerOpen = false;
 		selectedListener = null;
+		editMode = false;
+		saveError = null;
+	}
+
+	function parseFilterChains(listener: ListenerResponse): ListenerFilterChainInput[] {
+		const config = listener.config || {};
+		const chains = config.filter_chains || [];
+
+		return chains.map((fc: any) => {
+			const filters: ListenerFilterInput[] = (fc.filters || []).map((f: any) => {
+				if (f.filter_type?.HttpConnectionManager) {
+					return {
+						name: f.name || 'http_connection_manager',
+						type: 'httpConnectionManager' as const,
+						routeConfigName: f.filter_type.HttpConnectionManager.route_config_name,
+						inlineRouteConfig: f.filter_type.HttpConnectionManager.inline_route_config,
+						accessLog: f.filter_type.HttpConnectionManager.access_log,
+						tracing: f.filter_type.HttpConnectionManager.tracing,
+						httpFilters: f.filter_type.HttpConnectionManager.http_filters
+					};
+				} else if (f.filter_type?.TcpProxy) {
+					return {
+						name: f.name || 'tcp_proxy',
+						type: 'tcpProxy' as const,
+						cluster: f.filter_type.TcpProxy.cluster,
+						accessLog: f.filter_type.TcpProxy.access_log
+					};
+				}
+				return {
+					name: f.name || 'unknown',
+					type: 'httpConnectionManager' as const
+				};
+			});
+
+			return {
+				name: fc.name,
+				filters,
+				tlsContext: fc.tls_context ? {
+					certChainFile: fc.tls_context.cert_chain_file,
+					privateKeyFile: fc.tls_context.private_key_file,
+					caCertFile: fc.tls_context.ca_cert_file,
+					requireClientCertificate: fc.tls_context.require_client_certificate,
+					minTlsVersion: fc.tls_context.min_tls_version || 'V1_2'
+				} : undefined
+			};
+		});
+	}
+
+	function startEdit() {
+		if (!selectedListener) return;
+
+		editedAddress = selectedListener.address;
+		editedPort = selectedListener.port;
+		editedProtocol = selectedListener.protocol || 'HTTP';
+		editedFilterChains = parseFilterChains(selectedListener);
+		editMode = true;
+		saveError = null;
+	}
+
+	function cancelEdit() {
+		editMode = false;
+		saveError = null;
+	}
+
+	async function saveEdit() {
+		if (!selectedListener) return;
+
+		isSaving = true;
+		saveError = null;
+
+		try {
+			const body: UpdateListenerBody = {
+				address: editedAddress,
+				port: editedPort,
+				protocol: editedProtocol,
+				filterChains: editedFilterChains
+			};
+
+			await apiClient.updateListener(selectedListener.name, body);
+			await loadData();
+
+			// Update selectedListener with the new data
+			const updated = listeners.find(l => l.name === selectedListener?.name);
+			if (updated) {
+				selectedListener = updated;
+			}
+
+			editMode = false;
+		} catch (err) {
+			saveError = err instanceof Error ? err.message : 'Failed to update listener';
+		} finally {
+			isSaving = false;
+		}
 	}
 
 	async function handleDelete(listenerName: string) {
@@ -153,6 +263,7 @@
 		try {
 			await apiClient.deleteListener(listenerName);
 			await loadData();
+			closeDrawer();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete listener';
 		}
@@ -252,87 +363,140 @@
 >
 	{#if selectedListener}
 		{@const config = selectedListener.config || {}}
-		<div class="space-y-6">
-			<!-- Overview -->
-			<ConfigCard title="Overview" variant="gray">
-				<dl class="grid grid-cols-2 gap-4 text-sm">
-					<div>
-						<dt class="text-gray-500">Address</dt>
-						<dd class="font-mono text-gray-900">{selectedListener.address}</dd>
-					</div>
-					<div>
-						<dt class="text-gray-500">Port</dt>
-						<dd class="font-mono text-gray-900">{selectedListener.port}</dd>
-					</div>
-					<div>
-						<dt class="text-gray-500">Protocol</dt>
-						<dd class="text-gray-900">{selectedListener.protocol || 'HTTP'}</dd>
-					</div>
-					<div>
-						<dt class="text-gray-500">Version</dt>
-						<dd class="text-gray-900">{selectedListener.version}</dd>
-					</div>
-				</dl>
-			</ConfigCard>
 
-			<!-- Filter Chains -->
-			{#if config.filter_chains?.length}
-				<ConfigCard title="Filter Chains" variant="blue">
-					<div class="space-y-3">
-						{#each config.filter_chains as fc, i}
-							<div class="p-3 bg-white rounded border border-blue-200">
-								<div class="font-medium text-gray-900">{fc.name || `Chain ${i + 1}`}</div>
-								{#if fc.filters?.length}
-									<div class="mt-2 space-y-1">
-										{#each fc.filters as filter}
-											{@const routeConfigName = filter.filter_type?.HttpConnectionManager?.route_config_name}
-											<div class="text-sm text-gray-600">
-												{filter.name || (filter.filter_type?.HttpConnectionManager ? 'HttpConnectionManager' : 'Filter')}
-												{#if routeConfigName}
-													<span class="text-gray-400"> → {routeConfigName}</span>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{/if}
-								{#if fc.tls_context}
-									<div class="mt-2 flex items-center gap-1 text-green-600 text-sm">
-										<Lock class="h-3 w-3" />
-										TLS Enabled
-									</div>
-								{/if}
-							</div>
-						{/each}
+		{#if editMode}
+			<!-- Edit Mode -->
+			<div class="space-y-4">
+				{#if saveError}
+					<div class="bg-red-50 border-l-4 border-red-500 rounded-md p-4">
+						<p class="text-red-800 text-sm">{saveError}</p>
 					</div>
-				</ConfigCard>
-			{/if}
+				{/if}
 
-			<!-- Associated Routes -->
-			{#if getRoutesForListener(selectedListener).length > 0}
-				{@const listenerRoutes = getRoutesForListener(selectedListener)}
-				<ConfigCard title="Associated Routes" variant="green" collapsible defaultCollapsed>
-					<div class="space-y-2">
-						{#each listenerRoutes as route}
-							<div class="p-2 bg-white rounded border border-green-200">
-								<div class="font-medium text-gray-900">{route.name}</div>
-								<div class="text-sm text-gray-500">{route.pathPrefix}</div>
-							</div>
-						{/each}
-					</div>
+				<ListenerConfigEditor
+					address={editedAddress}
+					port={editedPort}
+					protocol={editedProtocol}
+					filterChains={editedFilterChains}
+					onAddressChange={(addr) => editedAddress = addr}
+					onPortChange={(p) => editedPort = p}
+					onProtocolChange={(proto) => editedProtocol = proto}
+					onFilterChainsChange={(chains) => editedFilterChains = chains}
+					showAddressPortWarning={true}
+				/>
+			</div>
+		{:else}
+			<!-- View Mode -->
+			<div class="space-y-6">
+				<!-- Overview -->
+				<ConfigCard title="Overview" variant="gray">
+					<dl class="grid grid-cols-2 gap-4 text-sm">
+						<div>
+							<dt class="text-gray-500">Address</dt>
+							<dd class="font-mono text-gray-900">{selectedListener.address}</dd>
+						</div>
+						<div>
+							<dt class="text-gray-500">Port</dt>
+							<dd class="font-mono text-gray-900">{selectedListener.port}</dd>
+						</div>
+						<div>
+							<dt class="text-gray-500">Protocol</dt>
+							<dd class="text-gray-900">{selectedListener.protocol || 'HTTP'}</dd>
+						</div>
+						<div>
+							<dt class="text-gray-500">Version</dt>
+							<dd class="text-gray-900">{selectedListener.version}</dd>
+						</div>
+					</dl>
 				</ConfigCard>
-			{/if}
-		</div>
+
+				<!-- Filter Chains -->
+				{#if config.filter_chains?.length}
+					<ConfigCard title="Filter Chains" variant="blue">
+						<div class="space-y-3">
+							{#each config.filter_chains as fc, i}
+								<div class="p-3 bg-white rounded border border-blue-200">
+									<div class="font-medium text-gray-900">{fc.name || `Chain ${i + 1}`}</div>
+									{#if fc.filters?.length}
+										<div class="mt-2 space-y-1">
+											{#each fc.filters as filter}
+												{@const routeConfigName = filter.filter_type?.HttpConnectionManager?.route_config_name}
+												<div class="text-sm text-gray-600">
+													{filter.name || (filter.filter_type?.HttpConnectionManager ? 'HttpConnectionManager' : 'Filter')}
+													{#if routeConfigName}
+														<span class="text-gray-400"> → {routeConfigName}</span>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
+									{#if fc.tls_context}
+										<div class="mt-2 flex items-center gap-1 text-green-600 text-sm">
+											<Lock class="h-3 w-3" />
+											TLS Enabled
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</ConfigCard>
+				{/if}
+
+				<!-- Associated Routes -->
+				{#if getRoutesForListener(selectedListener).length > 0}
+					{@const listenerRoutes = getRoutesForListener(selectedListener)}
+					<ConfigCard title="Associated Routes" variant="green" collapsible defaultCollapsed>
+						<div class="space-y-2">
+							{#each listenerRoutes as route}
+								<div class="p-2 bg-white rounded border border-green-200">
+									<div class="font-medium text-gray-900">{route.name}</div>
+									<div class="text-sm text-gray-500">{route.pathPrefix}</div>
+								</div>
+							{/each}
+						</div>
+					</ConfigCard>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 
 	{#snippet footer()}
-		<div class="flex justify-end gap-3">
-			<Button variant="ghost" onclick={closeDrawer}>Close</Button>
-			<Button
-				variant="danger"
-				onclick={() => selectedListener && handleDelete(selectedListener.name)}
-			>
-				Delete
-			</Button>
-		</div>
+		{#if editMode}
+			<!-- Edit Mode Footer -->
+			<div class="flex justify-between items-center">
+				<Button variant="ghost" onclick={cancelEdit} disabled={isSaving}>
+					Cancel
+				</Button>
+				<div class="flex gap-3">
+					<Button
+						variant="danger"
+						onclick={() => selectedListener && handleDelete(selectedListener.name)}
+						disabled={isSaving}
+					>
+						Delete
+					</Button>
+					<Button variant="primary" onclick={saveEdit} loading={isSaving}>
+						{isSaving ? 'Saving...' : 'Save Changes'}
+					</Button>
+				</div>
+			</div>
+		{:else}
+			<!-- View Mode Footer -->
+			<div class="flex justify-between items-center">
+				<Button variant="ghost" onclick={closeDrawer}>Close</Button>
+				<div class="flex gap-3">
+					<Button variant="secondary" onclick={startEdit}>
+						<Pencil class="h-4 w-4 mr-2" />
+						Edit
+					</Button>
+					<Button
+						variant="danger"
+						onclick={() => selectedListener && handleDelete(selectedListener.name)}
+					>
+						Delete
+					</Button>
+				</div>
+			</div>
+		{/if}
 	{/snippet}
 </DetailDrawer>
