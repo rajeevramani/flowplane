@@ -7,6 +7,7 @@ pub mod aggregated_schema;
 pub mod audit_log;
 pub mod cluster;
 pub mod cluster_references;
+pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
 pub mod learning_session;
@@ -25,6 +26,7 @@ pub use aggregated_schema::{
 pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
 pub use cluster_references::{ClusterReferenceData, ClusterReferencesRepository};
+pub use filter::{CreateFilterRequest, FilterData, FilterRepository, UpdateFilterRequest};
 pub use import_metadata::{
     CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
 };
