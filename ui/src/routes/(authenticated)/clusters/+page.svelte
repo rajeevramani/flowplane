@@ -104,13 +104,13 @@
 
 	// Filter clusters
 	let filteredClusters = $derived(
-		searchQuery
-			? clusters.filter(cluster =>
+		clusters
+			.filter(cluster => cluster.team === currentTeam)
+			.filter(cluster =>
+				!searchQuery ||
 				cluster.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-				cluster.serviceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-				cluster.team.toLowerCase().includes(searchQuery.toLowerCase())
+				cluster.serviceName.toLowerCase().includes(searchQuery.toLowerCase())
 			)
-			: clusters
 	);
 
 	// Get cluster features

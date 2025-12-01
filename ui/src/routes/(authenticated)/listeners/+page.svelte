@@ -88,13 +88,13 @@
 
 	// Filter listeners
 	let filteredListeners = $derived(
-		searchQuery
-			? listeners.filter(listener =>
+		listeners
+			.filter(listener => listener.team === currentTeam)
+			.filter(listener =>
+				!searchQuery ||
 				listener.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-				listener.address.toLowerCase().includes(searchQuery.toLowerCase()) ||
-				listener.team.toLowerCase().includes(searchQuery.toLowerCase())
+				listener.address.toLowerCase().includes(searchQuery.toLowerCase())
 			)
-			: listeners
 	);
 
 	// Get listener features

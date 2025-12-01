@@ -70,14 +70,15 @@
 
 	// Filter configurations
 	let filteredConfigs = $derived(
-		searchQuery
-			? routeConfigs.filter((config: any) =>
+		routeConfigs
+			.filter((config: any) => config.team === currentTeam)
+			.filter((config: any) =>
+				!searchQuery ||
 				config.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
 				config.config.virtualHosts.some((vh: any) =>
 					vh.domains.some((domain: string) => domain.toLowerCase().includes(searchQuery.toLowerCase()))
 				)
 			)
-			: routeConfigs
 	);
 
 	// Get route statistics for a configuration
