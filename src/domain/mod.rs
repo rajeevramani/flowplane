@@ -23,6 +23,7 @@
 //! - `cluster`: Cluster (upstream) configuration and policies
 
 pub mod cluster;
+pub mod filter;
 pub mod id;
 pub mod listener;
 pub mod route;
@@ -32,7 +33,8 @@ pub use cluster::{
     CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
     HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
 };
-pub use id::{ClusterId, ListenerId, RouteId, ScopeId, TeamId, TokenId, UserId};
+pub use filter::{FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig};
+pub use id::{ClusterId, FilterId, ListenerId, RouteId, ScopeId, TeamId, TokenId, UserId};
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
     TlsConfig as ListenerTlsConfig, TlsVersion as ListenerTlsVersion,

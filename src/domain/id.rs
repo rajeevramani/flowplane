@@ -149,6 +149,11 @@ domain_id!(
 );
 
 domain_id!(
+    /// Unique identifier for a filter resource
+    FilterId
+);
+
+domain_id!(
     /// Unique identifier for a scope definition
     ScopeId
 );
