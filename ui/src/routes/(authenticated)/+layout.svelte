@@ -10,6 +10,7 @@
 		routeConfigs: number;
 		clusters: number;
 		listeners: number;
+		filters: number;
 		imports: number;
 	}
 
@@ -17,7 +18,7 @@
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
-	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, imports: 0 });
+	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0 });
 
 	let { children } = $props();
 
@@ -49,10 +50,11 @@
 
 	async function loadResourceCounts() {
 		try {
-			const [routes, clusters, listeners, imports] = await Promise.all([
+			const [routes, clusters, listeners, filters, imports] = await Promise.all([
 				apiClient.listRoutes(),
 				apiClient.listClusters(),
 				apiClient.listListeners(),
+				apiClient.listFilters(),
 				sessionInfo?.isAdmin
 					? apiClient.listAllImports()
 					: currentTeam
@@ -64,6 +66,7 @@
 				routeConfigs: routes.length,
 				clusters: clusters.length,
 				listeners: listeners.length,
+				filters: filters.length,
 				imports: imports.length
 			};
 		} catch (error) {

@@ -597,3 +597,48 @@ export interface ListScopesResponse {
 	scopes: ScopeDefinition[];
 	count: number;
 }
+
+// === Filter Types ===
+
+export type FilterType = 'HeaderMutation';
+
+export type FilterConfig = {
+	headerMutation: HeaderMutationConfig;
+};
+
+export interface FilterResponse {
+	id: string;
+	name: string;
+	filterType: string;
+	description: string | null;
+	config: FilterConfig;
+	version: number;
+	source: string;
+	team: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CreateFilterRequest {
+	name: string;
+	filterType: FilterType;
+	description?: string;
+	config: FilterConfig;
+	team: string;
+}
+
+export interface UpdateFilterRequest {
+	name?: string;
+	description?: string;
+	config?: FilterConfig;
+}
+
+export interface AttachFilterRequest {
+	filterId: string;
+	order?: number;
+}
+
+export interface RouteFiltersResponse {
+	routeId: string;
+	filters: FilterResponse[];
+}

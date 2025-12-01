@@ -43,7 +43,12 @@ import type {
 	UpdateRouteBody,
 	CreateListenerBody,
 	UpdateListenerBody,
-	ListScopesResponse
+	ListScopesResponse,
+	FilterResponse,
+	CreateFilterRequest,
+	UpdateFilterRequest,
+	AttachFilterRequest,
+	RouteFiltersResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -519,6 +524,46 @@ class ApiClient {
 	// Admin scope methods
 	async listAllScopes(): Promise<ListScopesResponse> {
 		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
+	}
+
+	// Filter methods
+	async listFilters(params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
+		let path = '/api/v1/filters';
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<FilterResponse[]>(path);
+	}
+
+	async getFilter(id: string): Promise<FilterResponse> {
+		return this.get<FilterResponse>(`/api/v1/filters/${id}`);
+	}
+
+	async createFilter(body: CreateFilterRequest): Promise<FilterResponse> {
+		return this.post<FilterResponse>('/api/v1/filters', body);
+	}
+
+	async updateFilter(id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
+		return this.put<FilterResponse>(`/api/v1/filters/${id}`, body);
+	}
+
+	async deleteFilter(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/filters/${id}`);
+	}
+
+	// Route-Filter attachment methods
+	async listRouteFilters(routeId: string): Promise<RouteFiltersResponse> {
+		return this.get<RouteFiltersResponse>(`/api/v1/routes/${routeId}/filters`);
+	}
+
+	async attachFilter(routeId: string, body: AttachFilterRequest): Promise<void> {
+		return this.post<void>(`/api/v1/routes/${routeId}/filters`, body);
+	}
+
+	async detachFilter(routeId: string, filterId: string): Promise<void> {
+		return this.delete<void>(`/api/v1/routes/${routeId}/filters/${filterId}`);
 	}
 }
 

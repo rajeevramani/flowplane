@@ -6,6 +6,7 @@
 		Server,
 		Radio,
 		FileUp,
+		Filter,
 		Users,
 		Building2,
 		Key,
@@ -18,6 +19,7 @@
 		clusters: number;
 		listeners: number;
 		imports: number;
+		filters: number;
 	}
 
 	interface Props {
@@ -32,6 +34,7 @@
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
+		{ id: 'filters', label: 'Filters', href: '/filters', icon: Filter },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
 	];
 
@@ -60,6 +63,8 @@
 				return resourceCounts.clusters;
 			case 'listeners':
 				return resourceCounts.listeners;
+			case 'filters':
+				return resourceCounts.filters;
 			case 'imports':
 				return resourceCounts.imports;
 			default:
