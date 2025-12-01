@@ -100,10 +100,9 @@
 					return {
 						name: r.name,
 						match: {
-							path: {
-								type: r.pathType,
-								value: r.path
-							},
+							path: r.pathType === 'template'
+								? { type: r.pathType, template: r.path }
+								: { type: r.pathType, value: r.path },
 							headers: [
 								{
 									name: ':method',
@@ -339,7 +338,7 @@
 				<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>
 					Cancel
 				</Button>
-				<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting || isLoading}>
+				<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
 					{isSubmitting ? 'Creating...' : 'Create Configuration'}
 				</Button>
 			</div>

@@ -6,7 +6,7 @@
 	import { apiClient } from '$lib/api/client';
 
 	interface ResourceCounts {
-		apis: number;
+		routeConfigs: number;
 		clusters: number;
 		listeners: number;
 		imports: number;

@@ -6,6 +6,7 @@
 	import type { OpenApiSpec, ListenerResponse } from '$lib/api/types';
 
 	let activeTab = $state<'upload' | 'paste'>('paste');
+	let previewTab = $state<'preview' | 'json'>('preview');
 	let specContent = $state('');
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let isDragging = $state(false);
@@ -360,43 +361,83 @@
 
 	<!-- Right column: Preview & Configuration -->
 	<div class="space-y-6">
-		<!-- Spec Preview -->
+		<!-- Spec Preview with Tabs -->
 		{#if parsedSpec}
-			<div class="bg-white rounded-lg shadow-md p-6">
-				<h2 class="text-lg font-semibold text-gray-900 mb-4">Spec Preview</h2>
-
-				<div class="space-y-4">
-					<div>
-						<h3 class="text-sm font-medium text-gray-700">API Information</h3>
-						<div class="mt-2 bg-gray-50 rounded-md p-3 space-y-1">
-							<p class="text-sm"><span class="font-medium">Title:</span> {parsedSpec.info.title}</p>
-							<p class="text-sm"><span class="font-medium">Version:</span> {parsedSpec.info.version}</p>
-							{#if parsedSpec.info.description}
-								<p class="text-sm"><span class="font-medium">Description:</span> {parsedSpec.info.description}</p>
-							{/if}
-						</div>
+			<div class="bg-white rounded-lg shadow-md">
+				<!-- Preview Tabs -->
+				<div class="border-b border-gray-200">
+					<div class="flex">
+						<button
+							onclick={() => previewTab = 'preview'}
+							class="flex-1 px-6 py-4 text-sm font-medium transition-colors {previewTab === 'preview'
+								? 'text-blue-600 border-b-2 border-blue-600'
+								: 'text-gray-600 hover:text-gray-900'}"
+						>
+							Spec Preview
+						</button>
+						<button
+							onclick={() => previewTab = 'json'}
+							class="flex-1 px-6 py-4 text-sm font-medium transition-colors {previewTab === 'json'
+								? 'text-blue-600 border-b-2 border-blue-600'
+								: 'text-gray-600 hover:text-gray-900'}"
+						>
+							JSON Preview
+						</button>
 					</div>
+				</div>
 
-					{#if parsedSpec.servers && parsedSpec.servers.length > 0}
-						<div>
-							<h3 class="text-sm font-medium text-gray-700">Servers</h3>
-							<div class="mt-2 bg-gray-50 rounded-md p-3 space-y-1">
-								{#each parsedSpec.servers as server}
-									<p class="text-sm font-mono">{server.url}</p>
-								{/each}
+				<!-- Tab Content -->
+				<div class="p-6">
+					{#if previewTab === 'preview'}
+						<!-- Spec Preview -->
+						<div class="space-y-4">
+							<div>
+								<h3 class="text-sm font-medium text-gray-700">API Information</h3>
+								<div class="mt-2 bg-gray-50 rounded-md p-3 space-y-1">
+									<p class="text-sm"><span class="font-medium">Title:</span> {parsedSpec.info.title}</p>
+									<p class="text-sm"><span class="font-medium">Version:</span> {parsedSpec.info.version}</p>
+									{#if parsedSpec.info.description}
+										<p class="text-sm"><span class="font-medium">Description:</span> {parsedSpec.info.description}</p>
+									{/if}
+								</div>
+							</div>
+
+							{#if parsedSpec.servers && parsedSpec.servers.length > 0}
+								<div>
+									<h3 class="text-sm font-medium text-gray-700">Servers</h3>
+									<div class="mt-2 bg-gray-50 rounded-md p-3 space-y-1">
+										{#each parsedSpec.servers as server}
+											<p class="text-sm font-mono">{server.url}</p>
+										{/each}
+									</div>
+								</div>
+							{/if}
+
+							<div>
+								<h3 class="text-sm font-medium text-gray-700">Paths</h3>
+								<div class="mt-2 bg-gray-50 rounded-md p-3">
+									<p class="text-sm">
+										<span class="font-medium">{getPathCount()}</span> paths with
+										<span class="font-medium">{getMethodsCount()}</span> operations
+									</p>
+								</div>
 							</div>
 						</div>
-					{/if}
-
-					<div>
-						<h3 class="text-sm font-medium text-gray-700">Paths</h3>
-						<div class="mt-2 bg-gray-50 rounded-md p-3">
-							<p class="text-sm">
-								<span class="font-medium">{getPathCount()}</span> paths with
-								<span class="font-medium">{getMethodsCount()}</span> operations
-							</p>
+					{:else}
+						<!-- JSON Preview -->
+						<div>
+							<div class="flex justify-between items-center mb-2">
+								<h3 class="text-sm font-medium text-gray-700">Parsed OpenAPI Specification</h3>
+								<button
+									onclick={() => navigator.clipboard.writeText(JSON.stringify(parsedSpec, null, 2))}
+									class="px-3 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+								>
+									Copy JSON
+								</button>
+							</div>
+							<pre class="bg-gray-900 text-gray-100 rounded-md p-4 overflow-auto max-h-96 text-xs"><code>{JSON.stringify(parsedSpec, null, 2)}</code></pre>
 						</div>
-					</div>
+					{/if}
 				</div>
 			</div>
 		{/if}

@@ -14,7 +14,7 @@
 	import type { SessionInfoResponse } from '$lib/api/types';
 
 	interface ResourceCounts {
-		apis: number;
+		routeConfigs: number;
 		clusters: number;
 		listeners: number;
 		imports: number;
@@ -29,8 +29,8 @@
 
 	// Resources navigation items
 	const resourceItems = [
-		{ id: 'apis', label: 'APIs', href: '/apis', icon: Layers },
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
+		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
 	];
@@ -54,8 +54,8 @@
 	function getCount(id: string): number | undefined {
 		if (!resourceCounts) return undefined;
 		switch (id) {
-			case 'apis':
-				return resourceCounts.apis;
+			case 'route-configs':
+				return resourceCounts.routeConfigs;
 			case 'clusters':
 				return resourceCounts.clusters;
 			case 'listeners':

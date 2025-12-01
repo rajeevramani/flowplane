@@ -1,60 +1,35 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
-	import { onMount, onDestroy } from 'svelte';
-	import { Eye, Lock, LockOpen, Pencil } from 'lucide-svelte';
-	import DataTable from '$lib/components/DataTable.svelte';
-	import StatusIndicator from '$lib/components/StatusIndicator.svelte';
-	import DetailDrawer from '$lib/components/DetailDrawer.svelte';
-	import ConfigCard from '$lib/components/ConfigCard.svelte';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { Plus, Edit, Trash2, Radio, Lock, Shield, Route } from 'lucide-svelte';
+	import type { ListenerResponse, RouteResponse, ImportSummary } from '$lib/api/types';
+	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
-	import ListenerConfigEditor from '$lib/components/ListenerConfigEditor.svelte';
-	import type {
-		ListenerResponse,
-		RouteResponse,
-		ImportSummary,
-		ListenerFilterChainInput,
-		ListenerFilterInput,
-		UpdateListenerBody
-	} from '$lib/api/types';
-	import { selectedTeam } from '$lib/stores/team';
-	import type { Unsubscriber } from 'svelte/store';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
 	let searchQuery = $state('');
 	let currentTeam = $state<string>('');
-	let unsubscribe: Unsubscriber;
 
 	// Data
 	let listeners = $state<ListenerResponse[]>([]);
 	let routes = $state<RouteResponse[]>([]);
 	let imports = $state<ImportSummary[]>([]);
 
-	// Drawer state
-	let drawerOpen = $state(false);
-	let selectedListener = $state<ListenerResponse | null>(null);
-
-	// Edit mode state
-	let editMode = $state(false);
-	let isSaving = $state(false);
-	let saveError = $state<string | null>(null);
-	let editedAddress = $state('');
-	let editedPort = $state(8080);
-	let editedProtocol = $state('HTTP');
-	let editedFilterChains = $state<ListenerFilterChainInput[]>([]);
-
-	onMount(async () => {
-		unsubscribe = selectedTeam.subscribe(async (team) => {
-			if (team && team !== currentTeam) {
-				currentTeam = team;
-				await loadData();
-			}
-		});
+	// Subscribe to team changes
+	selectedTeam.subscribe((value) => {
+		if (currentTeam && currentTeam !== value) {
+			currentTeam = value;
+			loadData();
+		} else {
+			currentTeam = value;
+		}
 	});
 
-	onDestroy(() => {
-		if (unsubscribe) unsubscribe();
+	onMount(async () => {
+		await loadData();
 	});
 
 	async function loadData() {
@@ -71,72 +46,14 @@
 			listeners = listenersData;
 			routes = routesData;
 			imports = importsData;
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load data';
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
 			isLoading = false;
 		}
 	}
 
-	// Table columns
-	const columns = [
-		{ key: 'name', label: 'Name', sortable: true },
-		{ key: 'team', label: 'Team', sortable: true },
-		{ key: 'address', label: 'Address' },
-		{ key: 'protocol', label: 'Protocol' },
-		{ key: 'tls', label: 'TLS' },
-		{ key: 'routes', label: 'Routes' },
-		{ key: 'status', label: 'Status' },
-		{ key: 'source', label: 'Source' }
-	];
-
-	// Transform listeners for table display
-	let tableData = $derived(
-		listeners
-			.filter((listener) => {
-				// Filter by team if a team is selected
-				if (currentTeam && listener.team !== currentTeam) return false;
-
-				// Filter by search query
-				if (!searchQuery) return true;
-				const query = searchQuery.toLowerCase();
-				return (
-					listener.name.toLowerCase().includes(query) ||
-					listener.address.toLowerCase().includes(query) ||
-					listener.team.toLowerCase().includes(query)
-				);
-			})
-			.map((listener) => {
-				const config = listener.config || {};
-
-				// Check for TLS
-				const hasTls = config.filter_chains?.some(
-					(fc: { tls_context?: unknown }) => fc.tls_context
-				);
-
-				// Count routes associated with this listener
-				const routeCount = getRoutesForListener(listener).length;
-
-				// Get source info
-				const importRecord = listener.importId
-					? imports.find((i) => i.id === listener.importId)
-					: null;
-
-				return {
-					id: listener.name,
-					name: listener.name,
-					team: listener.team,
-					address: `${listener.address}:${listener.port}`,
-					protocol: listener.protocol || 'HTTP',
-					hasTls,
-					routes: routeCount,
-					source: importRecord ? importRecord.specName : 'Manual',
-					sourceType: importRecord ? 'import' : 'manual',
-					_raw: listener
-				};
-			})
-	);
-
+	// Get routes for a listener
 	function getRoutesForListener(listener: ListenerResponse): RouteResponse[] {
 		const routeNames = new Set<string>();
 
@@ -154,349 +71,325 @@
 		return routes.filter((r) => routeNames.has(r.name));
 	}
 
-	function openDrawer(row: Record<string, unknown>) {
-		selectedListener = (row._raw as ListenerResponse) || null;
-		drawerOpen = true;
-	}
+	// Calculate stats
+	let stats = $derived({
+		totalListeners: listeners.length,
+		httpListeners: listeners.filter(l => (l.protocol || 'HTTP') === 'HTTP').length,
+		httpsListeners: listeners.filter(l => {
+			const config = l.config || {};
+			return config.filter_chains?.some(
+				(fc: { tls_context?: unknown }) => fc.tls_context
+			);
+		}).length,
+		totalRoutes: listeners.reduce((sum, listener) => {
+			return sum + getRoutesForListener(listener).length;
+		}, 0)
+	});
 
-	function closeDrawer() {
-		drawerOpen = false;
-		selectedListener = null;
-		editMode = false;
-		saveError = null;
-	}
+	// Filter listeners
+	let filteredListeners = $derived(
+		searchQuery
+			? listeners.filter(listener =>
+				listener.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				listener.address.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				listener.team.toLowerCase().includes(searchQuery.toLowerCase())
+			)
+			: listeners
+	);
 
-	function parseFilterChains(listener: ListenerResponse): ListenerFilterChainInput[] {
+	// Get listener features
+	function getListenerFeatures(listener: ListenerResponse) {
 		const config = listener.config || {};
-		const chains = config.filter_chains || [];
+		return {
+			hasTls: config.filter_chains?.some((fc: { tls_context?: unknown }) => fc.tls_context),
+			routeCount: getRoutesForListener(listener).length
+		};
+	}
 
-		return chains.map((fc: any) => {
-			const filters: ListenerFilterInput[] = (fc.filters || []).map((f: any) => {
-				if (f.filter_type?.HttpConnectionManager) {
-					return {
-						name: f.name || 'http_connection_manager',
-						type: 'httpConnectionManager' as const,
-						routeConfigName: f.filter_type.HttpConnectionManager.route_config_name,
-						inlineRouteConfig: f.filter_type.HttpConnectionManager.inline_route_config,
-						accessLog: f.filter_type.HttpConnectionManager.access_log,
-						tracing: f.filter_type.HttpConnectionManager.tracing,
-						httpFilters: f.filter_type.HttpConnectionManager.http_filters
-					};
-				} else if (f.filter_type?.TcpProxy) {
-					return {
-						name: f.name || 'tcp_proxy',
-						type: 'tcpProxy' as const,
-						cluster: f.filter_type.TcpProxy.cluster,
-						accessLog: f.filter_type.TcpProxy.access_log
-					};
-				}
-				return {
-					name: f.name || 'unknown',
-					type: 'httpConnectionManager' as const
-				};
-			});
-
+	// Get source type
+	function getSourceType(listener: ListenerResponse): { type: string; name?: string } {
+		if (listener.importId) {
+			const importRecord = imports.find(i => i.id === listener.importId);
 			return {
-				name: fc.name,
-				filters,
-				tlsContext: fc.tls_context ? {
-					certChainFile: fc.tls_context.cert_chain_file,
-					privateKeyFile: fc.tls_context.private_key_file,
-					caCertFile: fc.tls_context.ca_cert_file,
-					requireClientCertificate: fc.tls_context.require_client_certificate,
-					minTlsVersion: fc.tls_context.min_tls_version || 'V1_2'
-				} : undefined
+				type: 'import',
+				name: importRecord?.specName || 'OpenAPI Import'
 			};
-		});
-	}
-
-	function startEdit() {
-		if (!selectedListener) return;
-
-		editedAddress = selectedListener.address;
-		editedPort = selectedListener.port;
-		editedProtocol = selectedListener.protocol || 'HTTP';
-		editedFilterChains = parseFilterChains(selectedListener);
-		editMode = true;
-		saveError = null;
-	}
-
-	function cancelEdit() {
-		editMode = false;
-		saveError = null;
-	}
-
-	async function saveEdit() {
-		if (!selectedListener) return;
-
-		isSaving = true;
-		saveError = null;
-
-		try {
-			const body: UpdateListenerBody = {
-				address: editedAddress,
-				port: editedPort,
-				protocol: editedProtocol,
-				filterChains: editedFilterChains
-			};
-
-			await apiClient.updateListener(selectedListener.name, body);
-			await loadData();
-
-			// Update selectedListener with the new data
-			const updated = listeners.find(l => l.name === selectedListener?.name);
-			if (updated) {
-				selectedListener = updated;
-			}
-
-			editMode = false;
-		} catch (err) {
-			saveError = err instanceof Error ? err.message : 'Failed to update listener';
-		} finally {
-			isSaving = false;
 		}
+		return { type: 'manual', name: 'Manual' };
 	}
 
-	async function handleDelete(listenerName: string) {
-		if (!confirm(`Are you sure you want to delete the listener "${listenerName}"?`)) return;
+	// Get route config names from listener
+	function getRouteConfigNames(listener: ListenerResponse): string[] {
+		const names: string[] = [];
+		const config = listener.config || {};
+		const filterChains = config.filter_chains || [];
+
+		for (const fc of filterChains as any[]) {
+			const filters = fc.filters || [];
+			for (const filter of filters) {
+				if (filter.filter_type?.HttpConnectionManager?.route_config_name) {
+					names.push(filter.filter_type.HttpConnectionManager.route_config_name);
+				}
+			}
+		}
+
+		return [...new Set(names)]; // Remove duplicates
+	}
+
+	// Navigate to create page
+	function handleCreate() {
+		goto('/listeners/create');
+	}
+
+	// Navigate to edit page
+	function handleEdit(listenerName: string) {
+		goto(`/listeners/${encodeURIComponent(listenerName)}/edit`);
+	}
+
+	// Delete listener
+	async function handleDelete(listener: ListenerResponse) {
+		if (!confirm(`Are you sure you want to delete the listener "${listener.name}"? This action cannot be undone.`)) {
+			return;
+		}
 
 		try {
-			await apiClient.deleteListener(listenerName);
+			await apiClient.deleteListener(listener.name);
 			await loadData();
-			closeDrawer();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete listener';
 		}
 	}
 </script>
 
-<!-- Page Header -->
-<div class="mb-6 flex items-center justify-between">
-	<div>
-		<h1 class="text-2xl font-bold text-gray-900">Listeners</h1>
-		<p class="mt-1 text-sm text-gray-600">Network listeners accepting incoming traffic</p>
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+	<!-- Header -->
+	<div class="mb-8">
+		<h1 class="text-3xl font-bold text-gray-900">Listeners</h1>
+		<p class="mt-2 text-sm text-gray-600">
+			Manage network listeners for the <span class="font-medium">{currentTeam}</span> team
+		</p>
 	</div>
-</div>
 
-<!-- Error Message -->
-{#if error}
-	<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
-		<p class="text-red-800 text-sm">{error}</p>
+	<!-- Action Buttons -->
+	<div class="mb-6">
+		<Button onclick={handleCreate} variant="primary">
+			<Plus class="h-4 w-4 mr-2" />
+			Create Listener
+		</Button>
 	</div>
-{/if}
 
-<!-- Search Bar -->
-<div class="mb-6">
-	<input
-		type="text"
-		bind:value={searchQuery}
-		placeholder="Search listeners..."
-		class="w-full max-w-md px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-	/>
-</div>
-
-<!-- Data Table -->
-<DataTable
-	{columns}
-	data={tableData}
-	loading={isLoading}
-	emptyMessage="No listeners found."
-	rowKey="id"
-	onRowClick={openDrawer}
->
-	{#snippet cell({ row, column })}
-		{#if column.key === 'name'}
-			<span class="font-medium text-blue-600 hover:text-blue-800">{row.name}</span>
-		{:else if column.key === 'team'}
-			<Badge variant="indigo">{row.team}</Badge>
-		{:else if column.key === 'address'}
-			<span class="font-mono text-gray-900">{row.address}</span>
-		{:else if column.key === 'protocol'}
-			<Badge variant="gray">{row.protocol}</Badge>
-		{:else if column.key === 'tls'}
-			{#if row.hasTls}
-				<div class="flex items-center gap-1 text-green-600">
-					<Lock class="h-4 w-4" />
-					<span>Enabled</span>
+	<!-- Stats Cards -->
+	<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">Total Listeners</p>
+					<p class="text-2xl font-bold text-gray-900">{stats.totalListeners}</p>
 				</div>
-			{:else}
-				<div class="flex items-center gap-1 text-gray-400">
-					<LockOpen class="h-4 w-4" />
-					<span>Disabled</span>
+				<div class="p-3 bg-blue-100 rounded-lg">
+					<Radio class="h-6 w-6 text-blue-600" />
 				</div>
-			{/if}
-		{:else if column.key === 'routes'}
-			<span class="text-gray-600">{row.routes} route{row.routes !== 1 ? 's' : ''}</span>
-		{:else if column.key === 'status'}
-			<StatusIndicator status="active" />
-		{:else if column.key === 'source'}
-			{#if row.sourceType === 'import'}
-				<Badge variant="purple">{row.source}</Badge>
-			{:else}
-				<span class="text-gray-500">{row.source}</span>
-			{/if}
-		{:else}
-			{String(row[column.key] ?? '')}
-		{/if}
-	{/snippet}
-
-	{#snippet actions({ row })}
-		<button
-			onclick={(e) => {
-				e.stopPropagation();
-				openDrawer(row);
-			}}
-			class="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-blue-600 transition-colors"
-			title="View details"
-		>
-			<Eye class="h-4 w-4" />
-		</button>
-	{/snippet}
-</DataTable>
-
-<!-- Detail Drawer -->
-<DetailDrawer
-	open={drawerOpen}
-	title={selectedListener?.name || ''}
-	subtitle={selectedListener ? `Team: ${selectedListener.team}` : undefined}
-	onClose={closeDrawer}
->
-	{#if selectedListener}
-		{@const config = selectedListener.config || {}}
-
-		{#if editMode}
-			<!-- Edit Mode -->
-			<div class="space-y-4">
-				{#if saveError}
-					<div class="bg-red-50 border-l-4 border-red-500 rounded-md p-4">
-						<p class="text-red-800 text-sm">{saveError}</p>
-					</div>
-				{/if}
-
-				<ListenerConfigEditor
-					address={editedAddress}
-					port={editedPort}
-					protocol={editedProtocol}
-					filterChains={editedFilterChains}
-					onAddressChange={(addr) => editedAddress = addr}
-					onPortChange={(p) => editedPort = p}
-					onProtocolChange={(proto) => editedProtocol = proto}
-					onFilterChainsChange={(chains) => editedFilterChains = chains}
-					showAddressPortWarning={true}
-				/>
 			</div>
-		{:else}
-			<!-- View Mode -->
-			<div class="space-y-6">
-				<!-- Overview -->
-				<ConfigCard title="Overview" variant="gray">
-					<dl class="grid grid-cols-2 gap-4 text-sm">
-						<div>
-							<dt class="text-gray-500">Address</dt>
-							<dd class="font-mono text-gray-900">{selectedListener.address}</dd>
-						</div>
-						<div>
-							<dt class="text-gray-500">Port</dt>
-							<dd class="font-mono text-gray-900">{selectedListener.port}</dd>
-						</div>
-						<div>
-							<dt class="text-gray-500">Protocol</dt>
-							<dd class="text-gray-900">{selectedListener.protocol || 'HTTP'}</dd>
-						</div>
-						<div>
-							<dt class="text-gray-500">Version</dt>
-							<dd class="text-gray-900">{selectedListener.version}</dd>
-						</div>
-					</dl>
-				</ConfigCard>
+		</div>
 
-				<!-- Filter Chains -->
-				{#if config.filter_chains?.length}
-					<ConfigCard title="Filter Chains" variant="blue">
-						<div class="space-y-3">
-							{#each config.filter_chains as fc, i}
-								<div class="p-3 bg-white rounded border border-blue-200">
-									<div class="font-medium text-gray-900">{fc.name || `Chain ${i + 1}`}</div>
-									{#if fc.filters?.length}
-										<div class="mt-2 space-y-1">
-											{#each fc.filters as filter}
-												{@const routeConfigName = filter.filter_type?.HttpConnectionManager?.route_config_name}
-												<div class="text-sm text-gray-600">
-													{filter.name || (filter.filter_type?.HttpConnectionManager ? 'HttpConnectionManager' : 'Filter')}
-													{#if routeConfigName}
-														<span class="text-gray-400"> → {routeConfigName}</span>
-													{/if}
-												</div>
-											{/each}
-										</div>
-									{/if}
-									{#if fc.tls_context}
-										<div class="mt-2 flex items-center gap-1 text-green-600 text-sm">
-											<Lock class="h-3 w-3" />
-											TLS Enabled
-										</div>
-									{/if}
-								</div>
-							{/each}
-						</div>
-					</ConfigCard>
-				{/if}
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">HTTP Listeners</p>
+					<p class="text-2xl font-bold text-gray-900">{stats.httpListeners}</p>
+				</div>
+				<div class="p-3 bg-green-100 rounded-lg">
+					<Radio class="h-6 w-6 text-green-600" />
+				</div>
+			</div>
+		</div>
 
-				<!-- Associated Routes -->
-				{#if getRoutesForListener(selectedListener).length > 0}
-					{@const listenerRoutes = getRoutesForListener(selectedListener)}
-					<ConfigCard title="Associated Routes" variant="green" collapsible defaultCollapsed>
-						<div class="space-y-2">
-							{#each listenerRoutes as route}
-								<div class="p-2 bg-white rounded border border-green-200">
-									<div class="font-medium text-gray-900">{route.name}</div>
-									<div class="text-sm text-gray-500">{route.pathPrefix}</div>
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">HTTPS Listeners</p>
+					<p class="text-2xl font-bold text-gray-900">{stats.httpsListeners}</p>
+				</div>
+				<div class="p-3 bg-purple-100 rounded-lg">
+					<Lock class="h-6 w-6 text-purple-600" />
+				</div>
+			</div>
+		</div>
+
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">Total Routes</p>
+					<p class="text-2xl font-bold text-gray-900">{stats.totalRoutes}</p>
+				</div>
+				<div class="p-3 bg-orange-100 rounded-lg">
+					<Route class="h-6 w-6 text-orange-600" />
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Search -->
+	<div class="mb-6">
+		<input
+			type="text"
+			bind:value={searchQuery}
+			placeholder="Search by name or address..."
+			class="w-full md:w-96 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+		/>
+	</div>
+
+	<!-- Loading State -->
+	{#if isLoading}
+		<div class="flex items-center justify-center py-12">
+			<div class="flex flex-col items-center gap-3">
+				<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+				<span class="text-sm text-gray-600">Loading listeners...</span>
+			</div>
+		</div>
+	{:else if error}
+		<!-- Error State -->
+		<div class="bg-red-50 border border-red-200 rounded-md p-4">
+			<p class="text-sm text-red-800">{error}</p>
+		</div>
+	{:else if filteredListeners.length === 0}
+		<!-- Empty State -->
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+			<Radio class="h-12 w-12 text-gray-400 mx-auto mb-4" />
+			<h3 class="text-lg font-medium text-gray-900 mb-2">
+				{searchQuery ? 'No listeners found' : 'No listeners yet'}
+			</h3>
+			<p class="text-sm text-gray-600 mb-6">
+				{searchQuery
+					? 'Try adjusting your search query'
+					: 'Get started by creating a new listener'}
+			</p>
+			{#if !searchQuery}
+				<Button onclick={handleCreate} variant="primary">
+					<Plus class="h-4 w-4 mr-2" />
+					Create Listener
+				</Button>
+			{/if}
+		</div>
+	{:else}
+		<!-- Table -->
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+			<table class="min-w-full divide-y divide-gray-200">
+				<thead class="bg-gray-50">
+					<tr>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Name
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Team
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Address
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Protocol
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							TLS
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Route Configs
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Source
+						</th>
+						<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Actions
+						</th>
+					</tr>
+				</thead>
+				<tbody class="bg-white divide-y divide-gray-200">
+					{#each filteredListeners as listener}
+						{@const features = getListenerFeatures(listener)}
+						{@const source = getSourceType(listener)}
+						<tr class="hover:bg-gray-50 transition-colors">
+							<!-- Name -->
+							<td class="px-6 py-4">
+								<span class="text-sm font-medium text-gray-900">{listener.name}</span>
+							</td>
+
+							<!-- Team -->
+							<td class="px-6 py-4">
+								<Badge variant="indigo">{listener.team}</Badge>
+							</td>
+
+							<!-- Address -->
+							<td class="px-6 py-4">
+								<span class="text-sm text-gray-900 font-mono">{listener.address}:{listener.port}</span>
+							</td>
+
+							<!-- Protocol -->
+							<td class="px-6 py-4">
+								<Badge variant="gray">{listener.protocol || 'HTTP'}</Badge>
+							</td>
+
+							<!-- TLS -->
+							<td class="px-6 py-4">
+								{#if features.hasTls}
+									<Badge variant="green">Enabled</Badge>
+								{:else}
+									<Badge variant="gray">Disabled</Badge>
+								{/if}
+							</td>
+
+							<!-- Route Configs -->
+							<td class="px-6 py-4">
+								{#if getRouteConfigNames(listener).length > 0}
+									{@const routeConfigNames = getRouteConfigNames(listener)}
+									<div class="flex flex-wrap gap-1">
+										{#each routeConfigNames as routeConfigName}
+											<Badge variant="blue">{routeConfigName}</Badge>
+										{/each}
+									</div>
+								{:else}
+									<span class="text-sm text-gray-500">None</span>
+								{/if}
+							</td>
+
+							<!-- Source -->
+							<td class="px-6 py-4">
+								{#if source.type === 'import'}
+									<Badge variant="purple">{source.name}</Badge>
+								{:else}
+									<span class="text-sm text-gray-500">{source.name}</span>
+								{/if}
+							</td>
+
+							<!-- Actions -->
+							<td class="px-6 py-4 text-right">
+								<div class="flex justify-end gap-2">
+									<button
+										onclick={() => handleEdit(listener.name)}
+										class="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+										title="Edit listener"
+									>
+										<Edit class="h-4 w-4" />
+									</button>
+									<button
+										onclick={() => handleDelete(listener)}
+										class="p-2 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+										title="Delete listener"
+									>
+										<Trash2 class="h-4 w-4" />
+									</button>
 								</div>
-							{/each}
-						</div>
-					</ConfigCard>
-				{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+
+		<!-- Pagination Placeholder -->
+		{#if filteredListeners.length > 50}
+			<div class="mt-4 flex justify-center">
+				<p class="text-sm text-gray-600">Showing {filteredListeners.length} listeners</p>
 			</div>
 		{/if}
 	{/if}
-
-	{#snippet footer()}
-		{#if editMode}
-			<!-- Edit Mode Footer -->
-			<div class="flex justify-between items-center">
-				<Button variant="ghost" onclick={cancelEdit} disabled={isSaving}>
-					Cancel
-				</Button>
-				<div class="flex gap-3">
-					<Button
-						variant="danger"
-						onclick={() => selectedListener && handleDelete(selectedListener.name)}
-						disabled={isSaving}
-					>
-						Delete
-					</Button>
-					<Button variant="primary" onclick={saveEdit} loading={isSaving}>
-						{isSaving ? 'Saving...' : 'Save Changes'}
-					</Button>
-				</div>
-			</div>
-		{:else}
-			<!-- View Mode Footer -->
-			<div class="flex justify-between items-center">
-				<Button variant="ghost" onclick={closeDrawer}>Close</Button>
-				<div class="flex gap-3">
-					<Button variant="secondary" onclick={startEdit}>
-						<Pencil class="h-4 w-4 mr-2" />
-						Edit
-					</Button>
-					<Button
-						variant="danger"
-						onclick={() => selectedListener && handleDelete(selectedListener.name)}
-					>
-						Delete
-					</Button>
-				</div>
-			</div>
-		{/if}
-	{/snippet}
-</DetailDrawer>
+</div>

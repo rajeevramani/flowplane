@@ -103,8 +103,8 @@
 						const pathObj = route.match?.path;
 						const pathType = pathObj?.type || 'prefix';
 
-						// Extract path from value field (backend uses generic 'value' for both requests and responses)
-						const path = pathObj?.value || '/';
+						// Extract path - template type uses 'template' field, others (exact/prefix/regex) use 'value'
+						const path = pathObj?.template || pathObj?.value || '/';
 
 						console.log(`Extracted path: ${path}, type: ${pathType}`);
 
@@ -177,10 +177,9 @@
 					return {
 						name: r.name,
 						match: {
-							path: {
-								type: r.pathType,
-								value: r.path
-							},
+							path: r.pathType === 'template'
+								? { type: r.pathType, template: r.path }
+								: { type: r.pathType, value: r.path },
 							headers: [
 								{
 									name: ':method',

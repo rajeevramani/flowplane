@@ -416,6 +416,18 @@ export interface WeightedClusterDefinition {
 	weight: number;
 }
 
+export interface BackoffConfig {
+	baseIntervalMs?: number;
+	maxIntervalMs?: number;
+}
+
+export interface RetryPolicyDefinition {
+	maxRetries?: number;
+	retryOn: string[];
+	perTryTimeoutSeconds?: number;
+	backoff?: BackoffConfig;
+}
+
 export type RouteActionDefinition =
 	| {
 			type: 'forward';
@@ -423,6 +435,7 @@ export type RouteActionDefinition =
 			timeoutSeconds?: number;
 			prefixRewrite?: string;
 			templateRewrite?: string;
+			retryPolicy?: RetryPolicyDefinition;
 	  }
 	| {
 			type: 'weighted';

@@ -7,7 +7,7 @@
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
 
 	interface ResourceCounts {
-		apis: number;
+		routeConfigs: number;
 		clusters: number;
 		listeners: number;
 		imports: number;
@@ -17,7 +17,7 @@
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
-	let resourceCounts = $state<ResourceCounts>({ apis: 0, clusters: 0, listeners: 0, imports: 0 });
+	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, imports: 0 });
 
 	let { children } = $props();
 
@@ -61,7 +61,7 @@
 			]);
 
 			resourceCounts = {
-				apis: routes.length,
+				routeConfigs: routes.length,
 				clusters: clusters.length,
 				listeners: listeners.length,
 				imports: imports.length
