@@ -5,6 +5,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
+pub mod filters;
 pub mod health;
 pub mod learning_sessions;
 pub mod listeners;
@@ -30,6 +31,10 @@ pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
+};
+pub use filters::{
+    attach_filter_handler, create_filter_handler, delete_filter_handler, detach_filter_handler,
+    get_filter_handler, list_filters_handler, list_route_filters_handler, update_filter_handler,
 };
 pub use health::health_handler;
 pub use learning_sessions::{
@@ -64,6 +69,10 @@ pub use aggregated_schemas::{
 pub use clusters::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
+};
+pub use filters::{
+    AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
+    RouteFiltersResponse, UpdateFilterRequest,
 };
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
