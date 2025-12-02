@@ -11,8 +11,8 @@ use crate::{
     config::SimpleXdsConfig,
     services::LearningSessionService,
     storage::{
-        AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository, ListenerRepository,
-        RouteRepository,
+        AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
+        ListenerRepository, RouteRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -266,7 +266,12 @@ impl XdsState {
             None => return Ok(()),
         };
 
-        let route_rows = repository.list(Some(1000), None).await?;
+        let mut route_rows = repository.list(Some(1000), None).await?;
+
+        // Inject attached filters into route configurations
+        if let Err(e) = self.inject_route_filters(&mut route_rows).await {
+            warn!(error = %e, "Failed to inject filters into routes, continuing without filters");
+        }
 
         let built = if route_rows.is_empty() {
             routes_from_config(&self.config)?
@@ -297,6 +302,147 @@ impl XdsState {
                     "Route cache refresh detected no changes"
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    /// Inject attached filters into route configurations
+    ///
+    /// This modifies the route's JSON configuration to include any filters
+    /// attached via the route_filters junction table.
+    pub async fn inject_route_filters(
+        &self,
+        routes: &mut [crate::storage::RouteData],
+    ) -> Result<()> {
+        use crate::domain::FilterConfig;
+        use crate::xds::filters::http::header_mutation::{HeaderMutationEntry, HeaderMutationPerRouteConfig};
+        use crate::xds::filters::http::HttpScopedConfig;
+
+        let filter_repository = match &self.filter_repository {
+            Some(repo) => repo.clone(),
+            None => return Ok(()),
+        };
+
+        for route in routes.iter_mut() {
+            // Get filters attached to this route
+            let filters = filter_repository.list_route_filters(&route.id).await?;
+
+            if filters.is_empty() {
+                continue;
+            }
+
+            // Parse the route configuration
+            let mut config: serde_json::Value =
+                serde_json::from_str(&route.configuration).map_err(|e| {
+                    crate::Error::internal(format!(
+                        "Failed to parse route configuration for '{}': {}",
+                        route.name, e
+                    ))
+                })?;
+
+            // Process each filter and add to typed_per_filter_config
+            for filter_data in filters {
+                // Parse the filter configuration
+                let filter_config: FilterConfig =
+                    serde_json::from_str(&filter_data.configuration).map_err(|e| {
+                        warn!(
+                            filter_id = %filter_data.id,
+                            filter_name = %filter_data.name,
+                            error = %e,
+                            "Failed to parse filter configuration, skipping"
+                        );
+                        crate::Error::internal(format!(
+                            "Failed to parse filter configuration: {}",
+                            e
+                        ))
+                    })?;
+
+                // Convert to per-route config based on filter type
+                let (filter_name, scoped_config) = match filter_config {
+                    FilterConfig::HeaderMutation(hm_config) => {
+                        let per_route = HeaderMutationPerRouteConfig {
+                            request_headers_to_add: hm_config
+                                .request_headers_to_add
+                                .into_iter()
+                                .map(|e| HeaderMutationEntry {
+                                    key: e.key,
+                                    value: e.value,
+                                    append: e.append,
+                                })
+                                .collect(),
+                            request_headers_to_remove: hm_config.request_headers_to_remove,
+                            response_headers_to_add: hm_config
+                                .response_headers_to_add
+                                .into_iter()
+                                .map(|e| HeaderMutationEntry {
+                                    key: e.key,
+                                    value: e.value,
+                                    append: e.append,
+                                })
+                                .collect(),
+                            response_headers_to_remove: hm_config.response_headers_to_remove,
+                        };
+
+                        (
+                            "envoy.filters.http.header_mutation".to_string(),
+                            HttpScopedConfig::HeaderMutation(per_route),
+                        )
+                    }
+                };
+
+                // Inject into the route's virtual hosts
+                if let Some(virtual_hosts) = config.get_mut("virtual_hosts") {
+                    if let Some(vhosts_arr) = virtual_hosts.as_array_mut() {
+                        for vhost in vhosts_arr {
+                            // Add to each route within the virtual host
+                            if let Some(routes_arr) = vhost.get_mut("routes") {
+                                if let Some(routes) = routes_arr.as_array_mut() {
+                                    for route_entry in routes {
+                                        // Add typed_per_filter_config to the route
+                                        let tpfc = route_entry
+                                            .as_object_mut()
+                                            .and_then(|obj| {
+                                                obj.entry("typed_per_filter_config")
+                                                    .or_insert_with(|| {
+                                                        serde_json::json!({})
+                                                    })
+                                                    .as_object_mut()
+                                            });
+
+                                        if let Some(tpfc_obj) = tpfc {
+                                            // Serialize the scoped config
+                                            if let Ok(config_value) =
+                                                serde_json::to_value(&scoped_config)
+                                            {
+                                                tpfc_obj.insert(
+                                                    filter_name.clone(),
+                                                    config_value,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                info!(
+                    route_name = %route.name,
+                    filter_name = %filter_data.name,
+                    filter_type = %filter_data.filter_type,
+                    "Injected filter into route configuration"
+                );
+            }
+
+            // Update the route configuration with the modified JSON
+            route.configuration = serde_json::to_string(&config).map_err(|e| {
+                crate::Error::internal(format!(
+                    "Failed to serialize modified route configuration: {}",
+                    e
+                ))
+            })?;
         }
 
         Ok(())

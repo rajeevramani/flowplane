@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info, instrument};
+use tracing::{info, instrument};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -31,6 +31,25 @@ use validation::{
     filter_response_from_data, require_filter_repository, validate_create_filter_request,
     validate_update_filter_request, verify_filter_access,
 };
+
+// === Helper Functions ===
+
+/// Resolve a route name to its database ID (UUID)
+///
+/// The public API uses route names as identifiers, but the database
+/// uses UUIDs for foreign key relationships. This function looks up
+/// the route by name and returns its internal UUID.
+async fn resolve_route_id(state: &ApiState, route_name: &str) -> Result<RouteId, ApiError> {
+    let route_repository = state
+        .xds_state
+        .route_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Route repository not available"))?;
+
+    let route = route_repository.get_by_name(route_name).await.map_err(ApiError::from)?;
+
+    Ok(route.id)
+}
 
 // === Handler Implementations ===
 
@@ -63,10 +82,8 @@ pub async fn list_filters_handler(
         .await
         .map_err(ApiError::from)?;
 
-    let responses: Result<Vec<FilterResponse>, ApiError> = filters
-        .into_iter()
-        .map(filter_response_from_data)
-        .collect();
+    let responses: Result<Vec<FilterResponse>, ApiError> =
+        filters.into_iter().map(filter_response_from_data).collect();
 
     Ok(Json(responses?))
 }
@@ -142,10 +159,7 @@ pub async fn get_filter_handler(
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
-    let filter = repository
-        .get_by_id(&filter_id)
-        .await
-        .map_err(ApiError::from)?;
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
 
     // Verify access to this filter
     let filter = verify_filter_access(filter, &team_scopes).await?;
@@ -185,10 +199,7 @@ pub async fn update_filter_handler(
     let filter_id = FilterId::from_string(id);
 
     // Get existing filter and verify access
-    let existing = repository
-        .get_by_id(&filter_id)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
     let existing = verify_filter_access(existing, &team_scopes).await?;
 
     // Verify user has write access to the filter's team
@@ -243,10 +254,7 @@ pub async fn delete_filter_handler(
     let filter_id = FilterId::from_string(id);
 
     // Get existing filter and verify access
-    let existing = repository
-        .get_by_id(&filter_id)
-        .await
-        .map_err(ApiError::from)?;
+    let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
     let existing = verify_filter_access(existing, &team_scopes).await?;
 
     // Verify user has write access to the filter's team
@@ -254,10 +262,7 @@ pub async fn delete_filter_handler(
 
     let service = FilterService::new(state.xds_state.clone());
 
-    service
-        .delete_filter(&filter_id)
-        .await
-        .map_err(ApiError::from)?;
+    service.delete_filter(&filter_id).await.map_err(ApiError::from)?;
 
     info!(
         filter_id = %filter_id,
@@ -283,19 +288,20 @@ pub async fn delete_filter_handler(
     ),
     tag = "filters"
 )]
-#[instrument(skip(state, context, payload), fields(route_id = %route_id, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(route_id): Path<String>,
+    Path(route_name): Path<String>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "routes", "write", None)?;
 
-    let service = FilterService::new(state.xds_state.clone());
-
-    let route_id = RouteId::from_string(route_id);
+    // Resolve route name to internal UUID for database foreign key
+    let route_id = resolve_route_id(&state, &route_name).await?;
     let filter_id = FilterId::from_string(payload.filter_id);
+
+    let service = FilterService::new(state.xds_state.clone());
 
     service
         .attach_filter_to_route(&route_id, &filter_id, payload.order)
@@ -303,6 +309,7 @@ pub async fn attach_filter_handler(
         .map_err(ApiError::from)?;
 
     info!(
+        route_name = %route_name,
         route_id = %route_id,
         filter_id = %filter_id,
         "Filter attached to route via API"
@@ -325,25 +332,24 @@ pub async fn attach_filter_handler(
     ),
     tag = "filters"
 )]
-#[instrument(skip(state, context), fields(route_id = %route_id, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_id, filter_id)): Path<(String, String)>,
+    Path((route_name, filter_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "routes", "write", None)?;
 
-    let service = FilterService::new(state.xds_state.clone());
-
-    let route_id = RouteId::from_string(route_id);
+    // Resolve route name to internal UUID for database foreign key
+    let route_id = resolve_route_id(&state, &route_name).await?;
     let filter_id = FilterId::from_string(filter_id);
 
-    service
-        .detach_filter_from_route(&route_id, &filter_id)
-        .await
-        .map_err(ApiError::from)?;
+    let service = FilterService::new(state.xds_state.clone());
+
+    service.detach_filter_from_route(&route_id, &filter_id).await.map_err(ApiError::from)?;
 
     info!(
+        route_name = %route_name,
         route_id = %route_id,
         filter_id = %filter_id,
         "Filter detached from route via API"
@@ -365,32 +371,27 @@ pub async fn detach_filter_handler(
     ),
     tag = "filters"
 )]
-#[instrument(skip(state, context), fields(route_id = %route_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(route_id): Path<String>,
+    Path(route_name): Path<String>,
 ) -> Result<Json<RouteFiltersResponse>, ApiError> {
     require_resource_access(&context, "routes", "read", None)?;
 
+    // Resolve route name to internal UUID for database query
+    let route_id = resolve_route_id(&state, &route_name).await?;
+
     let service = FilterService::new(state.xds_state.clone());
 
-    let route_id = RouteId::from_string(route_id.clone());
+    let filters = service.list_route_filters(&route_id).await.map_err(ApiError::from)?;
 
-    let filters = service
-        .list_route_filters(&route_id)
-        .await
-        .map_err(ApiError::from)?;
+    let filter_responses: Result<Vec<FilterResponse>, ApiError> =
+        filters.into_iter().map(filter_response_from_data).collect();
 
-    let filter_responses: Result<Vec<FilterResponse>, ApiError> = filters
-        .into_iter()
-        .map(filter_response_from_data)
-        .collect();
-
-    let response = RouteFiltersResponse {
-        route_id,
-        filters: filter_responses?,
-    };
+    // Return the route name (public identifier) in the response, not the internal UUID
+    let response =
+        RouteFiltersResponse { route_id: route_name, filters: filter_responses? };
 
     Ok(Json(response))
 }

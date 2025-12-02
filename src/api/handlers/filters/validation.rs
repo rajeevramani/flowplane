@@ -28,9 +28,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
 
     // Validate name length
     if payload.name.len() > 255 {
-        return Err(ApiError::validation(
-            "Filter name must be 255 characters or less",
-        ));
+        return Err(ApiError::validation("Filter name must be 255 characters or less"));
     }
 
     // Validate team is not empty
@@ -41,9 +39,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
     // Validate filter type matches config
     match (&payload.filter_type, &payload.config) {
         (crate::domain::FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => Ok(()),
-        _ => Err(ApiError::validation(
-            "Filter type and configuration do not match",
-        )),
+        _ => Err(ApiError::validation("Filter type and configuration do not match")),
     }
 }
 
@@ -55,9 +51,7 @@ pub fn validate_update_filter_request(payload: &UpdateFilterRequest) -> Result<(
             return Err(ApiError::validation("Filter name cannot be empty"));
         }
         if name.len() > 255 {
-            return Err(ApiError::validation(
-                "Filter name must be 255 characters or less",
-            ));
+            return Err(ApiError::validation("Filter name must be 255 characters or less"));
         }
     }
 
@@ -105,9 +99,6 @@ pub async fn verify_filter_access(
         }
 
         // Return 404 to avoid leaking existence of other teams' resources
-        Err(ApiError::NotFound(format!(
-            "Filter with id '{}' not found",
-            filter.id
-        )))
+        Err(ApiError::NotFound(format!("Filter with id '{}' not found", filter.id)))
     }
 }

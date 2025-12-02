@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::domain::{FilterConfig, FilterId, FilterType};
+use crate::domain::{FilterConfig, FilterType};
 use crate::storage::FilterData;
 
 /// Query parameters for listing filters

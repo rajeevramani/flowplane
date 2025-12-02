@@ -211,4 +211,18 @@ impl ApiError {
     pub fn forbidden<S: Into<String>>(msg: S) -> Self {
         ApiError::Forbidden(msg.into())
     }
+
+    /// Creates a bad request error (400).
+    ///
+    /// Use for validation errors and malformed input.
+    pub fn validation<S: Into<String>>(msg: S) -> Self {
+        ApiError::BadRequest(msg.into())
+    }
+
+    /// Creates an internal server error (500).
+    ///
+    /// Use for unexpected internal errors.
+    pub fn internal<S: Into<String>>(msg: S) -> Self {
+        ApiError::Internal(msg.into())
+    }
 }

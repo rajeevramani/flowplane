@@ -201,7 +201,7 @@ impl DatabaseAggregatedDiscoveryService {
 
             // Always include default resources (include_default = true)
             match repo.list_by_teams(&teams, true, Some(100), None).await {
-                Ok(route_data_list) => {
+                Ok(mut route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
                     // Record team-scoped resource count metrics
@@ -218,6 +218,11 @@ impl DatabaseAggregatedDiscoveryService {
                         info!("No routes found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
                     } else {
+                        // Inject attached filters into route configurations
+                        if let Err(e) = self.state.inject_route_filters(&mut route_data_list).await {
+                            warn!(error = %e, "Failed to inject filters into routes for ADS response");
+                        }
+
                         info!(
                             phase = "ads_response",
                             route_count = route_data_list.len(),

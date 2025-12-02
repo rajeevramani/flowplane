@@ -62,19 +62,15 @@ impl FilterService {
             // Validate config matches type
             match (&filter_type, &config) {
                 (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
-                _ => {
-                    return Err(Error::validation(
-                        "Filter type and configuration do not match",
-                    ))
-                }
+                _ => return Err(Error::validation("Filter type and configuration do not match")),
             }
 
             // Check if filter name already exists for this team
             if repository.exists_by_name(&team, &name).await? {
-                return Err(Error::conflict(format!(
-                    "Filter with name '{}' already exists for team '{}'",
-                    name, team
-                )));
+                return Err(Error::conflict(
+                    format!("Filter with name '{}' already exists for team '{}'", name, team),
+                    "filter",
+                ));
             }
 
             // Serialize config
@@ -152,30 +148,34 @@ impl FilterService {
 
             // If name is being changed, check for conflicts
             if let Some(ref new_name) = name {
-                if new_name != &existing.name {
-                    if repository.exists_by_name(&existing.team, new_name).await? {
-                        return Err(Error::conflict(format!(
+                if new_name != &existing.name
+                    && repository.exists_by_name(&existing.team, new_name).await?
+                {
+                    return Err(Error::conflict(
+                        format!(
                             "Filter with name '{}' already exists for team '{}'",
                             new_name, existing.team
-                        )));
-                    }
+                        ),
+                        "filter",
+                    ));
                 }
             }
 
             // Serialize config if provided
             let configuration = if let Some(config) = config {
                 // Validate config matches existing type
-                let existing_type: FilterType =
-                    serde_json::from_str(&format!("\"{}\"", existing.filter_type)).map_err(
-                        |err| Error::internal(format!("Failed to parse existing filter type: {}", err)),
-                    )?;
+                let existing_type: FilterType = serde_json::from_str(&format!(
+                    "\"{}\"",
+                    existing.filter_type
+                ))
+                .map_err(|err| {
+                    Error::internal(format!("Failed to parse existing filter type: {}", err))
+                })?;
 
                 match (&existing_type, &config) {
                     (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
                     _ => {
-                        return Err(Error::validation(
-                            "Cannot change filter type, config mismatch",
-                        ))
+                        return Err(Error::validation("Cannot change filter type, config mismatch"))
                     }
                 }
 
@@ -186,11 +186,7 @@ impl FilterService {
                 None
             };
 
-            let update_request = UpdateFilterRequest {
-                name,
-                description,
-                configuration,
-            };
+            let update_request = UpdateFilterRequest { name, description, configuration };
 
             let mut db_span = create_operation_span("db.filter.update", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "UPDATE"));
@@ -231,10 +227,13 @@ impl FilterService {
             // Check if filter is attached to any routes
             let routes = repository.list_filter_routes(id).await?;
             if !routes.is_empty() {
-                return Err(Error::conflict(format!(
-                    "Filter is attached to {} route(s). Detach before deleting.",
-                    routes.len()
-                )));
+                return Err(Error::conflict(
+                    format!(
+                        "Filter is attached to {} route(s). Detach before deleting.",
+                        routes.len()
+                    ),
+                    "filter",
+                ));
             }
 
             let mut db_span = create_operation_span("db.filter.delete", SpanKind::Client);
@@ -292,13 +291,10 @@ impl FilterService {
                 }
             };
 
-            let mut db_span =
-                create_operation_span("db.route_filters.insert", SpanKind::Client);
+            let mut db_span = create_operation_span("db.route_filters.insert", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
             db_span.set_attribute(KeyValue::new("db.table", "route_filters"));
-            repository
-                .attach_to_route(route_id, filter_id, order)
-                .await?;
+            repository.attach_to_route(route_id, filter_id, order).await?;
             drop(db_span);
 
             info!(
@@ -338,13 +334,10 @@ impl FilterService {
         async move {
             let repository = self.repository()?;
 
-            let mut db_span =
-                create_operation_span("db.route_filters.delete", SpanKind::Client);
+            let mut db_span = create_operation_span("db.route_filters.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
             db_span.set_attribute(KeyValue::new("db.table", "route_filters"));
-            repository
-                .detach_from_route(route_id, filter_id)
-                .await?;
+            repository.detach_from_route(route_id, filter_id).await?;
             drop(db_span);
 
             info!(
@@ -380,21 +373,15 @@ impl FilterService {
     /// Parse filter configuration from stored JSON
     pub fn parse_config(&self, data: &FilterData) -> Result<FilterConfig, Error> {
         serde_json::from_str(&data.configuration).map_err(|err| {
-            Error::internal(format!(
-                "Failed to parse stored filter configuration: {}",
-                err
-            ))
+            Error::internal(format!("Failed to parse stored filter configuration: {}", err))
         })
     }
 
     /// Refresh xDS caches after filter changes
     async fn refresh_xds(&self) -> Result<(), Error> {
-        self.xds_state
-            .refresh_routes_from_repository()
-            .await
-            .map_err(|err| {
-                error!(error = %err, "Failed to refresh xDS caches after filter operation");
-                err
-            })
+        self.xds_state.refresh_routes_from_repository().await.map_err(|err| {
+            error!(error = %err, "Failed to refresh xDS caches after filter operation");
+            err
+        })
     }
 }

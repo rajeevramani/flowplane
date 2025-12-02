@@ -17,6 +17,7 @@ pub use migrations::{
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
 pub use repositories::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
+    CreateFilterRequest, FilterData, FilterRepository, UpdateFilterRequest,
 };
 pub use repository::{
     AuditEvent, AuditLogRepository, ClusterData, ClusterRepository, CreateClusterRequest,

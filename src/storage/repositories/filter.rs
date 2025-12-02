@@ -238,11 +238,7 @@ impl FilterRepository {
     }
 
     #[instrument(skip(self, request), fields(filter_id = %id), name = "db_update_filter")]
-    pub async fn update(
-        &self,
-        id: &FilterId,
-        request: UpdateFilterRequest,
-    ) -> Result<FilterData> {
+    pub async fn update(&self, id: &FilterId, request: UpdateFilterRequest) -> Result<FilterData> {
         let current = self.get_by_id(id).await?;
 
         let new_name = request.name.unwrap_or(current.name);
@@ -351,11 +347,7 @@ impl FilterRepository {
     }
 
     #[instrument(skip(self), fields(route_id = %route_id, filter_id = %filter_id), name = "db_detach_filter_from_route")]
-    pub async fn detach_from_route(
-        &self,
-        route_id: &RouteId,
-        filter_id: &FilterId,
-    ) -> Result<()> {
+    pub async fn detach_from_route(&self, route_id: &RouteId, filter_id: &FilterId) -> Result<()> {
         let result = sqlx::query(
             "DELETE FROM route_filters WHERE route_id = $1 AND filter_id = $2"
         )
