@@ -600,11 +600,23 @@ export interface ListScopesResponse {
 
 // === Filter Types ===
 
-export type FilterType = 'HeaderMutation';
+// Filter type uses snake_case to match backend serde serialization
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'cors' | 'rate_limit' | 'ext_authz';
 
+// FilterConfig uses tagged enum format: { type: '...', config: {...} }
+// This matches the Rust #[serde(tag = "type", content = "config")] serialization
 export type FilterConfig = {
-	headerMutation: HeaderMutationConfig;
+	type: 'header_mutation';
+	config: HeaderMutationFilterConfig;
 };
+
+// Backend uses snake_case field names for HeaderMutationFilterConfig
+export interface HeaderMutationFilterConfig {
+	request_headers_to_add?: HeaderMutationEntry[];
+	request_headers_to_remove?: string[];
+	response_headers_to_add?: HeaderMutationEntry[];
+	response_headers_to_remove?: string[];
+}
 
 export interface FilterResponse {
 	id: string;

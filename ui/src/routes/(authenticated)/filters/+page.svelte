@@ -39,6 +39,7 @@
 			filters = filtersData;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load filters';
+			console.error('Failed to load filters:', e);
 		} finally {
 			isLoading = false;
 		}
@@ -47,7 +48,7 @@
 	// Calculate stats
 	let stats = $derived({
 		totalFilters: filters.filter(f => f.team === currentTeam).length,
-		headerMutationFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'HeaderMutation').length
+		headerMutationFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'header_mutation').length
 	});
 
 	// Filter filters by team and search
@@ -61,9 +62,9 @@
 			)
 	);
 
-	// Format filter type for display
+	// Format filter type for display (convert snake_case to Title Case)
 	function formatFilterType(type: string): string {
-		return type.replace(/([A-Z])/g, ' $1').trim();
+		return type.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 	}
 
 	// Navigate to create page

@@ -21,7 +21,7 @@ use tracing::{info, instrument};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     domain::{FilterId, RouteId},
     services::FilterService,
@@ -74,7 +74,9 @@ pub async fn list_filters_handler(
 ) -> Result<Json<Vec<FilterResponse>>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes = extract_team_scopes(&context);
+    // Admin users see all filters, regular users see only their team's filters
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let repository = require_filter_repository(&state)?;
 
     let filters = repository
@@ -155,7 +157,8 @@ pub async fn get_filter_handler(
 ) -> Result<Json<FilterResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
@@ -193,7 +196,8 @@ pub async fn update_filter_handler(
 ) -> Result<Json<FilterResponse>, ApiError> {
     validate_update_filter_request(&payload)?;
 
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
@@ -248,7 +252,8 @@ pub async fn delete_filter_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
@@ -390,8 +395,7 @@ pub async fn list_route_filters_handler(
         filters.into_iter().map(filter_response_from_data).collect();
 
     // Return the route name (public identifier) in the response, not the internal UUID
-    let response =
-        RouteFiltersResponse { route_id: route_name, filters: filter_responses? };
+    let response = RouteFiltersResponse { route_id: route_name, filters: filter_responses? };
 
     Ok(Json(response))
 }

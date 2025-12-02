@@ -316,7 +316,9 @@ impl XdsState {
         routes: &mut [crate::storage::RouteData],
     ) -> Result<()> {
         use crate::domain::FilterConfig;
-        use crate::xds::filters::http::header_mutation::{HeaderMutationEntry, HeaderMutationPerRouteConfig};
+        use crate::xds::filters::http::header_mutation::{
+            HeaderMutationEntry, HeaderMutationPerRouteConfig,
+        };
         use crate::xds::filters::http::HttpScopedConfig;
 
         let filter_repository = match &self.filter_repository {
@@ -333,8 +335,8 @@ impl XdsState {
             }
 
             // Parse the route configuration
-            let mut config: serde_json::Value =
-                serde_json::from_str(&route.configuration).map_err(|e| {
+            let mut config: serde_json::Value = serde_json::from_str(&route.configuration)
+                .map_err(|e| {
                     crate::Error::internal(format!(
                         "Failed to parse route configuration for '{}': {}",
                         route.name, e
@@ -344,8 +346,8 @@ impl XdsState {
             // Process each filter and add to typed_per_filter_config
             for filter_data in filters {
                 // Parse the filter configuration
-                let filter_config: FilterConfig =
-                    serde_json::from_str(&filter_data.configuration).map_err(|e| {
+                let filter_config: FilterConfig = serde_json::from_str(&filter_data.configuration)
+                    .map_err(|e| {
                         warn!(
                             filter_id = %filter_data.id,
                             filter_name = %filter_data.name,
@@ -400,25 +402,18 @@ impl XdsState {
                                 if let Some(routes) = routes_arr.as_array_mut() {
                                     for route_entry in routes {
                                         // Add typed_per_filter_config to the route
-                                        let tpfc = route_entry
-                                            .as_object_mut()
-                                            .and_then(|obj| {
-                                                obj.entry("typed_per_filter_config")
-                                                    .or_insert_with(|| {
-                                                        serde_json::json!({})
-                                                    })
-                                                    .as_object_mut()
-                                            });
+                                        let tpfc = route_entry.as_object_mut().and_then(|obj| {
+                                            obj.entry("typed_per_filter_config")
+                                                .or_insert_with(|| serde_json::json!({}))
+                                                .as_object_mut()
+                                        });
 
                                         if let Some(tpfc_obj) = tpfc {
                                             // Serialize the scoped config
                                             if let Ok(config_value) =
                                                 serde_json::to_value(&scoped_config)
                                             {
-                                                tpfc_obj.insert(
-                                                    filter_name.clone(),
-                                                    config_value,
-                                                );
+                                                tpfc_obj.insert(filter_name.clone(), config_value);
                                             }
                                         }
                                     }
