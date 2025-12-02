@@ -48,7 +48,8 @@ import type {
 	CreateFilterRequest,
 	UpdateFilterRequest,
 	AttachFilterRequest,
-	RouteFiltersResponse
+	RouteFiltersResponse,
+	ListenerFiltersResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -564,6 +565,19 @@ class ApiClient {
 
 	async detachFilter(routeId: string, filterId: string): Promise<void> {
 		return this.delete<void>(`/api/v1/routes/${routeId}/filters/${filterId}`);
+	}
+
+	// Listener-Filter attachment methods
+	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
+		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
+	}
+
+	async attachFilterToListener(listenerId: string, body: AttachFilterRequest): Promise<void> {
+		return this.post<void>(`/api/v1/listeners/${listenerId}/filters`, body);
+	}
+
+	async detachFilterFromListener(listenerId: string, filterId: string): Promise<void> {
+		return this.delete<void>(`/api/v1/listeners/${listenerId}/filters/${filterId}`);
 	}
 }
 

@@ -601,6 +601,9 @@ export interface ListScopesResponse {
 
 // === Filter Types ===
 
+// Attachment point - where a filter can be attached
+export type AttachmentPoint = 'route' | 'listener' | 'cluster';
+
 // Filter type uses snake_case to match backend serde serialization
 export type FilterType = 'header_mutation' | 'jwt_auth' | 'cors' | 'rate_limit' | 'ext_authz';
 
@@ -630,6 +633,7 @@ export interface FilterResponse {
 	team: string;
 	createdAt: string;
 	updatedAt: string;
+	allowedAttachmentPoints: AttachmentPoint[];
 }
 
 export interface CreateFilterRequest {
@@ -653,5 +657,10 @@ export interface AttachFilterRequest {
 
 export interface RouteFiltersResponse {
 	routeId: string;
+	filters: FilterResponse[];
+}
+
+export interface ListenerFiltersResponse {
+	listenerId: string;
 	filters: FilterResponse[];
 }

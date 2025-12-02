@@ -10,6 +10,7 @@
 		clusters: number;
 		listeners: number;
 		imports: number;
+		filters: number;
 	}
 
 	interface Props {

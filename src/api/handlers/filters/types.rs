@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::domain::{FilterConfig, FilterType};
+use crate::domain::{AttachmentPoint, FilterConfig, FilterType};
 use crate::storage::FilterData;
 
 /// Query parameters for listing filters
@@ -54,11 +54,20 @@ pub struct FilterResponse {
     pub team: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Valid attachment points for this filter type
+    pub allowed_attachment_points: Vec<AttachmentPoint>,
 }
 
 impl FilterResponse {
     /// Convert from FilterData and parsed config
     pub fn from_data(data: FilterData, config: FilterConfig) -> Self {
+        // Parse filter type to get allowed attachment points
+        let allowed_attachment_points = data
+            .filter_type
+            .parse::<FilterType>()
+            .map(|ft| ft.allowed_attachment_points())
+            .unwrap_or_default();
+
         Self {
             id: data.id.to_string(),
             name: data.name,
@@ -70,6 +79,7 @@ impl FilterResponse {
             team: data.team,
             created_at: data.created_at.to_rfc3339(),
             updated_at: data.updated_at.to_rfc3339(),
+            allowed_attachment_points,
         }
     }
 }

@@ -79,6 +79,21 @@ impl fmt::Display for FilterType {
     }
 }
 
+impl std::str::FromStr for FilterType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "header_mutation" => Ok(FilterType::HeaderMutation),
+            "jwt_auth" => Ok(FilterType::JwtAuth),
+            "cors" => Ok(FilterType::Cors),
+            "rate_limit" => Ok(FilterType::RateLimit),
+            "ext_authz" => Ok(FilterType::ExtAuthz),
+            _ => Err(format!("Unknown filter type: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct HeaderMutationEntry {
     pub key: String,
@@ -251,5 +266,17 @@ mod tests {
     fn test_allowed_attachment_points_display() {
         assert_eq!(FilterType::HeaderMutation.allowed_attachment_points_display(), "route only");
         assert_eq!(FilterType::JwtAuth.allowed_attachment_points_display(), "route, listener");
+    }
+
+    #[test]
+    fn test_filter_type_from_str() {
+        assert_eq!("header_mutation".parse::<FilterType>().unwrap(), FilterType::HeaderMutation);
+        assert_eq!("jwt_auth".parse::<FilterType>().unwrap(), FilterType::JwtAuth);
+        assert_eq!("cors".parse::<FilterType>().unwrap(), FilterType::Cors);
+        assert_eq!("rate_limit".parse::<FilterType>().unwrap(), FilterType::RateLimit);
+        assert_eq!("ext_authz".parse::<FilterType>().unwrap(), FilterType::ExtAuthz);
+
+        // Unknown type should error
+        assert!("unknown".parse::<FilterType>().is_err());
     }
 }
