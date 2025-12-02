@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 use crate::{
-    domain::{FilterConfig, FilterId, FilterType, RouteId},
+    domain::{AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId, RouteId},
     errors::Error,
     observability::http_tracing::create_operation_span,
     storage::{CreateFilterRequest, FilterData, FilterRepository, UpdateFilterRequest},
@@ -212,6 +212,8 @@ impl FilterService {
     }
 
     /// Delete a filter by ID
+    ///
+    /// Fails if the filter is attached to any routes or listeners.
     pub async fn delete_filter(&self, id: &FilterId) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -226,11 +228,20 @@ impl FilterService {
 
             // Check if filter is attached to any routes
             let routes = repository.list_filter_routes(id).await?;
-            if !routes.is_empty() {
+            let listeners = repository.list_filter_listeners(id).await?;
+
+            if !routes.is_empty() || !listeners.is_empty() {
+                let mut parts = Vec::new();
+                if !routes.is_empty() {
+                    parts.push(format!("{} route(s)", routes.len()));
+                }
+                if !listeners.is_empty() {
+                    parts.push(format!("{} listener(s)", listeners.len()));
+                }
                 return Err(Error::conflict(
                     format!(
-                        "Filter is attached to {} route(s). Detach before deleting.",
-                        routes.len()
+                        "Filter is attached to {}. Detach before deleting.",
+                        parts.join(" and ")
                     ),
                     "filter",
                 ));
@@ -261,6 +272,8 @@ impl FilterService {
     }
 
     /// Attach a filter to a route
+    ///
+    /// Validates that the filter type supports route-level attachment before proceeding.
     pub async fn attach_filter_to_route(
         &self,
         route_id: &RouteId,
@@ -279,8 +292,22 @@ impl FilterService {
         async move {
             let repository = self.repository()?;
 
-            // Verify filter exists
-            repository.get_by_id(filter_id).await?;
+            // Verify filter exists and get its type
+            let filter = repository.get_by_id(filter_id).await?;
+
+            // Validate filter type can attach to routes
+            let filter_type: FilterType =
+                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
+                    Error::internal(format!("Failed to parse filter type: {}", err))
+                })?;
+
+            if !filter_type.can_attach_to(AttachmentPoint::Route) {
+                return Err(Error::validation(format!(
+                    "Filter type '{}' cannot be attached to routes. Valid attachment points: {}",
+                    filter.filter_type,
+                    filter_type.allowed_attachment_points_display()
+                )));
+            }
 
             // Determine order (default: append to end)
             let order = match order {
@@ -368,6 +395,141 @@ impl FilterService {
     pub async fn list_filter_routes(&self, filter_id: &FilterId) -> Result<Vec<RouteId>, Error> {
         let repository = self.repository()?;
         repository.list_filter_routes(filter_id).await
+    }
+
+    // Listener filter attachment methods
+
+    /// Attach a filter to a listener
+    ///
+    /// Validates that the filter type supports listener-level attachment before proceeding.
+    /// Only JwtAuth, RateLimit, and ExtAuthz filters can attach to listeners.
+    pub async fn attach_filter_to_listener(
+        &self,
+        listener_id: &ListenerId,
+        filter_id: &FilterId,
+        order: Option<i64>,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.attach_filter_to_listener", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("listener.id", listener_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let repository = self.repository()?;
+
+            // Verify filter exists and get its type
+            let filter = repository.get_by_id(filter_id).await?;
+
+            // Validate filter type can attach to listeners
+            let filter_type: FilterType =
+                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
+                    Error::internal(format!("Failed to parse filter type: {}", err))
+                })?;
+
+            if !filter_type.can_attach_to(AttachmentPoint::Listener) {
+                return Err(Error::validation(format!(
+                    "Filter type '{}' cannot be attached to listeners. Valid attachment points: {}",
+                    filter.filter_type,
+                    filter_type.allowed_attachment_points_display()
+                )));
+            }
+
+            // Determine order (default: append to end)
+            let order = match order {
+                Some(o) => o,
+                None => {
+                    let existing = repository.list_listener_filters(listener_id).await?;
+                    existing.len() as i64
+                }
+            };
+
+            let mut db_span = create_operation_span("db.listener_filters.insert", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+            db_span.set_attribute(KeyValue::new("db.table", "listener_filters"));
+            repository.attach_to_listener(listener_id, filter_id, order).await?;
+            drop(db_span);
+
+            info!(
+                listener_id = %listener_id,
+                filter_id = %filter_id,
+                order = %order,
+                "Filter attached to listener"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("listener.id", listener_id.to_string()));
+            xds_span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// Detach a filter from a listener
+    pub async fn detach_filter_from_listener(
+        &self,
+        listener_id: &ListenerId,
+        filter_id: &FilterId,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.detach_filter_from_listener", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("listener.id", listener_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let repository = self.repository()?;
+
+            let mut db_span = create_operation_span("db.listener_filters.delete", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
+            db_span.set_attribute(KeyValue::new("db.table", "listener_filters"));
+            repository.detach_from_listener(listener_id, filter_id).await?;
+            drop(db_span);
+
+            info!(
+                listener_id = %listener_id,
+                filter_id = %filter_id,
+                "Filter detached from listener"
+            );
+
+            let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
+            xds_span.set_attribute(KeyValue::new("listener.id", listener_id.to_string()));
+            xds_span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+            self.refresh_xds().await?;
+            drop(xds_span);
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// List all filters attached to a listener
+    pub async fn list_listener_filters(
+        &self,
+        listener_id: &ListenerId,
+    ) -> Result<Vec<FilterData>, Error> {
+        let repository = self.repository()?;
+        repository.list_listener_filters(listener_id).await
+    }
+
+    /// List all listeners using a filter
+    pub async fn list_filter_listeners(
+        &self,
+        filter_id: &FilterId,
+    ) -> Result<Vec<ListenerId>, Error> {
+        let repository = self.repository()?;
+        repository.list_filter_listeners(filter_id).await
     }
 
     /// Parse filter configuration from stored JSON

@@ -9,7 +9,7 @@ mod validation;
 // Re-export public types
 pub use types::{
     AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
-    RouteFiltersResponse, UpdateFilterRequest,
+    ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
 };
 
 use axum::{
@@ -23,7 +23,7 @@ use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
-    domain::{FilterId, RouteId},
+    domain::{FilterId, ListenerId, RouteId},
     services::FilterService,
 };
 
@@ -49,6 +49,26 @@ async fn resolve_route_id(state: &ApiState, route_name: &str) -> Result<RouteId,
     let route = route_repository.get_by_name(route_name).await.map_err(ApiError::from)?;
 
     Ok(route.id)
+}
+
+/// Resolve a listener name to its database ID (UUID)
+///
+/// The public API uses listener names as identifiers, but the database
+/// uses UUIDs for foreign key relationships. This function looks up
+/// the listener by name and returns its internal UUID.
+async fn resolve_listener_id(
+    state: &ApiState,
+    listener_name: &str,
+) -> Result<ListenerId, ApiError> {
+    let listener_repository = state
+        .xds_state
+        .listener_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Listener repository not available"))?;
+
+    let listener = listener_repository.get_by_name(listener_name).await.map_err(ApiError::from)?;
+
+    Ok(listener.id)
 }
 
 // === Handler Implementations ===
@@ -396,6 +416,131 @@ pub async fn list_route_filters_handler(
 
     // Return the route name (public identifier) in the response, not the internal UUID
     let response = RouteFiltersResponse { route_id: route_name, filters: filter_responses? };
+
+    Ok(Json(response))
+}
+
+// === Listener Filter Handlers ===
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/listeners/{listener_id}/filters",
+    params(
+        ("listener_id" = String, Path, description = "Listener ID"),
+    ),
+    request_body = AttachFilterRequest,
+    responses(
+        (status = 204, description = "Filter attached to listener"),
+        (status = 400, description = "Validation error - filter type incompatible with listener attachment"),
+        (status = 404, description = "Listener or filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filters"
+)]
+#[instrument(skip(state, context, payload), fields(listener_name = %listener_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+pub async fn attach_filter_to_listener_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(listener_name): Path<String>,
+    Json(payload): Json<AttachFilterRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_resource_access(&context, "listeners", "write", None)?;
+
+    // Resolve listener name to internal UUID for database foreign key
+    let listener_id = resolve_listener_id(&state, &listener_name).await?;
+    let filter_id = FilterId::from_string(payload.filter_id);
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    service
+        .attach_filter_to_listener(&listener_id, &filter_id, payload.order)
+        .await
+        .map_err(ApiError::from)?;
+
+    info!(
+        listener_name = %listener_name,
+        listener_id = %listener_id,
+        filter_id = %filter_id,
+        "Filter attached to listener via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/listeners/{listener_id}/filters/{filter_id}",
+    params(
+        ("listener_id" = String, Path, description = "Listener ID"),
+        ("filter_id" = String, Path, description = "Filter ID"),
+    ),
+    responses(
+        (status = 204, description = "Filter detached from listener"),
+        (status = 404, description = "Listener, filter, or attachment not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filters"
+)]
+#[instrument(skip(state, context), fields(listener_name = %listener_name, filter_id = %filter_id, user_id = ?context.user_id))]
+pub async fn detach_filter_from_listener_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((listener_name, filter_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_resource_access(&context, "listeners", "write", None)?;
+
+    // Resolve listener name to internal UUID for database foreign key
+    let listener_id = resolve_listener_id(&state, &listener_name).await?;
+    let filter_id = FilterId::from_string(filter_id);
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    service.detach_filter_from_listener(&listener_id, &filter_id).await.map_err(ApiError::from)?;
+
+    info!(
+        listener_name = %listener_name,
+        listener_id = %listener_id,
+        filter_id = %filter_id,
+        "Filter detached from listener via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/listeners/{listener_id}/filters",
+    params(
+        ("listener_id" = String, Path, description = "Listener ID"),
+    ),
+    responses(
+        (status = 200, description = "Filters attached to listener", body = ListenerFiltersResponse),
+        (status = 404, description = "Listener not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filters"
+)]
+#[instrument(skip(state, context), fields(listener_name = %listener_name, user_id = ?context.user_id))]
+pub async fn list_listener_filters_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(listener_name): Path<String>,
+) -> Result<Json<ListenerFiltersResponse>, ApiError> {
+    require_resource_access(&context, "listeners", "read", None)?;
+
+    // Resolve listener name to internal UUID for database query
+    let listener_id = resolve_listener_id(&state, &listener_name).await?;
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    let filters = service.list_listener_filters(&listener_id).await.map_err(ApiError::from)?;
+
+    let filter_responses: Result<Vec<FilterResponse>, ApiError> =
+        filters.into_iter().map(filter_response_from_data).collect();
+
+    // Return the listener name (public identifier) in the response, not the internal UUID
+    let response =
+        ListenerFiltersResponse { listener_id: listener_name, filters: filter_responses? };
 
     Ok(Json(response))
 }

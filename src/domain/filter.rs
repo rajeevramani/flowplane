@@ -2,6 +2,29 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
 
+/// Represents the resource types that a filter can attach to.
+/// Different filter types have different valid attachment points based on their scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentPoint {
+    /// Route-level attachment (per-route filter config via typed_per_filter_config)
+    Route,
+    /// Listener-level attachment (HTTP connection manager filter chain)
+    Listener,
+    /// Cluster-level attachment (future: connection pool, health check, outlier detection)
+    Cluster,
+}
+
+impl fmt::Display for AttachmentPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AttachmentPoint::Route => write!(f, "route"),
+            AttachmentPoint::Listener => write!(f, "listener"),
+            AttachmentPoint::Cluster => write!(f, "cluster"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FilterType {
@@ -10,6 +33,38 @@ pub enum FilterType {
     Cors,
     RateLimit,
     ExtAuthz,
+}
+
+impl FilterType {
+    /// Returns the valid attachment points for this filter type.
+    ///
+    /// Filter types have different scopes:
+    /// - HeaderMutation, Cors: Route-level only (L7 HTTP route filters)
+    /// - JwtAuth, RateLimit, ExtAuthz: Can apply at both route and listener levels
+    pub fn allowed_attachment_points(&self) -> Vec<AttachmentPoint> {
+        match self {
+            FilterType::HeaderMutation => vec![AttachmentPoint::Route],
+            FilterType::Cors => vec![AttachmentPoint::Route],
+            FilterType::JwtAuth => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+            FilterType::RateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+            FilterType::ExtAuthz => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+        }
+    }
+
+    /// Checks if this filter type can attach to the given attachment point.
+    pub fn can_attach_to(&self, point: AttachmentPoint) -> bool {
+        self.allowed_attachment_points().contains(&point)
+    }
+
+    /// Returns a human-readable description of allowed attachment points.
+    pub fn allowed_attachment_points_display(&self) -> String {
+        let points = self.allowed_attachment_points();
+        if points.len() == 1 {
+            format!("{} only", points[0])
+        } else {
+            points.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        }
+    }
 }
 
 impl fmt::Display for FilterType {
@@ -126,5 +181,75 @@ mod tests {
         // Should be tagged enum format
         assert!(json.contains(r#""type":"header_mutation""#), "JSON: {}", json);
         assert!(json.contains(r#""config":"#), "JSON: {}", json);
+    }
+
+    // Attachment point tests
+
+    #[test]
+    fn test_attachment_point_serialization() {
+        let point = AttachmentPoint::Route;
+        let json = serde_json::to_string(&point).unwrap();
+        assert_eq!(json, r#""route""#);
+
+        let parsed: AttachmentPoint = serde_json::from_str(r#""listener""#).unwrap();
+        assert_eq!(parsed, AttachmentPoint::Listener);
+    }
+
+    #[test]
+    fn test_attachment_point_display() {
+        assert_eq!(AttachmentPoint::Route.to_string(), "route");
+        assert_eq!(AttachmentPoint::Listener.to_string(), "listener");
+        assert_eq!(AttachmentPoint::Cluster.to_string(), "cluster");
+    }
+
+    #[test]
+    fn test_header_mutation_only_attaches_to_routes() {
+        let ft = FilterType::HeaderMutation;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(!ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+        assert_eq!(ft.allowed_attachment_points(), vec![AttachmentPoint::Route]);
+    }
+
+    #[test]
+    fn test_cors_only_attaches_to_routes() {
+        let ft = FilterType::Cors;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(!ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+    }
+
+    #[test]
+    fn test_jwt_auth_attaches_to_routes_and_listeners() {
+        let ft = FilterType::JwtAuth;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+        assert_eq!(
+            ft.allowed_attachment_points(),
+            vec![AttachmentPoint::Route, AttachmentPoint::Listener]
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_attaches_to_routes_and_listeners() {
+        let ft = FilterType::RateLimit;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+    }
+
+    #[test]
+    fn test_ext_authz_attaches_to_routes_and_listeners() {
+        let ft = FilterType::ExtAuthz;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+    }
+
+    #[test]
+    fn test_allowed_attachment_points_display() {
+        assert_eq!(FilterType::HeaderMutation.allowed_attachment_points_display(), "route only");
+        assert_eq!(FilterType::JwtAuth.allowed_attachment_points_display(), "route, listener");
     }
 }

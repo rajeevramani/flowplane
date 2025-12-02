@@ -1,4 +1,4 @@
-use crate::domain::{FilterId, RouteId};
+use crate::domain::{FilterId, ListenerId, RouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
@@ -426,5 +426,141 @@ impl FilterRepository {
             })?;
 
         Ok(count)
+    }
+
+    // Listener filter attachment methods
+
+    #[instrument(skip(self), fields(listener_id = %listener_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_listener")]
+    pub async fn attach_to_listener(
+        &self,
+        listener_id: &ListenerId,
+        filter_id: &FilterId,
+        order: i64,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            "INSERT INTO listener_filters (listener_id, filter_id, filter_order, created_at) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(listener_id.as_str())
+        .bind(filter_id.as_str())
+        .bind(order)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %listener_id, filter_id = %filter_id, "Failed to attach filter to listener");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to attach filter {} to listener {}", filter_id.as_str(), listener_id.as_str()),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(listener_id = %listener_id, filter_id = %filter_id), name = "db_detach_filter_from_listener")]
+    pub async fn detach_from_listener(
+        &self,
+        listener_id: &ListenerId,
+        filter_id: &FilterId,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            "DELETE FROM listener_filters WHERE listener_id = $1 AND filter_id = $2"
+        )
+        .bind(listener_id.as_str())
+        .bind(filter_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %listener_id, filter_id = %filter_id, "Failed to detach filter from listener");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to detach filter {} from listener {}", filter_id.as_str(), listener_id.as_str()),
+            }
+        })?;
+
+        if result.rows_affected() != 1 {
+            return Err(FlowplaneError::not_found("Listener filter attachment", ""));
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(listener_id = %listener_id), name = "db_list_listener_filters")]
+    pub async fn list_listener_filters(&self, listener_id: &ListenerId) -> Result<Vec<FilterData>> {
+        let rows = sqlx::query_as::<Sqlite, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, f.created_at, f.updated_at \
+             FROM filters f \
+             INNER JOIN listener_filters lf ON f.id = lf.filter_id \
+             WHERE lf.listener_id = $1 \
+             ORDER BY lf.filter_order ASC"
+        )
+        .bind(listener_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %listener_id, "Failed to list listener filters");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list filters for listener: {}", listener_id.as_str()),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(FilterData::from).collect())
+    }
+
+    #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_list_filter_listeners")]
+    pub async fn list_filter_listeners(&self, filter_id: &FilterId) -> Result<Vec<ListenerId>> {
+        let listener_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT listener_id FROM listener_filters WHERE filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list listeners using filter");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list listeners for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        Ok(listener_ids.into_iter().map(ListenerId::from_string).collect())
+    }
+
+    /// Count total attachments (routes + listeners) for a filter
+    /// Used to prevent deletion of attached filters
+    #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_count_filter_attachments")]
+    pub async fn count_attachments(&self, filter_id: &FilterId) -> Result<i64> {
+        let route_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM route_filters WHERE filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to count route attachments");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count route attachments for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        let listener_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM listener_filters WHERE filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to count listener attachments");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count listener attachments for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        Ok(route_count + listener_count)
     }
 }

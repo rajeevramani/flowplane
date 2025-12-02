@@ -33,8 +33,10 @@ pub use clusters::{
     update_cluster_handler,
 };
 pub use filters::{
-    attach_filter_handler, create_filter_handler, delete_filter_handler, detach_filter_handler,
-    get_filter_handler, list_filters_handler, list_route_filters_handler, update_filter_handler,
+    attach_filter_handler, attach_filter_to_listener_handler, create_filter_handler,
+    delete_filter_handler, detach_filter_from_listener_handler, detach_filter_handler,
+    get_filter_handler, list_filters_handler, list_listener_filters_handler,
+    list_route_filters_handler, update_filter_handler,
 };
 pub use health::health_handler;
 pub use learning_sessions::{
@@ -72,7 +74,7 @@ pub use clusters::{
 };
 pub use filters::{
     AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
-    RouteFiltersResponse, UpdateFilterRequest,
+    ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
 };
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,

@@ -33,7 +33,9 @@ pub use cluster::{
     CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
     HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
 };
-pub use filter::{FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig};
+pub use filter::{
+    AttachmentPoint, FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig,
+};
 pub use id::{ClusterId, FilterId, ListenerId, RouteId, ScopeId, TeamId, TokenId, UserId};
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,

@@ -90,3 +90,11 @@ pub struct RouteFiltersResponse {
     pub route_id: String,
     pub filters: Vec<FilterResponse>,
 }
+
+/// Response for listing listener filters
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerFiltersResponse {
+    pub listener_id: String,
+    pub filters: Vec<FilterResponse>,
+}
