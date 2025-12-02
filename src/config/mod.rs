@@ -31,16 +31,21 @@ pub struct SimpleXdsConfig {
     pub envoy_admin: EnvoyAdminConfig,
 }
 
-/// Configuration for Envoy admin interface in bootstrap config
+/// Configuration for Envoy admin interface in bootstrap config.
+/// Note: The `port` field serves as the base port for auto-allocation.
+/// Each team gets a unique port starting from this base value.
 #[derive(Debug, Clone)]
 pub struct EnvoyAdminConfig {
     /// Admin interface bind address
     pub bind_address: String,
-    /// Admin interface port
+    /// Base port for Envoy admin interface (teams are auto-allocated ports starting from this)
     pub port: u16,
     /// Access log path for admin interface
     pub access_log_path: String,
 }
+
+/// Default base port for Envoy admin interface allocation
+pub const DEFAULT_ENVOY_ADMIN_BASE_PORT: u16 = 9901;
 
 /// TLS configuration for the xDS server
 #[derive(Debug, Clone)]

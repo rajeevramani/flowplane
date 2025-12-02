@@ -96,8 +96,16 @@ pub async fn get_team_bootstrap_handler(
         "team": team,
     });
 
-    // Get Envoy admin config from configuration
+    // Get Envoy admin config from configuration (base values)
     let envoy_admin = &state.xds_state.config.envoy_admin;
+
+    // Try to get team-specific admin port from database
+    let team_repo = team_repository_for_state(&state)?;
+    let team_data = team_repo.get_team_by_name(&team).await.map_err(convert_error)?;
+
+    // Use team-specific port if available, otherwise fall back to global config
+    let admin_port =
+        team_data.as_ref().and_then(|t| t.envoy_admin_port).unwrap_or(envoy_admin.port);
 
     // Generate Envoy bootstrap configuration
     // This is minimal - it only tells Envoy where to find the xDS server
@@ -108,7 +116,7 @@ pub async fn get_team_bootstrap_handler(
             "address": {
                 "socket_address": {
                     "address": envoy_admin.bind_address,
-                    "port_value": envoy_admin.port
+                    "port_value": admin_port
                 }
             }
         },

@@ -273,6 +273,12 @@
 						<p class="text-gray-900">{team.ownerUserId || 'None'}</p>
 					</div>
 
+					<div>
+						<label class="block text-sm font-medium text-gray-700 mb-1">Envoy Admin Port</label>
+						<p class="text-gray-900 font-mono">{team.envoyAdminPort ?? 'Not allocated'}</p>
+						<p class="text-xs text-gray-500 mt-1">Auto-allocated for this team's Envoy instance</p>
+					</div>
+
 					<div class="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
 						<div>
 							<label class="block text-sm font-medium text-gray-700 mb-1">Created</label>

@@ -24,6 +24,7 @@ struct TeamRow {
     pub owner_user_id: Option<String>,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
+    pub envoy_admin_port: Option<i64>, // Stored as INTEGER in SQLite
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -52,6 +53,7 @@ impl TryFrom<TeamRow> for Team {
             owner_user_id: row.owner_user_id.map(|id| id.into()),
             settings,
             status,
+            envoy_admin_port: row.envoy_admin_port.map(|p| p as u16),
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -120,10 +122,22 @@ impl TeamRepository for SqlxTeamRepository {
             .transpose()
             .map_err(|e| FlowplaneError::validation(format!("Invalid settings JSON: {}", e)))?;
 
+        // Auto-allocate Envoy admin port: MAX(existing) + 1, or base port if none exist
+        let base_port = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT as i64;
+        let next_port: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(envoy_admin_port), $1 - 1) + 1 FROM teams")
+                .bind(base_port)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: "Failed to allocate Envoy admin port".to_string(),
+                })?;
+
         let row = sqlx::query_as::<_, TeamRow>(
             "INSERT INTO teams (
-                id, name, display_name, description, owner_user_id, settings, status, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                id, name, display_name, description, owner_user_id, settings, status, envoy_admin_port, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *"
         )
         .bind(id.as_str())
@@ -133,6 +147,7 @@ impl TeamRepository for SqlxTeamRepository {
         .bind(request.owner_user_id.as_ref().map(|id| id.as_str()))
         .bind(settings_json.as_deref())
         .bind(TeamStatus::Active.as_str())
+        .bind(next_port)
         .bind(now)
         .bind(now)
         .fetch_one(&self.pool)
@@ -520,5 +535,48 @@ mod tests {
 
         assert!(!repo.is_name_available("existing-team").await.expect("check availability"));
         assert!(repo.is_name_available("another-team").await.expect("check availability"));
+    }
+
+    #[tokio::test]
+    async fn test_create_team_allocates_envoy_admin_port() {
+        let pool = setup_test_db().await;
+        let repo = SqlxTeamRepository::new(pool);
+
+        let request = CreateTeamRequest {
+            name: "first-team".to_string(),
+            display_name: "First Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            settings: None,
+        };
+
+        let created = repo.create_team(request).await.expect("create team");
+
+        // First team should get the base port (9901)
+        assert_eq!(created.envoy_admin_port, Some(crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT));
+    }
+
+    #[tokio::test]
+    async fn test_create_multiple_teams_unique_ports() {
+        let pool = setup_test_db().await;
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create 3 teams
+        let mut ports = Vec::new();
+        for i in 1..=3 {
+            let request = CreateTeamRequest {
+                name: format!("team-{}", i),
+                display_name: format!("Team {}", i),
+                description: None,
+                owner_user_id: None,
+                settings: None,
+            };
+            let created = repo.create_team(request).await.expect("create team");
+            ports.push(created.envoy_admin_port.expect("port should be allocated"));
+        }
+
+        // Verify sequential allocation
+        let base = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT;
+        assert_eq!(ports, vec![base, base + 1, base + 2]);
     }
 }

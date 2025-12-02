@@ -3,6 +3,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { Unsubscriber } from 'svelte/store';
+	import type { TeamResponse } from '$lib/api/types';
 	import hljs from 'highlight.js/lib/core';
 	import yaml from 'highlight.js/lib/languages/yaml';
 	import json from 'highlight.js/lib/languages/json';
@@ -13,6 +14,7 @@
 	hljs.registerLanguage('json', json);
 
 	let currentTeam = $state('');
+	let teamDetails = $state<TeamResponse | null>(null);
 	let format = $state<'yaml' | 'json'>('yaml');
 	let bootstrapConfig = $state('');
 	let highlightedCode = $state('');
@@ -26,10 +28,28 @@
 		unsubscribe = selectedTeam.subscribe(async (team) => {
 			if (team && team !== currentTeam) {
 				currentTeam = team;
-				await loadBootstrapConfig();
+				await Promise.all([loadBootstrapConfig(), loadTeamDetails()]);
 			}
 		});
 	});
+
+	async function loadTeamDetails() {
+		if (!currentTeam) {
+			teamDetails = null;
+			return;
+		}
+
+		try {
+			// Try to get team details by looking up in the teams list
+			// This works for users who have access to the team
+			const teamsResponse = await apiClient.adminListTeams(100, 0);
+			const team = teamsResponse.teams.find((t) => t.name === currentTeam);
+			teamDetails = team || null;
+		} catch (err) {
+			// If admin API fails, team details won't be shown
+			teamDetails = null;
+		}
+	}
 
 	onDestroy(() => {
 		if (unsubscribe) {
@@ -113,6 +133,21 @@
 						Use the navbar team selector to change teams
 					</p>
 				</div>
+
+				<!-- Admin Port Info -->
+				{#if teamDetails?.envoyAdminPort}
+					<div>
+						<label class="block text-sm font-medium text-gray-700 mb-2">
+							Envoy Admin Port
+						</label>
+						<div class="px-3 py-2 bg-gray-100 border border-gray-300 rounded-md text-sm text-gray-700 font-mono">
+							{teamDetails.envoyAdminPort}
+						</div>
+						<p class="mt-1 text-xs text-gray-500">
+							Auto-allocated admin interface port for this team
+						</p>
+					</div>
+				{/if}
 
 				<!-- Format Selection -->
 				<div>

@@ -64,6 +64,7 @@ export interface TeamResponse {
 	ownerUserId: string | null;
 	settings: any | null;
 	status: TeamStatus;
+	envoyAdminPort: number | null;
 	createdAt: string;
 	updatedAt: string;
 }

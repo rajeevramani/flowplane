@@ -229,6 +229,11 @@
 								<th
 									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 								>
+									Admin Port
+								</th>
+								<th
+									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+								>
 									Created
 								</th>
 								<th
@@ -260,6 +265,9 @@
 										>
 											{team.status.charAt(0).toUpperCase() + team.status.slice(1)}
 										</span>
+									</td>
+									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 font-mono">
+										{team.envoyAdminPort ?? '-'}
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 										{formatDate(team.createdAt)}
