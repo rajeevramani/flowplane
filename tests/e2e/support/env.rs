@@ -39,6 +39,7 @@ impl ControlPlaneHandle {
             port: xds_addr.port(),
             resources: XdsResourceConfig { listener_port: 10000, ..Default::default() },
             tls: None,
+            envoy_admin: Default::default(),
         };
 
         let state = Arc::new(XdsState::with_database(simple_config, pool));
@@ -87,6 +88,7 @@ impl ControlPlaneHandle {
             port: xds_addr.port(),
             resources: XdsResourceConfig { listener_port: 10000, ..Default::default() },
             tls: xds_tls,
+            envoy_admin: Default::default(),
         };
 
         let state = Arc::new(XdsState::with_database(simple_config, pool));

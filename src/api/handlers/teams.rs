@@ -96,16 +96,19 @@ pub async fn get_team_bootstrap_handler(
         "team": team,
     });
 
+    // Get Envoy admin config from configuration
+    let envoy_admin = &state.xds_state.config.envoy_admin;
+
     // Generate Envoy bootstrap configuration
     // This is minimal - it only tells Envoy where to find the xDS server
     // All actual resources (listeners, routes, clusters) are discovered dynamically
     let bootstrap = serde_json::json!({
         "admin": {
-            "access_log_path": "/tmp/envoy_admin.log",
+            "access_log_path": envoy_admin.access_log_path,
             "address": {
                 "socket_address": {
-                    "address": "127.0.0.1",
-                    "port_value": 9901
+                    "address": envoy_admin.bind_address,
+                    "port_value": envoy_admin.port
                 }
             }
         },
