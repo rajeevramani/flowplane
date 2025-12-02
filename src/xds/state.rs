@@ -66,7 +66,7 @@ pub struct XdsState {
     pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
-    pub learning_session_service: Option<Arc<LearningSessionService>>,
+    pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -84,7 +84,7 @@ impl XdsState {
             aggregated_schema_repository: None,
             access_log_service: None,
             ext_proc_service: None,
-            learning_session_service: None,
+            learning_session_service: RwLock::new(None),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -107,7 +107,7 @@ impl XdsState {
             aggregated_schema_repository: Some(aggregated_schema_repository),
             access_log_service: None,
             ext_proc_service: None,
-            learning_session_service: None,
+            learning_session_service: RwLock::new(None),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -130,8 +130,19 @@ impl XdsState {
     ) -> Self {
         self.access_log_service = Some(access_log_service);
         self.ext_proc_service = Some(ext_proc_service);
-        self.learning_session_service = Some(learning_session_service);
+        *self.learning_session_service.write().expect("lock poisoned") =
+            Some(learning_session_service);
         self
+    }
+
+    /// Set the learning session service (safe mutation)
+    pub fn set_learning_session_service(&self, service: Arc<LearningSessionService>) {
+        *self.learning_session_service.write().expect("lock poisoned") = Some(service);
+    }
+
+    /// Get the learning session service if available
+    pub fn get_learning_session_service(&self) -> Option<Arc<LearningSessionService>> {
+        self.learning_session_service.read().ok()?.clone()
     }
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
@@ -523,7 +534,7 @@ impl XdsState {
         use prost::Message;
 
         // Get learning session service
-        let session_service = match &self.learning_session_service {
+        let session_service = match self.get_learning_session_service() {
             Some(service) => service,
             None => {
                 debug!("No learning session service available, skipping access log injection");
@@ -688,7 +699,7 @@ impl XdsState {
         use prost::Message;
 
         // Get learning session service
-        let session_service = match &self.learning_session_service {
+        let session_service = match self.get_learning_session_service() {
             Some(service) => service,
             None => {
                 debug!("No learning session service available, skipping ExtProc injection");

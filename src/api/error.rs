@@ -132,17 +132,8 @@ impl From<FlowplaneError> for ApiError {
             }
             FlowplaneError::Conflict { message, .. } => ApiError::Conflict(message),
             FlowplaneError::Auth { message, .. } => ApiError::Unauthorized(message),
-            FlowplaneError::Database { source, context } => {
-                if let Some(db_err) = source.as_database_error() {
-                    if let Some(code) = db_err.code() {
-                        if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT")
-                        {
-                            return ApiError::Conflict(context);
-                        }
-                    }
-                }
-                ApiError::Internal(context)
-            }
+            FlowplaneError::ConstraintViolation { message, .. } => ApiError::Conflict(message),
+            FlowplaneError::Database { context, .. } => ApiError::Internal(context),
             FlowplaneError::Config { message, .. }
             | FlowplaneError::Transport(message)
             | FlowplaneError::Internal { message, .. } => ApiError::Internal(message),

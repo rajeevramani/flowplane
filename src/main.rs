@@ -102,15 +102,25 @@ async fn main() -> Result<()> {
     let schema_aggregator =
         Arc::new(SchemaAggregator::new(inferred_schema_repo, aggregated_schema_repo));
 
-    // Create Learning Session Service with Access Log Service, Webhook Service, and Schema Aggregator integration
-    // Note: XdsState will be added after XdsState creation to avoid circular dependency
+    // Create XdsState first (without LearningSessionService) to resolve circular dependency
+    // We initialize with access log and ext proc services directly
+    let mut state_struct = XdsState::with_database(simple_xds_config.clone(), pool.clone());
+    state_struct.access_log_service = Some(access_log_service.clone());
+    state_struct.ext_proc_service = Some(ext_proc_service.clone());
+    let state = Arc::new(state_struct);
+
+    // Create LearningSessionService with XdsState (Weak reference)
     let learning_session_repo = LearningSessionRepository::new(pool.clone());
     let learning_session_service = LearningSessionService::new(learning_session_repo)
         .with_access_log_service(access_log_service.clone())
         .with_ext_proc_service(ext_proc_service.clone())
         .with_webhook_service(webhook_service.clone())
-        .with_schema_aggregator(schema_aggregator.clone());
+        .with_schema_aggregator(schema_aggregator.clone())
+        .with_xds_state(state.clone());
     let learning_session_service = Arc::new(learning_session_service);
+
+    // Update XdsState with LearningSessionService using safe interior mutability
+    state.set_learning_session_service(learning_session_service.clone());
 
     // Start background Access Log Processor to handle inference + persistence
     // Wire ExtProc body channel for request/response body capture (Task 12.3)
@@ -121,38 +131,6 @@ async fn main() -> Result<()> {
         // Spawn workers (handles internal batching and metrics). We don't need the handle here.
         let _handle = processor.spawn_workers();
     }
-
-    // Create XdsState with services
-    let state = Arc::new(XdsState::with_database(simple_xds_config.clone(), pool).with_services(
-        access_log_service.clone(),
-        ext_proc_service.clone(),
-        learning_session_service.clone(),
-    ));
-
-    // Now wire XdsState back into LearningSessionService for LDS refresh triggers
-    // This creates a weak circular reference: LearningSessionService -> XdsState -> LearningSessionService
-    // which is acceptable as both are Arc<> wrapped
-    let learning_session_service_with_xds = Arc::new(
-        Arc::try_unwrap(learning_session_service)
-            .unwrap_or_else(|arc| (*arc).clone())
-            .with_xds_state(state.clone()),
-    );
-    let learning_session_service = learning_session_service_with_xds;
-
-    // CRITICAL FIX: Update XdsState to use the learning session service that has xds_state configured
-    // The API handlers use state.learning_session_service, which needs to have xds_state set
-    // to trigger LDS refreshes when sessions are activated.
-    // We need to get mutable access to update the field. Since this is during initialization
-    // and we haven't shared state yet (no clones exist), we can use Arc::get_mut safely.
-    let state_mut = unsafe {
-        // SAFETY: We know this is safe because:
-        // 1. We just created the Arc on line 119
-        // 2. No other code has cloned it yet
-        // 3. This is during single-threaded initialization
-        let ptr = Arc::as_ptr(&state) as *mut XdsState;
-        &mut *ptr
-    };
-    state_mut.learning_session_service = Some(learning_session_service.clone());
 
     // Spawn background worker for learning session auto-completion
     let learning_session_service_bg = learning_session_service.clone();

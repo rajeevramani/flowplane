@@ -31,6 +31,14 @@ pub enum FlowplaneError {
         context: String,
     },
 
+    /// Database constraint violation
+    #[error("Database constraint violation: {message}")]
+    ConstraintViolation {
+        message: String,
+        #[source]
+        source: sqlx::Error,
+    },
+
     /// I/O errors with additional context
     #[error("I/O error: {context}")]
     Io {
@@ -242,6 +250,7 @@ impl FlowplaneError {
             FlowplaneError::Conflict { .. } => 409,
             FlowplaneError::RateLimit { .. } => 429,
             FlowplaneError::Timeout { .. } => 408,
+            FlowplaneError::ConstraintViolation { .. } => 409,
             FlowplaneError::Transport(_) => 500,
         }
     }
@@ -261,6 +270,20 @@ impl FlowplaneError {
 // Error conversions for common external error types
 impl From<sqlx::Error> for FlowplaneError {
     fn from(error: sqlx::Error) -> Self {
+        // Check for constraint violations
+        if let Some(db_err) = error.as_database_error() {
+            if let Some(code) = db_err.code() {
+                // SQLite constraint violation codes
+                // 2067 is SQLITE_CONSTRAINT_UNIQUE
+                if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT") {
+                    return Self::ConstraintViolation {
+                        message: db_err.message().to_string(),
+                        source: error,
+                    };
+                }
+            }
+        }
+
         Self::Database { source: error, context: "Database operation failed".to_string() }
     }
 }
