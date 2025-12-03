@@ -100,6 +100,8 @@ ui/.vercel/
 .taskmaster/
 AGENTS.md 
 
+.agent/
+
 # Task files
 # tasks.json
 # tasks/ 
