@@ -30,7 +30,7 @@
 	});
 
 	onMount(async () => {
-		importId = $page.params.id;
+		importId = $page.params.id ?? '';
 		await loadData();
 	});
 
@@ -95,7 +95,7 @@
 
 	// Derived JSON for preview
 	let jsonPayload = $derived(
-		importDetails ? {
+		importDetails ? JSON.stringify({
 			id: importDetails.id,
 			specName: importDetails.specName,
 			specVersion: importDetails.specVersion,
@@ -110,7 +110,7 @@
 			routes: routes.map(r => ({ name: r.name, pathPrefix: r.pathPrefix, team: r.team })),
 			clusters: clusters.map(c => ({ name: c.name, serviceName: c.serviceName, team: c.team })),
 			listeners: listeners.map(l => ({ name: l.name, address: l.address, port: l.port, team: l.team }))
-		} : null
+		}, null, 2) : ''
 	);
 </script>
 
@@ -548,7 +548,7 @@
 				{/if}
 			</div>
 		{:else if activeTab === 'json'}
-			<JsonPanel json={jsonPayload} />
+			<JsonPanel jsonString={jsonPayload} />
 		{/if}
 	{/if}
 </div>

@@ -15,15 +15,15 @@
 	let responseHeadersToAdd = $state(config.responseHeadersToAdd ?? []);
 	let responseHeadersToRemove = $state(config.responseHeadersToRemove ?? []);
 
-	// Watch for changes and propagate to parent
-	$effect(() => {
+	// Helper to propagate changes to parent
+	function updateParent() {
 		onUpdate({
 			requestHeadersToAdd,
 			requestHeadersToRemove,
 			responseHeadersToAdd,
 			responseHeadersToRemove
 		});
-	});
+	}
 </script>
 
 <div class="space-y-4">
@@ -50,8 +50,14 @@
 	<HeaderMutationSection
 		headersToAdd={requestHeadersToAdd}
 		headersToRemove={requestHeadersToRemove}
-		onUpdateAdd={(headers) => (requestHeadersToAdd = headers)}
-		onUpdateRemove={(headers) => (requestHeadersToRemove = headers)}
+		onUpdateAdd={(headers) => {
+			requestHeadersToAdd = headers;
+			updateParent();
+		}}
+		onUpdateRemove={(headers) => {
+			requestHeadersToRemove = headers;
+			updateParent();
+		}}
 		sectionLabel="Request Headers"
 		headerType="request"
 	/>
@@ -59,8 +65,14 @@
 	<HeaderMutationSection
 		headersToAdd={responseHeadersToAdd}
 		headersToRemove={responseHeadersToRemove}
-		onUpdateAdd={(headers) => (responseHeadersToAdd = headers)}
-		onUpdateRemove={(headers) => (responseHeadersToRemove = headers)}
+		onUpdateAdd={(headers) => {
+			responseHeadersToAdd = headers;
+			updateParent();
+		}}
+		onUpdateRemove={(headers) => {
+			responseHeadersToRemove = headers;
+			updateParent();
+		}}
 		sectionLabel="Response Headers"
 		headerType="response"
 	/>

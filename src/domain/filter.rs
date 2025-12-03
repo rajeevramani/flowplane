@@ -65,6 +65,20 @@ impl FilterType {
             points.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
         }
     }
+
+    /// Returns the Envoy HTTP filter name for this filter type.
+    ///
+    /// This is the canonical name used in Envoy's HTTP connection manager filter chain
+    /// and in `typed_per_filter_config` entries.
+    pub fn http_filter_name(&self) -> &'static str {
+        match self {
+            FilterType::HeaderMutation => "envoy.filters.http.header_mutation",
+            FilterType::JwtAuth => "envoy.filters.http.jwt_authn",
+            FilterType::Cors => "envoy.filters.http.cors",
+            FilterType::RateLimit => "envoy.filters.http.ratelimit",
+            FilterType::ExtAuthz => "envoy.filters.http.ext_authz",
+        }
+    }
 }
 
 impl fmt::Display for FilterType {
@@ -278,5 +292,17 @@ mod tests {
 
         // Unknown type should error
         assert!("unknown".parse::<FilterType>().is_err());
+    }
+
+    #[test]
+    fn test_http_filter_name_returns_correct_envoy_names() {
+        assert_eq!(
+            FilterType::HeaderMutation.http_filter_name(),
+            "envoy.filters.http.header_mutation"
+        );
+        assert_eq!(FilterType::JwtAuth.http_filter_name(), "envoy.filters.http.jwt_authn");
+        assert_eq!(FilterType::Cors.http_filter_name(), "envoy.filters.http.cors");
+        assert_eq!(FilterType::RateLimit.http_filter_name(), "envoy.filters.http.ratelimit");
+        assert_eq!(FilterType::ExtAuthz.http_filter_name(), "envoy.filters.http.ext_authz");
     }
 }

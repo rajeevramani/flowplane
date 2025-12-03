@@ -579,4 +579,127 @@ impl ListenerRepository {
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }
+
+    /// Find all listeners that reference a specific route config name.
+    ///
+    /// This is used by the auto-filter management system to find which listeners
+    /// are connected to a route via the HCM's `route_config_name`.
+    ///
+    /// # Arguments
+    ///
+    /// * `route_config_name` - The name of the route configuration to find
+    /// * `teams` - Optional team filter. If empty, searches all listeners.
+    ///
+    /// # Returns
+    ///
+    /// A vector of listeners whose HTTP connection manager references the given route.
+    #[instrument(skip(self), fields(route_config_name = %route_config_name), name = "db_find_listeners_by_route_config_name")]
+    pub async fn find_by_route_config_name(
+        &self,
+        route_config_name: &str,
+        teams: &[&str],
+    ) -> Result<Vec<ListenerData>> {
+        // Get all listeners (optionally filtered by team)
+        let listeners = if teams.is_empty() {
+            self.list(Some(1000), Some(0)).await?
+        } else {
+            let team_strings: Vec<String> = teams.iter().map(|s| s.to_string()).collect();
+            self.list_by_teams(&team_strings, true, Some(1000), Some(0)).await?
+        };
+
+        // Filter listeners that reference this route_config_name in their configuration
+        let matching_listeners: Vec<ListenerData> = listeners
+            .into_iter()
+            .filter(|listener| {
+                listener_references_route(&listener.configuration, route_config_name)
+            })
+            .collect();
+
+        tracing::debug!(
+            route_config_name = %route_config_name,
+            matching_count = matching_listeners.len(),
+            "Found listeners referencing route config"
+        );
+
+        Ok(matching_listeners)
+    }
+
+    /// Update only the configuration field of a listener.
+    ///
+    /// This is used by the auto-filter management system to add/remove HTTP filters
+    /// from the listener's filter chain.
+    #[instrument(skip(self, configuration), fields(listener_id = %id), name = "db_update_listener_configuration")]
+    pub async fn update_configuration(
+        &self,
+        id: &ListenerId,
+        configuration: &str,
+    ) -> Result<ListenerData> {
+        let current = self.get_by_id(id).await?;
+        let now = chrono::Utc::now();
+        let new_version = current.version + 1;
+
+        let result = sqlx::query(
+            "UPDATE listeners SET configuration = $1, version = $2, updated_at = $3 WHERE id = $4"
+        )
+        .bind(configuration)
+        .bind(new_version)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %id, "Failed to update listener configuration");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to update configuration for listener '{}'", id),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(listener_id = %id, new_version = new_version, "Updated listener configuration");
+
+        self.get_by_id(id).await
+    }
+}
+
+/// Check if a listener configuration references a specific route config name.
+///
+/// Parses the listener configuration JSON and looks for HCM filters with
+/// `route_config_name` matching the target.
+fn listener_references_route(configuration: &str, target_route_name: &str) -> bool {
+    // Parse the configuration JSON
+    let config: serde_json::Value = match serde_json::from_str(configuration) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Look for filter_chains -> filters -> filter_type.HttpConnectionManager.route_config_name
+    if let Some(filter_chains) = config.get("filter_chains").and_then(|v| v.as_array()) {
+        for chain in filter_chains {
+            if let Some(filters) = chain.get("filters").and_then(|v| v.as_array()) {
+                for filter in filters {
+                    if let Some(filter_type) = filter.get("filter_type") {
+                        // Check for HttpConnectionManager variant
+                        if let Some(hcm) = filter_type.get("HttpConnectionManager") {
+                            if let Some(route_name) =
+                                hcm.get("route_config_name").and_then(|v| v.as_str())
+                            {
+                                if route_name == target_route_name {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }

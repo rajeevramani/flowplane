@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { HttpFilterConfigEntry, HeaderMutationConfig } from '$lib/api/types';
+	import type { HttpFilterConfigEntry, HeaderMutationConfig, HttpFilterKind } from '$lib/api/types';
 	import { ChevronDown, ChevronRight } from 'lucide-svelte';
 	import HeaderMutationFilterForm from './HeaderMutationFilterForm.svelte';
 
@@ -22,20 +22,29 @@
 	}
 
 	function addFilter(filterType: string) {
-		const newFilter: HttpFilterConfigEntry = {
-			filter:
-				filterType === 'header_mutation'
-					? {
-							type: 'header_mutation',
-							config: {
-								requestHeadersToAdd: [],
-								requestHeadersToRemove: [],
-								responseHeadersToAdd: [],
-								responseHeadersToRemove: []
-							}
-						}
-					: { type: filterType as 'cors' | 'local_rate_limit' }
-		};
+		let filter: HttpFilterKind;
+
+		if (filterType === 'header_mutation') {
+			filter = {
+				type: 'header_mutation',
+				config: {
+					requestHeadersToAdd: [],
+					requestHeadersToRemove: [],
+					responseHeadersToAdd: [],
+					responseHeadersToRemove: []
+				}
+			};
+		} else if (filterType === 'cors') {
+			filter = { type: 'cors', config: {} };
+		} else if (filterType === 'local_rate_limit') {
+			filter = { type: 'local_rate_limit', config: {} };
+		} else if (filterType === 'jwt_authn') {
+			filter = { type: 'jwt_authn', config: {} };
+		} else {
+			filter = { type: 'router' };
+		}
+
+		const newFilter: HttpFilterConfigEntry = { filter };
 
 		// Insert before router filter (router should always be last)
 		const routerIndex = filters.findIndex((f) => f.filter.type === 'router');
@@ -81,6 +90,10 @@
 	function getFilterSummary(filter: HttpFilterConfigEntry): string {
 		if (filter.filter.type === 'header_mutation') {
 			const config = filter.filter.config;
+			// Guard against undefined config (can happen when parsing listener data)
+			if (!config) {
+				return 'No mutations configured';
+			}
 			const parts: string[] = [];
 			const reqAdd = config.requestHeadersToAdd?.length || 0;
 			const reqRemove = config.requestHeadersToRemove?.length || 0;
@@ -212,7 +225,7 @@
 					{#if isExpanded && filter.filter.type === 'header_mutation'}
 						<div class="border-t border-gray-200 p-4 bg-gray-50">
 							<HeaderMutationFilterForm
-								config={filter.filter.config}
+								config={filter.filter.config ?? { requestHeadersToAdd: [], requestHeadersToRemove: [], responseHeadersToAdd: [], responseHeadersToRemove: [] }}
 								onUpdate={(config) => handleHeaderMutationUpdate(index, config)}
 							/>
 						</div>

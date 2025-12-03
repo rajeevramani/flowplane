@@ -605,7 +605,8 @@ export interface ListScopesResponse {
 export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 
 // Filter type uses snake_case to match backend serde serialization
-export type FilterType = 'header_mutation' | 'jwt_auth' | 'cors' | 'rate_limit' | 'ext_authz';
+// Note: jwt_authn is the Envoy filter name variant (with 'n')
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'rate_limit' | 'ext_authz';
 
 // FilterConfig uses tagged enum format: { type: '...', config: {...} }
 // This matches the Rust #[serde(tag = "type", content = "config")] serialization

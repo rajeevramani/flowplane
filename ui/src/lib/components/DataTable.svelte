@@ -47,10 +47,11 @@
 
 	let sortedData = $derived.by(() => {
 		if (!sortKey) return data;
+		const key = sortKey; // Narrow type to non-null
 
 		return [...data].sort((a, b) => {
-			const aVal = a[sortKey] as string | number | null;
-			const bVal = b[sortKey] as string | number | null;
+			const aVal = a[key] as string | number | null;
+			const bVal = b[key] as string | number | null;
 
 			if (aVal === bVal) return 0;
 			if (aVal === null || aVal === undefined) return 1;

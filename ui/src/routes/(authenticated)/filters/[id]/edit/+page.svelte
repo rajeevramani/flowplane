@@ -27,7 +27,7 @@
 
 	// Get filter ID from route params (always defined for this route)
 	function getFilterId(): string {
-		return $page.params.id;
+		return $page.params.id ?? '';
 	}
 
 	onMount(async () => {

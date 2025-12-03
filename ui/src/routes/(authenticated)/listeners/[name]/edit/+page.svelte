@@ -3,13 +3,15 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { ArrowLeft, ChevronDown, ChevronUp, Link as LinkIcon, ExternalLink } from 'lucide-svelte';
+	import { ArrowLeft, ChevronDown, ChevronUp, Link as LinkIcon, ExternalLink, Filter, Plus } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
-	import type { ListenerResponse, ListenerFilterChainInput, ListenerFilterInput } from '$lib/api/types';
+	import type { ListenerResponse, ListenerFilterChainInput, ListenerFilterInput, FilterResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import FilterChainList from '$lib/components/listener/FilterChainList.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import FilterAttachmentList from '$lib/components/filters/FilterAttachmentList.svelte';
+	import FilterSelectorModal from '$lib/components/filters/FilterSelectorModal.svelte';
 
 	interface FormState {
 		name: string;
@@ -27,6 +29,14 @@
 	let activeTab = $state<'configuration' | 'json'>('configuration');
 	let filterChainsExpanded = $state(true);
 	let listenerName = $state<string>('');
+
+	// Filter attachment state
+	let attachedFilters = $state<FilterResponse[]>([]);
+	let availableFilters = $state<FilterResponse[]>([]);
+	let isLoadingFilters = $state(false);
+	let filtersExpanded = $state(true);
+	let showFilterModal = $state(false);
+	let filterError = $state<string | null>(null);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -62,12 +72,79 @@
 		try {
 			const listener = await apiClient.getListener(listenerName);
 			formState = parseListenerToForm(listener);
+
+			// Load filters (separate from main data load to not block UI)
+			loadFilters();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load listener';
 		} finally {
 			isLoading = false;
 		}
 	}
+
+	async function loadFilters() {
+		if (!listenerName) {
+			console.warn('loadFilters called without listenerName');
+			return;
+		}
+
+		isLoadingFilters = true;
+		filterError = null;
+
+		try {
+			// Load attached filters and all available filters in parallel
+			const [listenerFiltersResponse, allFilters] = await Promise.all([
+				apiClient.listListenerFilters(listenerName),
+				apiClient.listFilters()
+			]);
+
+			attachedFilters = listenerFiltersResponse.filters;
+			availableFilters = allFilters;
+
+			console.debug('Loaded listener filters:', {
+				attached: attachedFilters.length,
+				available: availableFilters.length,
+				availableTypes: availableFilters.map(f => f.filterType)
+			});
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to load filters';
+			console.error('Failed to load filters:', e);
+			// Ensure arrays are reset on error
+			attachedFilters = [];
+			availableFilters = [];
+		} finally {
+			isLoadingFilters = false;
+		}
+	}
+
+	async function handleAttachFilter(filterId: string, order?: number) {
+		if (!listenerName) return;
+
+		try {
+			await apiClient.attachFilterToListener(listenerName, { filterId, order });
+			// Reload filters to show the newly attached filter
+			await loadFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to attach filter';
+			console.error('Failed to attach filter:', e);
+		}
+	}
+
+	async function handleDetachFilter(filterId: string) {
+		if (!listenerName) return;
+
+		try {
+			await apiClient.detachFilterFromListener(listenerName, filterId);
+			// Reload filters to update the list
+			await loadFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to detach filter';
+			console.error('Failed to detach filter:', e);
+		}
+	}
+
+	// Derived: IDs of already attached filters for the modal
+	let attachedFilterIds = $derived(attachedFilters.map((f) => f.id));
 
 	// Parse listener response to form state
 	function parseListenerToForm(listener: ListenerResponse): FormState {
@@ -118,7 +195,7 @@
 			name: listener.name,
 			team: listener.team,
 			address: listener.address,
-			port: listener.port,
+			port: listener.port ?? 8080,
 			protocol: listener.protocol || 'HTTP',
 			filterChains
 		};
@@ -144,29 +221,38 @@
 		// Clean up filter chains by removing empty optional fields
 		const cleanedFilterChains = form.filterChains.map(chain => {
 			const cleanedFilters = chain.filters.map(filter => {
-				const cleanedFilter: any = {
+				const cleanedFilter: Record<string, unknown> = {
 					name: filter.name,
 					type: filter.type
 				};
 
-				// Only include non-empty optional fields
-				if (filter.routeConfigName && filter.routeConfigName.trim() !== '') {
-					cleanedFilter.routeConfigName = filter.routeConfigName;
+				// Handle httpConnectionManager type
+				if (filter.type === 'httpConnectionManager') {
+					if (filter.routeConfigName && filter.routeConfigName.trim() !== '') {
+						cleanedFilter.routeConfigName = filter.routeConfigName;
+					}
+					if (filter.inlineRouteConfig) {
+						cleanedFilter.inlineRouteConfig = filter.inlineRouteConfig;
+					}
+					if (filter.accessLog) {
+						cleanedFilter.accessLog = filter.accessLog;
+					}
+					if (filter.tracing) {
+						cleanedFilter.tracing = filter.tracing;
+					}
+					if (filter.httpFilters) {
+						cleanedFilter.httpFilters = filter.httpFilters;
+					}
 				}
-				if (filter.inlineRouteConfig) {
-					cleanedFilter.inlineRouteConfig = filter.inlineRouteConfig;
-				}
-				if (filter.accessLog) {
-					cleanedFilter.accessLog = filter.accessLog;
-				}
-				if (filter.tracing) {
-					cleanedFilter.tracing = filter.tracing;
-				}
-				if (filter.httpFilters) {
-					cleanedFilter.httpFilters = filter.httpFilters;
-				}
-				if (filter.cluster) {
-					cleanedFilter.cluster = filter.cluster;
+
+				// Handle tcpProxy type
+				if (filter.type === 'tcpProxy') {
+					if (filter.cluster) {
+						cleanedFilter.cluster = filter.cluster;
+					}
+					if (filter.accessLog) {
+						cleanedFilter.accessLog = filter.accessLog;
+					}
 				}
 
 				return cleanedFilter;
@@ -464,6 +550,69 @@
 					{/if}
 				</div>
 
+				<!-- Attached Filters (Collapsible) -->
+				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+					<button
+						onclick={() => (filtersExpanded = !filtersExpanded)}
+						class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+					>
+						<div class="flex items-center gap-3">
+							<Filter class="w-5 h-5 text-gray-500" />
+							<div class="text-left">
+								<h2 class="text-lg font-semibold text-gray-900">Attached Filters</h2>
+								<p class="text-sm text-gray-600">
+									Manage filter resources attached to this listener
+								</p>
+							</div>
+							{#if attachedFilters.length > 0}
+								<span class="ml-2 px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-800">
+									{attachedFilters.length}
+								</span>
+							{/if}
+						</div>
+						{#if filtersExpanded}
+							<ChevronUp class="w-5 h-5 text-gray-500" />
+						{:else}
+							<ChevronDown class="w-5 h-5 text-gray-500" />
+						{/if}
+					</button>
+					{#if filtersExpanded}
+						<div class="px-6 pb-6">
+							{#if filterError}
+								<div class="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+									<p class="text-sm text-red-800">{filterError}</p>
+								</div>
+							{/if}
+
+							<div class="flex items-center justify-between mb-4">
+								<p class="text-sm text-gray-600">
+									Only listener-compatible filter types (JWT Auth, Rate Limit, External Auth) can be attached.
+								</p>
+								<Button
+									onclick={() => (showFilterModal = true)}
+									variant="secondary"
+									disabled={isLoadingFilters}
+								>
+									<Plus class="h-4 w-4 mr-1" />
+									Attach Filter
+								</Button>
+							</div>
+
+							<FilterAttachmentList
+								filters={attachedFilters}
+								onDetach={handleDetachFilter}
+								isLoading={isLoadingFilters}
+								emptyMessage="No filters attached to this listener"
+							/>
+
+							<div class="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+								<strong>Note:</strong> These are filter resources attached at the listener level.
+								For inline HTTP filter configuration (like header mutation in the filter chain), use the Filter Chains section above.
+							</div>
+						</div>
+					{/if}
+				</div>
+
 				<!-- Action Buttons -->
 				<div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 -mx-8 flex justify-end gap-3">
 					<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>
@@ -481,4 +630,15 @@
 			{/if}
 		{/if}
 	</div>
+
+	<!-- Filter Selector Modal -->
+	<FilterSelectorModal
+		isOpen={showFilterModal}
+		filters={availableFilters}
+		attachmentPoint="listener"
+		alreadyAttachedIds={attachedFilterIds}
+		onSelect={handleAttachFilter}
+		onClose={() => (showFilterModal = false)}
+		isLoading={isLoadingFilters}
+	/>
 </div>

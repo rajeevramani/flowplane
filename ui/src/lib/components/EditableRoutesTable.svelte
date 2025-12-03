@@ -61,22 +61,22 @@
 
 	function getMethodVariant(
 		method: string
-	): 'primary' | 'success' | 'warning' | 'error' | 'default' {
+	): 'blue' | 'green' | 'yellow' | 'red' | 'gray' {
 		switch (method.toUpperCase()) {
 			case 'GET':
-				return 'success';
+				return 'green';
 			case 'POST':
-				return 'primary';
+				return 'blue';
 			case 'PUT':
-				return 'warning';
+				return 'yellow';
 			case 'PATCH':
-				return 'warning';
+				return 'yellow';
 			case 'DELETE':
-				return 'error';
+				return 'red';
 			case '*':
-				return 'default';
+				return 'gray';
 			default:
-				return 'default';
+				return 'gray';
 		}
 	}
 
@@ -88,16 +88,16 @@
 		return clusterName;
 	}
 
-	function getActionBadgeVariant(actionType: RouteActionType): 'primary' | 'success' | 'warning' | 'error' | 'default' {
+	function getActionBadgeVariant(actionType: RouteActionType): 'blue' | 'yellow' | 'gray' {
 		switch (actionType) {
 			case 'forward':
-				return 'primary';
+				return 'blue';
 			case 'weighted':
-				return 'warning';
+				return 'yellow';
 			case 'redirect':
-				return 'default';
+				return 'gray';
 			default:
-				return 'default';
+				return 'gray';
 		}
 	}
 

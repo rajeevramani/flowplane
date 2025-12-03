@@ -7,6 +7,7 @@ pub mod access_log_processor;
 pub mod cluster_service;
 pub mod filter_service;
 pub mod learning_session_service;
+pub mod listener_filter_chain;
 pub mod listener_service;
 pub mod path_normalizer;
 pub mod route_service;

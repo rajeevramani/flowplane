@@ -5,7 +5,7 @@
 	import { page } from '$app/stores';
 	import type { TeamResponse, UpdateTeamRequest, UserResponse, TeamStatus } from '$lib/api/types';
 
-	let teamId = $derived($page.params.id);
+	let teamId = $derived($page.params.id ?? '');
 
 	let team = $state<TeamResponse | null>(null);
 	let users = $state<UserResponse[]>([]);

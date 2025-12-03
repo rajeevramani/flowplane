@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { HeaderMutationPerRouteConfig } from '$lib/api/types';
-	import HeaderMutationSection from './HeaderMutationSection.svelte';
+	import type { HeaderMutationPerRouteConfig } from "$lib/api/types";
+	import HeaderMutationSection from "./HeaderMutationSection.svelte";
 
 	interface Props {
 		config: HeaderMutationPerRouteConfig | null;
@@ -18,19 +18,19 @@
 	let responseHeadersToAdd = $state(config?.responseHeadersToAdd ?? []);
 	let responseHeadersToRemove = $state(config?.responseHeadersToRemove ?? []);
 
-	// Watch for changes and propagate to parent
-	$effect(() => {
+	// Helper to propagate changes to parent
+	function updateParent() {
 		if (enabled) {
 			onUpdate({
 				requestHeadersToAdd,
 				requestHeadersToRemove,
 				responseHeadersToAdd,
-				responseHeadersToRemove
+				responseHeadersToRemove,
 			});
 		} else {
 			onUpdate(null);
 		}
-	});
+	}
 
 	function toggleEnabled() {
 		enabled = !enabled;
@@ -41,6 +41,7 @@
 			responseHeadersToAdd = [];
 			responseHeadersToRemove = [];
 		}
+		updateParent();
 	}
 </script>
 
@@ -53,7 +54,10 @@
 			onchange={toggleEnabled}
 			class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
 		/>
-		<label for="enable-per-route-mutation" class="text-sm font-medium text-gray-700">
+		<label
+			for="enable-per-route-mutation"
+			class="text-sm font-medium text-gray-700"
+		>
 			Enable per-route header mutation
 		</label>
 	</div>
@@ -77,8 +81,8 @@
 				<div class="text-xs text-blue-700">
 					<p class="font-medium">Route-level Header Mutation</p>
 					<p class="mt-1">
-						These mutations apply only to this specific route and are processed in addition to any
-						listener-level filters.
+						These mutations apply only to this specific route and
+						are processed in addition to any listener-level filters.
 					</p>
 				</div>
 			</div>
@@ -88,8 +92,14 @@
 			<HeaderMutationSection
 				headersToAdd={requestHeadersToAdd}
 				headersToRemove={requestHeadersToRemove}
-				onUpdateAdd={(headers) => (requestHeadersToAdd = headers)}
-				onUpdateRemove={(headers) => (requestHeadersToRemove = headers)}
+				onUpdateAdd={(headers) => {
+					requestHeadersToAdd = headers;
+					updateParent();
+				}}
+				onUpdateRemove={(headers) => {
+					requestHeadersToRemove = headers;
+					updateParent();
+				}}
 				sectionLabel="Request Headers"
 				headerType="request"
 			/>
@@ -97,8 +107,14 @@
 			<HeaderMutationSection
 				headersToAdd={responseHeadersToAdd}
 				headersToRemove={responseHeadersToRemove}
-				onUpdateAdd={(headers) => (responseHeadersToAdd = headers)}
-				onUpdateRemove={(headers) => (responseHeadersToRemove = headers)}
+				onUpdateAdd={(headers) => {
+					responseHeadersToAdd = headers;
+					updateParent();
+				}}
+				onUpdateRemove={(headers) => {
+					responseHeadersToRemove = headers;
+					updateParent();
+				}}
 				sectionLabel="Response Headers"
 				headerType="response"
 			/>

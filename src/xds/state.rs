@@ -12,7 +12,7 @@ use crate::{
     services::LearningSessionService,
     storage::{
         AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
-        ListenerRepository, RouteRepository,
+        ListenerAutoFilterRepository, ListenerRepository, RouteRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -63,6 +63,7 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub filter_repository: Option<FilterRepository>,
+    pub listener_auto_filter_repository: Option<ListenerAutoFilterRepository>,
     pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
@@ -81,6 +82,7 @@ impl XdsState {
             route_repository: None,
             listener_repository: None,
             filter_repository: None,
+            listener_auto_filter_repository: None,
             aggregated_schema_repository: None,
             access_log_service: None,
             ext_proc_service: None,
@@ -96,6 +98,7 @@ impl XdsState {
         let route_repository = RouteRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
         let filter_repository = FilterRepository::new(pool.clone());
+        let listener_auto_filter_repository = ListenerAutoFilterRepository::new(pool.clone());
         let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
         Self {
             config,
@@ -104,6 +107,7 @@ impl XdsState {
             route_repository: Some(route_repository),
             listener_repository: Some(listener_repository),
             filter_repository: Some(filter_repository),
+            listener_auto_filter_repository: Some(listener_auto_filter_repository),
             aggregated_schema_repository: Some(aggregated_schema_repository),
             access_log_service: None,
             ext_proc_service: None,

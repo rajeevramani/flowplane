@@ -3,8 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { Plus, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-svelte';
-	import type { ClusterResponse, RouteResponse, CreateRouteBody } from '$lib/api/types';
+	import { Plus, ChevronDown, ChevronUp, ArrowLeft, Filter } from 'lucide-svelte';
+	import type { ClusterResponse, RouteResponse, CreateRouteBody, FilterResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import VirtualHostEditor, {
 		type VirtualHostFormState,
@@ -12,6 +12,8 @@
 	} from '$lib/components/route-config/VirtualHostEditor.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import FilterAttachmentList from '$lib/components/filters/FilterAttachmentList.svelte';
+	import FilterSelectorModal from '$lib/components/filters/FilterSelectorModal.svelte';
 
 	interface FormState {
 		name: string;
@@ -28,6 +30,14 @@
 	let advancedExpanded = $state(false);
 	let originalConfig = $state<RouteResponse | null>(null);
 	let activeTab = $state<'configuration' | 'json'>('configuration');
+
+	// Filter attachment state
+	let attachedFilters = $state<FilterResponse[]>([]);
+	let availableFilters = $state<FilterResponse[]>([]);
+	let isLoadingFilters = $state(false);
+	let filtersExpanded = $state(true);
+	let showFilterModal = $state(false);
+	let filterError = $state<string | null>(null);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -67,12 +77,79 @@
 
 			// Parse config into form state
 			formState = parseRouteConfigToForm(config);
+
+			// Load filters (separate from main data load to not block UI)
+			loadFilters();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load configuration';
 		} finally {
 			isLoading = false;
 		}
 	}
+
+	async function loadFilters() {
+		if (!configId) {
+			console.warn('loadFilters called without configId');
+			return;
+		}
+
+		isLoadingFilters = true;
+		filterError = null;
+
+		try {
+			// Load attached filters and all available filters in parallel
+			const [routeFiltersResponse, allFilters] = await Promise.all([
+				apiClient.listRouteFilters(configId),
+				apiClient.listFilters()
+			]);
+
+			attachedFilters = routeFiltersResponse.filters;
+			availableFilters = allFilters;
+
+			console.debug('Loaded filters:', {
+				attached: attachedFilters.length,
+				available: availableFilters.length,
+				availableTypes: availableFilters.map(f => f.filterType)
+			});
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to load filters';
+			console.error('Failed to load filters:', e);
+			// Ensure arrays are reset on error
+			attachedFilters = [];
+			availableFilters = [];
+		} finally {
+			isLoadingFilters = false;
+		}
+	}
+
+	async function handleAttachFilter(filterId: string, order?: number) {
+		if (!configId) return;
+
+		try {
+			await apiClient.attachFilter(configId, { filterId, order });
+			// Reload filters to show the newly attached filter
+			await loadFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to attach filter';
+			console.error('Failed to attach filter:', e);
+		}
+	}
+
+	async function handleDetachFilter(filterId: string) {
+		if (!configId) return;
+
+		try {
+			await apiClient.detachFilter(configId, filterId);
+			// Reload filters to update the list
+			await loadFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to detach filter';
+			console.error('Failed to detach filter:', e);
+		}
+	}
+
+	// Derived: IDs of already attached filters for the modal
+	let attachedFilterIds = $derived(attachedFilters.map((f) => f.id));
 
 	// Parse RouteResponse to form state
 	function parseRouteConfigToForm(config: RouteResponse): FormState {
@@ -415,6 +492,69 @@
 					</div>
 				</div>
 
+				<!-- Attached Filters (Collapsible) -->
+				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+					<button
+						onclick={() => (filtersExpanded = !filtersExpanded)}
+						class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+					>
+						<div class="flex items-center gap-3">
+							<Filter class="w-5 h-5 text-gray-500" />
+							<div class="text-left">
+								<h2 class="text-lg font-semibold text-gray-900">Attached Filters</h2>
+								<p class="text-sm text-gray-600">
+									Manage filters applied to all routes in this configuration
+								</p>
+							</div>
+							{#if attachedFilters.length > 0}
+								<span class="ml-2 px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-800">
+									{attachedFilters.length}
+								</span>
+							{/if}
+						</div>
+						{#if filtersExpanded}
+							<ChevronUp class="w-5 h-5 text-gray-500" />
+						{:else}
+							<ChevronDown class="w-5 h-5 text-gray-500" />
+						{/if}
+					</button>
+					{#if filtersExpanded}
+						<div class="px-6 pb-6">
+							{#if filterError}
+								<div class="mb-4 bg-red-50 border border-red-200 rounded-md p-3">
+									<p class="text-sm text-red-800">{filterError}</p>
+								</div>
+							{/if}
+
+							<div class="flex items-center justify-between mb-4">
+								<p class="text-sm text-gray-600">
+									Filters are executed in order. Lower order numbers execute first.
+								</p>
+								<Button
+									onclick={() => (showFilterModal = true)}
+									variant="secondary"
+									disabled={isLoadingFilters}
+								>
+									<Plus class="h-4 w-4 mr-1" />
+									Attach Filter
+								</Button>
+							</div>
+
+							<FilterAttachmentList
+								filters={attachedFilters}
+								onDetach={handleDetachFilter}
+								isLoading={isLoadingFilters}
+								emptyMessage="No filters attached to this route configuration"
+							/>
+
+							<div class="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+								<strong>Note:</strong> Attached filters are applied to all routes in this configuration.
+								For route-specific header mutations, use the inline typedPerFilterConfig in the route definition.
+							</div>
+						</div>
+					{/if}
+				</div>
+
 				<!-- Advanced (Collapsible) -->
 				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
 					<button
@@ -452,4 +592,15 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- Filter Selector Modal -->
+	<FilterSelectorModal
+		isOpen={showFilterModal}
+		filters={availableFilters}
+		attachmentPoint="route"
+		alreadyAttachedIds={attachedFilterIds}
+		onSelect={handleAttachFilter}
+		onClose={() => (showFilterModal = false)}
+		isLoading={isLoadingFilters}
+	/>
 {/if}

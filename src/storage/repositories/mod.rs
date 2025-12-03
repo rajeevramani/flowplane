@@ -12,6 +12,7 @@ pub mod import_metadata;
 pub mod inferred_schema;
 pub mod learning_session;
 pub mod listener;
+pub mod listener_auto_filter;
 pub mod reporting;
 pub mod route;
 pub mod scope;
@@ -38,6 +39,7 @@ pub use learning_session::{
 pub use listener::{
     CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest,
 };
+pub use listener_auto_filter::{ListenerAutoFilterData, ListenerAutoFilterRepository};
 pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
 pub use scope::{

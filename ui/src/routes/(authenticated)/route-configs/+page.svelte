@@ -2,8 +2,8 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Plus, FileUp, Edit, Trash2, Server, Globe } from 'lucide-svelte';
-	import type { RouteResponse, ClusterResponse, ListenerResponse, ImportSummary } from '$lib/api/types';
+	import { Plus, FileUp, Edit, Trash2, Server, Globe, Filter } from 'lucide-svelte';
+	import type { RouteResponse, ClusterResponse, ListenerResponse, ImportSummary, FilterResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -18,6 +18,10 @@
 	let clusters = $state<ClusterResponse[]>([]);
 	let listeners = $state<ListenerResponse[]>([]);
 	let imports = $state<ImportSummary[]>([]);
+
+	// Filter counts per route (loaded lazily)
+	let routeFilterCounts = $state<Map<string, number>>(new Map());
+	let loadingFilters = $state(false);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -49,10 +53,48 @@
 			clusters = clustersData;
 			listeners = listenersData;
 			imports = importsData;
+
+			// Load filter counts for all routes (non-blocking)
+			loadFilterCounts(routesData);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
 			isLoading = false;
+		}
+	}
+
+	// Load filter counts for all routes (runs in background)
+	async function loadFilterCounts(routes: RouteResponse[]) {
+		if (routes.length === 0) return;
+
+		loadingFilters = true;
+		const newCounts = new Map<string, number>();
+
+		try {
+			// Load filter counts for each route in parallel (with a reasonable limit)
+			const batchSize = 10;
+			for (let i = 0; i < routes.length; i += batchSize) {
+				const batch = routes.slice(i, i + batchSize);
+				const results = await Promise.allSettled(
+					batch.map(route => apiClient.listRouteFilters(route.name))
+				);
+
+				results.forEach((result, index) => {
+					const routeName = batch[index].name;
+					if (result.status === 'fulfilled') {
+						newCounts.set(routeName, result.value.filters.length);
+					} else {
+						newCounts.set(routeName, 0);
+					}
+				});
+
+				// Update state after each batch
+				routeFilterCounts = new Map(newCounts);
+			}
+		} catch (e) {
+			console.error('Failed to load filter counts:', e);
+		} finally {
+			loadingFilters = false;
 		}
 	}
 
@@ -295,6 +337,9 @@
 							Routes
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Filters
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Source
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -310,14 +355,12 @@
 						{@const routeStats = getRouteStats(config)}
 						{@const domains = getDomainList(config)}
 						{@const source = getSourceType(config)}
+						{@const filterCount = routeFilterCounts.get(config.name)}
 						<tr class="hover:bg-gray-50 transition-colors">
 							<!-- Configuration Name -->
 							<td class="px-6 py-4">
 								<div class="flex flex-col">
 									<span class="text-sm font-medium text-gray-900">{config.name}</span>
-									{#if config?.description}
-										<span class="text-xs text-gray-500 mt-0.5">{config.description}</span>
-									{/if}
 								</div>
 							</td>
 
@@ -347,13 +390,31 @@
 									{#if routeStats.total > 0}
 										<div class="flex gap-1 ml-2">
 											{#each Object.entries(routeStats.methodCounts) as [method, count]}
-												<Badge variant="secondary" size="sm">
+												<Badge variant="gray" size="sm">
 													{method} {count}
 												</Badge>
 											{/each}
 										</div>
 									{/if}
 								</div>
+							</td>
+
+							<!-- Filters -->
+							<td class="px-6 py-4">
+								{#if filterCount === undefined && loadingFilters}
+									<span class="text-xs text-gray-400">Loading...</span>
+								{:else if filterCount && filterCount > 0}
+									<button
+										onclick={() => handleEdit(config.name)}
+										class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+										title="View attached filters"
+									>
+										<Filter class="h-3 w-3" />
+										{filterCount}
+									</button>
+								{:else}
+									<span class="text-xs text-gray-400">None</span>
+								{/if}
 							</td>
 
 							<!-- Source -->
@@ -367,7 +428,7 @@
 
 							<!-- Created -->
 							<td class="px-6 py-4">
-								<span class="text-sm text-gray-500">{formatDate(config?.metadata?.createdAt)}</span>
+								<span class="text-sm text-gray-500">-</span>
 							</td>
 
 							<!-- Actions -->

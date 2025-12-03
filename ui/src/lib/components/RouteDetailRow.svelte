@@ -152,15 +152,15 @@
 									<div class="space-y-2 min-w-[200px]">
 										<div class="flex justify-between gap-4">
 											<span class="text-gray-500">Max Retries:</span>
-											<span class="font-medium text-gray-900">{route.retryPolicy.numRetries}</span>
+											<span class="font-medium text-gray-900">{route.retryPolicy?.numRetries}</span>
 										</div>
 										<div class="flex justify-between gap-4">
 											<span class="text-gray-500">Retry On:</span>
-											<span class="font-medium text-gray-900">{formatRetryOn(route.retryPolicy.retryOn)}</span>
+											<span class="font-medium text-gray-900">{formatRetryOn(route.retryPolicy?.retryOn)}</span>
 										</div>
 										<div class="flex justify-between gap-4">
 											<span class="text-gray-500">Per Try Timeout:</span>
-											<span class="font-medium text-gray-900">{formatDuration(route.retryPolicy.perTryTimeout)}</span>
+											<span class="font-medium text-gray-900">{formatDuration(route.retryPolicy?.perTryTimeout)}</span>
 										</div>
 										<div class="flex justify-between gap-4">
 											<span class="text-gray-500">Backoff:</span>

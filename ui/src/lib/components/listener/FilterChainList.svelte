@@ -55,14 +55,15 @@
 	}
 
 	function getFilterDisplayName(filter: ListenerFilterChainInput['filters'][0]): string {
-		if ('type' in filter) {
-			if (filter.type === 'httpConnectionManager') {
+		switch (filter.type) {
+			case 'httpConnectionManager':
 				return 'HttpConnectionManager';
-			} else if (filter.type === 'tcpProxy') {
+			case 'tcpProxy':
 				return 'TcpProxy';
-			}
+			default:
+				// Fallback that TypeScript knows won't be reached
+				return (filter as { name?: string }).name || 'Filter';
 		}
-		return filter.name || 'Filter';
 	}
 
 	function getFilterTarget(filter: ListenerFilterChainInput['filters'][0]): string | null {
@@ -72,6 +73,54 @@
 			return filter.cluster || null;
 		}
 		return null;
+	}
+
+	// Get HTTP filters from an HttpConnectionManager filter, excluding the router
+	function getHttpFilters(filter: ListenerFilterChainInput['filters'][0]): HttpFilterConfigEntry[] {
+		if ('type' in filter && filter.type === 'httpConnectionManager' && filter.httpFilters) {
+			// Filter out the router filter for display
+			return filter.httpFilters.filter((hf) => hf.filter.type !== 'router');
+		}
+		return [];
+	}
+
+	// Get a display name for an HTTP filter type
+	function getHttpFilterTypeName(filterType: string): string {
+		switch (filterType) {
+			case 'header_mutation':
+				return 'Header Mutation';
+			case 'cors':
+				return 'CORS';
+			case 'local_rate_limit':
+				return 'Rate Limit (Local)';
+			case 'jwt_authn':
+				return 'JWT Auth';
+			case 'rate_limit':
+				return 'Rate Limit';
+			case 'health_check':
+				return 'Health Check';
+			default:
+				return filterType;
+		}
+	}
+
+	// Get badge color for an HTTP filter type
+	function getHttpFilterBadgeColor(filterType: string): string {
+		switch (filterType) {
+			case 'header_mutation':
+				return 'bg-blue-100 text-blue-700';
+			case 'cors':
+				return 'bg-purple-100 text-purple-700';
+			case 'jwt_authn':
+				return 'bg-green-100 text-green-700';
+			case 'rate_limit':
+			case 'local_rate_limit':
+				return 'bg-orange-100 text-orange-700';
+			case 'health_check':
+				return 'bg-gray-100 text-gray-700';
+			default:
+				return 'bg-gray-100 text-gray-700';
+		}
 	}
 </script>
 
@@ -131,16 +180,29 @@
 				<!-- Filters List (always visible) -->
 				{#if filterCount > 0 && !compact}
 					<div class="px-3 py-2 border-t border-gray-100">
-						<div class="space-y-1">
+						<div class="space-y-2">
 							{#each chain.filters as filter}
 								{@const displayName = getFilterDisplayName(filter)}
 								{@const target = getFilterTarget(filter)}
-								<div class="text-xs text-gray-600 flex items-center gap-1">
-									<span class="text-gray-400">•</span>
-									<span>{displayName}</span>
-									{#if target}
-										<span class="text-gray-400">→</span>
-										<span class="font-mono text-gray-700">{target}</span>
+								{@const httpFilters = getHttpFilters(filter)}
+								<div class="space-y-1">
+									<div class="text-xs text-gray-600 flex items-center gap-1">
+										<span class="text-gray-400">•</span>
+										<span>{displayName}</span>
+										{#if target}
+											<span class="text-gray-400">→</span>
+											<span class="font-mono text-gray-700">{target}</span>
+										{/if}
+									</div>
+									<!-- Show HTTP filters inline -->
+									{#if httpFilters.length > 0}
+										<div class="ml-4 flex flex-wrap gap-1">
+											{#each httpFilters as httpFilter}
+												<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs {getHttpFilterBadgeColor(httpFilter.filter.type)}">
+													{getHttpFilterTypeName(httpFilter.filter.type)}
+												</span>
+											{/each}
+										</div>
 									{/if}
 								</div>
 							{/each}

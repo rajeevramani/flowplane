@@ -25,6 +25,12 @@
 			attachmentPoints: ['Routes', 'Listeners'],
 			available: false
 		},
+		jwt_authn: {
+			label: 'JWT Auth (Envoy)',
+			description: 'JSON Web Token authentication (Envoy filter name)',
+			attachmentPoints: ['Routes', 'Listeners'],
+			available: false
+		},
 		cors: {
 			label: 'CORS',
 			description: 'Cross-Origin Resource Sharing configuration',

@@ -147,29 +147,38 @@
 		// Clean up filter chains by removing empty optional fields
 		const cleanedFilterChains = form.filterChains.map(chain => {
 			const cleanedFilters = chain.filters.map(filter => {
-				const cleanedFilter: any = {
+				const cleanedFilter: Record<string, unknown> = {
 					name: filter.name,
 					type: filter.type
 				};
 
-				// Only include non-empty optional fields
-				if (filter.routeConfigName && filter.routeConfigName.trim() !== '') {
-					cleanedFilter.routeConfigName = filter.routeConfigName;
+				// Handle httpConnectionManager type
+				if (filter.type === 'httpConnectionManager') {
+					if (filter.routeConfigName && filter.routeConfigName.trim() !== '') {
+						cleanedFilter.routeConfigName = filter.routeConfigName;
+					}
+					if (filter.inlineRouteConfig) {
+						cleanedFilter.inlineRouteConfig = filter.inlineRouteConfig;
+					}
+					if (filter.accessLog) {
+						cleanedFilter.accessLog = filter.accessLog;
+					}
+					if (filter.tracing) {
+						cleanedFilter.tracing = filter.tracing;
+					}
+					if (filter.httpFilters) {
+						cleanedFilter.httpFilters = filter.httpFilters;
+					}
 				}
-				if (filter.inlineRouteConfig) {
-					cleanedFilter.inlineRouteConfig = filter.inlineRouteConfig;
-				}
-				if (filter.accessLog) {
-					cleanedFilter.accessLog = filter.accessLog;
-				}
-				if (filter.tracing) {
-					cleanedFilter.tracing = filter.tracing;
-				}
-				if (filter.httpFilters) {
-					cleanedFilter.httpFilters = filter.httpFilters;
-				}
-				if (filter.cluster) {
-					cleanedFilter.cluster = filter.cluster;
+
+				// Handle tcpProxy type
+				if (filter.type === 'tcpProxy') {
+					if (filter.cluster) {
+						cleanedFilter.cluster = filter.cluster;
+					}
+					if (filter.accessLog) {
+						cleanedFilter.accessLog = filter.accessLog;
+					}
 				}
 
 				return cleanedFilter;

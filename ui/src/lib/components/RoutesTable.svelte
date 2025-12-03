@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { RouteResponse } from '$lib/api/types';
 	import Badge from './Badge.svelte';
-	import RouteDetailRow, { type RouteDetail } from './RouteDetailRow.svelte';
+	import RouteDetailRow, { type RouteDetail, type RetryPolicy } from './RouteDetailRow.svelte';
 
 	interface Props {
 		routes: RouteResponse[];
@@ -113,7 +113,7 @@
 						}
 
 						// Handle backoff from multiple possible structures
-						let retryBackOff: RouteDetail['retryPolicy']['retryBackOff'] | undefined;
+						let retryBackOff: RetryPolicy['retryBackOff'] | undefined;
 						if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
 							retryBackOff = {
 								baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
