@@ -4,10 +4,11 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { ArrowLeft } from 'lucide-svelte';
-	import type { FilterResponse, FilterConfig, HeaderMutationConfig, HeaderMutationFilterConfig } from '$lib/api/types';
+	import type { FilterResponse, FilterConfig, HeaderMutationConfig, HeaderMutationFilterConfig, JwtAuthenticationFilterConfig } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import HeaderMutationConfigForm from '$lib/components/filters/HeaderMutationConfigForm.svelte';
+	import JwtAuthConfigForm from '$lib/components/filters/JwtAuthConfigForm.svelte';
 
 	// Page state
 	let isLoading = $state(true);
@@ -23,6 +24,10 @@
 		requestHeadersToRemove: [],
 		responseHeadersToAdd: [],
 		responseHeadersToRemove: []
+	});
+	let jwtAuthConfig = $state<JwtAuthenticationFilterConfig>({
+		providers: {},
+		bypass_cors_preflight: false
 	});
 
 	// Get filter ID from route params (always defined for this route)
@@ -46,8 +51,8 @@
 			filterName = data.name;
 			filterDescription = data.description || '';
 
-			// Load header mutation config from tagged enum format
-			// Backend returns: { type: 'header_mutation', config: { request_headers_to_add: [...], ... } }
+			// Load config from tagged enum format based on filter type
+			// Backend returns: { type: 'header_mutation' | 'jwt_auth', config: { ... } }
 			if (data.config.type === 'header_mutation') {
 				const backendConfig = data.config.config;
 				headerMutationConfig = {
@@ -56,6 +61,9 @@
 					responseHeadersToAdd: backendConfig.response_headers_to_add || [],
 					responseHeadersToRemove: backendConfig.response_headers_to_remove || []
 				};
+			} else if (data.config.type === 'jwt_auth') {
+				// JWT config is already in correct format from backend
+				jwtAuthConfig = data.config.config;
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load filter';
@@ -72,6 +80,14 @@
 	// Build the filter config based on filter type
 	// Uses tagged enum format with snake_case to match backend Rust serialization
 	function buildFilterConfig(): FilterConfig {
+		if (filter?.filterType === 'jwt_auth') {
+			return {
+				type: 'jwt_auth',
+				config: jwtAuthConfig
+			};
+		}
+
+		// Default: header_mutation
 		// Convert camelCase config to snake_case for backend
 		const backendConfig: HeaderMutationFilterConfig = {
 			request_headers_to_add: headerMutationConfig.requestHeadersToAdd,
@@ -94,6 +110,11 @@
 
 		if (filterName.length > 255) {
 			return 'Filter name must be 255 characters or less';
+		}
+
+		// Type-specific validation
+		if (filter?.filterType === 'jwt_auth') {
+			return validateJwtAuthConfig();
 		}
 
 		// Validate at least one header operation is configured
@@ -130,6 +151,35 @@
 		for (const header of headersToRemove) {
 			if (!header.trim()) {
 				return 'Header name to remove cannot be empty';
+			}
+		}
+
+		return null;
+	}
+
+	// Validate JWT auth config
+	function validateJwtAuthConfig(): string | null {
+		if (Object.keys(jwtAuthConfig.providers).length === 0) {
+			return 'At least one JWT provider is required';
+		}
+
+		for (const [name, provider] of Object.entries(jwtAuthConfig.providers)) {
+			if (!name.trim()) {
+				return 'Provider name cannot be empty';
+			}
+
+			// Validate JWKS source
+			if (provider.jwks.type === 'remote') {
+				if (!provider.jwks.http_uri.uri.trim()) {
+					return `Provider "${name}": JWKS URI is required`;
+				}
+				if (!provider.jwks.http_uri.cluster.trim()) {
+					return `Provider "${name}": Cluster name is required for remote JWKS`;
+				}
+			} else if (provider.jwks.type === 'local') {
+				if (!provider.jwks.inline_string?.trim() && !provider.jwks.filename?.trim()) {
+					return `Provider "${name}": Either inline JWKS or filename is required`;
+				}
 			}
 		}
 
@@ -188,6 +238,11 @@
 	// Handle config change
 	function handleConfigChange(config: HeaderMutationConfig) {
 		headerMutationConfig = config;
+	}
+
+	// Handle JWT config change
+	function handleJwtConfigChange(config: JwtAuthenticationFilterConfig) {
+		jwtAuthConfig = config;
 	}
 
 	// Format date
@@ -304,20 +359,36 @@
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
 			<div class="flex items-center justify-between mb-4">
 				<h2 class="text-lg font-semibold text-gray-900">Attachment Points</h2>
-				<Badge variant="blue">Routes only</Badge>
+				<div class="flex gap-1">
+					{#if filter.filterType === 'jwt_auth'}
+						<Badge variant="blue">Routes</Badge>
+						<Badge variant="blue">Listeners</Badge>
+					{:else}
+						<Badge variant="blue">Routes only</Badge>
+					{/if}
+				</div>
 			</div>
 			<p class="text-sm text-gray-500">
-				HeaderMutation filters can only attach to routes (L7 HTTP filter)
+				{#if filter.filterType === 'jwt_auth'}
+					JWT Auth filters can attach to routes or listeners (L7 HTTP filter)
+				{:else}
+					HeaderMutation filters can only attach to routes (L7 HTTP filter)
+				{/if}
 			</p>
 		</div>
 
 		<!-- Configuration -->
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-			<h2 class="text-lg font-semibold text-gray-900 mb-4">Header Mutation Configuration</h2>
-			<HeaderMutationConfigForm
-				config={headerMutationConfig}
-				onConfigChange={handleConfigChange}
-			/>
+			{#if filter.filterType === 'jwt_auth'}
+				<h2 class="text-lg font-semibold text-gray-900 mb-4">JWT Authentication Configuration</h2>
+				<JwtAuthConfigForm config={jwtAuthConfig} onConfigChange={handleJwtConfigChange} />
+			{:else}
+				<h2 class="text-lg font-semibold text-gray-900 mb-4">Header Mutation Configuration</h2>
+				<HeaderMutationConfigForm
+					config={headerMutationConfig}
+					onConfigChange={handleConfigChange}
+				/>
+			{/if}
 		</div>
 
 		<!-- Metadata -->

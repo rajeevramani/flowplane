@@ -617,15 +617,16 @@ export interface RemoteJwksConfig {
 	http_uri: {
 		uri: string;
 		cluster: string;
-		timeout_seconds?: number;
+		timeout_ms?: number;
 	};
 	cache_duration_seconds?: number;
 	async_fetch?: {
 		fast_listener?: boolean;
+		failed_refetch_duration_seconds?: number;
 	};
 	retry_policy?: {
 		num_retries?: number;
-		retry_back_off?: {
+		retry_backoff?: {
 			base_interval_ms?: number;
 			max_interval_ms?: number;
 		};
@@ -657,10 +658,30 @@ export interface JwtClaimToHeaderConfig {
 	claim_name: string;
 }
 
+// String matcher for subject validation
+export type JwtStringMatcherConfig =
+	| { type: 'exact'; value: string }
+	| { type: 'prefix'; value: string }
+	| { type: 'suffix'; value: string }
+	| { type: 'contains'; value: string }
+	| { type: 'regex'; value: string };
+
+// Normalize payload configuration
+export interface JwtNormalizePayloadConfig {
+	space_delimited_claims?: string[];
+}
+
+// JWT cache configuration
+export interface JwtCacheConfig {
+	jwt_cache_size?: number;
+	jwt_max_token_size?: number;
+}
+
 // JWT Provider configuration
 export interface JwtProviderConfig {
 	issuer?: string;
 	audiences?: string[];
+	subjects?: JwtStringMatcherConfig;
 	require_expiration?: boolean;
 	max_lifetime_seconds?: number;
 	clock_skew_seconds?: number;
@@ -673,6 +694,8 @@ export interface JwtProviderConfig {
 	payload_in_metadata?: string;
 	header_in_metadata?: string;
 	failed_status_in_metadata?: string;
+	normalize_payload_in_metadata?: JwtNormalizePayloadConfig;
+	jwt_cache_config?: JwtCacheConfig;
 	claim_to_headers?: JwtClaimToHeaderConfig[];
 	clear_route_cache?: boolean;
 	jwks: JwtJwksSourceConfig;
