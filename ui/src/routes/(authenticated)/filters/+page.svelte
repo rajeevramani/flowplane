@@ -10,6 +10,7 @@
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
+	let actionError = $state<string | null>(null);
 	let searchQuery = $state('');
 	let currentTeam = $state<string>('');
 
@@ -83,11 +84,14 @@
 			return;
 		}
 
+		// Clear any previous action error
+		actionError = null;
+
 		try {
 			await apiClient.deleteFilter(filter.id);
 			await loadData();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to delete filter';
+			actionError = err instanceof Error ? err.message : 'Failed to delete filter';
 		}
 	}
 
@@ -155,6 +159,13 @@
 			class="w-full md:w-96 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 		/>
 	</div>
+
+	<!-- Action Error (e.g., delete failed) -->
+	{#if actionError}
+		<div class="bg-red-50 border border-red-200 rounded-md p-4 mb-6">
+			<p class="text-sm text-red-800">{actionError}</p>
+		</div>
+	{/if}
 
 	<!-- Loading State -->
 	{#if isLoading}
