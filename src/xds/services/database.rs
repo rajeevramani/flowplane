@@ -361,6 +361,15 @@ impl DatabaseAggregatedDiscoveryService {
 
         // Intentionally do not emit Platform API listeners here to avoid port conflicts
 
+        // Inject listener-attached filters (e.g., JWT authentication)
+        // This ensures Envoy receives listeners with user-defined filters attached
+        if let Err(e) = self.state.inject_listener_auto_filters(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject listener-attached filters in ADS response"
+            );
+        }
+
         // Inject access log configuration for active learning sessions
         // This ensures Envoy receives listeners with access log config when sessions are active
         if let Err(e) = self.state.inject_learning_session_access_logs(&mut built).await {

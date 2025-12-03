@@ -150,17 +150,20 @@ fn create_empty_http_filter(filter_name: &str) -> HttpFilterConfigEntry {
         "envoy.filters.http.header_mutation" => HttpFilterKind::HeaderMutation(
             crate::xds::filters::http::header_mutation::HeaderMutationConfig::default(),
         ),
+        // JWT authn requires valid providers - can't create empty placeholder
+        // For route-level JWT filters, the actual JWT config must be attached to the listener
+        // via the listener_filters junction table, not auto-added here
         "envoy.filters.http.jwt_authn" => {
-            // JWT authn requires at least an empty providers map
-            HttpFilterKind::JwtAuthn(crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig {
-                rules: Vec::new(),
-                requirement_map: std::collections::HashMap::new(),
-                providers: std::collections::HashMap::new(),
-                filter_state_rules: None,
-                bypass_cors_preflight: None,
-                strip_failure_response: None,
-                stat_prefix: None,
-            })
+            tracing::warn!(
+                filter_name = %filter_name,
+                "JWT auth requires valid providers - route-level JWT needs listener-attached JWT config"
+            );
+            HttpFilterKind::Custom {
+                config: crate::xds::filters::TypedConfig {
+                    type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".to_string(),
+                    value: crate::xds::filters::Base64Bytes(Vec::new()),
+                },
+            }
         }
         "envoy.filters.http.cors" => {
             // CORS requires a policy

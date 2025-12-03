@@ -1,3 +1,4 @@
+use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
@@ -129,12 +130,12 @@ pub struct HeaderMutationFilterConfig {
 }
 
 /// Envelope for all filter configurations (extensible for future filter types)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum FilterConfig {
     HeaderMutation(HeaderMutationFilterConfig),
+    JwtAuth(JwtAuthenticationConfig),
     // Future filter types will be added here:
-    // JwtAuth(JwtAuthConfig),
     // Cors(CorsConfig),
     // RateLimit(RateLimitConfig),
 }
@@ -143,6 +144,7 @@ impl FilterConfig {
     pub fn filter_type(&self) -> FilterType {
         match self {
             FilterConfig::HeaderMutation(_) => FilterType::HeaderMutation,
+            FilterConfig::JwtAuth(_) => FilterType::JwtAuth,
         }
     }
 }
@@ -180,6 +182,7 @@ mod tests {
                 assert_eq!(cfg.request_headers_to_add.len(), 1);
                 assert_eq!(cfg.request_headers_to_add[0].key, "X-Test");
             }
+            _ => panic!("Expected HeaderMutation config"),
         }
     }
 
@@ -304,5 +307,74 @@ mod tests {
         assert_eq!(FilterType::Cors.http_filter_name(), "envoy.filters.http.cors");
         assert_eq!(FilterType::RateLimit.http_filter_name(), "envoy.filters.http.ratelimit");
         assert_eq!(FilterType::ExtAuthz.http_filter_name(), "envoy.filters.http.ext_authz");
+    }
+
+    #[test]
+    fn test_jwt_auth_filter_config_filter_type() {
+        use crate::xds::filters::http::jwt_auth::{
+            JwtAuthenticationConfig, JwtJwksSourceConfig, JwtProviderConfig, LocalJwksConfig,
+        };
+        use std::collections::HashMap;
+
+        // Create a minimal JwtAuth config
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test-provider".to_string(),
+            JwtProviderConfig {
+                issuer: Some("https://issuer.example.com".to_string()),
+                audiences: vec!["api".to_string()],
+                jwks: JwtJwksSourceConfig::Local(LocalJwksConfig {
+                    inline_string: Some("{\"keys\":[]}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let config =
+            FilterConfig::JwtAuth(JwtAuthenticationConfig { providers, ..Default::default() });
+
+        assert_eq!(config.filter_type(), FilterType::JwtAuth);
+    }
+
+    #[test]
+    fn test_jwt_auth_filter_config_serialization() {
+        use crate::xds::filters::http::jwt_auth::{
+            JwtAuthenticationConfig, JwtJwksSourceConfig, JwtProviderConfig, LocalJwksConfig,
+        };
+        use std::collections::HashMap;
+
+        // Create a minimal JwtAuth config
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test-provider".to_string(),
+            JwtProviderConfig {
+                issuer: Some("https://issuer.example.com".to_string()),
+                audiences: vec!["api".to_string()],
+                jwks: JwtJwksSourceConfig::Local(LocalJwksConfig {
+                    inline_string: Some("{\"keys\":[]}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let config =
+            FilterConfig::JwtAuth(JwtAuthenticationConfig { providers, ..Default::default() });
+
+        let json = serde_json::to_string(&config).unwrap();
+        // Should be tagged enum format
+        assert!(json.contains(r#""type":"jwt_auth""#), "JSON: {}", json);
+        assert!(json.contains(r#""config":"#), "JSON: {}", json);
+        assert!(json.contains("test-provider"), "JSON: {}", json);
+
+        // Round-trip test
+        let parsed: FilterConfig = serde_json::from_str(&json).unwrap();
+        match parsed {
+            FilterConfig::JwtAuth(jwt_config) => {
+                assert!(jwt_config.providers.contains_key("test-provider"));
+            }
+            _ => panic!("Expected JwtAuth config"),
+        }
     }
 }

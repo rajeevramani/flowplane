@@ -336,7 +336,12 @@ pub fn listeners_from_database_entries(
             ))
         })?;
 
-        let envoy_listener = config.to_envoy_listener()?;
+        let envoy_listener = config.to_envoy_listener().map_err(|e| {
+            Error::internal(format!(
+                "Failed to convert listener '{}' to Envoy format: {}",
+                entry.name, e
+            ))
+        })?;
         let encoded = envoy_listener.encode_to_vec();
 
         debug!(

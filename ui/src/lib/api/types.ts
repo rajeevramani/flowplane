@@ -608,12 +608,116 @@ export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 // Note: jwt_authn is the Envoy filter name variant (with 'n')
 export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'rate_limit' | 'ext_authz';
 
+// ============================================================================
+// JWT Authentication Filter Types
+// ============================================================================
+
+// JWKS Source: Remote configuration (HTTP URI with cluster)
+export interface RemoteJwksConfig {
+	http_uri: {
+		uri: string;
+		cluster: string;
+		timeout_seconds?: number;
+	};
+	cache_duration_seconds?: number;
+	async_fetch?: {
+		fast_listener?: boolean;
+	};
+	retry_policy?: {
+		num_retries?: number;
+		retry_back_off?: {
+			base_interval_ms?: number;
+			max_interval_ms?: number;
+		};
+	};
+}
+
+// JWKS Source: Local configuration (inline or file)
+export interface LocalJwksConfig {
+	filename?: string;
+	inline_string?: string;
+	inline_bytes?: string;
+	environment_variable?: string;
+}
+
+// JWKS Source: Discriminated union (matches Rust tagged enum)
+export type JwtJwksSourceConfig =
+	| { type: 'remote'; } & RemoteJwksConfig
+	| { type: 'local'; } & LocalJwksConfig;
+
+// JWT Header extraction configuration
+export interface JwtHeaderConfig {
+	name: string;
+	value_prefix?: string;
+}
+
+// JWT Claim to header forwarding configuration
+export interface JwtClaimToHeaderConfig {
+	header_name: string;
+	claim_name: string;
+}
+
+// JWT Provider configuration
+export interface JwtProviderConfig {
+	issuer?: string;
+	audiences?: string[];
+	require_expiration?: boolean;
+	max_lifetime_seconds?: number;
+	clock_skew_seconds?: number;
+	forward?: boolean;
+	from_headers?: JwtHeaderConfig[];
+	from_params?: string[];
+	from_cookies?: string[];
+	forward_payload_header?: string;
+	pad_forward_payload_header?: boolean;
+	payload_in_metadata?: string;
+	header_in_metadata?: string;
+	failed_status_in_metadata?: string;
+	claim_to_headers?: JwtClaimToHeaderConfig[];
+	clear_route_cache?: boolean;
+	jwks: JwtJwksSourceConfig;
+}
+
+// JWT Requirement: Discriminated union for requirement types
+export type JwtRequirementConfig =
+	| { type: 'provider_name'; provider_name: string }
+	| { type: 'requires_any'; requirements: JwtRequirementConfig[] }
+	| { type: 'requires_all'; requirements: JwtRequirementConfig[] }
+	| { type: 'allow_missing_or_failed' }
+	| { type: 'allow_missing' };
+
+// JWT Requirement Rule: Maps route matches to requirements
+export interface JwtRequirementRuleConfig {
+	match?: {
+		prefix?: string;
+		path?: string;
+		safe_regex?: { regex: string };
+	};
+	requires?: JwtRequirementConfig;
+	requirement_name?: string;
+}
+
+// JWT Authentication full configuration
+export interface JwtAuthenticationFilterConfig {
+	providers: Record<string, JwtProviderConfig>;
+	rules?: JwtRequirementRuleConfig[];
+	requirement_map?: Record<string, JwtRequirementConfig>;
+	bypass_cors_preflight?: boolean;
+	filter_state_rules?: {
+		name?: string;
+		requires?: Record<string, JwtRequirementConfig>;
+	};
+}
+
+// ============================================================================
+// FilterConfig Union Type
+// ============================================================================
+
 // FilterConfig uses tagged enum format: { type: '...', config: {...} }
 // This matches the Rust #[serde(tag = "type", content = "config")] serialization
-export type FilterConfig = {
-	type: 'header_mutation';
-	config: HeaderMutationFilterConfig;
-};
+export type FilterConfig =
+	| { type: 'header_mutation'; config: HeaderMutationFilterConfig }
+	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig };
 
 // Backend uses snake_case field names for HeaderMutationFilterConfig
 export interface HeaderMutationFilterConfig {

@@ -39,6 +39,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
     // Validate filter type matches config
     match (&payload.filter_type, &payload.config) {
         (crate::domain::FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => Ok(()),
+        (crate::domain::FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => Ok(()),
         _ => Err(ApiError::validation("Filter type and configuration do not match")),
     }
 }

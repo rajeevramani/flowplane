@@ -406,6 +406,24 @@ impl XdsState {
                             HttpScopedConfig::HeaderMutation(per_route),
                         )
                     }
+                    FilterConfig::JwtAuth(jwt_config) => {
+                        // Per-route JWT uses requirement_name to reference listener-level config
+                        // Use the first provider name as the default requirement
+                        use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
+                        let per_route = jwt_config
+                            .providers
+                            .keys()
+                            .next()
+                            .map(|name| JwtPerRouteConfig::RequirementName {
+                                requirement_name: name.clone(),
+                            })
+                            .unwrap_or(JwtPerRouteConfig::Disabled { disabled: true });
+
+                        (
+                            "envoy.filters.http.jwt_authn".to_string(),
+                            HttpScopedConfig::JwtAuthn(per_route),
+                        )
+                    }
                 };
 
                 // Inject into the route's virtual hosts
@@ -473,6 +491,14 @@ impl XdsState {
         } else {
             listeners_from_database_entries(listener_rows, "cache_refresh")?
         };
+
+        // Inject listener-attached filters (e.g., JWT authentication)
+        if let Err(e) = self.inject_listener_auto_filters(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject listener-attached filters"
+            );
+        }
 
         // Inject access log configuration for active learning sessions
         if let Err(e) = self.inject_learning_session_access_logs(&mut built).await {
@@ -668,6 +694,207 @@ impl XdsState {
                 debug!(
                     listener = %built.name,
                     "Re-encoded listener with access log configuration"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inject listener-attached filters into the HTTP connection manager filter chain
+    ///
+    /// This method:
+    /// 1. For each listener, queries the database for attached filters
+    /// 2. Decodes the listener protobuf
+    /// 3. Converts each filter configuration to an Envoy HttpFilter
+    /// 4. Injects the filters into the listener's HCM filter chain (before the router)
+    /// 5. Re-encodes the modified listener back into the BuiltResource
+    ///
+    /// This enables user-defined filters (like JWT authentication) to be dynamically
+    /// applied to listeners without modifying the stored listener configuration.
+    #[instrument(skip(self, built_listeners), name = "xds_inject_listener_filters")]
+    pub(crate) async fn inject_listener_auto_filters(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        use crate::domain::FilterConfig;
+        use envoy_types::pb::envoy::config::listener::v3::Listener;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
+        use prost::Message;
+
+        let filter_repository = match &self.filter_repository {
+            Some(repo) => repo.clone(),
+            None => {
+                debug!("No filter repository available, skipping listener filter injection");
+                return Ok(());
+            }
+        };
+
+        let listener_repository = match &self.listener_repository {
+            Some(repo) => repo.clone(),
+            None => {
+                debug!("No listener repository available, skipping listener filter injection");
+                return Ok(());
+            }
+        };
+
+        for built in built_listeners.iter_mut() {
+            // Get the listener data by name to retrieve the ListenerId
+            let listener_data = match listener_repository.get_by_name(&built.name).await {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!(
+                        listener = %built.name,
+                        error = %e,
+                        "Could not find listener in database, skipping filter injection"
+                    );
+                    continue;
+                }
+            };
+
+            // Get filters attached to this listener
+            let filters = match filter_repository.list_listener_filters(&listener_data.id).await {
+                Ok(filters) => filters,
+                Err(e) => {
+                    warn!(
+                        listener = %built.name,
+                        error = %e,
+                        "Failed to load listener filters, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            if filters.is_empty() {
+                continue;
+            }
+
+            debug!(
+                listener = %built.name,
+                filter_count = filters.len(),
+                "Injecting filters into listener"
+            );
+
+            // Decode the listener protobuf
+            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
+                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
+            })?;
+
+            // Track if we modified this listener
+            let mut modified = false;
+
+            // Process each filter and convert to HttpFilter
+            for filter_data in &filters {
+                let filter_config: FilterConfig =
+                    match serde_json::from_str(&filter_data.configuration) {
+                        Ok(config) => config,
+                        Err(e) => {
+                            warn!(
+                                listener = %built.name,
+                                filter_id = %filter_data.id,
+                                filter_name = %filter_data.name,
+                                error = %e,
+                                "Failed to parse filter configuration, skipping"
+                            );
+                            continue;
+                        }
+                    };
+
+                // Convert FilterConfig to HttpFilter
+                let http_filter = match &filter_config {
+                    FilterConfig::JwtAuth(jwt_config) => {
+                        let typed_config = match jwt_config.to_any() {
+                            Ok(any) => any,
+                            Err(e) => {
+                                warn!(
+                                    listener = %built.name,
+                                    filter_name = %filter_data.name,
+                                    error = %e,
+                                    "Failed to convert JWT config to protobuf, skipping"
+                                );
+                                continue;
+                            }
+                        };
+
+                        HttpFilter {
+                            name: "envoy.filters.http.jwt_authn".to_string(),
+                            config_type: Some(
+                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(typed_config)
+                            ),
+                            is_optional: false,
+                            disabled: false,
+                        }
+                    }
+                    FilterConfig::HeaderMutation(_) => {
+                        // HeaderMutation is route-level only, skip for listener injection
+                        debug!(
+                            listener = %built.name,
+                            filter_name = %filter_data.name,
+                            "HeaderMutation filter is route-level only, skipping listener injection"
+                        );
+                        continue;
+                    }
+                };
+
+                // Inject filter into each filter chain's HTTP connection manager
+                for filter_chain in listener.filter_chains.iter_mut() {
+                    for filter in filter_chain.filters.iter_mut() {
+                        // Check if this is an HTTP connection manager
+                        if filter.name == "envoy.filters.network.http_connection_manager" {
+                            if let Some(config_type) = &mut filter.config_type {
+                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+
+                                if let ConfigType::TypedConfig(typed_config) = config_type {
+                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+
+                                    let mut hcm =
+                                        HttpConnectionManager::decode(&typed_config.value[..])
+                                            .map_err(|e| {
+                                                crate::Error::internal(format!(
+                                                    "Failed to decode HCM for listener '{}': {}",
+                                                    built.name, e
+                                                ))
+                                            })?;
+
+                                    // Check if this filter already exists (by name)
+                                    let already_has_filter =
+                                        hcm.http_filters.iter().any(|f| f.name == http_filter.name);
+
+                                    if !already_has_filter {
+                                        // Insert filter BEFORE the router filter
+                                        let router_pos = hcm
+                                            .http_filters
+                                            .iter()
+                                            .position(|f| f.name == "envoy.filters.http.router")
+                                            .unwrap_or(hcm.http_filters.len());
+
+                                        hcm.http_filters.insert(router_pos, http_filter.clone());
+                                        modified = true;
+
+                                        debug!(
+                                            listener = %built.name,
+                                            filter_name = %filter_data.name,
+                                            filter_type = %filter_data.filter_type,
+                                            position = router_pos,
+                                            "Injected filter into listener HCM"
+                                        );
+                                    }
+
+                                    // Re-encode HCM back into typed_config
+                                    typed_config.value = hcm.encode_to_vec();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we modified the listener, re-encode it
+            if modified {
+                built.resource.value = listener.encode_to_vec();
+                info!(
+                    listener = %built.name,
+                    "Re-encoded listener with injected filters"
                 );
             }
         }

@@ -95,6 +95,7 @@ impl FilterService {
             // Validate config matches type
             match (&filter_type, &config) {
                 (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
+                (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                 _ => return Err(Error::validation("Filter type and configuration do not match")),
             }
 
@@ -207,6 +208,7 @@ impl FilterService {
 
                 match (&existing_type, &config) {
                     (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
+                    (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                     _ => {
                         return Err(Error::validation("Cannot change filter type, config mismatch"))
                     }
