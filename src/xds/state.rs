@@ -3,9 +3,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
-    listeners_from_config, listeners_from_database_entries, routes_from_config,
-    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
-    ROUTE_TYPE_URL,
+    create_jwks_cluster, listeners_from_config, listeners_from_database_entries,
+    routes_from_config, routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL,
+    LISTENER_TYPE_URL, ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
@@ -705,10 +705,9 @@ impl XdsState {
     ///
     /// This method:
     /// 1. For each listener, queries the database for attached filters
-    /// 2. Decodes the listener protobuf
-    /// 3. Converts each filter configuration to an Envoy HttpFilter
-    /// 4. Injects the filters into the listener's HCM filter chain (before the router)
-    /// 5. Re-encodes the modified listener back into the BuiltResource
+    /// 2. Also queries filters attached to the route configuration used by the listener
+    /// 3. Merges compatible filters (specifically JWT authentication)
+    /// 4. Injects the filters into the listener's HCM filter chain
     ///
     /// This enables user-defined filters (like JWT authentication) to be dynamically
     /// applied to listeners without modifying the stored listener configuration.
@@ -718,8 +717,14 @@ impl XdsState {
         built_listeners: &mut [BuiltResource],
     ) -> Result<()> {
         use crate::domain::FilterConfig;
+        use crate::xds::filters::http::jwt_auth::{
+            JwtAuthenticationConfig, JwtJwksSourceConfig, JwtRequirementConfig,
+        };
         use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::RouteSpecifier;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
+            HttpConnectionManager, HttpFilter,
+        };
         use prost::Message;
 
         let filter_repository = match &self.filter_repository {
@@ -738,6 +743,8 @@ impl XdsState {
             }
         };
 
+        let route_repository = self.route_repository.clone();
+
         for built in built_listeners.iter_mut() {
             // Get the listener data by name to retrieve the ListenerId
             let listener_data = match listener_repository.get_by_name(&built.name).await {
@@ -752,8 +759,9 @@ impl XdsState {
                 }
             };
 
-            // Get filters attached to this listener
-            let filters = match filter_repository.list_listener_filters(&listener_data.id).await {
+            // 1. Get filters attached directly to this listener
+            let mut filters = match filter_repository.list_listener_filters(&listener_data.id).await
+            {
                 Ok(filters) => filters,
                 Err(e) => {
                     warn!(
@@ -761,29 +769,108 @@ impl XdsState {
                         error = %e,
                         "Failed to load listener filters, skipping"
                     );
-                    continue;
+                    Vec::new()
                 }
             };
+
+            // Decode the listener protobuf to find associated routes
+            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
+                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
+            })?;
+
+            // 2. Find route configs used by this listener and get their filters
+            if let Some(route_repo) = &route_repository {
+                let mut route_config_names = HashSet::new();
+                
+                // Scan all filter chains for HCMs and their route configs
+                for filter_chain in &listener.filter_chains {
+                    for filter in &filter_chain.filters {
+                        if filter.name == "envoy.filters.network.http_connection_manager" {
+                            if let Some(config_type) = &filter.config_type {
+                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+                                if let ConfigType::TypedConfig(typed_config) = config_type {
+                                    if let Ok(hcm) = HttpConnectionManager::decode(&typed_config.value[..]) {
+                                        if let Some(route_specifier) = hcm.route_specifier {
+                                            match route_specifier {
+                                                RouteSpecifier::Rds(rds) => {
+                                                    info!(
+                                                        listener = %built.name,
+                                                        route_config = %rds.route_config_name,
+                                                        "Found RDS route config for listener"
+                                                    );
+                                                    route_config_names.insert(rds.route_config_name);
+                                                }
+                                                RouteSpecifier::RouteConfig(rc) => {
+                                                    info!(
+                                                        listener = %built.name,
+                                                        route_config = %rc.name,
+                                                        "Found inline route config for listener"
+                                                    );
+                                                    route_config_names.insert(rc.name);
+                                                }
+                                                RouteSpecifier::ScopedRoutes(_) => {
+                                                    info!(listener = %built.name, "Scoped routes not yet supported for filter injection");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for route_name in route_config_names {
+                    match route_repo.get_by_name(&route_name).await {
+                        Ok(route) => {
+                            match filter_repository.list_route_filters(&route.id).await {
+                                Ok(route_filters) => {
+                                    if !route_filters.is_empty() {
+                                        info!(
+                                            listener = %built.name,
+                                            route_name = %route_name,
+                                            count = route_filters.len(),
+                                            "Found filters attached to route used by listener"
+                                        );
+                                        filters.extend(route_filters);
+                                    } else {
+                                        info!(
+                                            listener = %built.name,
+                                            route_name = %route_name,
+                                            "No filters attached to route"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        listener = %built.name,
+                                        route_name = %route_name,
+                                        error = %e,
+                                        "Failed to list filters for route"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                listener = %built.name,
+                                route_name = %route_name,
+                                error = %e,
+                                "Failed to look up route by name (or route not found)"
+                            );
+                        }
+                    }
+                }
+            }
 
             if filters.is_empty() {
                 continue;
             }
 
-            debug!(
-                listener = %built.name,
-                filter_count = filters.len(),
-                "Injecting filters into listener"
-            );
+            // 3. Process and merge filters
+            let mut jwt_configs: Vec<JwtAuthenticationConfig> = Vec::new();
+            let mut other_filters: Vec<HttpFilter> = Vec::new();
 
-            // Decode the listener protobuf
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            // Track if we modified this listener
-            let mut modified = false;
-
-            // Process each filter and convert to HttpFilter
             for filter_data in &filters {
                 let filter_config: FilterConfig =
                     match serde_json::from_str(&filter_data.configuration) {
@@ -800,30 +887,9 @@ impl XdsState {
                         }
                     };
 
-                // Convert FilterConfig to HttpFilter
-                let http_filter = match &filter_config {
+                match filter_config {
                     FilterConfig::JwtAuth(jwt_config) => {
-                        let typed_config = match jwt_config.to_any() {
-                            Ok(any) => any,
-                            Err(e) => {
-                                warn!(
-                                    listener = %built.name,
-                                    filter_name = %filter_data.name,
-                                    error = %e,
-                                    "Failed to convert JWT config to protobuf, skipping"
-                                );
-                                continue;
-                            }
-                        };
-
-                        HttpFilter {
-                            name: "envoy.filters.http.jwt_authn".to_string(),
-                            config_type: Some(
-                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(typed_config)
-                            ),
-                            is_optional: false,
-                            disabled: false,
-                        }
+                        jwt_configs.push(jwt_config);
                     }
                     FilterConfig::HeaderMutation(_) => {
                         // HeaderMutation is route-level only, skip for listener injection
@@ -834,55 +900,180 @@ impl XdsState {
                         );
                         continue;
                     }
-                };
+                }
+            }
 
-                // Inject filter into each filter chain's HTTP connection manager
-                for filter_chain in listener.filter_chains.iter_mut() {
-                    for filter in filter_chain.filters.iter_mut() {
-                        // Check if this is an HTTP connection manager
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &mut filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+            // Merge JWT configs if present
+            if !jwt_configs.is_empty() {
+                let mut merged_config = JwtAuthenticationConfig::default();
+                
+                // Merge all JWT configs
+                for config in jwt_configs {
+                    merged_config.providers.extend(config.providers);
+                    merged_config.rules.extend(config.rules);
+                    merged_config.requirement_map.extend(config.requirement_map);
+                    
+                    if let Some(rules) = config.filter_state_rules {
+                        // Simple last-write-wins for filter state rules for now
+                        merged_config.filter_state_rules = Some(rules);
+                    }
+                    
+                    // Merge boolean flags (if any is true, result is true)
+                    if config.bypass_cors_preflight.unwrap_or(false) {
+                        merged_config.bypass_cors_preflight = Some(true);
+                    }
+                    if config.strip_failure_response.unwrap_or(false) {
+                        merged_config.strip_failure_response = Some(true);
+                    }
+                    
+                    if let Some(prefix) = config.stat_prefix {
+                        merged_config.stat_prefix = Some(prefix);
+                    }
+                }
 
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+                // Auto-populate requirement_map if empty but providers exist
+                if merged_config.requirement_map.is_empty() && !merged_config.providers.is_empty() {
+                    for provider_name in merged_config.providers.keys() {
+                        merged_config.requirement_map.insert(
+                            provider_name.clone(),
+                            JwtRequirementConfig::ProviderName {
+                                provider_name: provider_name.clone(),
+                            },
+                        );
+                    }
+                    debug!(
+                        listener = %built.name,
+                        provider_count = merged_config.providers.len(),
+                        "Auto-populated requirement_map from providers for merged JWT config"
+                    );
+                }
 
-                                    let mut hcm =
-                                        HttpConnectionManager::decode(&typed_config.value[..])
-                                            .map_err(|e| {
-                                                crate::Error::internal(format!(
-                                                    "Failed to decode HCM for listener '{}': {}",
-                                                    built.name, e
-                                                ))
-                                            })?;
+                // Auto-create JWKS clusters for remote providers
+                let existing_clusters: HashSet<String> = self
+                    .cached_resources(CLUSTER_TYPE_URL)
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect();
 
-                                    // Check if this filter already exists (by name)
-                                    let already_has_filter =
-                                        hcm.http_filters.iter().any(|f| f.name == http_filter.name);
+                for (provider_name, provider_config) in &merged_config.providers {
+                    if let JwtJwksSourceConfig::Remote(remote) = &provider_config.jwks {
+                        let cluster_name = &remote.http_uri.cluster;
+                        let jwks_uri = &remote.http_uri.uri;
 
-                                    if !already_has_filter {
-                                        // Insert filter BEFORE the router filter
-                                        let router_pos = hcm
-                                            .http_filters
-                                            .iter()
-                                            .position(|f| f.name == "envoy.filters.http.router")
-                                            .unwrap_or(hcm.http_filters.len());
-
-                                        hcm.http_filters.insert(router_pos, http_filter.clone());
-                                        modified = true;
-
-                                        debug!(
-                                            listener = %built.name,
-                                            filter_name = %filter_data.name,
-                                            filter_type = %filter_data.filter_type,
-                                            position = router_pos,
-                                            "Injected filter into listener HCM"
+                        if !existing_clusters.contains(cluster_name) {
+                            match create_jwks_cluster(cluster_name, jwks_uri) {
+                                Ok(cluster) => {
+                                    if self
+                                        .apply_built_resources(CLUSTER_TYPE_URL, vec![cluster])
+                                        .is_some()
+                                    {
+                                        info!(
+                                            cluster = %cluster_name,
+                                            provider = %provider_name,
+                                            jwks_uri = %jwks_uri,
+                                            "Auto-created JWKS cluster for JWT provider"
                                         );
                                     }
-
-                                    // Re-encode HCM back into typed_config
-                                    typed_config.value = hcm.encode_to_vec();
                                 }
+                                Err(e) => {
+                                    warn!(
+                                        cluster = %cluster_name,
+                                        provider = %provider_name,
+                                        error = %e,
+                                        "Failed to create JWKS cluster"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Create the JWT filter
+                match merged_config.to_any() {
+                    Ok(any) => {
+                        other_filters.push(HttpFilter {
+                            name: "envoy.filters.http.jwt_authn".to_string(),
+                            config_type: Some(
+                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any)
+                            ),
+                            is_optional: false,
+                            disabled: false,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            listener = %built.name,
+                            error = %e,
+                            "Failed to convert merged JWT config to protobuf, skipping"
+                        );
+                    }
+                }
+            }
+
+            if other_filters.is_empty() {
+                continue;
+            }
+
+            // 4. Inject filters into listener
+            let mut modified = false;
+
+            for filter_chain in listener.filter_chains.iter_mut() {
+                for filter in filter_chain.filters.iter_mut() {
+                    if filter.name == "envoy.filters.network.http_connection_manager" {
+                        if let Some(config_type) = &mut filter.config_type {
+                            use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+
+                            if let ConfigType::TypedConfig(typed_config) = config_type {
+                                let mut hcm = match HttpConnectionManager::decode(&typed_config.value[..]) {
+                                    Ok(hcm) => hcm,
+                                    Err(e) => {
+                                        warn!("Failed to decode HCM: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                for http_filter in &other_filters {
+                                    // Check if this filter already exists
+                                    let existing_filter_idx = hcm
+                                        .http_filters
+                                        .iter()
+                                        .position(|f| f.name == http_filter.name);
+
+                                    match existing_filter_idx {
+                                        Some(idx) => {
+                                            // For JWT, we always replace because we've merged everything
+                                            if http_filter.name == "envoy.filters.http.jwt_authn" {
+                                                info!(
+                                                    listener = %built.name,
+                                                    filter_name = %http_filter.name,
+                                                    "Replacing existing JWT filter with merged configuration"
+                                                );
+                                                hcm.http_filters[idx] = http_filter.clone();
+                                                modified = true;
+                                            }
+                                        }
+                                        None => {
+                                            // Insert filter BEFORE the router filter
+                                            let router_pos = hcm
+                                                .http_filters
+                                                .iter()
+                                                .position(|f| f.name == "envoy.filters.http.router")
+                                                .unwrap_or(hcm.http_filters.len());
+
+                                            hcm.http_filters.insert(router_pos, http_filter.clone());
+                                            modified = true;
+
+                                            info!(
+                                                listener = %built.name,
+                                                filter_name = %http_filter.name,
+                                                position = router_pos,
+                                                "Injected filter into listener HCM"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                typed_config.value = hcm.encode_to_vec();
                             }
                         }
                     }

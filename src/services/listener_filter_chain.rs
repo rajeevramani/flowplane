@@ -69,7 +69,15 @@ pub fn add_http_filter_before_router(config: &mut ListenerConfig, filter_name: &
                 });
 
                 // Create the new filter entry based on filter name
-                let new_filter = create_empty_http_filter(filter_name);
+                // Some filters (like JWT) cannot be created as empty placeholders
+                let new_filter = match create_empty_http_filter(filter_name) {
+                    Some(filter) => filter,
+                    None => {
+                        // Filter requires proper config, skip adding placeholder
+                        // The filter will be injected later via inject_listener_auto_filters
+                        continue;
+                    }
+                };
 
                 match router_pos {
                     Some(pos) => http_filters.insert(pos, new_filter),
@@ -144,7 +152,10 @@ fn is_router_filter(filter: &HttpFilterKind) -> bool {
 ///
 /// The filter is created with default/empty configuration, which allows
 /// per-route overrides via `typed_per_filter_config` to work.
-fn create_empty_http_filter(filter_name: &str) -> HttpFilterConfigEntry {
+///
+/// Returns `None` for filters that require valid configuration (like JWT auth)
+/// and cannot work as empty placeholders.
+fn create_empty_http_filter(filter_name: &str) -> Option<HttpFilterConfigEntry> {
     // Create the appropriate filter kind based on name
     let filter = match filter_name {
         "envoy.filters.http.header_mutation" => HttpFilterKind::HeaderMutation(
@@ -152,18 +163,14 @@ fn create_empty_http_filter(filter_name: &str) -> HttpFilterConfigEntry {
         ),
         // JWT authn requires valid providers - can't create empty placeholder
         // For route-level JWT filters, the actual JWT config must be attached to the listener
-        // via the listener_filters junction table, not auto-added here
+        // via the listener_filters junction table. The inject_listener_auto_filters function
+        // will inject the properly configured JWT filter from there.
         "envoy.filters.http.jwt_authn" => {
-            tracing::warn!(
+            tracing::debug!(
                 filter_name = %filter_name,
-                "JWT auth requires valid providers - route-level JWT needs listener-attached JWT config"
+                "JWT auth requires listener-attached config via listener_filters table, skipping empty placeholder"
             );
-            HttpFilterKind::Custom {
-                config: crate::xds::filters::TypedConfig {
-                    type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".to_string(),
-                    value: crate::xds::filters::Base64Bytes(Vec::new()),
-                },
-            }
+            return None;
         }
         "envoy.filters.http.cors" => {
             // CORS requires a policy
@@ -198,12 +205,12 @@ fn create_empty_http_filter(filter_name: &str) -> HttpFilterConfigEntry {
         }
     };
 
-    HttpFilterConfigEntry {
+    Some(HttpFilterConfigEntry {
         name: Some(filter_name.to_string()),
         is_optional: false,
         disabled: false,
         filter,
-    }
+    })
 }
 
 #[cfg(test)]

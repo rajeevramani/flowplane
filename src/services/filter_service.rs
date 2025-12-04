@@ -592,9 +592,20 @@ impl FilterService {
     }
 
     /// Refresh xDS caches after filter changes
+    ///
+    /// This refreshes both routes and listeners because:
+    /// - Route-level filters need route refresh for typed_per_filter_config
+    /// - Listener-attached filters (like JWT) need listener refresh for HCM injection
     async fn refresh_xds(&self) -> Result<(), Error> {
+        // Refresh routes first (for typed_per_filter_config)
         self.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-            error!(error = %err, "Failed to refresh xDS caches after filter operation");
+            error!(error = %err, "Failed to refresh route xDS caches after filter operation");
+            err
+        })?;
+
+        // Also refresh listeners (for JWT and other listener-attached filters)
+        self.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
+            error!(error = %err, "Failed to refresh listener xDS caches after filter operation");
             err
         })
     }
@@ -607,6 +618,9 @@ impl FilterService {
     ///
     /// When a filter is attached to a route, the corresponding HTTP filter must
     /// exist in the listener's filter chain for `typed_per_filter_config` to work.
+    ///
+    /// For JWT auth filters, we auto-attach the filter to the listener via
+    /// `listener_filters` table since JWT requires full config (providers, requirement_map).
     async fn ensure_listener_http_filters(
         &self,
         route_id: &RouteId,
@@ -616,6 +630,7 @@ impl FilterService {
         let route_repo = self.route_repository()?;
         let listener_repo = self.listener_repository()?;
         let auto_filter_repo = self.auto_filter_repository()?;
+        let filter_repo = self.repository()?;
 
         // Get route to find its name (used as route_config_name in listeners)
         let route = route_repo.get_by_id(route_id).await?;
@@ -634,7 +649,32 @@ impl FilterService {
 
         let http_filter_name = filter_type.http_filter_name();
 
+        // For JWT filters, auto-attach to listener via listener_filters table
+        // This is required because JWT filters need full configuration (providers, requirement_map)
+        // and cannot work as empty placeholders
+        let is_jwt_filter = filter_type == FilterType::JwtAuth;
+
         for listener in listeners {
+            if is_jwt_filter {
+                // Check if JWT filter already attached to listener
+                let existing_listener_filters = filter_repo.list_listener_filters(&listener.id).await?;
+                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
+
+                if !already_attached {
+                    // Auto-attach JWT filter to listener
+                    let order = existing_listener_filters.len() as i64;
+                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
+
+                    info!(
+                        listener_id = %listener.id,
+                        filter_id = %filter_id,
+                        "Auto-attached JWT filter to listener for route-level JWT requirement"
+                    );
+                }
+            }
+
+            // For non-JWT filters, add placeholder to listener config
+            // For JWT filters, this will skip (returns false) and rely on inject_listener_auto_filters
             self.add_http_filter_to_listener(
                 &listener.id,
                 http_filter_name,

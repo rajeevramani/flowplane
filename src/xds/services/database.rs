@@ -168,6 +168,19 @@ impl DatabaseAggregatedDiscoveryService {
             built.push(als);
         }
 
+        // Include dynamically created JWKS clusters from cache
+        // These are created by inject_listener_auto_filters for JWT auth providers
+        let existing_names: std::collections::HashSet<String> =
+            built.iter().map(|r| r.name.clone()).collect();
+        for cached in self.state.cached_resources(resources::CLUSTER_TYPE_URL) {
+            if cached.name.contains("jwks") && !existing_names.contains(&cached.name) {
+                built.push(resources::BuiltResource {
+                    name: cached.name,
+                    resource: cached.body,
+                });
+            }
+        }
+
         // NOTE: Platform API clusters are NOT added here to avoid duplicates
         // They are already stored in the database by materialize_native_resources()
         // and loaded above via cluster_repository.list()

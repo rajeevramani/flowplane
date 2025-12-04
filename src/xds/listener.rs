@@ -287,8 +287,17 @@ impl FilterConfig {
             }
         };
 
+        // Normalize filter name to canonical Envoy filter name based on filter type
+        // This ensures consistent naming regardless of how the filter was stored in the database
+        let canonical_name = match &self.filter_type {
+            FilterType::HttpConnectionManager { .. } => {
+                "envoy.filters.network.http_connection_manager".to_string()
+            }
+            FilterType::TcpProxy { .. } => "envoy.filters.network.tcp_proxy".to_string(),
+        };
+
         let filter = Filter {
-            name: self.name.clone(),
+            name: canonical_name,
             config_type: Some(
                 envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(
                     typed_config,
