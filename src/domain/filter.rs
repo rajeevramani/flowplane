@@ -1,4 +1,5 @@
 use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
+use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
@@ -32,6 +33,9 @@ pub enum FilterType {
     HeaderMutation,
     JwtAuth,
     Cors,
+    /// Local (in-memory) rate limiting
+    LocalRateLimit,
+    /// External/distributed rate limiting (requires gRPC service)
     RateLimit,
     ExtAuthz,
 }
@@ -47,6 +51,7 @@ impl FilterType {
             FilterType::HeaderMutation => vec![AttachmentPoint::Route],
             FilterType::Cors => vec![AttachmentPoint::Route],
             FilterType::JwtAuth => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+            FilterType::LocalRateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::RateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::ExtAuthz => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
         }
@@ -76,9 +81,42 @@ impl FilterType {
             FilterType::HeaderMutation => "envoy.filters.http.header_mutation",
             FilterType::JwtAuth => "envoy.filters.http.jwt_authn",
             FilterType::Cors => "envoy.filters.http.cors",
+            FilterType::LocalRateLimit => "envoy.filters.http.local_ratelimit",
             FilterType::RateLimit => "envoy.filters.http.ratelimit",
             FilterType::ExtAuthz => "envoy.filters.http.ext_authz",
         }
+    }
+
+    /// Returns true if this filter type has full implementation support.
+    ///
+    /// Used for API validation to reject unsupported filter creation.
+    /// Filter types that are defined but not yet fully implemented will return false.
+    pub fn is_fully_implemented(&self) -> bool {
+        matches!(
+            self,
+            FilterType::HeaderMutation | FilterType::JwtAuth | FilterType::LocalRateLimit
+        )
+    }
+
+    /// Returns whether this filter type requires listener-level configuration.
+    ///
+    /// Filters requiring listener config cannot be created as empty placeholders
+    /// in the HCM filter chain - they need their full configuration attached.
+    ///
+    /// - JwtAuth: Requires providers and requirement_map
+    /// - LocalRateLimit: Requires token_bucket configuration
+    /// - RateLimit: Requires gRPC service configuration
+    /// - ExtAuthz: Requires service configuration
+    ///
+    /// Filters that work as placeholders (HeaderMutation, Cors) return false.
+    pub fn requires_listener_config(&self) -> bool {
+        matches!(
+            self,
+            FilterType::JwtAuth
+                | FilterType::LocalRateLimit
+                | FilterType::RateLimit
+                | FilterType::ExtAuthz
+        )
     }
 }
 
@@ -88,6 +126,7 @@ impl fmt::Display for FilterType {
             FilterType::HeaderMutation => write!(f, "header_mutation"),
             FilterType::JwtAuth => write!(f, "jwt_auth"),
             FilterType::Cors => write!(f, "cors"),
+            FilterType::LocalRateLimit => write!(f, "local_rate_limit"),
             FilterType::RateLimit => write!(f, "rate_limit"),
             FilterType::ExtAuthz => write!(f, "ext_authz"),
         }
@@ -102,6 +141,7 @@ impl std::str::FromStr for FilterType {
             "header_mutation" => Ok(FilterType::HeaderMutation),
             "jwt_auth" => Ok(FilterType::JwtAuth),
             "cors" => Ok(FilterType::Cors),
+            "local_rate_limit" => Ok(FilterType::LocalRateLimit),
             "rate_limit" => Ok(FilterType::RateLimit),
             "ext_authz" => Ok(FilterType::ExtAuthz),
             _ => Err(format!("Unknown filter type: {}", s)),
@@ -135,9 +175,9 @@ pub struct HeaderMutationFilterConfig {
 pub enum FilterConfig {
     HeaderMutation(HeaderMutationFilterConfig),
     JwtAuth(JwtAuthenticationConfig),
+    LocalRateLimit(LocalRateLimitConfig),
     // Future filter types will be added here:
     // Cors(CorsConfig),
-    // RateLimit(RateLimitConfig),
 }
 
 impl FilterConfig {
@@ -145,6 +185,7 @@ impl FilterConfig {
         match self {
             FilterConfig::HeaderMutation(_) => FilterType::HeaderMutation,
             FilterConfig::JwtAuth(_) => FilterType::JwtAuth,
+            FilterConfig::LocalRateLimit(_) => FilterType::LocalRateLimit,
         }
     }
 }
@@ -264,6 +305,14 @@ mod tests {
     }
 
     #[test]
+    fn test_local_rate_limit_attaches_to_routes_and_listeners() {
+        let ft = FilterType::LocalRateLimit;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+    }
+
+    #[test]
     fn test_rate_limit_attaches_to_routes_and_listeners() {
         let ft = FilterType::RateLimit;
         assert!(ft.can_attach_to(AttachmentPoint::Route));
@@ -290,6 +339,7 @@ mod tests {
         assert_eq!("header_mutation".parse::<FilterType>().unwrap(), FilterType::HeaderMutation);
         assert_eq!("jwt_auth".parse::<FilterType>().unwrap(), FilterType::JwtAuth);
         assert_eq!("cors".parse::<FilterType>().unwrap(), FilterType::Cors);
+        assert_eq!("local_rate_limit".parse::<FilterType>().unwrap(), FilterType::LocalRateLimit);
         assert_eq!("rate_limit".parse::<FilterType>().unwrap(), FilterType::RateLimit);
         assert_eq!("ext_authz".parse::<FilterType>().unwrap(), FilterType::ExtAuthz);
 
@@ -305,8 +355,38 @@ mod tests {
         );
         assert_eq!(FilterType::JwtAuth.http_filter_name(), "envoy.filters.http.jwt_authn");
         assert_eq!(FilterType::Cors.http_filter_name(), "envoy.filters.http.cors");
+        assert_eq!(
+            FilterType::LocalRateLimit.http_filter_name(),
+            "envoy.filters.http.local_ratelimit"
+        );
         assert_eq!(FilterType::RateLimit.http_filter_name(), "envoy.filters.http.ratelimit");
         assert_eq!(FilterType::ExtAuthz.http_filter_name(), "envoy.filters.http.ext_authz");
+    }
+
+    #[test]
+    fn test_is_fully_implemented() {
+        // Currently implemented filters
+        assert!(FilterType::HeaderMutation.is_fully_implemented());
+        assert!(FilterType::JwtAuth.is_fully_implemented());
+        assert!(FilterType::LocalRateLimit.is_fully_implemented());
+
+        // Not yet implemented filters
+        assert!(!FilterType::Cors.is_fully_implemented());
+        assert!(!FilterType::RateLimit.is_fully_implemented());
+        assert!(!FilterType::ExtAuthz.is_fully_implemented());
+    }
+
+    #[test]
+    fn test_requires_listener_config() {
+        // Filters that require listener-level configuration (cannot be empty placeholders)
+        assert!(FilterType::JwtAuth.requires_listener_config());
+        assert!(FilterType::LocalRateLimit.requires_listener_config());
+        assert!(FilterType::RateLimit.requires_listener_config());
+        assert!(FilterType::ExtAuthz.requires_listener_config());
+
+        // Filters that work as empty placeholders in HCM filter chain
+        assert!(!FilterType::HeaderMutation.requires_listener_config());
+        assert!(!FilterType::Cors.requires_listener_config());
     }
 
     #[test]
@@ -376,5 +456,70 @@ mod tests {
             }
             _ => panic!("Expected JwtAuth config"),
         }
+    }
+
+    #[test]
+    fn test_local_rate_limit_filter_config_serialization() {
+        use crate::xds::filters::http::local_rate_limit::{
+            LocalRateLimitConfig, TokenBucketConfig,
+        };
+
+        let config = FilterConfig::LocalRateLimit(LocalRateLimitConfig {
+            stat_prefix: "ingress_http".to_string(),
+            token_bucket: Some(TokenBucketConfig {
+                max_tokens: 100,
+                tokens_per_fill: Some(50),
+                fill_interval_ms: 1000,
+            }),
+            status_code: Some(429),
+            filter_enabled: None,
+            filter_enforced: None,
+            per_downstream_connection: Some(false),
+            rate_limited_as_resource_exhausted: Some(true),
+            max_dynamic_descriptors: None,
+            always_consume_default_token_bucket: None,
+        });
+
+        let json = serde_json::to_string(&config).unwrap();
+        // Should be tagged enum format
+        assert!(json.contains(r#""type":"local_rate_limit""#), "JSON: {}", json);
+        assert!(json.contains(r#""config":"#), "JSON: {}", json);
+        assert!(json.contains("ingress_http"), "JSON: {}", json);
+
+        // Round-trip test
+        let parsed: FilterConfig = serde_json::from_str(&json).unwrap();
+        match parsed {
+            FilterConfig::LocalRateLimit(rate_limit_config) => {
+                assert_eq!(rate_limit_config.stat_prefix, "ingress_http");
+                assert!(rate_limit_config.token_bucket.is_some());
+                assert_eq!(rate_limit_config.status_code, Some(429));
+            }
+            _ => panic!("Expected LocalRateLimit config"),
+        }
+    }
+
+    #[test]
+    fn test_local_rate_limit_filter_type() {
+        use crate::xds::filters::http::local_rate_limit::{
+            LocalRateLimitConfig, TokenBucketConfig,
+        };
+
+        let config = FilterConfig::LocalRateLimit(LocalRateLimitConfig {
+            stat_prefix: "test".to_string(),
+            token_bucket: Some(TokenBucketConfig {
+                max_tokens: 10,
+                tokens_per_fill: None,
+                fill_interval_ms: 1000,
+            }),
+            status_code: None,
+            filter_enabled: None,
+            filter_enforced: None,
+            per_downstream_connection: None,
+            rate_limited_as_resource_exhausted: None,
+            max_dynamic_descriptors: None,
+            always_consume_default_token_bucket: None,
+        });
+
+        assert_eq!(config.filter_type(), FilterType::LocalRateLimit);
     }
 }

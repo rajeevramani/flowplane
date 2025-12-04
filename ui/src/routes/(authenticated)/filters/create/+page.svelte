@@ -8,12 +8,14 @@
 		FilterConfig,
 		HeaderMutationConfig,
 		HeaderMutationFilterConfig,
-		JwtAuthenticationFilterConfig
+		JwtAuthenticationFilterConfig,
+		LocalRateLimitConfig
 	} from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import HeaderMutationConfigForm from '$lib/components/filters/HeaderMutationConfigForm.svelte';
 	import JwtAuthConfigForm from '$lib/components/filters/JwtAuthConfigForm.svelte';
+	import LocalRateLimitForm from '$lib/components/filters/LocalRateLimitForm.svelte';
 
 	// Filter type metadata (using snake_case to match backend)
 	const FILTER_TYPE_INFO: Record<
@@ -44,11 +46,11 @@
 			attachmentPoints: ['Routes'],
 			available: false
 		},
-		rate_limit: {
-			label: 'Rate Limit',
-			description: 'Rate limiting configuration',
+		local_rate_limit: {
+			label: 'Local Rate Limit',
+			description: 'Local rate limiting with token bucket algorithm',
 			attachmentPoints: ['Routes', 'Listeners'],
-			available: false
+			available: true
 		},
 		ext_authz: {
 			label: 'External Auth',
@@ -81,6 +83,17 @@
 		bypass_cors_preflight: false
 	});
 
+	// Local rate limit config
+	let localRateLimitConfig = $state<LocalRateLimitConfig>({
+		stat_prefix: '',
+		token_bucket: {
+			max_tokens: 100,
+			tokens_per_fill: undefined,
+			fill_interval_ms: 1000
+		},
+		status_code: 429
+	});
+
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
 		currentTeam = value;
@@ -96,6 +109,13 @@
 			return {
 				type: 'jwt_auth',
 				config: jwtAuthConfig
+			};
+		}
+
+		if (filterType === 'local_rate_limit') {
+			return {
+				type: 'local_rate_limit',
+				config: localRateLimitConfig
 			};
 		}
 
@@ -129,6 +149,10 @@
 			return validateJwtAuthConfig();
 		}
 
+		if (filterType === 'local_rate_limit') {
+			return validateLocalRateLimitConfig();
+		}
+
 		// Validate at least one header operation is configured
 		const config = headerMutationConfig;
 		const hasConfig =
@@ -158,6 +182,27 @@
 			if (!header.trim()) {
 				return 'Header name to remove cannot be empty';
 			}
+		}
+
+		return null;
+	}
+
+	// Validate local rate limit config
+	function validateLocalRateLimitConfig(): string | null {
+		if (!localRateLimitConfig.stat_prefix.trim()) {
+			return 'Stat prefix is required for rate limit filter';
+		}
+
+		if (!localRateLimitConfig.token_bucket) {
+			return 'Token bucket configuration is required';
+		}
+
+		if (localRateLimitConfig.token_bucket.max_tokens < 1) {
+			return 'Max tokens must be at least 1';
+		}
+
+		if (localRateLimitConfig.token_bucket.fill_interval_ms < 1) {
+			return 'Fill interval must be at least 1ms';
 		}
 
 		return null;
@@ -233,6 +278,11 @@
 	// Handle JWT config change
 	function handleJwtConfigChange(config: JwtAuthenticationFilterConfig) {
 		jwtAuthConfig = config;
+	}
+
+	// Handle local rate limit config change
+	function handleLocalRateLimitConfigChange(config: LocalRateLimitConfig) {
+		localRateLimitConfig = config;
 	}
 </script>
 
@@ -346,6 +396,9 @@
 		{:else if filterType === 'jwt_auth'}
 			<h2 class="text-lg font-semibold text-gray-900 mb-4">JWT Authentication Configuration</h2>
 			<JwtAuthConfigForm config={jwtAuthConfig} onConfigChange={handleJwtConfigChange} />
+		{:else if filterType === 'local_rate_limit'}
+			<h2 class="text-lg font-semibold text-gray-900 mb-4">Local Rate Limit Configuration</h2>
+			<LocalRateLimitForm config={localRateLimitConfig} onConfigChange={handleLocalRateLimitConfigChange} />
 		{:else}
 			<div class="text-center py-8 text-gray-500">
 				<p>Configuration for this filter type is not yet available.</p>

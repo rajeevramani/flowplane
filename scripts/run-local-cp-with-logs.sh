@@ -27,5 +27,4 @@ cargo clean
   FLOWPLANE_API_BIND_ADDRESS=127.0.0.1 \
   FLOWPLANE_API_PORT=8080 \
   FLOWPLANE_XDS_PORT=18000 \
-  RUST_LOG=flowplane=debug \
   cargo run --bin flowplane 2>&1 | tee "${LOG_FILE}"

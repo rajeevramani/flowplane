@@ -153,8 +153,8 @@ fn is_router_filter(filter: &HttpFilterKind) -> bool {
 /// The filter is created with default/empty configuration, which allows
 /// per-route overrides via `typed_per_filter_config` to work.
 ///
-/// Returns `None` for filters that require valid configuration (like JWT auth)
-/// and cannot work as empty placeholders.
+/// Returns `None` for filters that require valid configuration (like JWT auth,
+/// local rate limit) and cannot work as empty placeholders.
 fn create_empty_http_filter(filter_name: &str) -> Option<HttpFilterConfigEntry> {
     // Create the appropriate filter kind based on name
     let filter = match filter_name {
@@ -172,13 +172,22 @@ fn create_empty_http_filter(filter_name: &str) -> Option<HttpFilterConfigEntry> 
             );
             return None;
         }
+        // Local rate limit requires token bucket config - can't create empty placeholder
+        // The actual config must be attached via the listener_filters junction table.
+        "envoy.filters.http.local_ratelimit" => {
+            tracing::debug!(
+                filter_name = %filter_name,
+                "Local rate limit requires listener-attached config via listener_filters table, skipping empty placeholder"
+            );
+            return None;
+        }
         "envoy.filters.http.cors" => {
             // CORS requires a policy
             HttpFilterKind::Cors(crate::xds::filters::http::cors::CorsConfig {
                 policy: crate::xds::filters::http::cors::CorsPolicyConfig::default(),
             })
         }
-        // Rate limit and other complex filters that require valid service config
+        // External rate limit and other complex filters that require valid service config
         // are better handled as custom filters for now
         "envoy.filters.http.ratelimit" | "envoy.filters.http.ext_authz" => {
             tracing::warn!(

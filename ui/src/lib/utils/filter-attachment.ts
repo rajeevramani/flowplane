@@ -14,6 +14,7 @@ const FILTER_ATTACHMENT_RULES: Record<FilterType, AttachmentPoint[]> = {
 	cors: ['route'],
 	jwt_auth: ['route', 'listener'],
 	jwt_authn: ['route', 'listener'], // Legacy name from Envoy filter
+	local_rate_limit: ['route', 'listener'],
 	rate_limit: ['route', 'listener'],
 	ext_authz: ['route', 'listener']
 };

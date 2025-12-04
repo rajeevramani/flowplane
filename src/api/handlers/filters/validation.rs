@@ -36,11 +36,32 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         return Err(ApiError::validation("Team name cannot be empty"));
     }
 
+    // Validate filter type is fully implemented
+    if !payload.filter_type.is_fully_implemented() {
+        return Err(ApiError::validation(format!(
+            "Filter type '{}' is not yet supported. Available types: header_mutation, jwt_auth, local_rate_limit",
+            payload.filter_type
+        )));
+    }
+
     // Validate filter type matches config
+    tracing::debug!(
+        filter_type = ?payload.filter_type,
+        config_type = ?std::mem::discriminant(&payload.config),
+        "Validating filter type matches config"
+    );
     match (&payload.filter_type, &payload.config) {
         (crate::domain::FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => Ok(()),
         (crate::domain::FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => Ok(()),
-        _ => Err(ApiError::validation("Filter type and configuration do not match")),
+        (crate::domain::FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => Ok(()),
+        _ => {
+            tracing::warn!(
+                filter_type = ?payload.filter_type,
+                config = ?payload.config,
+                "Filter type and configuration do not match"
+            );
+            Err(ApiError::validation("Filter type and configuration do not match"))
+        }
     }
 }
 

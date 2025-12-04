@@ -606,7 +606,7 @@ export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 
 // Filter type uses snake_case to match backend serde serialization
 // Note: jwt_authn is the Envoy filter name variant (with 'n')
-export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'rate_limit' | 'ext_authz';
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz';
 
 // ============================================================================
 // JWT Authentication Filter Types
@@ -733,6 +733,40 @@ export interface JwtAuthenticationFilterConfig {
 }
 
 // ============================================================================
+// Local Rate Limit Configuration Types
+// ============================================================================
+
+// Token bucket configuration for rate limiting
+export interface TokenBucketConfig {
+	max_tokens: number;
+	tokens_per_fill?: number;
+	fill_interval_ms: number;
+}
+
+// Fractional percent denominator options
+export type FractionalPercentDenominator = 'hundred' | 'ten_thousand' | 'million';
+
+// Runtime fractional percent configuration for enabling/enforcing rate limits
+export interface RuntimeFractionalPercentConfig {
+	runtime_key?: string;
+	numerator: number;
+	denominator?: FractionalPercentDenominator;
+}
+
+// Local Rate Limit filter configuration
+export interface LocalRateLimitConfig {
+	stat_prefix: string;
+	token_bucket?: TokenBucketConfig;
+	status_code?: number;
+	filter_enabled?: RuntimeFractionalPercentConfig;
+	filter_enforced?: RuntimeFractionalPercentConfig;
+	per_downstream_connection?: boolean;
+	rate_limited_as_resource_exhausted?: boolean;
+	max_dynamic_descriptors?: number;
+	always_consume_default_token_bucket?: boolean;
+}
+
+// ============================================================================
 // FilterConfig Union Type
 // ============================================================================
 
@@ -740,7 +774,8 @@ export interface JwtAuthenticationFilterConfig {
 // This matches the Rust #[serde(tag = "type", content = "config")] serialization
 export type FilterConfig =
 	| { type: 'header_mutation'; config: HeaderMutationFilterConfig }
-	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig };
+	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig }
+	| { type: 'local_rate_limit'; config: LocalRateLimitConfig };
 
 // Backend uses snake_case field names for HeaderMutationFilterConfig
 export interface HeaderMutationFilterConfig {

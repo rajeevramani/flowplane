@@ -4,11 +4,12 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { ArrowLeft } from 'lucide-svelte';
-	import type { FilterResponse, FilterConfig, HeaderMutationConfig, HeaderMutationFilterConfig, JwtAuthenticationFilterConfig } from '$lib/api/types';
+	import type { FilterResponse, FilterConfig, HeaderMutationConfig, HeaderMutationFilterConfig, JwtAuthenticationFilterConfig, LocalRateLimitConfig } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import HeaderMutationConfigForm from '$lib/components/filters/HeaderMutationConfigForm.svelte';
 	import JwtAuthConfigForm from '$lib/components/filters/JwtAuthConfigForm.svelte';
+	import LocalRateLimitForm from '$lib/components/filters/LocalRateLimitForm.svelte';
 
 	// Page state
 	let isLoading = $state(true);
@@ -28,6 +29,15 @@
 	let jwtAuthConfig = $state<JwtAuthenticationFilterConfig>({
 		providers: {},
 		bypass_cors_preflight: false
+	});
+	let localRateLimitConfig = $state<LocalRateLimitConfig>({
+		stat_prefix: '',
+		token_bucket: {
+			max_tokens: 100,
+			tokens_per_fill: undefined,
+			fill_interval_ms: 1000
+		},
+		status_code: 429
 	});
 
 	// Get filter ID from route params (always defined for this route)
@@ -52,7 +62,7 @@
 			filterDescription = data.description || '';
 
 			// Load config from tagged enum format based on filter type
-			// Backend returns: { type: 'header_mutation' | 'jwt_auth', config: { ... } }
+			// Backend returns: { type: 'header_mutation' | 'jwt_auth' | 'local_rate_limit', config: { ... } }
 			if (data.config.type === 'header_mutation') {
 				const backendConfig = data.config.config;
 				headerMutationConfig = {
@@ -64,6 +74,9 @@
 			} else if (data.config.type === 'jwt_auth') {
 				// JWT config is already in correct format from backend
 				jwtAuthConfig = data.config.config;
+			} else if (data.config.type === 'local_rate_limit') {
+				// LocalRateLimit config is already in correct format from backend
+				localRateLimitConfig = data.config.config;
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load filter';
@@ -84,6 +97,13 @@
 			return {
 				type: 'jwt_auth',
 				config: jwtAuthConfig
+			};
+		}
+
+		if (filter?.filterType === 'local_rate_limit') {
+			return {
+				type: 'local_rate_limit',
+				config: localRateLimitConfig
 			};
 		}
 
@@ -115,6 +135,10 @@
 		// Type-specific validation
 		if (filter?.filterType === 'jwt_auth') {
 			return validateJwtAuthConfig();
+		}
+
+		if (filter?.filterType === 'local_rate_limit') {
+			return validateLocalRateLimitConfig();
 		}
 
 		// Validate at least one header operation is configured
@@ -152,6 +176,27 @@
 			if (!header.trim()) {
 				return 'Header name to remove cannot be empty';
 			}
+		}
+
+		return null;
+	}
+
+	// Validate local rate limit config
+	function validateLocalRateLimitConfig(): string | null {
+		if (!localRateLimitConfig.stat_prefix.trim()) {
+			return 'Stat prefix is required for rate limit filter';
+		}
+
+		if (!localRateLimitConfig.token_bucket) {
+			return 'Token bucket configuration is required';
+		}
+
+		if (localRateLimitConfig.token_bucket.max_tokens < 1) {
+			return 'Max tokens must be at least 1';
+		}
+
+		if (localRateLimitConfig.token_bucket.fill_interval_ms < 1) {
+			return 'Fill interval must be at least 1ms';
 		}
 
 		return null;
@@ -243,6 +288,11 @@
 	// Handle JWT config change
 	function handleJwtConfigChange(config: JwtAuthenticationFilterConfig) {
 		jwtAuthConfig = config;
+	}
+
+	// Handle local rate limit config change
+	function handleLocalRateLimitConfigChange(config: LocalRateLimitConfig) {
+		localRateLimitConfig = config;
 	}
 
 	// Format date
@@ -360,7 +410,7 @@
 			<div class="flex items-center justify-between mb-4">
 				<h2 class="text-lg font-semibold text-gray-900">Attachment Points</h2>
 				<div class="flex gap-1">
-					{#if filter.filterType === 'jwt_auth'}
+					{#if filter.filterType === 'jwt_auth' || filter.filterType === 'rate_limit'}
 						<Badge variant="blue">Routes</Badge>
 						<Badge variant="blue">Listeners</Badge>
 					{:else}
@@ -371,6 +421,8 @@
 			<p class="text-sm text-gray-500">
 				{#if filter.filterType === 'jwt_auth'}
 					JWT Auth filters can attach to routes or listeners (L7 HTTP filter)
+				{:else if filter.filterType === 'rate_limit'}
+					Rate Limit filters can attach to routes or listeners (L7 HTTP filter)
 				{:else}
 					HeaderMutation filters can only attach to routes (L7 HTTP filter)
 				{/if}
@@ -382,6 +434,9 @@
 			{#if filter.filterType === 'jwt_auth'}
 				<h2 class="text-lg font-semibold text-gray-900 mb-4">JWT Authentication Configuration</h2>
 				<JwtAuthConfigForm config={jwtAuthConfig} onConfigChange={handleJwtConfigChange} />
+			{:else if filter.filterType === 'rate_limit'}
+				<h2 class="text-lg font-semibold text-gray-900 mb-4">Rate Limit Configuration</h2>
+				<LocalRateLimitForm config={localRateLimitConfig} onConfigChange={handleLocalRateLimitConfigChange} />
 			{:else}
 				<h2 class="text-lg font-semibold text-gray-900 mb-4">Header Mutation Configuration</h2>
 				<HeaderMutationConfigForm

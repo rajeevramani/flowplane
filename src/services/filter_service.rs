@@ -651,12 +651,11 @@ impl FilterService {
 
         let http_filter_name = filter_type.http_filter_name();
 
-        // For filters that require full configuration (JWT, LocalRateLimit),
+        // For filters that require full configuration (JWT, LocalRateLimit, RateLimit, ExtAuthz),
         // auto-attach to listener via listener_filters table.
         // These filters cannot work as empty placeholders - they need their
         // full config (providers/requirement_map for JWT, token bucket for rate limit).
-        let requires_listener_attachment =
-            matches!(filter_type, FilterType::JwtAuth | FilterType::LocalRateLimit);
+        let requires_listener_attachment = filter_type.requires_listener_config();
 
         for listener in listeners {
             if requires_listener_attachment {

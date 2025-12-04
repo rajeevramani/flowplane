@@ -3,9 +3,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
-    create_jwks_cluster, listeners_from_config, listeners_from_database_entries,
-    routes_from_config, routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL,
-    LISTENER_TYPE_URL, ROUTE_TYPE_URL,
+    listeners_from_config, listeners_from_database_entries, routes_from_config,
+    routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
+    ROUTE_TYPE_URL,
 };
 use crate::{
     config::SimpleXdsConfig,
@@ -326,154 +326,18 @@ impl XdsState {
     ///
     /// This modifies the route's JSON configuration to include any filters
     /// attached via the route_filters junction table.
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_route_filters`].
     pub async fn inject_route_filters(
         &self,
         routes: &mut [crate::storage::RouteData],
     ) -> Result<()> {
-        use crate::domain::FilterConfig;
-        use crate::xds::filters::http::header_mutation::{
-            HeaderMutationEntry, HeaderMutationPerRouteConfig,
-        };
-        use crate::xds::filters::http::HttpScopedConfig;
-
         let filter_repository = match &self.filter_repository {
-            Some(repo) => repo.clone(),
+            Some(repo) => repo,
             None => return Ok(()),
         };
 
-        for route in routes.iter_mut() {
-            // Get filters attached to this route
-            let filters = filter_repository.list_route_filters(&route.id).await?;
-
-            if filters.is_empty() {
-                continue;
-            }
-
-            // Parse the route configuration
-            let mut config: serde_json::Value = serde_json::from_str(&route.configuration)
-                .map_err(|e| {
-                    crate::Error::internal(format!(
-                        "Failed to parse route configuration for '{}': {}",
-                        route.name, e
-                    ))
-                })?;
-
-            // Process each filter and add to typed_per_filter_config
-            for filter_data in filters {
-                // Parse the filter configuration
-                let filter_config: FilterConfig = serde_json::from_str(&filter_data.configuration)
-                    .map_err(|e| {
-                        warn!(
-                            filter_id = %filter_data.id,
-                            filter_name = %filter_data.name,
-                            error = %e,
-                            "Failed to parse filter configuration, skipping"
-                        );
-                        crate::Error::internal(format!(
-                            "Failed to parse filter configuration: {}",
-                            e
-                        ))
-                    })?;
-
-                // Convert to per-route config based on filter type
-                let (filter_name, scoped_config) = match filter_config {
-                    FilterConfig::HeaderMutation(hm_config) => {
-                        let per_route = HeaderMutationPerRouteConfig {
-                            request_headers_to_add: hm_config
-                                .request_headers_to_add
-                                .into_iter()
-                                .map(|e| HeaderMutationEntry {
-                                    key: e.key,
-                                    value: e.value,
-                                    append: e.append,
-                                })
-                                .collect(),
-                            request_headers_to_remove: hm_config.request_headers_to_remove,
-                            response_headers_to_add: hm_config
-                                .response_headers_to_add
-                                .into_iter()
-                                .map(|e| HeaderMutationEntry {
-                                    key: e.key,
-                                    value: e.value,
-                                    append: e.append,
-                                })
-                                .collect(),
-                            response_headers_to_remove: hm_config.response_headers_to_remove,
-                        };
-
-                        (
-                            "envoy.filters.http.header_mutation".to_string(),
-                            HttpScopedConfig::HeaderMutation(per_route),
-                        )
-                    }
-                    FilterConfig::JwtAuth(jwt_config) => {
-                        // Per-route JWT uses requirement_name to reference listener-level config
-                        // Use the first provider name as the default requirement
-                        use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
-                        let per_route = jwt_config
-                            .providers
-                            .keys()
-                            .next()
-                            .map(|name| JwtPerRouteConfig::RequirementName {
-                                requirement_name: name.clone(),
-                            })
-                            .unwrap_or(JwtPerRouteConfig::Disabled { disabled: true });
-
-                        (
-                            "envoy.filters.http.jwt_authn".to_string(),
-                            HttpScopedConfig::JwtAuthn(per_route),
-                        )
-                    }
-                };
-
-                // Inject into the route's virtual hosts
-                if let Some(virtual_hosts) = config.get_mut("virtual_hosts") {
-                    if let Some(vhosts_arr) = virtual_hosts.as_array_mut() {
-                        for vhost in vhosts_arr {
-                            // Add to each route within the virtual host
-                            if let Some(routes_arr) = vhost.get_mut("routes") {
-                                if let Some(routes) = routes_arr.as_array_mut() {
-                                    for route_entry in routes {
-                                        // Add typed_per_filter_config to the route
-                                        let tpfc = route_entry.as_object_mut().and_then(|obj| {
-                                            obj.entry("typed_per_filter_config")
-                                                .or_insert_with(|| serde_json::json!({}))
-                                                .as_object_mut()
-                                        });
-
-                                        if let Some(tpfc_obj) = tpfc {
-                                            // Serialize the scoped config
-                                            if let Ok(config_value) =
-                                                serde_json::to_value(&scoped_config)
-                                            {
-                                                tpfc_obj.insert(filter_name.clone(), config_value);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                info!(
-                    route_name = %route.name,
-                    filter_name = %filter_data.name,
-                    filter_type = %filter_data.filter_type,
-                    "Injected filter into route configuration"
-                );
-            }
-
-            // Update the route configuration with the modified JSON
-            route.configuration = serde_json::to_string(&config).map_err(|e| {
-                crate::Error::internal(format!(
-                    "Failed to serialize modified route configuration: {}",
-                    e
-                ))
-            })?;
-        }
-
-        Ok(())
+        crate::xds::filters::injection::inject_route_filters(routes, filter_repository).await
     }
 
     /// Refresh the listener cache from the backing repository (if available).
@@ -544,26 +408,14 @@ impl XdsState {
         Ok(())
     }
 
-    /// Inject access log configuration into listeners for active learning sessions
+    /// Inject access log configuration into listeners for active learning sessions.
     ///
-    /// This method:
-    /// 1. Queries active learning sessions from the service
-    /// 2. For each active session, decodes the listener protobuf
-    /// 3. Injects HttpGrpcAccessLogConfig into the listener's filter chains
-    /// 4. Re-encodes the modified listener back into the BuiltResource
-    ///
-    /// This enables dynamic access logging for routes in active learning sessions
-    /// without modifying the stored listener configuration.
+    /// Delegates to [`crate::xds::filters::injection::inject_access_logs`].
     #[instrument(skip(self, built_listeners), name = "xds_inject_access_logs")]
     pub(crate) async fn inject_learning_session_access_logs(
         &self,
         built_listeners: &mut [BuiltResource],
     ) -> Result<()> {
-        use crate::xds::access_log::LearningSessionAccessLogConfig;
-        use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use prost::Message;
-
-        // Get learning session service
         let session_service = match self.get_learning_session_service() {
             Some(service) => service,
             None => {
@@ -572,133 +424,13 @@ impl XdsState {
             }
         };
 
-        // Query active learning sessions
-        let active_sessions = session_service.list_active_sessions().await?;
-
-        if active_sessions.is_empty() {
-            debug!("No active learning sessions, skipping access log injection");
-            return Ok(());
-        }
-
-        info!(
-            session_count = active_sessions.len(),
-            "Injecting access log configuration for active learning sessions"
-        );
-
-        // For each listener, check if it needs access log injection
-        for built in built_listeners.iter_mut() {
-            debug!(
-                listener = %built.name,
-                "Processing listener for access log injection"
-            );
-
-            // Decode the listener protobuf
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            debug!(
-                listener = %built.name,
-                filter_chain_count = listener.filter_chains.len(),
-                "Decoded listener, checking filter chains"
-            );
-
-            // Track if we modified this listener
-            let mut modified = false;
-
-            // Check each active session to see if it applies to this listener
-            for session in &active_sessions {
-                debug!(
-                    listener = %built.name,
-                    session_id = %session.id,
-                    "Checking session for injection"
-                );
-                // For now, we inject access log into ALL listeners when ANY session is active
-                // TODO: In the future, we could be more selective based on session.route_pattern
-                // and match it against the listener's routes
-
-                // Create access log config for this session
-                let access_log_config = LearningSessionAccessLogConfig::new(
-                    session.id.clone(),
-                    session.team.clone(),
-                    self.config.bind_address.clone() + ":" + &self.config.port.to_string(),
-                );
-
-                let access_log = access_log_config.build_access_log()?;
-
-                // Inject access log into each filter chain's HTTP connection manager
-                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
-                    debug!(
-                        listener = %built.name,
-                        filter_chain_index = fc_idx,
-                        filter_count = filter_chain.filters.len(),
-                        "Processing filter chain"
-                    );
-
-                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
-                        debug!(
-                            listener = %built.name,
-                            filter_chain_index = fc_idx,
-                            filter_index = f_idx,
-                            filter_name = %filter.name,
-                            "Examining filter"
-                        );
-
-                        // Check if this is an HTTP connection manager
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &mut filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    // Decode HCM, add access log, re-encode
-                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
-
-                                    let mut hcm =
-                                        HttpConnectionManager::decode(&typed_config.value[..])
-                                            .map_err(|e| {
-                                                crate::Error::internal(format!(
-                                                    "Failed to decode HCM for listener '{}': {}",
-                                                    built.name, e
-                                                ))
-                                            })?;
-
-                                    // Add access log to the HCM (avoid duplicates)
-                                    let already_has_log = hcm
-                                        .access_log
-                                        .iter()
-                                        .any(|al| al.name.contains(&session.id));
-
-                                    if !already_has_log {
-                                        hcm.access_log.push(access_log.clone());
-                                        modified = true;
-
-                                        debug!(
-                                            listener = %built.name,
-                                            session_id = %session.id,
-                                            "Injected access log configuration"
-                                        );
-                                    }
-
-                                    // Re-encode HCM back into typed_config
-                                    typed_config.value = hcm.encode_to_vec();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If we modified the listener, re-encode it
-            if modified {
-                built.resource.value = listener.encode_to_vec();
-                debug!(
-                    listener = %built.name,
-                    "Re-encoded listener with access log configuration"
-                );
-            }
-        }
-
-        Ok(())
+        let grpc_address = format!("{}:{}", self.config.bind_address, self.config.port);
+        crate::xds::filters::injection::inject_access_logs(
+            built_listeners,
+            &session_service,
+            &grpc_address,
+        )
+        .await
     }
 
     /// Inject listener-attached filters into the HTTP connection manager filter chain
@@ -711,24 +443,15 @@ impl XdsState {
     ///
     /// This enables user-defined filters (like JWT authentication) to be dynamically
     /// applied to listeners without modifying the stored listener configuration.
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_listener_filters`].
     #[instrument(skip(self, built_listeners), name = "xds_inject_listener_filters")]
     pub(crate) async fn inject_listener_auto_filters(
         &self,
         built_listeners: &mut [BuiltResource],
     ) -> Result<()> {
-        use crate::domain::FilterConfig;
-        use crate::xds::filters::http::jwt_auth::{
-            JwtAuthenticationConfig, JwtJwksSourceConfig, JwtRequirementConfig,
-        };
-        use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::RouteSpecifier;
-        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
-            HttpConnectionManager, HttpFilter,
-        };
-        use prost::Message;
-
         let filter_repository = match &self.filter_repository {
-            Some(repo) => repo.clone(),
+            Some(repo) => repo,
             None => {
                 debug!("No filter repository available, skipping listener filter injection");
                 return Ok(());
@@ -736,391 +459,33 @@ impl XdsState {
         };
 
         let listener_repository = match &self.listener_repository {
-            Some(repo) => repo.clone(),
+            Some(repo) => repo,
             None => {
                 debug!("No listener repository available, skipping listener filter injection");
                 return Ok(());
             }
         };
 
-        let route_repository = self.route_repository.clone();
+        let route_repository = self.route_repository.as_ref();
 
-        for built in built_listeners.iter_mut() {
-            // Get the listener data by name to retrieve the ListenerId
-            let listener_data = match listener_repository.get_by_name(&built.name).await {
-                Ok(data) => data,
-                Err(e) => {
-                    debug!(
-                        listener = %built.name,
-                        error = %e,
-                        "Could not find listener in database, skipping filter injection"
-                    );
-                    continue;
-                }
-            };
-
-            // 1. Get filters attached directly to this listener
-            let mut filters = match filter_repository.list_listener_filters(&listener_data.id).await
-            {
-                Ok(filters) => filters,
-                Err(e) => {
-                    warn!(
-                        listener = %built.name,
-                        error = %e,
-                        "Failed to load listener filters, skipping"
-                    );
-                    Vec::new()
-                }
-            };
-
-            // Decode the listener protobuf to find associated routes
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            // 2. Find route configs used by this listener and get their filters
-            if let Some(route_repo) = &route_repository {
-                let mut route_config_names = HashSet::new();
-                
-                // Scan all filter chains for HCMs and their route configs
-                for filter_chain in &listener.filter_chains {
-                    for filter in &filter_chain.filters {
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    if let Ok(hcm) = HttpConnectionManager::decode(&typed_config.value[..]) {
-                                        if let Some(route_specifier) = hcm.route_specifier {
-                                            match route_specifier {
-                                                RouteSpecifier::Rds(rds) => {
-                                                    info!(
-                                                        listener = %built.name,
-                                                        route_config = %rds.route_config_name,
-                                                        "Found RDS route config for listener"
-                                                    );
-                                                    route_config_names.insert(rds.route_config_name);
-                                                }
-                                                RouteSpecifier::RouteConfig(rc) => {
-                                                    info!(
-                                                        listener = %built.name,
-                                                        route_config = %rc.name,
-                                                        "Found inline route config for listener"
-                                                    );
-                                                    route_config_names.insert(rc.name);
-                                                }
-                                                RouteSpecifier::ScopedRoutes(_) => {
-                                                    info!(listener = %built.name, "Scoped routes not yet supported for filter injection");
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for route_name in route_config_names {
-                    match route_repo.get_by_name(&route_name).await {
-                        Ok(route) => {
-                            match filter_repository.list_route_filters(&route.id).await {
-                                Ok(route_filters) => {
-                                    if !route_filters.is_empty() {
-                                        info!(
-                                            listener = %built.name,
-                                            route_name = %route_name,
-                                            count = route_filters.len(),
-                                            "Found filters attached to route used by listener"
-                                        );
-                                        filters.extend(route_filters);
-                                    } else {
-                                        info!(
-                                            listener = %built.name,
-                                            route_name = %route_name,
-                                            "No filters attached to route"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        listener = %built.name,
-                                        route_name = %route_name,
-                                        error = %e,
-                                        "Failed to list filters for route"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(
-                                listener = %built.name,
-                                route_name = %route_name,
-                                error = %e,
-                                "Failed to look up route by name (or route not found)"
-                            );
-                        }
-                    }
-                }
-            }
-
-            if filters.is_empty() {
-                continue;
-            }
-
-            // 3. Process and merge filters
-            let mut jwt_configs: Vec<JwtAuthenticationConfig> = Vec::new();
-            let mut other_filters: Vec<HttpFilter> = Vec::new();
-
-            for filter_data in &filters {
-                let filter_config: FilterConfig =
-                    match serde_json::from_str(&filter_data.configuration) {
-                        Ok(config) => config,
-                        Err(e) => {
-                            warn!(
-                                listener = %built.name,
-                                filter_id = %filter_data.id,
-                                filter_name = %filter_data.name,
-                                error = %e,
-                                "Failed to parse filter configuration, skipping"
-                            );
-                            continue;
-                        }
-                    };
-
-                match filter_config {
-                    FilterConfig::JwtAuth(jwt_config) => {
-                        jwt_configs.push(jwt_config);
-                    }
-                    FilterConfig::HeaderMutation(_) => {
-                        // HeaderMutation is route-level only, skip for listener injection
-                        debug!(
-                            listener = %built.name,
-                            filter_name = %filter_data.name,
-                            "HeaderMutation filter is route-level only, skipping listener injection"
-                        );
-                        continue;
-                    }
-                }
-            }
-
-            // Merge JWT configs if present
-            if !jwt_configs.is_empty() {
-                let mut merged_config = JwtAuthenticationConfig::default();
-                
-                // Merge all JWT configs
-                for config in jwt_configs {
-                    merged_config.providers.extend(config.providers);
-                    merged_config.rules.extend(config.rules);
-                    merged_config.requirement_map.extend(config.requirement_map);
-                    
-                    if let Some(rules) = config.filter_state_rules {
-                        // Simple last-write-wins for filter state rules for now
-                        merged_config.filter_state_rules = Some(rules);
-                    }
-                    
-                    // Merge boolean flags (if any is true, result is true)
-                    if config.bypass_cors_preflight.unwrap_or(false) {
-                        merged_config.bypass_cors_preflight = Some(true);
-                    }
-                    if config.strip_failure_response.unwrap_or(false) {
-                        merged_config.strip_failure_response = Some(true);
-                    }
-                    
-                    if let Some(prefix) = config.stat_prefix {
-                        merged_config.stat_prefix = Some(prefix);
-                    }
-                }
-
-                // Auto-populate requirement_map if empty but providers exist
-                if merged_config.requirement_map.is_empty() && !merged_config.providers.is_empty() {
-                    for provider_name in merged_config.providers.keys() {
-                        merged_config.requirement_map.insert(
-                            provider_name.clone(),
-                            JwtRequirementConfig::ProviderName {
-                                provider_name: provider_name.clone(),
-                            },
-                        );
-                    }
-                    debug!(
-                        listener = %built.name,
-                        provider_count = merged_config.providers.len(),
-                        "Auto-populated requirement_map from providers for merged JWT config"
-                    );
-                }
-
-                // Auto-create JWKS clusters for remote providers
-                let existing_clusters: HashSet<String> = self
-                    .cached_resources(CLUSTER_TYPE_URL)
-                    .iter()
-                    .map(|r| r.name.clone())
-                    .collect();
-
-                for (provider_name, provider_config) in &merged_config.providers {
-                    if let JwtJwksSourceConfig::Remote(remote) = &provider_config.jwks {
-                        let cluster_name = &remote.http_uri.cluster;
-                        let jwks_uri = &remote.http_uri.uri;
-
-                        if !existing_clusters.contains(cluster_name) {
-                            match create_jwks_cluster(cluster_name, jwks_uri) {
-                                Ok(cluster) => {
-                                    if self
-                                        .apply_built_resources(CLUSTER_TYPE_URL, vec![cluster])
-                                        .is_some()
-                                    {
-                                        info!(
-                                            cluster = %cluster_name,
-                                            provider = %provider_name,
-                                            jwks_uri = %jwks_uri,
-                                            "Auto-created JWKS cluster for JWT provider"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        cluster = %cluster_name,
-                                        provider = %provider_name,
-                                        error = %e,
-                                        "Failed to create JWKS cluster"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Create the JWT filter
-                match merged_config.to_any() {
-                    Ok(any) => {
-                        other_filters.push(HttpFilter {
-                            name: "envoy.filters.http.jwt_authn".to_string(),
-                            config_type: Some(
-                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any)
-                            ),
-                            is_optional: false,
-                            disabled: false,
-                        });
-                    }
-                    Err(e) => {
-                        warn!(
-                            listener = %built.name,
-                            error = %e,
-                            "Failed to convert merged JWT config to protobuf, skipping"
-                        );
-                    }
-                }
-            }
-
-            if other_filters.is_empty() {
-                continue;
-            }
-
-            // 4. Inject filters into listener
-            let mut modified = false;
-
-            for filter_chain in listener.filter_chains.iter_mut() {
-                for filter in filter_chain.filters.iter_mut() {
-                    if filter.name == "envoy.filters.network.http_connection_manager" {
-                        if let Some(config_type) = &mut filter.config_type {
-                            use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-
-                            if let ConfigType::TypedConfig(typed_config) = config_type {
-                                let mut hcm = match HttpConnectionManager::decode(&typed_config.value[..]) {
-                                    Ok(hcm) => hcm,
-                                    Err(e) => {
-                                        warn!("Failed to decode HCM: {}", e);
-                                        continue;
-                                    }
-                                };
-
-                                for http_filter in &other_filters {
-                                    // Check if this filter already exists
-                                    let existing_filter_idx = hcm
-                                        .http_filters
-                                        .iter()
-                                        .position(|f| f.name == http_filter.name);
-
-                                    match existing_filter_idx {
-                                        Some(idx) => {
-                                            // For JWT, we always replace because we've merged everything
-                                            if http_filter.name == "envoy.filters.http.jwt_authn" {
-                                                info!(
-                                                    listener = %built.name,
-                                                    filter_name = %http_filter.name,
-                                                    "Replacing existing JWT filter with merged configuration"
-                                                );
-                                                hcm.http_filters[idx] = http_filter.clone();
-                                                modified = true;
-                                            }
-                                        }
-                                        None => {
-                                            // Insert filter BEFORE the router filter
-                                            let router_pos = hcm
-                                                .http_filters
-                                                .iter()
-                                                .position(|f| f.name == "envoy.filters.http.router")
-                                                .unwrap_or(hcm.http_filters.len());
-
-                                            hcm.http_filters.insert(router_pos, http_filter.clone());
-                                            modified = true;
-
-                                            info!(
-                                                listener = %built.name,
-                                                filter_name = %http_filter.name,
-                                                position = router_pos,
-                                                "Injected filter into listener HCM"
-                                            );
-                                        }
-                                    }
-                                }
-
-                                typed_config.value = hcm.encode_to_vec();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If we modified the listener, re-encode it
-            if modified {
-                built.resource.value = listener.encode_to_vec();
-                info!(
-                    listener = %built.name,
-                    "Re-encoded listener with injected filters"
-                );
-            }
-        }
-
-        Ok(())
+        crate::xds::filters::injection::inject_listener_filters(
+            built_listeners,
+            filter_repository,
+            listener_repository,
+            route_repository,
+            self,
+        )
+        .await
     }
 
-    /// Inject ExtProc filter configuration into listeners for active learning sessions
+    /// Inject ExtProc filter configuration into listeners for active learning sessions.
     ///
-    /// This method:
-    /// 1. Queries active learning sessions from the service
-    /// 2. For each active session, decodes the listener protobuf
-    /// 3. Injects ExtProc HTTP filter into the listener's filter chains
-    /// 4. Re-encodes the modified listener back into the BuiltResource
-    ///
-    /// This enables dynamic body capture for routes in active learning sessions
-    /// without modifying the stored listener configuration.
-    ///
-    /// The ExtProc filter is configured to:
-    /// - Buffer request and response bodies up to 10KB
-    /// - Send bodies to the Flowplane ExtProc service
-    /// - Fail-open (requests continue even if ExtProc fails)
+    /// Delegates to [`crate::xds::filters::injection::inject_ext_proc`].
     #[instrument(skip(self, built_listeners), name = "xds_inject_ext_proc")]
     pub(crate) async fn inject_learning_session_ext_proc(
         &self,
         built_listeners: &mut [BuiltResource],
     ) -> Result<()> {
-        use crate::xds::filters::http::ext_proc::{
-            ExtProcConfig, GrpcServiceConfig, ProcessingMode,
-        };
-        use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
-        use prost::Message;
-
-        // Get learning session service
         let session_service = match self.get_learning_session_service() {
             Some(service) => service,
             None => {
@@ -1129,143 +494,7 @@ impl XdsState {
             }
         };
 
-        // Query active learning sessions
-        let active_sessions = session_service.list_active_sessions().await?;
-
-        if active_sessions.is_empty() {
-            debug!("No active learning sessions, skipping ExtProc injection");
-            return Ok(());
-        }
-
-        info!(
-            session_count = active_sessions.len(),
-            "Injecting ExtProc configuration for active learning sessions"
-        );
-
-        // For each listener, check if it needs ExtProc injection
-        for built in built_listeners.iter_mut() {
-            debug!(
-                listener = %built.name,
-                "Processing listener for ExtProc injection"
-            );
-
-            // Decode the listener protobuf
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            // Track if we modified this listener
-            let mut modified = false;
-
-            // Check each active session to see if it applies to this listener
-            for session in &active_sessions {
-                debug!(
-                    listener = %built.name,
-                    session_id = %session.id,
-                    "Checking session for ExtProc injection"
-                );
-
-                // Create ExtProc config for body capture
-                let ext_proc_config = ExtProcConfig {
-                    grpc_service: GrpcServiceConfig {
-                        target_uri: "flowplane_ext_proc_service".to_string(),
-                        timeout_seconds: 5,
-                    },
-                    failure_mode_allow: true, // Fail-open: requests continue even if ExtProc fails
-                    processing_mode: Some(ProcessingMode {
-                        request_header_mode: Some("SEND".to_string()),
-                        response_header_mode: Some("SEND".to_string()),
-                        request_body_mode: Some("BUFFERED".to_string()), // Capture request body
-                        response_body_mode: Some("BUFFERED".to_string()), // Capture response body
-                        request_trailer_mode: Some("SKIP".to_string()),
-                        response_trailer_mode: Some("SKIP".to_string()),
-                    }),
-                    message_timeout_ms: Some(5000), // 5 second timeout per message
-                    request_attributes: vec![],
-                    response_attributes: vec![],
-                };
-
-                let ext_proc_any = ext_proc_config.to_any()?;
-
-                // Create HTTP filter for ExtProc
-                let ext_proc_filter = HttpFilter {
-                    name: format!("envoy.filters.http.ext_proc.session_{}", session.id),
-                    config_type: Some(
-                        envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(ext_proc_any)
-                    ),
-                    is_optional: true, // Make it optional so requests continue if filter fails
-                    disabled: false,
-                };
-
-                // Inject ExtProc filter into each filter chain's HTTP connection manager
-                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
-                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
-                        // Check if this is an HTTP connection manager
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &mut filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    // Decode HCM, add ExtProc filter, re-encode
-                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
-
-                                    let mut hcm =
-                                        HttpConnectionManager::decode(&typed_config.value[..])
-                                            .map_err(|e| {
-                                                crate::Error::internal(format!(
-                                                    "Failed to decode HCM for listener '{}': {}",
-                                                    built.name, e
-                                                ))
-                                            })?;
-
-                                    // Check if ExtProc filter already exists for this session
-                                    let already_has_ext_proc = hcm
-                                        .http_filters
-                                        .iter()
-                                        .any(|f| f.name.contains(&session.id));
-
-                                    if !already_has_ext_proc {
-                                        // Insert ExtProc filter BEFORE the router filter
-                                        // Find router filter position
-                                        let router_pos = hcm
-                                            .http_filters
-                                            .iter()
-                                            .position(|f| f.name == "envoy.filters.http.router")
-                                            .unwrap_or(hcm.http_filters.len());
-
-                                        hcm.http_filters
-                                            .insert(router_pos, ext_proc_filter.clone());
-                                        modified = true;
-
-                                        debug!(
-                                            listener = %built.name,
-                                            filter_chain_index = fc_idx,
-                                            filter_index = f_idx,
-                                            session_id = %session.id,
-                                            "Injected ExtProc filter for body capture"
-                                        );
-                                    }
-
-                                    // Re-encode HCM back into typed_config
-                                    typed_config.value = hcm.encode_to_vec();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If we modified the listener, re-encode it
-            if modified {
-                built.resource.value = listener.encode_to_vec();
-                debug!(
-                    listener = %built.name,
-                    "Re-encoded listener with ExtProc configuration"
-                );
-            }
-        }
-
-        Ok(())
+        crate::xds::filters::injection::inject_ext_proc(built_listeners, &session_service).await
     }
 }
 

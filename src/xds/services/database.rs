@@ -174,10 +174,7 @@ impl DatabaseAggregatedDiscoveryService {
             built.iter().map(|r| r.name.clone()).collect();
         for cached in self.state.cached_resources(resources::CLUSTER_TYPE_URL) {
             if cached.name.contains("jwks") && !existing_names.contains(&cached.name) {
-                built.push(resources::BuiltResource {
-                    name: cached.name,
-                    resource: cached.body,
-                });
+                built.push(resources::BuiltResource { name: cached.name, resource: cached.body });
             }
         }
 

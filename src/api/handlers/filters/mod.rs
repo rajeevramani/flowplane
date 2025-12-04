@@ -127,6 +127,11 @@ pub async fn create_filter_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<CreateFilterRequest>,
 ) -> Result<(StatusCode, Json<FilterResponse>), ApiError> {
+    info!(
+        filter_type = ?payload.filter_type,
+        config = ?payload.config,
+        "Creating filter - received payload"
+    );
     validate_create_filter_request(&payload)?;
 
     // Verify user has write access to the specified team
