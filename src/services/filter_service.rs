@@ -96,6 +96,7 @@ impl FilterService {
             match (&filter_type, &config) {
                 (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
                 (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
+                (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
                 _ => return Err(Error::validation("Filter type and configuration do not match")),
             }
 
@@ -209,6 +210,7 @@ impl FilterService {
                 match (&existing_type, &config) {
                     (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
                     (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
+                    (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
                     _ => {
                         return Err(Error::validation("Cannot change filter type, config mismatch"))
                     }
@@ -649,32 +651,37 @@ impl FilterService {
 
         let http_filter_name = filter_type.http_filter_name();
 
-        // For JWT filters, auto-attach to listener via listener_filters table
-        // This is required because JWT filters need full configuration (providers, requirement_map)
-        // and cannot work as empty placeholders
-        let is_jwt_filter = filter_type == FilterType::JwtAuth;
+        // For filters that require full configuration (JWT, LocalRateLimit),
+        // auto-attach to listener via listener_filters table.
+        // These filters cannot work as empty placeholders - they need their
+        // full config (providers/requirement_map for JWT, token bucket for rate limit).
+        let requires_listener_attachment =
+            matches!(filter_type, FilterType::JwtAuth | FilterType::LocalRateLimit);
 
         for listener in listeners {
-            if is_jwt_filter {
-                // Check if JWT filter already attached to listener
-                let existing_listener_filters = filter_repo.list_listener_filters(&listener.id).await?;
+            if requires_listener_attachment {
+                // Check if filter already attached to listener
+                let existing_listener_filters =
+                    filter_repo.list_listener_filters(&listener.id).await?;
                 let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
 
                 if !already_attached {
-                    // Auto-attach JWT filter to listener
+                    // Auto-attach filter to listener
                     let order = existing_listener_filters.len() as i64;
                     filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
 
                     info!(
                         listener_id = %listener.id,
                         filter_id = %filter_id,
-                        "Auto-attached JWT filter to listener for route-level JWT requirement"
+                        filter_type = %filter_type,
+                        "Auto-attached filter to listener for route-level requirement"
                     );
                 }
             }
 
-            // For non-JWT filters, add placeholder to listener config
-            // For JWT filters, this will skip (returns false) and rely on inject_listener_auto_filters
+            // For simple filters (HeaderMutation, Cors), add placeholder to listener config.
+            // For complex filters (JWT, LocalRateLimit), this will skip (returns None)
+            // and rely on inject_listener_filters to inject the full config.
             self.add_http_filter_to_listener(
                 &listener.id,
                 http_filter_name,
