@@ -92,7 +92,8 @@ async fn filters_header_mutation_request_and_response() {
 
     // Create route config
     let route_name = format!("{}-routes", namer.test_id());
-    let route_uri: hyper::http::Uri = format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
+    let route_uri: hyper::http::Uri =
+        format!("http://{}/api/v1/route-configs", api_addr).parse().unwrap();
     let route_body = serde_json::json!({
         "team": "e2e",
         "name": route_name,

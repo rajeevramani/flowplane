@@ -37,7 +37,7 @@ use crate::{
                 CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
             },
         },
-        CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest,
+        CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRepositoryRequest,
     },
     xds::XdsState,
 };
@@ -447,11 +447,10 @@ pub async fn get_import_handler(
     }
 
     // Count routes and clusters
-    let route_repo = state
-        .xds_state
-        .route_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+    let route_config_repo =
+        state.xds_state.route_config_repository.as_ref().ok_or_else(|| {
+            ApiError::Internal("Route config repository not configured".to_string())
+        })?;
     let listener_repo = state
         .xds_state
         .listener_repository
@@ -459,7 +458,7 @@ pub async fn get_import_handler(
         .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
     let cluster_ref_repo = ClusterReferencesRepository::new(db_pool);
 
-    let routes = route_repo.list_by_import(&id).await.map_err(ApiError::from)?;
+    let routes = route_config_repo.list_by_import(&id).await.map_err(ApiError::from)?;
     let listener_count = listener_repo.count_by_import(&id).await.map_err(ApiError::from)?;
     let cluster_refs = cluster_ref_repo.get_by_import(&id).await.map_err(ApiError::from)?;
 
@@ -586,19 +585,19 @@ async fn materialize_route(
     _db_pool: &crate::storage::DbPool,
     import_id: &str,
     team: &str,
-    mut route_request: CreateRouteRepositoryRequest,
+    mut route_request: CreateRouteConfigRepositoryRequest,
 ) -> std::result::Result<(), ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
 
     // Add import metadata
     route_request.import_id = Some(import_id.to_string());
     route_request.team = Some(team.to_string());
     route_request.route_order = Some(0);
 
-    route_repo.create(route_request).await.map_err(ApiError::from)?;
+    route_config_repo.create(route_request).await.map_err(ApiError::from)?;
 
     Ok(())
 }
@@ -611,10 +610,10 @@ async fn materialize_routes_from_virtual_host(
     virtual_host: crate::xds::route::VirtualHostConfig,
     listener_name: &str,
 ) -> std::result::Result<usize, ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
     let listener_repo = xds_state
         .listener_repository
         .as_ref()
@@ -650,13 +649,16 @@ async fn materialize_routes_from_virtual_host(
         })?;
 
     // Get the existing route config
-    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
-        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
-    })?;
+    let existing_route_config =
+        route_config_repo.get_by_name(&route_config_name).await.map_err(|e| {
+            ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+        })?;
 
     // Parse the existing route configuration
-    let existing_config: serde_json::Value = serde_json::from_str(&existing_route.configuration)
-        .map_err(|e| ApiError::Internal(format!("Failed to parse route configuration: {}", e)))?;
+    let existing_config: serde_json::Value =
+        serde_json::from_str(&existing_route_config.configuration).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse route configuration: {}", e))
+        })?;
 
     let mut route_config: crate::xds::route::RouteConfig = serde_json::from_value(existing_config)
         .map_err(|e| ApiError::Internal(format!("Failed to deserialize route config: {}", e)))?;
@@ -681,14 +683,17 @@ async fn materialize_routes_from_virtual_host(
         .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
 
     // Update the route config in the database
-    let update_request = crate::storage::UpdateRouteRepositoryRequest {
+    let update_request = crate::storage::UpdateRouteConfigRepositoryRequest {
         path_prefix: None,
         cluster_name: None,
         configuration: Some(updated_configuration),
         team: None,
     };
 
-    route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+    route_config_repo
+        .update(&existing_route_config.id, update_request)
+        .await
+        .map_err(ApiError::from)?;
 
     tracing::info!(
         route_config_name = %route_config_name,
@@ -726,10 +731,10 @@ async fn cleanup_virtual_host_from_route_config(
     spec_name: &str,
     listener_name: &str,
 ) -> std::result::Result<(), ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
     let listener_repo = xds_state
         .listener_repository
         .as_ref()
@@ -770,13 +775,14 @@ async fn cleanup_virtual_host_from_route_config(
         })?;
 
     // Get the existing route config
-    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
-        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
-    })?;
+    let existing_route_config =
+        route_config_repo.get_by_name(&route_config_name).await.map_err(|e| {
+            ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+        })?;
 
     // Parse the existing route configuration
     let mut route_config: crate::xds::route::RouteConfig =
-        serde_json::from_str(&existing_route.configuration).map_err(|e| {
+        serde_json::from_str(&existing_route_config.configuration).map_err(|e| {
             ApiError::Internal(format!("Failed to parse route configuration: {}", e))
         })?;
 
@@ -790,14 +796,17 @@ async fn cleanup_virtual_host_from_route_config(
             .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
 
         // Update the route config in the database
-        let update_request = crate::storage::UpdateRouteRepositoryRequest {
+        let update_request = crate::storage::UpdateRouteConfigRepositoryRequest {
             path_prefix: None,
             cluster_name: None,
             configuration: Some(updated_configuration),
             team: None,
         };
 
-        route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+        route_config_repo
+            .update(&existing_route_config.id, update_request)
+            .await
+            .map_err(ApiError::from)?;
 
         tracing::info!(
             virtual_host_name = %virtual_host_name,

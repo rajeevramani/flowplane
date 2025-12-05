@@ -1,4 +1,4 @@
-use crate::domain::{FilterId, ListenerId, RouteId};
+use crate::domain::{FilterId, ListenerId, RouteConfigId, RouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
@@ -426,6 +426,113 @@ impl FilterRepository {
             })?;
 
         Ok(count)
+    }
+
+    // Route Config filter attachment methods (for RouteConfiguration-level filters)
+
+    #[instrument(skip(self), fields(route_config_id = %route_config_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_route_config")]
+    pub async fn attach_to_route_config(
+        &self,
+        route_config_id: &RouteConfigId,
+        filter_id: &FilterId,
+        order: i64,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            "INSERT INTO route_config_filters (route_config_id, filter_id, filter_order, created_at) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(route_config_id.as_str())
+        .bind(filter_id.as_str())
+        .bind(order)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_config_id = %route_config_id, filter_id = %filter_id, "Failed to attach filter to route config");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to attach filter {} to route config {}", filter_id.as_str(), route_config_id.as_str()),
+            }
+        })?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(route_config_id = %route_config_id, filter_id = %filter_id), name = "db_detach_filter_from_route_config")]
+    pub async fn detach_from_route_config(
+        &self,
+        route_config_id: &RouteConfigId,
+        filter_id: &FilterId,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            "DELETE FROM route_config_filters WHERE route_config_id = $1 AND filter_id = $2"
+        )
+        .bind(route_config_id.as_str())
+        .bind(filter_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_config_id = %route_config_id, filter_id = %filter_id, "Failed to detach filter from route config");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to detach filter {} from route config {}", filter_id.as_str(), route_config_id.as_str()),
+            }
+        })?;
+
+        if result.rows_affected() != 1 {
+            return Err(FlowplaneError::not_found("Route config filter attachment", ""));
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(route_config_id = %route_config_id), name = "db_list_route_config_filters")]
+    pub async fn list_route_config_filters(
+        &self,
+        route_config_id: &RouteConfigId,
+    ) -> Result<Vec<FilterData>> {
+        let rows = sqlx::query_as::<Sqlite, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, f.created_at, f.updated_at \
+             FROM filters f \
+             INNER JOIN route_config_filters rcf ON f.id = rcf.filter_id \
+             WHERE rcf.route_config_id = $1 \
+             ORDER BY rcf.filter_order ASC"
+        )
+        .bind(route_config_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_config_id = %route_config_id, "Failed to list route config filters");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list filters for route config: {}", route_config_id.as_str()),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(FilterData::from).collect())
+    }
+
+    #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_list_filter_route_configs")]
+    pub async fn list_filter_route_configs(
+        &self,
+        filter_id: &FilterId,
+    ) -> Result<Vec<RouteConfigId>> {
+        let route_config_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT route_config_id FROM route_config_filters WHERE filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list route configs using filter");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list route configs for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        Ok(route_config_ids.into_iter().map(RouteConfigId::from_string).collect())
     }
 
     // Listener filter attachment methods

@@ -23,20 +23,26 @@
 //! - `cluster`: Cluster (upstream) configuration and policies
 
 pub mod cluster;
+pub mod endpoint;
 pub mod filter;
 pub mod id;
 pub mod listener;
 pub mod route;
+pub mod route_hierarchy;
 
 // Re-export main types from each module
 pub use cluster::{
     CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
     HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
 };
+pub use endpoint::EndpointHealthStatus;
 pub use filter::{
     AttachmentPoint, FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig,
 };
-pub use id::{ClusterId, FilterId, ListenerId, RouteId, ScopeId, TeamId, TokenId, UserId};
+pub use id::{
+    ClusterId, EndpointId, FilterId, ListenerId, RouteConfigId, RouteId, ScopeId, TeamId, TokenId,
+    UserId, VirtualHostId,
+};
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
     TlsConfig as ListenerTlsConfig, TlsVersion as ListenerTlsVersion,
@@ -46,3 +52,4 @@ pub use route::{
     QueryParameterMatcher, RetryCondition, RetryPolicy, RouteAction, RouteMatch, RouteTarget,
     WeightedCluster,
 };
+pub use route_hierarchy::{AttachmentLevel, RouteMatchType};

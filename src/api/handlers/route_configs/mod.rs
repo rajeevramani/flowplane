@@ -6,11 +6,12 @@
 mod types;
 mod validation;
 
-// Re-export public types for backward compatibility
+// Re-export public types
 pub use types::{
-    HeaderMatchDefinition, ListRoutesQuery, PathMatchDefinition, QueryParameterMatchDefinition,
-    RouteActionDefinition, RouteDefinition, RouteMatchDefinition, RouteResponse,
-    RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
+    HeaderMatchDefinition, ListRouteConfigsQuery, PathMatchDefinition,
+    QueryParameterMatchDefinition, RouteActionDefinition, RouteConfigDefinition,
+    RouteConfigResponse, RouteMatchDefinition, RouteRuleDefinition, VirtualHostDefinition,
+    WeightedClusterDefinition,
 };
 
 use axum::{
@@ -26,33 +27,35 @@ use crate::{
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
-    storage::{CreateRouteRepositoryRequest, RouteData, UpdateRouteRepositoryRequest},
+    storage::{
+        CreateRouteConfigRepositoryRequest, RouteConfigData, UpdateRouteConfigRepositoryRequest,
+    },
 };
 
 use validation::{
-    require_route_repository, route_response_from_data, summarize_route, validate_route_config,
-    validate_route_payload,
+    require_route_config_repository, route_config_response_from_data, summarize_route_config,
+    validate_route_config, validate_route_config_payload,
 };
 
 // === Helper Functions ===
 
-/// Verify that a route belongs to one of the user's teams or is global.
-/// Returns the route if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_route_access(
-    route: RouteData,
+/// Verify that a route config belongs to one of the user's teams or is global.
+/// Returns the route config if authorized, otherwise returns NotFound error (to avoid leaking existence).
+async fn verify_route_config_access(
+    route_config: RouteConfigData,
     team_scopes: &[String],
-) -> Result<RouteData, ApiError> {
+) -> Result<RouteConfigData, ApiError> {
     // Admin:all or resource-level scopes (empty team_scopes) can access everything
     if team_scopes.is_empty() {
-        return Ok(route);
+        return Ok(route_config);
     }
 
-    // Check if route is global (team = NULL) or belongs to one of user's teams
-    match &route.team {
-        None => Ok(route), // Global route, accessible to all
+    // Check if route config is global (team = NULL) or belongs to one of user's teams
+    match &route_config.team {
+        None => Ok(route_config), // Global route config, accessible to all
         Some(route_team) => {
             if team_scopes.contains(route_team) {
-                Ok(route)
+                Ok(route_config)
             } else {
                 // Record cross-team access attempt for security monitoring
                 if let Some(from_team) = team_scopes.first() {
@@ -63,7 +66,10 @@ async fn verify_route_access(
                 }
 
                 // Return 404 to avoid leaking existence of other teams' resources
-                Err(ApiError::NotFound(format!("Route with name '{}' not found", route.name)))
+                Err(ApiError::NotFound(format!(
+                    "Route with name '{}' not found",
+                    route_config.name
+                )))
             }
         }
     }
@@ -73,31 +79,31 @@ async fn verify_route_access(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/routes",
-    request_body = RouteDefinition,
+    path = "/api/v1/route-configs",
+    request_body = RouteConfigDefinition,
     responses(
-        (status = 201, description = "Route created", body = RouteResponse),
+        (status = 201, description = "Route config created", body = RouteConfigResponse),
         (status = 400, description = "Validation error"),
-        (status = 503, description = "Route repository unavailable"),
+        (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "routes"
+    tag = "route-configs"
 )]
-#[instrument(skip(state, payload), fields(team = %payload.team, route_name = %payload.name, user_id = ?context.user_id))]
-pub async fn create_route_handler(
+#[instrument(skip(state, payload), fields(team = %payload.team, route_config_name = %payload.name, user_id = ?context.user_id))]
+pub async fn create_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(payload): Json<RouteDefinition>,
-) -> Result<(StatusCode, Json<RouteResponse>), ApiError> {
-    validate_route_payload(&payload)?;
+    Json(payload): Json<RouteConfigDefinition>,
+) -> Result<(StatusCode, Json<RouteConfigResponse>), ApiError> {
+    validate_route_config_payload(&payload)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "routes", "write", Some(&payload.team))?;
 
-    let route_repository = require_route_repository(&state)?;
+    let route_config_repository = require_route_config_repository(&state)?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
 
-    let (path_prefix, cluster_summary) = summarize_route(&payload);
+    let (path_prefix, cluster_summary) = summarize_route_config(&payload);
     let configuration = serde_json::to_value(&xds_config).map_err(|err| {
         ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
@@ -105,7 +111,7 @@ pub async fn create_route_handler(
     // Use explicit team from request
     let team = Some(payload.team.clone());
 
-    let request = CreateRouteRepositoryRequest {
+    let request = CreateRouteConfigRepositoryRequest {
         name: payload.name.clone(),
         path_prefix,
         cluster_name: cluster_summary,
@@ -116,16 +122,16 @@ pub async fn create_route_handler(
         headers: None,
     };
 
-    let created = route_repository.create(request).await.map_err(ApiError::from)?;
+    let created = route_config_repository.create(request).await.map_err(ApiError::from)?;
 
-    info!(route_id = %created.id, route_name = %created.name, "Route created via API");
+    info!(route_config_id = %created.id, route_config_name = %created.name, "Route config created via API");
 
     state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route creation");
+        error!(error = %err, "Failed to refresh xDS caches after route config creation");
         ApiError::from(err)
     })?;
 
-    let response = RouteResponse {
+    let response = RouteConfigResponse {
         name: created.name,
         team: created.team.unwrap_or_default(),
         path_prefix: created.path_prefix,
@@ -140,23 +146,23 @@ pub async fn create_route_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/routes",
+    path = "/api/v1/route-configs",
     params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of routes to return"),
+        ("limit" = Option<i32>, Query, description = "Maximum number of route configs to return"),
         ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
     ),
     responses(
-        (status = 200, description = "List of routes", body = [RouteResponse]),
-        (status = 503, description = "Route repository unavailable"),
+        (status = 200, description = "List of route configs", body = [RouteConfigResponse]),
+        (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "routes"
+    tag = "route-configs"
 )]
 #[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
-pub async fn list_routes_handler(
+pub async fn list_route_configs_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListRoutesQuery>,
-) -> Result<Json<Vec<RouteResponse>>, ApiError> {
+    Query(params): Query<types::ListRouteConfigsQuery>,
+) -> Result<Json<Vec<RouteConfigResponse>>, ApiError> {
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
@@ -164,7 +170,7 @@ pub async fn list_routes_handler(
     let team_scopes =
         if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
-    let repository = require_route_repository(&state)?;
+    let repository = require_route_config_repository(&state)?;
     let rows = repository
         .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
         .await
@@ -172,7 +178,7 @@ pub async fn list_routes_handler(
 
     let mut routes = Vec::with_capacity(rows.len());
     for row in rows {
-        routes.push(route_response_from_data(row)?);
+        routes.push(route_config_response_from_data(row)?);
     }
 
     Ok(Json(routes))
@@ -180,21 +186,21 @@ pub async fn list_routes_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/routes/{name}",
+    path = "/api/v1/route-configs/{name}",
     params(("name" = String, Path, description = "Name of the route configuration")),
     responses(
-        (status = 200, description = "Route details", body = RouteResponse),
-        (status = 404, description = "Route not found"),
-        (status = 503, description = "Route repository unavailable"),
+        (status = 200, description = "Route config details", body = RouteConfigResponse),
+        (status = 404, description = "Route config not found"),
+        (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "routes"
+    tag = "route-configs"
 )]
-#[instrument(skip(state), fields(route_name = %name, user_id = ?context.user_id))]
-pub async fn get_route_handler(
+#[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
+pub async fn get_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
-) -> Result<Json<RouteResponse>, ApiError> {
+) -> Result<Json<RouteConfigResponse>, ApiError> {
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
@@ -202,39 +208,39 @@ pub async fn get_route_handler(
     let team_scopes =
         if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
-    let repository = require_route_repository(&state)?;
-    let route = repository.get_by_name(&name).await.map_err(ApiError::from)?;
+    let repository = require_route_config_repository(&state)?;
+    let route_config = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
-    // Verify the route belongs to one of the user's teams or is global
-    let route = verify_route_access(route, &team_scopes).await?;
+    // Verify the route config belongs to one of the user's teams or is global
+    let route_config = verify_route_config_access(route_config, &team_scopes).await?;
 
-    Ok(Json(route_response_from_data(route)?))
+    Ok(Json(route_config_response_from_data(route_config)?))
 }
 
 #[utoipa::path(
     put,
-    path = "/api/v1/routes/{name}",
+    path = "/api/v1/route-configs/{name}",
     params(("name" = String, Path, description = "Name of the route configuration")),
-    request_body = RouteDefinition,
+    request_body = RouteConfigDefinition,
     responses(
-        (status = 200, description = "Route updated", body = RouteResponse),
+        (status = 200, description = "Route config updated", body = RouteConfigResponse),
         (status = 400, description = "Validation error"),
-        (status = 404, description = "Route not found"),
-        (status = 503, description = "Route repository unavailable"),
+        (status = 404, description = "Route config not found"),
+        (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "routes"
+    tag = "route-configs"
 )]
-#[instrument(skip(state, payload), fields(route_name = %name, user_id = ?context.user_id))]
-pub async fn update_route_handler(
+#[instrument(skip(state, payload), fields(route_config_name = %name, user_id = ?context.user_id))]
+pub async fn update_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
-    Json(payload): Json<RouteDefinition>,
-) -> Result<Json<RouteResponse>, ApiError> {
+    Json(payload): Json<RouteConfigDefinition>,
+) -> Result<Json<RouteConfigResponse>, ApiError> {
     // Authorization: require routes:write scope
     require_resource_access(&context, "routes", "write", None)?;
 
-    validate_route_payload(&payload)?;
+    validate_route_config_payload(&payload)?;
 
     if payload.name != name {
         return Err(ApiError::BadRequest(format!(
@@ -247,19 +253,19 @@ pub async fn update_route_handler(
     let team_scopes =
         if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
-    let repository = require_route_repository(&state)?;
+    let repository = require_route_config_repository(&state)?;
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
 
-    // Verify the route belongs to one of the user's teams or is global
-    verify_route_access(existing.clone(), &team_scopes).await?;
+    // Verify the route config belongs to one of the user's teams or is global
+    verify_route_config_access(existing.clone(), &team_scopes).await?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
-    let (path_prefix, cluster_summary) = summarize_route(&payload);
+    let (path_prefix, cluster_summary) = summarize_route_config(&payload);
     let configuration = serde_json::to_value(&xds_config).map_err(|err| {
         ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
     })?;
 
-    let update_request = UpdateRouteRepositoryRequest {
+    let update_request = UpdateRouteConfigRepositoryRequest {
         path_prefix: Some(path_prefix.clone()),
         cluster_name: Some(cluster_summary.clone()),
         configuration: Some(configuration),
@@ -268,14 +274,14 @@ pub async fn update_route_handler(
 
     let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
 
-    info!(route_id = %updated.id, route_name = %updated.name, "Route updated via API");
+    info!(route_config_id = %updated.id, route_config_name = %updated.name, "Route config updated via API");
 
     state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route update");
+        error!(error = %err, "Failed to refresh xDS caches after route config update");
         ApiError::from(err)
     })?;
 
-    let response = RouteResponse {
+    let response = RouteConfigResponse {
         name: updated.name,
         team: updated.team.unwrap_or_default(),
         path_prefix,
@@ -290,17 +296,17 @@ pub async fn update_route_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/routes/{name}",
+    path = "/api/v1/route-configs/{name}",
     params(("name" = String, Path, description = "Name of the route configuration")),
     responses(
-        (status = 204, description = "Route deleted"),
-        (status = 404, description = "Route not found"),
-        (status = 503, description = "Route repository unavailable"),
+        (status = 204, description = "Route config deleted"),
+        (status = 404, description = "Route config not found"),
+        (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "routes"
+    tag = "route-configs"
 )]
-#[instrument(skip(state), fields(route_name = %name, user_id = ?context.user_id))]
-pub async fn delete_route_handler(
+#[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
+pub async fn delete_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
@@ -318,18 +324,18 @@ pub async fn delete_route_handler(
     let team_scopes =
         if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
 
-    let repository = require_route_repository(&state)?;
+    let repository = require_route_config_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
-    // Verify the route belongs to one of the user's teams or is global
-    verify_route_access(existing.clone(), &team_scopes).await?;
+    // Verify the route config belongs to one of the user's teams or is global
+    verify_route_config_access(existing.clone(), &team_scopes).await?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
-    info!(route_id = %existing.id, route_name = %existing.name, "Route deleted via API");
+    info!(route_config_id = %existing.id, route_config_name = %existing.name, "Route config deleted via API");
 
     state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route deletion");
+        error!(error = %err, "Failed to refresh xDS caches after route config deletion");
         ApiError::from(err)
     })?;
 
@@ -361,7 +367,7 @@ mod tests {
     use crate::xds::XdsState;
 
     use types::{
-        PathMatchDefinition, RouteActionDefinition, RouteDefinition, RouteMatchDefinition,
+        PathMatchDefinition, RouteActionDefinition, RouteConfigDefinition, RouteMatchDefinition,
         RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
     };
 
@@ -399,7 +405,7 @@ mod tests {
                 UNIQUE(name, version)
             );
 
-            CREATE TABLE IF NOT EXISTS routes (
+            CREATE TABLE IF NOT EXISTS route_configs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 path_prefix TEXT NOT NULL,
@@ -456,8 +462,8 @@ mod tests {
         api_state
     }
 
-    fn sample_route_definition() -> RouteDefinition {
-        RouteDefinition {
+    fn sample_route_config_definition() -> RouteConfigDefinition {
+        RouteConfigDefinition {
             team: "test-team".into(),
             name: "primary-routes".into(),
             virtual_hosts: vec![VirtualHostDefinition {
@@ -485,84 +491,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_route_persists_configuration() {
+    async fn create_route_config_persists_configuration() {
         let state = setup_state().await;
 
-        let payload = sample_route_definition();
-        let (status, Json(created)) = create_route_handler(
+        let payload = sample_route_config_definition();
+        let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
             Extension(admin_context()),
             Json(payload.clone()),
         )
         .await
-        .expect("create route");
+        .expect("create route config");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created.name, "primary-routes");
         assert_eq!(created.config.virtual_hosts.len(), 1);
 
-        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
-        let stored = repo.get_by_name("primary-routes").await.expect("stored route");
+        let repo =
+            state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
+        let stored = repo.get_by_name("primary-routes").await.expect("stored route config");
         assert_eq!(stored.path_prefix, "/api");
         assert!(stored.cluster_name.contains("api-cluster"));
     }
 
     #[tokio::test]
-    async fn list_routes_returns_entries() {
+    async fn list_route_configs_returns_entries() {
         let state = setup_state().await;
 
-        let payload = sample_route_definition();
-        let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
-                .await
-                .expect("create route");
-        assert_eq!(status, StatusCode::CREATED);
-
-        let response = list_routes_handler(
-            State(state),
+        let payload = sample_route_config_definition();
+        let (status, _) = create_route_config_handler(
+            State(state.clone()),
             Extension(admin_context()),
-            Query(types::ListRoutesQuery::default()),
+            Json(payload),
         )
         .await
-        .expect("list routes");
+        .expect("create route config");
+        assert_eq!(status, StatusCode::CREATED);
+
+        let response = list_route_configs_handler(
+            State(state),
+            Extension(admin_context()),
+            Query(types::ListRouteConfigsQuery::default()),
+        )
+        .await
+        .expect("list route configs");
 
         assert_eq!(response.0.len(), 1);
         assert_eq!(response.0[0].name, "primary-routes");
     }
 
     #[tokio::test]
-    async fn get_route_returns_definition() {
+    async fn get_route_config_returns_definition() {
         let state = setup_state().await;
-        let payload = sample_route_definition();
-        let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
-                .await
-                .expect("create route");
+        let payload = sample_route_config_definition();
+        let (status, _) = create_route_config_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create route config");
         assert_eq!(status, StatusCode::CREATED);
 
-        let response = get_route_handler(
+        let response = get_route_config_handler(
             State(state),
             Extension(admin_context()),
             Path("primary-routes".into()),
         )
         .await
-        .expect("get route");
+        .expect("get route config");
 
         assert_eq!(response.0.name, "primary-routes");
         assert_eq!(response.0.config.virtual_hosts[0].routes.len(), 1);
     }
 
     #[tokio::test]
-    async fn update_route_applies_changes() {
+    async fn update_route_config_applies_changes() {
         let state = setup_state().await;
-        let mut payload = sample_route_definition();
-        let (status, _) = create_route_handler(
+        let mut payload = sample_route_config_definition();
+        let (status, _) = create_route_config_handler(
             State(state.clone()),
             Extension(admin_context()),
             Json(payload.clone()),
         )
         .await
-        .expect("create route");
+        .expect("create route config");
         assert_eq!(status, StatusCode::CREATED);
 
         payload.virtual_hosts[0].routes[0].action = RouteActionDefinition::Weighted {
@@ -607,14 +620,14 @@ mod tests {
             }),
         );
 
-        let response = update_route_handler(
+        let response = update_route_config_handler(
             State(state.clone()),
             Extension(admin_context()),
             Path("primary-routes".into()),
             Json(payload.clone()),
         )
         .await
-        .expect("update route");
+        .expect("update route config");
 
         assert!(response.0.cluster_targets.contains("api-cluster"));
         if let Some(HttpScopedConfig::LocalRateLimit(cfg)) = response.0.config.virtual_hosts[0]
@@ -629,8 +642,9 @@ mod tests {
             panic!("expected local rate limit override in response");
         }
 
-        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
-        let stored = repo.get_by_name("primary-routes").await.expect("stored route");
+        let repo =
+            state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
+        let stored = repo.get_by_name("primary-routes").await.expect("stored route config");
         let stored_config: XdsRouteConfig = serde_json::from_str(&stored.configuration).unwrap();
         assert!(stored_config.virtual_hosts[0].routes[0]
             .typed_per_filter_config
@@ -639,34 +653,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_route_removes_row() {
+    async fn delete_route_config_removes_row() {
         let state = setup_state().await;
-        let payload = sample_route_definition();
-        let (status, _) =
-            create_route_handler(State(state.clone()), Extension(admin_context()), Json(payload))
-                .await
-                .expect("create route");
+        let payload = sample_route_config_definition();
+        let (status, _) = create_route_config_handler(
+            State(state.clone()),
+            Extension(admin_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create route config");
         assert_eq!(status, StatusCode::CREATED);
 
-        let status = delete_route_handler(
+        let status = delete_route_config_handler(
             State(state.clone()),
             Extension(admin_context()),
             Path("primary-routes".into()),
         )
         .await
-        .expect("delete route");
+        .expect("delete route config");
 
         assert_eq!(status, StatusCode::NO_CONTENT);
 
-        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
+        let repo =
+            state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
         assert!(repo.get_by_name("primary-routes").await.is_err());
     }
 
     #[tokio::test]
-    async fn template_route_supports_rewrite() {
+    async fn template_route_config_supports_rewrite() {
         let state = setup_state().await;
 
-        let mut payload = sample_route_definition();
+        let mut payload = sample_route_config_definition();
         payload.name = "template-route".into();
         payload.virtual_hosts[0].routes[0].r#match.path =
             PathMatchDefinition::Template { template: "/api/v1/users/{user_id}".into() };
@@ -678,13 +696,13 @@ mod tests {
             retry_policy: None,
         };
 
-        let (status, Json(created)) = create_route_handler(
+        let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
             Extension(admin_context()),
             Json(payload.clone()),
         )
         .await
-        .expect("create template route");
+        .expect("create template route config");
 
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created.name, "template-route");
@@ -696,7 +714,8 @@ mod tests {
             panic!("expected forward action");
         }
 
-        let repo = state.xds_state.route_repository.as_ref().cloned().expect("route repo");
+        let repo =
+            state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
         let stored = repo.get_by_name("template-route").await.expect("stored template route");
         assert_eq!(stored.path_prefix, "template:/api/v1/users/{user_id}".to_string());
     }

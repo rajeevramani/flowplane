@@ -72,7 +72,7 @@ impl ReportingRepository {
                     l.name as listener_name,
                     l.address as listener_address,
                     l.port as listener_port
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
                 WHERE l.name LIKE 'default%'
@@ -115,7 +115,7 @@ impl ReportingRepository {
                     l.name as listener_name,
                     l.address as listener_address,
                     l.port as listener_port
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
                 WHERE (r.team IN ({}) OR r.team IS NULL)
@@ -168,7 +168,7 @@ impl ReportingRepository {
             sqlx::query_scalar::<Sqlite, i64>(
                 r#"
                 SELECT COUNT(DISTINCT r.name)
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 "#,
             )
@@ -193,7 +193,7 @@ impl ReportingRepository {
             let query_str = format!(
                 r#"
                 SELECT COUNT(DISTINCT r.name)
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 WHERE r.team IN ({}) OR r.team IS NULL
                 "#,

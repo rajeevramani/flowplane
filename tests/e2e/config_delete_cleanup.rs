@@ -113,7 +113,7 @@ async fn config_delete_cleanup() {
         ]
     });
     let uri_routes: hyper::http::Uri =
-        format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/route-configs", api_addr).parse().unwrap();
     let req = hyper::Request::builder()
         .method(hyper::http::Method::POST)
         .uri(uri_routes)
@@ -178,7 +178,7 @@ async fn config_delete_cleanup() {
 
     // Delete route configuration
     let del_route_uri: hyper::http::Uri =
-        format!("http://{}/api/v1/routes/{}", api_addr, route_name).parse().unwrap();
+        format!("http://{}/api/v1/route-configs/{}", api_addr, route_name).parse().unwrap();
     let req = hyper::Request::builder()
         .method(hyper::http::Method::DELETE)
         .uri(del_route_uri)

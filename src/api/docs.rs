@@ -48,12 +48,12 @@ use crate::xds::{
         crate::api::handlers::clusters::get_cluster_handler,
         crate::api::handlers::clusters::update_cluster_handler,
         crate::api::handlers::clusters::delete_cluster_handler,
-        // Route endpoints
-        crate::api::handlers::routes::create_route_handler,
-        crate::api::handlers::routes::list_routes_handler,
-        crate::api::handlers::routes::get_route_handler,
-        crate::api::handlers::routes::update_route_handler,
-        crate::api::handlers::routes::delete_route_handler,
+        // Route config endpoints
+        crate::api::handlers::route_configs::create_route_config_handler,
+        crate::api::handlers::route_configs::list_route_configs_handler,
+        crate::api::handlers::route_configs::get_route_config_handler,
+        crate::api::handlers::route_configs::update_route_config_handler,
+        crate::api::handlers::route_configs::delete_route_config_handler,
         // Listener endpoints
         crate::api::handlers::listeners::create_listener_handler,
         crate::api::handlers::listeners::list_listeners_handler,
@@ -132,15 +132,15 @@ use crate::xds::{
             crate::api::handlers::auth::LoginBody,
             crate::api::handlers::auth::LoginResponseBody,
             crate::api::handlers::auth::ChangePasswordBody,
-            // Route schemas
-            crate::api::handlers::routes::RouteDefinition,
-            crate::api::handlers::routes::VirtualHostDefinition,
-            crate::api::handlers::routes::RouteRuleDefinition,
-            crate::api::handlers::routes::RouteMatchDefinition,
-            crate::api::handlers::routes::PathMatchDefinition,
-            crate::api::handlers::routes::RouteActionDefinition,
-            crate::api::handlers::routes::WeightedClusterDefinition,
-            crate::api::handlers::routes::RouteResponse,
+            // Route config schemas
+            crate::api::handlers::route_configs::RouteConfigDefinition,
+            crate::api::handlers::route_configs::VirtualHostDefinition,
+            crate::api::handlers::route_configs::RouteRuleDefinition,
+            crate::api::handlers::route_configs::RouteMatchDefinition,
+            crate::api::handlers::route_configs::PathMatchDefinition,
+            crate::api::handlers::route_configs::RouteActionDefinition,
+            crate::api::handlers::route_configs::WeightedClusterDefinition,
+            crate::api::handlers::route_configs::RouteConfigResponse,
             // Listener schemas
             crate::api::handlers::listeners::ListenerResponse,
             crate::api::handlers::listeners::CreateListenerBody,
@@ -203,7 +203,7 @@ use crate::xds::{
         (name = "auth", description = "Authentication and session management"),
         (name = "bootstrap", description = "Bootstrap initialization for first-time setup"),
         (name = "clusters", description = "Operations for managing Envoy clusters"),
-        (name = "routes", description = "Operations for managing Envoy routes"),
+        (name = "route-configs", description = "Operations for managing Envoy route configurations"),
         (name = "listeners", description = "Operations for managing Envoy listeners"),
         (name = "tokens", description = "Personal access token management APIs"),
         (name = "teams", description = "Team management and bootstrap configuration"),
@@ -268,8 +268,8 @@ mod tests {
         // Ensure clusters endpoint is documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters"));
         assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/routes"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/routes/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs/{name}"));
         assert!(openapi.paths.paths.contains_key("/api/v1/tokens"));
     }
 
@@ -322,11 +322,14 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/clusters/{{name}}"
         );
 
-        // Route endpoints (5)
-        assert!(paths.contains_key("/api/v1/routes"), "Missing GET/POST /api/v1/routes");
+        // Route config endpoints (5)
         assert!(
-            paths.contains_key("/api/v1/routes/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/routes/{{name}}"
+            paths.contains_key("/api/v1/route-configs"),
+            "Missing GET/POST /api/v1/route-configs"
+        );
+        assert!(
+            paths.contains_key("/api/v1/route-configs/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/route-configs/{{name}}"
         );
 
         // Listener endpoints (5)
@@ -487,8 +490,11 @@ mod tests {
         assert!(schemas.contains_key("LoginResponseBody"), "Missing LoginResponseBody schema");
         assert!(schemas.contains_key("ChangePasswordBody"), "Missing ChangePasswordBody schema");
 
-        // Route schemas
-        assert!(schemas.contains_key("RouteDefinition"), "Missing RouteDefinition schema");
+        // Route config schemas
+        assert!(
+            schemas.contains_key("RouteConfigDefinition"),
+            "Missing RouteConfigDefinition schema"
+        );
         assert!(
             schemas.contains_key("VirtualHostDefinition"),
             "Missing VirtualHostDefinition schema"
@@ -507,7 +513,7 @@ mod tests {
             schemas.contains_key("WeightedClusterDefinition"),
             "Missing WeightedClusterDefinition schema"
         );
-        assert!(schemas.contains_key("RouteResponse"), "Missing RouteResponse schema");
+        assert!(schemas.contains_key("RouteConfigResponse"), "Missing RouteConfigResponse schema");
 
         // Listener schemas
         assert!(schemas.contains_key("ListenerResponse"), "Missing ListenerResponse schema");
@@ -625,7 +631,7 @@ mod tests {
         assert!(tag_names.contains(&"auth"), "Missing 'auth' tag");
         assert!(tag_names.contains(&"bootstrap"), "Missing 'bootstrap' tag");
         assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
-        assert!(tag_names.contains(&"routes"), "Missing 'routes' tag");
+        assert!(tag_names.contains(&"route-configs"), "Missing 'route-configs' tag");
         assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
         assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");
         assert!(tag_names.contains(&"teams"), "Missing 'teams' tag");

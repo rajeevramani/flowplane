@@ -376,7 +376,7 @@ mod tests {
 
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS routes (
+            CREATE TABLE IF NOT EXISTS route_configs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 path_prefix TEXT NOT NULL,

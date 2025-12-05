@@ -7,11 +7,12 @@ pub mod bootstrap;
 pub mod clusters;
 pub mod filters;
 pub mod health;
+pub mod hierarchy;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod openapi_import;
 pub mod reporting;
-pub mod routes;
+pub mod route_configs;
 pub mod scopes;
 pub mod teams;
 pub mod users;
@@ -49,9 +50,9 @@ pub use listeners::{
 };
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use reporting::list_route_flows_handler;
-pub use routes::{
-    create_route_handler, delete_route_handler, get_route_handler, list_routes_handler,
-    update_route_handler,
+pub use route_configs::{
+    create_route_config_handler, delete_route_config_handler, get_route_config_handler,
+    list_route_configs_handler, update_route_config_handler,
 };
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
 pub use teams::{
@@ -61,6 +62,14 @@ pub use teams::{
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
     remove_team_membership, update_user,
+};
+
+// Re-export hierarchy handlers for route hierarchy filter attachment
+pub use hierarchy::{
+    attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
+    detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
+    list_route_rule_filters_handler, list_route_rules_handler, list_virtual_host_filters_handler,
+    list_virtual_hosts_handler,
 };
 
 // Re-export DTOs for OpenAPI docs
@@ -81,3 +90,10 @@ pub use learning_sessions::{
 };
 pub use teams::{AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse};
 pub use users::ListUsersResponse;
+
+// Hierarchy DTOs for route hierarchy filter attachment
+pub use hierarchy::{
+    AttachFilterRequest as HierarchyAttachFilterRequest, FilterResponse as HierarchyFilterResponse,
+    ListRouteRulesResponse, ListVirtualHostsResponse, RouteRuleFiltersResponse, RouteRuleResponse,
+    VirtualHostFiltersResponse, VirtualHostResponse,
+};

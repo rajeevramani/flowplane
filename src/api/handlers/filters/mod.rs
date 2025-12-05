@@ -23,7 +23,7 @@ use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
-    domain::{FilterId, ListenerId, RouteId},
+    domain::{FilterId, ListenerId, RouteConfigId},
     services::FilterService,
 };
 
@@ -38,17 +38,20 @@ use validation::{
 ///
 /// The public API uses route names as identifiers, but the database
 /// uses UUIDs for foreign key relationships. This function looks up
-/// the route by name and returns its internal UUID.
-async fn resolve_route_id(state: &ApiState, route_name: &str) -> Result<RouteId, ApiError> {
-    let route_repository = state
-        .xds_state
-        .route_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("Route repository not available"))?;
+/// the route config by name and returns its internal UUID.
+async fn resolve_route_config_id(
+    state: &ApiState,
+    route_name: &str,
+) -> Result<RouteConfigId, ApiError> {
+    let route_config_repository =
+        state.xds_state.route_config_repository.as_ref().ok_or_else(|| {
+            ApiError::service_unavailable("Route config repository not available")
+        })?;
 
-    let route = route_repository.get_by_name(route_name).await.map_err(ApiError::from)?;
+    let route_config =
+        route_config_repository.get_by_name(route_name).await.map_err(ApiError::from)?;
 
-    Ok(route.id)
+    Ok(route_config.id)
 }
 
 /// Resolve a listener name to its database ID (UUID)
@@ -328,21 +331,21 @@ pub async fn attach_filter_handler(
     require_resource_access(&context, "routes", "write", None)?;
 
     // Resolve route name to internal UUID for database foreign key
-    let route_id = resolve_route_id(&state, &route_name).await?;
+    let route_config_id = resolve_route_config_id(&state, &route_name).await?;
     let filter_id = FilterId::from_string(payload.filter_id);
 
     let service = FilterService::new(state.xds_state.clone());
 
     service
-        .attach_filter_to_route(&route_id, &filter_id, payload.order)
+        .attach_filter_to_route_config(&route_config_id, &filter_id, payload.order)
         .await
         .map_err(ApiError::from)?;
 
     info!(
         route_name = %route_name,
-        route_id = %route_id,
+        route_config_id = %route_config_id,
         filter_id = %filter_id,
-        "Filter attached to route via API"
+        "Filter attached to route config via API"
     );
 
     Ok(StatusCode::NO_CONTENT)
@@ -371,18 +374,21 @@ pub async fn detach_filter_handler(
     require_resource_access(&context, "routes", "write", None)?;
 
     // Resolve route name to internal UUID for database foreign key
-    let route_id = resolve_route_id(&state, &route_name).await?;
+    let route_config_id = resolve_route_config_id(&state, &route_name).await?;
     let filter_id = FilterId::from_string(filter_id);
 
     let service = FilterService::new(state.xds_state.clone());
 
-    service.detach_filter_from_route(&route_id, &filter_id).await.map_err(ApiError::from)?;
+    service
+        .detach_filter_from_route_config(&route_config_id, &filter_id)
+        .await
+        .map_err(ApiError::from)?;
 
     info!(
         route_name = %route_name,
-        route_id = %route_id,
+        route_config_id = %route_config_id,
         filter_id = %filter_id,
-        "Filter detached from route via API"
+        "Filter detached from route config via API"
     );
 
     Ok(StatusCode::NO_CONTENT)
@@ -410,11 +416,12 @@ pub async fn list_route_filters_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Resolve route name to internal UUID for database query
-    let route_id = resolve_route_id(&state, &route_name).await?;
+    let route_config_id = resolve_route_config_id(&state, &route_name).await?;
 
     let service = FilterService::new(state.xds_state.clone());
 
-    let filters = service.list_route_filters(&route_id).await.map_err(ApiError::from)?;
+    let filters =
+        service.list_route_config_filters(&route_config_id).await.map_err(ApiError::from)?;
 
     let filter_responses: Result<Vec<FilterResponse>, ApiError> =
         filters.into_iter().map(filter_response_from_data).collect();

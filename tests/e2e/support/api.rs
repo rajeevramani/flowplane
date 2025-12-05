@@ -232,7 +232,7 @@ pub async fn post_append_route(
 ) -> anyhow::Result<serde_json::Value> {
     let connector = HttpConnector::new();
     let client: Client<HttpConnector, _> = Client::builder(TokioExecutor::new()).build(connector);
-    let uri: Uri = format!("http://{}/api/v1/routes", api_addr).parse()?;
+    let uri: Uri = format!("http://{}/api/v1/route-configs", api_addr).parse()?;
     let body = json!({
         "team": team,
         "name": route_name,

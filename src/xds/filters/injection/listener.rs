@@ -5,7 +5,7 @@
 
 use super::JwtConfigMerger;
 use crate::domain::FilterConfig;
-use crate::storage::{FilterData, FilterRepository, ListenerRepository, RouteRepository};
+use crate::storage::{FilterData, FilterRepository, ListenerRepository, RouteConfigRepository};
 use crate::xds::helpers::ListenerModifier;
 use crate::xds::resources::{create_jwks_cluster, BuiltResource, CLUSTER_TYPE_URL};
 use crate::xds::state::XdsState;
@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 /// * `built_listeners` - Mutable slice of built listener resources to modify
 /// * `filter_repo` - Repository for loading filter configurations
 /// * `listener_repo` - Repository for listener metadata
-/// * `route_repo` - Optional repository for route metadata
+/// * `route_config_repo` - Optional repository for route config metadata
 /// * `xds_state` - XDS state for cluster management and cached resource access
 ///
 /// # Returns
@@ -38,7 +38,7 @@ pub async fn inject_listener_filters(
     built_listeners: &mut [BuiltResource],
     filter_repo: &FilterRepository,
     listener_repo: &ListenerRepository,
-    route_repo: Option<&RouteRepository>,
+    route_config_repo: Option<&RouteConfigRepository>,
     xds_state: &XdsState,
 ) -> Result<()> {
     for built in built_listeners.iter_mut() {
@@ -78,38 +78,40 @@ pub async fn inject_listener_filters(
         };
 
         // 2. Find route configs used by this listener and get their filters
-        if let Some(route_repo) = route_repo {
+        if let Some(route_config_repo) = route_config_repo {
             let route_config_names = modifier_temp.get_route_config_names();
 
-            for route_name in route_config_names {
-                match route_repo.get_by_name(&route_name).await {
-                    Ok(route) => match filter_repo.list_route_filters(&route.id).await {
-                        Ok(route_filters) => {
-                            if !route_filters.is_empty() {
-                                info!(
+            for route_config_name in route_config_names {
+                match route_config_repo.get_by_name(&route_config_name).await {
+                    Ok(route_config) => {
+                        match filter_repo.list_route_config_filters(&route_config.id).await {
+                            Ok(route_config_filters) => {
+                                if !route_config_filters.is_empty() {
+                                    info!(
+                                        listener = %built.name,
+                                        route_config_name = %route_config_name,
+                                        count = route_config_filters.len(),
+                                        "Found filters attached to route config used by listener"
+                                    );
+                                    filters.extend(route_config_filters);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
                                     listener = %built.name,
-                                    route_name = %route_name,
-                                    count = route_filters.len(),
-                                    "Found filters attached to route used by listener"
+                                    route_config_name = %route_config_name,
+                                    error = %e,
+                                    "Failed to list filters for route config"
                                 );
-                                filters.extend(route_filters);
                             }
                         }
-                        Err(e) => {
-                            warn!(
-                                listener = %built.name,
-                                route_name = %route_name,
-                                error = %e,
-                                "Failed to list filters for route"
-                            );
-                        }
-                    },
+                    }
                     Err(e) => {
                         debug!(
                             listener = %built.name,
-                            route_name = %route_name,
+                            route_config_name = %route_config_name,
                             error = %e,
-                            "Failed to look up route by name"
+                            "Failed to look up route config by name"
                         );
                     }
                 }

@@ -1,4 +1,4 @@
-//! Route handler DTOs and XDS conversion implementations
+//! Route configuration handler DTOs and XDS conversion implementations
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ use crate::{
         }
     ]
 }))]
-pub struct RouteDefinition {
+pub struct RouteConfigDefinition {
     #[validate(length(min = 1, max = 100))]
     pub team: String,
 
@@ -229,7 +229,7 @@ pub struct WeightedClusterDefinition {
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct RouteResponse {
+pub struct RouteConfigResponse {
     pub name: String,
     pub team: String,
     pub path_prefix: String,
@@ -237,18 +237,18 @@ pub struct RouteResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_id: Option<String>,
     pub route_order: Option<i64>,
-    pub config: RouteDefinition,
+    pub config: RouteConfigDefinition,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct ListRoutesQuery {
+pub struct ListRouteConfigsQuery {
     pub limit: Option<i32>,
     pub offset: Option<i32>,
 }
 
 // === Conversion Helpers ===
 
-impl RouteDefinition {
+impl RouteConfigDefinition {
     pub(super) fn to_xds_config(&self) -> Result<XdsRouteConfig, ApiError> {
         let virtual_hosts = self
             .virtual_hosts
@@ -260,7 +260,7 @@ impl RouteDefinition {
     }
 
     pub(super) fn from_xds_config(config: &XdsRouteConfig, team: String) -> Self {
-        RouteDefinition {
+        RouteConfigDefinition {
             team,
             name: config.name.clone(),
             virtual_hosts: config

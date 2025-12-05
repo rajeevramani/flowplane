@@ -1,5 +1,7 @@
 use crate::errors::Error;
-use crate::storage::{CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest};
+use crate::storage::{
+    CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRepositoryRequest,
+};
 use crate::xds::XdsState;
 use crate::xds::{
     filters::http::{HttpFilterConfigEntry, HttpFilterKind},
@@ -31,7 +33,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         Some(repo) => repo.clone(),
         None => return Ok(()),
     };
-    let route_repo = match &state.route_repository {
+    let route_config_repo = match &state.route_config_repository {
         Some(repo) => repo.clone(),
         None => return Ok(()),
     };
@@ -74,7 +76,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
         info!("Created default gateway cluster");
     }
 
-    if !route_repo.exists_by_name(DEFAULT_GATEWAY_ROUTES).await? {
+    if !route_config_repo.exists_by_name(DEFAULT_GATEWAY_ROUTES).await? {
         let route_rule = RouteRule {
             name: Some(DEFAULT_GATEWAY_ROUTE_RULE.to_string()),
             r#match: RouteMatchConfig {
@@ -106,7 +108,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
 
         let route_configuration: Value = serialize_value(&route_config, "default route config")?;
 
-        let request = CreateRouteRepositoryRequest {
+        let request = CreateRouteConfigRepositoryRequest {
             name: DEFAULT_GATEWAY_ROUTES.to_string(),
             path_prefix: "/".to_string(),
             cluster_name: DEFAULT_GATEWAY_CLUSTER.to_string(),
@@ -117,7 +119,7 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             headers: None,
         };
 
-        route_repo.create(request).await?;
+        route_config_repo.create(request).await?;
         info!("Created default gateway route configuration");
     }
 

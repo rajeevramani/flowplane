@@ -22,24 +22,28 @@ use super::{
     handlers::{
         add_team_membership, admin_create_team, admin_delete_team, admin_get_team,
         admin_list_teams, admin_update_team, attach_filter_handler,
-        attach_filter_to_listener_handler, bootstrap_initialize_handler, bootstrap_status_handler,
-        change_password_handler, compare_aggregated_schemas_handler, create_cluster_handler,
-        create_filter_handler, create_learning_session_handler, create_listener_handler,
-        create_route_handler, create_session_handler, create_token_handler, create_user,
-        delete_cluster_handler, delete_filter_handler, delete_learning_session_handler,
-        delete_listener_handler, delete_route_handler, delete_user,
-        detach_filter_from_listener_handler, detach_filter_handler,
+        attach_filter_to_listener_handler, attach_filter_to_route_rule_handler,
+        attach_filter_to_virtual_host_handler, bootstrap_initialize_handler,
+        bootstrap_status_handler, change_password_handler, compare_aggregated_schemas_handler,
+        create_cluster_handler, create_filter_handler, create_learning_session_handler,
+        create_listener_handler, create_route_config_handler, create_session_handler,
+        create_token_handler, create_user, delete_cluster_handler, delete_filter_handler,
+        delete_learning_session_handler, delete_listener_handler, delete_route_config_handler,
+        delete_user, detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
+        detach_filter_from_virtual_host_handler, detach_filter_handler,
         export_aggregated_schema_handler, get_aggregated_schema_handler, get_cluster_handler,
-        get_filter_handler, get_learning_session_handler, get_listener_handler, get_route_handler,
-        get_session_info_handler, get_team_bootstrap_handler, get_token_handler, get_user,
-        health_handler, list_aggregated_schemas_handler, list_all_scopes_handler, list_audit_logs,
-        list_clusters_handler, list_filters_handler, list_learning_sessions_handler,
-        list_listener_filters_handler, list_listeners_handler, list_route_filters_handler,
-        list_route_flows_handler, list_routes_handler, list_scopes_handler, list_teams_handler,
-        list_tokens_handler, list_user_teams, list_users, login_handler, logout_handler,
-        remove_team_membership, revoke_token_handler, rotate_token_handler, update_cluster_handler,
-        update_filter_handler, update_listener_handler, update_route_handler, update_token_handler,
-        update_user,
+        get_filter_handler, get_learning_session_handler, get_listener_handler,
+        get_route_config_handler, get_session_info_handler, get_team_bootstrap_handler,
+        get_token_handler, get_user, health_handler, list_aggregated_schemas_handler,
+        list_all_scopes_handler, list_audit_logs, list_clusters_handler, list_filters_handler,
+        list_learning_sessions_handler, list_listener_filters_handler, list_listeners_handler,
+        list_route_configs_handler, list_route_filters_handler, list_route_flows_handler,
+        list_route_rule_filters_handler, list_route_rules_handler, list_scopes_handler,
+        list_teams_handler, list_tokens_handler, list_user_teams, list_users,
+        list_virtual_host_filters_handler, list_virtual_hosts_handler, login_handler,
+        logout_handler, remove_team_membership, revoke_token_handler, rotate_token_handler,
+        update_cluster_handler, update_filter_handler, update_listener_handler,
+        update_route_config_handler, update_token_handler, update_user,
     },
 };
 
@@ -130,22 +134,56 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/clusters/{name}", get(get_cluster_handler))
         .route("/api/v1/clusters/{name}", put(update_cluster_handler))
         .route("/api/v1/clusters/{name}", delete(delete_cluster_handler))
-        // Route endpoints
-        .route("/api/v1/routes", get(list_routes_handler))
-        .route("/api/v1/routes", post(create_route_handler))
-        .route("/api/v1/routes/{name}", get(get_route_handler))
-        .route("/api/v1/routes/{name}", put(update_route_handler))
-        .route("/api/v1/routes/{name}", delete(delete_route_handler))
+        // Route config endpoints
+        .route("/api/v1/route-configs", get(list_route_configs_handler))
+        .route("/api/v1/route-configs", post(create_route_config_handler))
+        .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
+        .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
+        .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
         // Filter endpoints
         .route("/api/v1/filters", get(list_filters_handler))
         .route("/api/v1/filters", post(create_filter_handler))
         .route("/api/v1/filters/{id}", get(get_filter_handler))
         .route("/api/v1/filters/{id}", put(update_filter_handler))
         .route("/api/v1/filters/{id}", delete(delete_filter_handler))
-        // Route-Filter attachment endpoints
-        .route("/api/v1/routes/{route_id}/filters", get(list_route_filters_handler))
-        .route("/api/v1/routes/{route_id}/filters", post(attach_filter_handler))
-        .route("/api/v1/routes/{route_id}/filters/{filter_id}", delete(detach_filter_handler))
+        // Route config filter attachment endpoints
+        .route("/api/v1/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
+        .route("/api/v1/route-configs/{route_config_id}/filters", post(attach_filter_handler))
+        .route("/api/v1/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
+        // Hierarchical filter attachment endpoints - Virtual Hosts
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+            get(list_virtual_hosts_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            get(list_virtual_host_filters_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            post(attach_filter_to_virtual_host_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+            delete(detach_filter_from_virtual_host_handler),
+        )
+        // Hierarchical filter attachment endpoints - Routes
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+            get(list_route_rules_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            get(list_route_rule_filters_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            post(attach_filter_to_route_rule_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+            delete(detach_filter_from_route_rule_handler),
+        )
         // Listener-Filter attachment endpoints
         .route("/api/v1/listeners/{listener_id}/filters", get(list_listener_filters_handler))
         .route("/api/v1/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))

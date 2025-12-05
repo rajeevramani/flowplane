@@ -390,8 +390,8 @@ pub fn action_from_http_method(method: &str) -> &'static str {
 /// ```rust
 /// use flowplane::auth::authorization::resource_from_path;
 ///
-/// assert_eq!(resource_from_path("/api/v1/routes"), Some("routes"));
-/// assert_eq!(resource_from_path("/api/v1/routes/123"), Some("routes"));
+/// assert_eq!(resource_from_path("/api/v1/route-configs"), Some("routes"));
+/// assert_eq!(resource_from_path("/api/v1/route-configs/123"), Some("routes"));
 /// assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
 /// assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
 /// assert_eq!(resource_from_path("/health"), None);
@@ -418,6 +418,13 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
         // but the URL structure is /api/v1/openapi/import, /api/v1/openapi/imports, etc.
         if parts[2] == "openapi" {
             return Some("openapi-import");
+        }
+
+        // Special case: /api/v1/route-configs/* uses "routes" resource
+        // The API path follows Envoy terminology (RouteConfiguration) but the scope
+        // remains "routes" for backwards compatibility and consistency
+        if parts[2] == "route-configs" {
+            return Some("routes");
         }
 
         Some(parts[2])
@@ -733,14 +740,15 @@ mod tests {
 
     #[test]
     fn resource_from_path_extracts_resource_name() {
-        assert_eq!(resource_from_path("/api/v1/routes"), Some("routes"));
-        assert_eq!(resource_from_path("/api/v1/routes/123"), Some("routes"));
+        // route-configs API path maps to "routes" scope
+        assert_eq!(resource_from_path("/api/v1/route-configs"), Some("routes"));
+        assert_eq!(resource_from_path("/api/v1/route-configs/123"), Some("routes"));
         assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
         assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
         assert_eq!(resource_from_path("/api/v1/api-definitions"), Some("api-definitions"));
         assert_eq!(resource_from_path("/api/v1/tokens/revoke"), Some("tokens"));
         assert_eq!(resource_from_path("/health"), None);
-        assert_eq!(resource_from_path("/api/v2/routes"), None); // Wrong version
+        assert_eq!(resource_from_path("/api/v2/route-configs"), None); // Wrong version
 
         // Special case: team bootstrap endpoint uses generate-envoy-config resource
         assert_eq!(

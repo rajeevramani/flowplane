@@ -99,16 +99,18 @@ pub enum RouteCommands {
     },
 }
 
-/// Route response structure
+/// Route config response structure (matches API's RouteConfigResponse)
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RouteResponse {
+pub struct RouteConfigResponse {
     pub name: String,
+    pub team: String,
     pub path_prefix: String,
-    pub cluster_name: String,
-    pub version: i64,
-    pub created_at: String,
-    pub updated_at: String,
+    pub cluster_targets: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_id: Option<String>,
+    pub route_order: Option<i64>,
+    pub config: serde_json::Value,
 }
 
 /// Handle route commands
@@ -135,7 +137,7 @@ async fn create_route(client: &FlowplaneClient, file: PathBuf, output: &str) -> 
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let response: RouteResponse = client.post_json("/api/v1/routes", &body).await?;
+    let response: RouteConfigResponse = client.post_json("/api/v1/route-configs", &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -148,7 +150,7 @@ async fn list_routes(
     offset: Option<i32>,
     output: &str,
 ) -> Result<()> {
-    let mut path = String::from("/api/v1/routes?");
+    let mut path = String::from("/api/v1/route-configs?");
     let mut params = Vec::new();
 
     if let Some(c) = cluster {
@@ -163,7 +165,7 @@ async fn list_routes(
 
     path.push_str(&params.join("&"));
 
-    let response: Vec<RouteResponse> = client.get_json(&path).await?;
+    let response: Vec<RouteConfigResponse> = client.get_json(&path).await?;
 
     if output == "table" {
         print_routes_table(&response);
@@ -175,8 +177,8 @@ async fn list_routes(
 }
 
 async fn get_route(client: &FlowplaneClient, name: &str, output: &str) -> Result<()> {
-    let path = format!("/api/v1/routes/{}", name);
-    let response: RouteResponse = client.get_json(&path).await?;
+    let path = format!("/api/v1/route-configs/{}", name);
+    let response: RouteConfigResponse = client.get_json(&path).await?;
 
     if output == "table" {
         print_routes_table(&[response]);
@@ -199,8 +201,8 @@ async fn update_route(
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let path = format!("/api/v1/routes/{}", name);
-    let response: RouteResponse = client.put_json(&path, &body).await?;
+    let path = format!("/api/v1/route-configs/{}", name);
+    let response: RouteConfigResponse = client.put_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -208,7 +210,7 @@ async fn update_route(
 
 async fn delete_route(client: &FlowplaneClient, name: &str, yes: bool) -> Result<()> {
     if !yes {
-        println!("Are you sure you want to delete route '{}'? (y/N)", name);
+        println!("Are you sure you want to delete route config '{}'? (y/N)", name);
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
@@ -217,10 +219,10 @@ async fn delete_route(client: &FlowplaneClient, name: &str, yes: bool) -> Result
         }
     }
 
-    let path = format!("/api/v1/routes/{}", name);
+    let path = format!("/api/v1/route-configs/{}", name);
     let _: serde_json::Value = client.delete_json(&path).await?;
 
-    println!("Route '{}' deleted successfully", name);
+    println!("Route config '{}' deleted successfully", name);
     Ok(())
 }
 
@@ -241,23 +243,23 @@ fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_routes_table(routes: &[RouteResponse]) {
+fn print_routes_table(routes: &[RouteConfigResponse]) {
     if routes.is_empty() {
-        println!("No routes found");
+        println!("No route configs found");
         return;
     }
 
     println!();
-    println!("{:<30} {:<25} {:<25} {:<10}", "Name", "Path Prefix", "Cluster", "Version");
-    println!("{}", "-".repeat(95));
+    println!("{:<30} {:<15} {:<25} {:<25}", "Name", "Team", "Path Prefix", "Cluster Targets");
+    println!("{}", "-".repeat(100));
 
     for route in routes {
         println!(
-            "{:<30} {:<25} {:<25} {:<10}",
+            "{:<30} {:<15} {:<25} {:<25}",
             truncate(&route.name, 28),
+            truncate(&route.team, 13),
             truncate(&route.path_prefix, 23),
-            truncate(&route.cluster_name, 23),
-            route.version
+            truncate(&route.cluster_targets, 23),
         );
     }
     println!();

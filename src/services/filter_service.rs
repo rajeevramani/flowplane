@@ -7,15 +7,19 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    domain::{AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId, RouteId},
+    domain::{
+        AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId, RouteConfigId, RouteId,
+        VirtualHostId,
+    },
     errors::Error,
     observability::http_tracing::create_operation_span,
     services::listener_filter_chain::{
         add_http_filter_before_router, listener_has_http_filter, remove_http_filter_from_listener,
     },
     storage::{
-        CreateFilterRequest, FilterData, FilterRepository, ListenerAutoFilterRepository,
-        ListenerRepository, RouteRepository, UpdateFilterRequest,
+        CreateFilterRequest, CreateRouteConfigAutoFilterRequest, FilterData, FilterRepository,
+        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
+        UpdateFilterRequest,
     },
     xds::{listener::ListenerConfig, XdsState},
 };
@@ -44,13 +48,13 @@ impl FilterService {
             .ok_or_else(|| Error::internal("Filter repository not configured"))
     }
 
-    /// Get the route repository
-    fn route_repository(&self) -> Result<RouteRepository, Error> {
+    /// Get the route config repository
+    fn route_config_repository(&self) -> Result<RouteConfigRepository, Error> {
         self.xds_state
-            .route_repository
+            .route_config_repository
             .as_ref()
             .cloned()
-            .ok_or_else(|| Error::internal("Route repository not configured"))
+            .ok_or_else(|| Error::internal("Route config repository not configured"))
     }
 
     /// Get the listener repository
@@ -308,21 +312,23 @@ impl FilterService {
         .await
     }
 
-    /// Attach a filter to a route
+    /// Attach a filter to a route config
     ///
     /// Validates that the filter type supports route-level attachment before proceeding.
     /// Also automatically adds the required HTTP filter to connected listeners.
-    pub async fn attach_filter_to_route(
+    pub async fn attach_filter_to_route_config(
         &self,
-        route_id: &RouteId,
+        route_config_id: &RouteConfigId,
         filter_id: &FilterId,
         order: Option<i64>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let mut span =
-            create_operation_span("filter_service.attach_filter_to_route", SpanKind::Internal);
-        span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+        let mut span = create_operation_span(
+            "filter_service.attach_filter_to_route_config",
+            SpanKind::Internal,
+        );
+        span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
         span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
 
         let cx = opentelemetry::Context::current().with_span(span);
@@ -351,29 +357,30 @@ impl FilterService {
             let order = match order {
                 Some(o) => o,
                 None => {
-                    let existing = repository.list_route_filters(route_id).await?;
+                    let existing = repository.list_route_config_filters(route_config_id).await?;
                     existing.len() as i64
                 }
             };
 
-            let mut db_span = create_operation_span("db.route_filters.insert", SpanKind::Client);
+            let mut db_span =
+                create_operation_span("db.route_config_filters.insert", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
-            db_span.set_attribute(KeyValue::new("db.table", "route_filters"));
-            repository.attach_to_route(route_id, filter_id, order).await?;
+            db_span.set_attribute(KeyValue::new("db.table", "route_config_filters"));
+            repository.attach_to_route_config(route_config_id, filter_id, order).await?;
             drop(db_span);
 
             info!(
-                route_id = %route_id,
+                route_config_id = %route_config_id,
                 filter_id = %filter_id,
                 order = %order,
-                "Filter attached to route"
+                "Filter attached to route config"
             );
 
             // Auto-add HTTP filter to connected listeners
-            self.ensure_listener_http_filters(route_id, filter_id, filter_type).await?;
+            self.ensure_listener_http_filters(route_config_id, filter_id, filter_type).await?;
 
             let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
-            xds_span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+            xds_span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
             xds_span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
             self.refresh_xds().await?;
             drop(xds_span);
@@ -384,20 +391,22 @@ impl FilterService {
         .await
     }
 
-    /// Detach a filter from a route
+    /// Detach a filter from a route config
     ///
     /// Also automatically removes the HTTP filter from connected listeners
-    /// if no other routes need it.
-    pub async fn detach_filter_from_route(
+    /// if no other route configs need it.
+    pub async fn detach_filter_from_route_config(
         &self,
-        route_id: &RouteId,
+        route_config_id: &RouteConfigId,
         filter_id: &FilterId,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
-        let mut span =
-            create_operation_span("filter_service.detach_filter_from_route", SpanKind::Internal);
-        span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+        let mut span = create_operation_span(
+            "filter_service.detach_filter_from_route_config",
+            SpanKind::Internal,
+        );
+        span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
         span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
 
         let cx = opentelemetry::Context::current().with_span(span);
@@ -412,23 +421,24 @@ impl FilterService {
                     Error::internal(format!("Failed to parse filter type: {}", err))
                 })?;
 
-            let mut db_span = create_operation_span("db.route_filters.delete", SpanKind::Client);
+            let mut db_span =
+                create_operation_span("db.route_config_filters.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
-            db_span.set_attribute(KeyValue::new("db.table", "route_filters"));
-            repository.detach_from_route(route_id, filter_id).await?;
+            db_span.set_attribute(KeyValue::new("db.table", "route_config_filters"));
+            repository.detach_from_route_config(route_config_id, filter_id).await?;
             drop(db_span);
 
             info!(
-                route_id = %route_id,
+                route_config_id = %route_config_id,
                 filter_id = %filter_id,
-                "Filter detached from route"
+                "Filter detached from route config"
             );
 
             // Auto-remove HTTP filter from listeners if no longer needed
-            self.cleanup_listener_http_filters(route_id, filter_id, filter_type).await?;
+            self.cleanup_listener_http_filters(route_config_id, filter_id, filter_type).await?;
 
             let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
-            xds_span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+            xds_span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
             xds_span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
             self.refresh_xds().await?;
             drop(xds_span);
@@ -439,16 +449,22 @@ impl FilterService {
         .await
     }
 
-    /// List all filters attached to a route
-    pub async fn list_route_filters(&self, route_id: &RouteId) -> Result<Vec<FilterData>, Error> {
+    /// List all filters attached to a route config
+    pub async fn list_route_config_filters(
+        &self,
+        route_config_id: &RouteConfigId,
+    ) -> Result<Vec<FilterData>, Error> {
         let repository = self.repository()?;
-        repository.list_route_filters(route_id).await
+        repository.list_route_config_filters(route_config_id).await
     }
 
-    /// List all routes using a filter
-    pub async fn list_filter_routes(&self, filter_id: &FilterId) -> Result<Vec<RouteId>, Error> {
+    /// List all route configs using a filter
+    pub async fn list_filter_route_configs(
+        &self,
+        filter_id: &FilterId,
+    ) -> Result<Vec<RouteConfigId>, Error> {
         let repository = self.repository()?;
-        repository.list_filter_routes(filter_id).await
+        repository.list_filter_route_configs(filter_id).await
     }
 
     // Listener filter attachment methods
@@ -616,35 +632,35 @@ impl FilterService {
     // Automatic Listener Filter Chain Management
     // =========================================================================
 
-    /// Ensure listeners referencing this route have the required HTTP filter
+    /// Ensure listeners referencing this route config have the required HTTP filter
     ///
-    /// When a filter is attached to a route, the corresponding HTTP filter must
+    /// When a filter is attached to a route config, the corresponding HTTP filter must
     /// exist in the listener's filter chain for `typed_per_filter_config` to work.
     ///
     /// For JWT auth filters, we auto-attach the filter to the listener via
     /// `listener_filters` table since JWT requires full config (providers, requirement_map).
     async fn ensure_listener_http_filters(
         &self,
-        route_id: &RouteId,
+        route_config_id: &RouteConfigId,
         filter_id: &FilterId,
         filter_type: FilterType,
     ) -> Result<(), Error> {
-        let route_repo = self.route_repository()?;
+        let route_config_repo = self.route_config_repository()?;
         let listener_repo = self.listener_repository()?;
         let auto_filter_repo = self.auto_filter_repository()?;
         let filter_repo = self.repository()?;
 
-        // Get route to find its name (used as route_config_name in listeners)
-        let route = route_repo.get_by_id(route_id).await?;
+        // Get route config to find its name (used as route_config_name in listeners)
+        let route_config = route_config_repo.get_by_id(route_config_id).await?;
 
-        // Find listeners using this route's name as route_config_name
-        let listeners = listener_repo.find_by_route_config_name(&route.name, &[]).await?;
+        // Find listeners using this route config's name as route_config_name
+        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
 
         if listeners.is_empty() {
             debug!(
-                route_id = %route_id,
-                route_name = %route.name,
-                "No listeners found referencing this route"
+                route_config_id = %route_config_id,
+                route_config_name = %route_config.name,
+                "No listeners found referencing this route config"
             );
             return Ok(());
         }
@@ -685,7 +701,7 @@ impl FilterService {
                 &listener.id,
                 http_filter_name,
                 filter_id,
-                route_id,
+                route_config_id,
                 &listener_repo,
                 &auto_filter_repo,
             )
@@ -701,12 +717,15 @@ impl FilterService {
         listener_id: &ListenerId,
         http_filter_name: &str,
         filter_id: &FilterId,
-        route_id: &RouteId,
+        route_config_id: &RouteConfigId,
         listener_repo: &ListenerRepository,
         auto_filter_repo: &ListenerAutoFilterRepository,
     ) -> Result<(), Error> {
         // Check if already tracked (idempotent)
-        if auto_filter_repo.exists(listener_id, http_filter_name, filter_id, route_id).await? {
+        if auto_filter_repo
+            .exists_for_route_config(listener_id, http_filter_name, filter_id, route_config_id)
+            .await?
+        {
             debug!(
                 listener_id = %listener_id,
                 http_filter_name = %http_filter_name,
@@ -747,15 +766,22 @@ impl FilterService {
         }
 
         // Track auto-added filter (even if filter already existed - for reference counting)
-        auto_filter_repo.create(listener_id, http_filter_name, filter_id, route_id).await?;
+        auto_filter_repo
+            .create_for_route_config(CreateRouteConfigAutoFilterRequest {
+                listener_id: listener_id.clone(),
+                http_filter_name: http_filter_name.to_string(),
+                source_filter_id: filter_id.clone(),
+                route_config_id: route_config_id.clone(),
+            })
+            .await?;
 
         Ok(())
     }
 
-    /// Remove HTTP filter from listeners if no other routes need it
+    /// Remove HTTP filter from listeners if no other route configs need it
     async fn cleanup_listener_http_filters(
         &self,
-        route_id: &RouteId,
+        route_config_id: &RouteConfigId,
         filter_id: &FilterId,
         filter_type: FilterType,
     ) -> Result<(), Error> {
@@ -765,19 +791,28 @@ impl FilterService {
         let http_filter_name = filter_type.http_filter_name();
 
         // Get affected listeners (from tracking table)
-        let affected = auto_filter_repo.get_by_source(filter_id, route_id).await?;
+        // Filter to only route config level attachments for this specific filter
+        let all_route_config_records =
+            auto_filter_repo.get_by_route_config(route_config_id).await?;
+        let affected: Vec<_> = all_route_config_records
+            .into_iter()
+            .filter(|r| {
+                r.source_filter_id == *filter_id
+                    && r.attachment_level == crate::domain::AttachmentLevel::RouteConfig
+            })
+            .collect();
 
         if affected.is_empty() {
             debug!(
                 filter_id = %filter_id,
-                route_id = %route_id,
+                route_config_id = %route_config_id,
                 "No auto-filter tracking records found for cleanup"
             );
             return Ok(());
         }
 
         // Remove tracking records for this source
-        auto_filter_repo.delete_by_source(filter_id, route_id).await?;
+        auto_filter_repo.delete_for_route_config(filter_id, route_config_id).await?;
 
         // For each affected listener, check if filter still needed
         for record in affected {
@@ -842,5 +877,257 @@ impl FilterService {
         }
 
         Ok(())
+    }
+
+    // =========================================================================
+    // Virtual Host and Route Rule Filter Attachment (Hierarchical Filters)
+    // =========================================================================
+
+    /// Attach a filter to a virtual host
+    ///
+    /// Filters attached at the virtual host level apply to all route rules within that host.
+    pub async fn attach_filter_to_virtual_host(
+        &self,
+        virtual_host_id: &VirtualHostId,
+        filter_id: &FilterId,
+        order: Option<i32>,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.attach_filter_to_vh", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("virtual_host.id", virtual_host_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let filter_repo = self.repository()?;
+            let vh_filter_repo = self.virtual_host_filter_repository()?;
+
+            // Verify filter exists and get its type
+            let filter = filter_repo.get_by_id(filter_id).await?;
+
+            // Validate filter type can attach to routes
+            let filter_type: FilterType =
+                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
+                    Error::internal(format!("Failed to parse filter type: {}", err))
+                })?;
+
+            if !filter_type.can_attach_to(AttachmentPoint::Route) {
+                return Err(Error::validation(format!(
+                    "Filter type '{}' cannot be attached to virtual hosts. Valid attachment points: {}",
+                    filter.filter_type,
+                    filter_type.allowed_attachment_points_display()
+                )));
+            }
+
+            // Determine order
+            let order = match order {
+                Some(o) => o,
+                None => vh_filter_repo.get_next_order(virtual_host_id).await?,
+            };
+
+            vh_filter_repo.attach(virtual_host_id, filter_id, order).await?;
+
+            info!(
+                virtual_host_id = %virtual_host_id,
+                filter_id = %filter_id,
+                order = %order,
+                "Filter attached to virtual host"
+            );
+
+            self.refresh_xds().await?;
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// Detach a filter from a virtual host
+    pub async fn detach_filter_from_virtual_host(
+        &self,
+        virtual_host_id: &VirtualHostId,
+        filter_id: &FilterId,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.detach_filter_from_vh", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("virtual_host.id", virtual_host_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let vh_filter_repo = self.virtual_host_filter_repository()?;
+
+            vh_filter_repo.detach(virtual_host_id, filter_id).await?;
+
+            info!(
+                virtual_host_id = %virtual_host_id,
+                filter_id = %filter_id,
+                "Filter detached from virtual host"
+            );
+
+            self.refresh_xds().await?;
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// List all filters attached to a virtual host
+    pub async fn list_virtual_host_filters(
+        &self,
+        virtual_host_id: &VirtualHostId,
+    ) -> Result<Vec<FilterData>, Error> {
+        let vh_filter_repo = self.virtual_host_filter_repository()?;
+        let filter_repo = self.repository()?;
+
+        let attachments = vh_filter_repo.list_by_virtual_host(virtual_host_id).await?;
+
+        let mut filters = Vec::with_capacity(attachments.len());
+        for attachment in attachments {
+            let filter = filter_repo.get_by_id(&attachment.filter_id).await?;
+            filters.push(filter);
+        }
+
+        Ok(filters)
+    }
+
+    /// Attach a filter to a route
+    ///
+    /// Filters attached at the route level apply only to that specific route,
+    /// overriding filters attached at the virtual host or route config level.
+    pub async fn attach_filter_to_route(
+        &self,
+        route_id: &RouteId,
+        filter_id: &FilterId,
+        order: Option<i32>,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.attach_filter_to_route", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let filter_repo = self.repository()?;
+            let route_filter_repo = self.route_filter_repository()?;
+
+            // Verify filter exists and get its type
+            let filter = filter_repo.get_by_id(filter_id).await?;
+
+            // Validate filter type can attach to routes
+            let filter_type: FilterType =
+                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
+                    Error::internal(format!("Failed to parse filter type: {}", err))
+                })?;
+
+            if !filter_type.can_attach_to(AttachmentPoint::Route) {
+                return Err(Error::validation(format!(
+                    "Filter type '{}' cannot be attached to routes. Valid attachment points: {}",
+                    filter.filter_type,
+                    filter_type.allowed_attachment_points_display()
+                )));
+            }
+
+            // Determine order
+            let order = match order {
+                Some(o) => o,
+                None => route_filter_repo.get_next_order(route_id).await?,
+            };
+
+            route_filter_repo.attach(route_id, filter_id, order).await?;
+
+            info!(
+                route_id = %route_id,
+                filter_id = %filter_id,
+                order = %order,
+                "Filter attached to route"
+            );
+
+            self.refresh_xds().await?;
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// Detach a filter from a route
+    pub async fn detach_filter_from_route(
+        &self,
+        route_id: &RouteId,
+        filter_id: &FilterId,
+    ) -> Result<(), Error> {
+        use opentelemetry::trace::{FutureExt, TraceContextExt};
+
+        let mut span =
+            create_operation_span("filter_service.detach_filter_from_route", SpanKind::Internal);
+        span.set_attribute(KeyValue::new("route.id", route_id.to_string()));
+        span.set_attribute(KeyValue::new("filter.id", filter_id.to_string()));
+
+        let cx = opentelemetry::Context::current().with_span(span);
+
+        async move {
+            let route_filter_repo = self.route_filter_repository()?;
+
+            route_filter_repo.detach(route_id, filter_id).await?;
+
+            info!(
+                route_id = %route_id,
+                filter_id = %filter_id,
+                "Filter detached from route"
+            );
+
+            self.refresh_xds().await?;
+
+            Ok(())
+        }
+        .with_context(cx)
+        .await
+    }
+
+    /// List all filters attached to a route
+    pub async fn list_route_filters(&self, route_id: &RouteId) -> Result<Vec<FilterData>, Error> {
+        let route_filter_repo = self.route_filter_repository()?;
+        let filter_repo = self.repository()?;
+
+        let attachments = route_filter_repo.list_by_route(route_id).await?;
+
+        let mut filters = Vec::with_capacity(attachments.len());
+        for attachment in attachments {
+            let filter = filter_repo.get_by_id(&attachment.filter_id).await?;
+            filters.push(filter);
+        }
+
+        Ok(filters)
+    }
+
+    // Helper methods for hierarchical repositories
+
+    fn virtual_host_filter_repository(
+        &self,
+    ) -> Result<crate::storage::VirtualHostFilterRepository, Error> {
+        self.xds_state
+            .virtual_host_filter_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Virtual host filter repository not configured"))
+    }
+
+    fn route_filter_repository(&self) -> Result<crate::storage::RouteFilterRepository, Error> {
+        self.xds_state
+            .route_filter_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Route filter repository not configured"))
     }
 }

@@ -366,7 +366,7 @@ async fn team_a_cannot_list_team_b_routes() {
     let create_response = send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -375,7 +375,8 @@ async fn team_a_cannot_list_team_b_routes() {
 
     // Team A lists routes - should NOT see Team B's route
     let list_response =
-        send_request(&app, Method::GET, "/api/v1/routes", Some(&team_a_token.token), None).await;
+        send_request(&app, Method::GET, "/api/v1/route-configs", Some(&team_a_token.token), None)
+            .await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
     let routes: Vec<Value> = read_json(list_response).await;
@@ -428,7 +429,7 @@ async fn team_a_cannot_get_team_b_route() {
     send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -438,7 +439,7 @@ async fn team_a_cannot_get_team_b_route() {
     let get_response = send_request(
         &app,
         Method::GET,
-        "/api/v1/routes/team-b-private-route",
+        "/api/v1/route-configs/team-b-private-route",
         Some(&team_a_token.token),
         None,
     )
@@ -491,7 +492,7 @@ async fn team_a_cannot_delete_team_b_route() {
     send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -501,7 +502,7 @@ async fn team_a_cannot_delete_team_b_route() {
     let delete_response = send_request(
         &app,
         Method::DELETE,
-        "/api/v1/routes/team-b-route",
+        "/api/v1/route-configs/team-b-route",
         Some(&team_a_token.token),
         None,
     )

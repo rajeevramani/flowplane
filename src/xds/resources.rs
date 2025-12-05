@@ -6,7 +6,7 @@ use crate::xds::{
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterData, ListenerData, RouteData},
+    storage::{ClusterData, ListenerData, RouteConfigData},
     Error, Result,
 };
 use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
@@ -186,26 +186,27 @@ pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>
 
 /// Build route configuration resources from database entries
 pub fn routes_from_database_entries(
-    routes: Vec<RouteData>,
+    route_configs: Vec<RouteConfigData>,
     phase: &str,
 ) -> Result<Vec<BuiltResource>> {
-    let mut built = Vec::with_capacity(routes.len());
+    let mut built = Vec::with_capacity(route_configs.len());
     let mut total_bytes = 0;
 
-    for route_row in routes {
-        let mut value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
-            Error::internal(format!(
-                "Failed to parse stored route configuration for '{}': {}",
-                route_row.name, err
-            ))
-        })?;
+    for route_config_row in route_configs {
+        let mut value: Value =
+            serde_json::from_str(&route_config_row.configuration).map_err(|err| {
+                Error::internal(format!(
+                    "Failed to parse stored route configuration for '{}': {}",
+                    route_config_row.name, err
+                ))
+            })?;
 
         strip_gateway_tags(&mut value);
 
         let route_config: RouteConfig = serde_json::from_value(value).map_err(|err| {
             Error::internal(format!(
                 "Failed to deserialize route configuration for '{}': {}",
-                route_row.name, err
+                route_config_row.name, err
             ))
         })?;
 

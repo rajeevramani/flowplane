@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use crate::{
-    storage::{ClusterRepository, ListenerRepository, RouteRepository},
+    storage::{ClusterRepository, ListenerRepository, RouteConfigRepository},
     Result,
 };
 use envoy_types::pb::envoy::service::discovery::v3::{
@@ -33,8 +33,8 @@ impl DatabaseAggregatedDiscoveryService {
             spawn_cluster_watcher(state.clone(), repo.clone());
         }
 
-        if let Some(repo) = &state.route_repository {
-            spawn_route_watcher(state.clone(), repo.clone());
+        if let Some(repo) = &state.route_config_repository {
+            spawn_route_config_watcher(state.clone(), repo.clone());
         }
 
         if let Some(repo) = &state.listener_repository {
@@ -192,7 +192,7 @@ impl DatabaseAggregatedDiscoveryService {
 
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.route_repository {
+        let built = if let Some(repo) = &self.state.route_config_repository {
             // Extract teams from scope for filtering
             // Default resources (team IS NULL) are always included
             let teams = match scope {
@@ -225,13 +225,14 @@ impl DatabaseAggregatedDiscoveryService {
                     }
 
                     if route_data_list.is_empty() {
-                        info!("No routes found in database, falling back to config-based routes");
+                        info!("No route configs found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
                     } else {
                         // Inject attached filters into route configurations
-                        if let Err(e) = self.state.inject_route_filters(&mut route_data_list).await
+                        if let Err(e) =
+                            self.state.inject_route_config_filters(&mut route_data_list).await
                         {
-                            warn!(error = %e, "Failed to inject filters into routes for ADS response");
+                            warn!(error = %e, "Failed to inject filters into route configs for ADS response");
                         }
 
                         info!(
@@ -532,51 +533,51 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
     });
 }
 
-fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
+fn spawn_route_config_watcher(state: Arc<XdsState>, repository: RouteConfigRepository) {
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
         if let Err(error) = state.refresh_routes_from_repository().await {
-            warn!(%error, "Failed to initialize route cache from repository");
+            warn!(%error, "Failed to initialize route config cache from repository");
         }
 
-        // Track route state using count + last modification timestamp
+        // Track route config state using count + last modification timestamp
         // This avoids false positives from PRAGMA data_version which can change
         // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
-        let mut last_route_state: Option<(i64, Option<String>)> = None;
+        let mut last_route_config_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            // Query actual route data: count and max updated_at timestamp
-            // This only changes when routes are actually added/removed/modified
+            // Query actual route config data: count and max updated_at timestamp
+            // This only changes when route configs are actually added/removed/modified
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM routes",
+                "SELECT COUNT(*), MAX(updated_at) FROM route_configs",
             )
             .fetch_one(repository.pool())
             .await;
 
             match poll_result {
-                Ok(current_state) => match &last_route_state {
+                Ok(current_state) => match &last_route_config_state {
                     Some(previous_state) if previous_state == &current_state => {
-                        // No actual route changes, skip update
+                        // No actual route config changes, skip update
                     }
                     Some(_) => {
-                        last_route_state = Some(current_state.clone());
+                        last_route_config_state = Some(current_state.clone());
                         info!(
-                            route_count = current_state.0,
+                            route_config_count = current_state.0,
                             last_updated = ?current_state.1,
-                            "Route data changed, refreshing route cache"
+                            "Route config data changed, refreshing route cache"
                         );
                         if let Err(error) = state.refresh_routes_from_repository().await {
-                            warn!(%error, "Failed to refresh route cache from repository");
+                            warn!(%error, "Failed to refresh route config cache from repository");
                         }
                     }
                     None => {
                         // First poll, just record the state without triggering update
-                        last_route_state = Some(current_state);
+                        last_route_config_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll route state for change detection");
+                    warn!(error = %e, "Failed to poll route config state for change detection");
                 }
             }
 

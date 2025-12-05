@@ -8,8 +8,8 @@ use flowplane::storage::create_pool;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::repositories::{CreateImportMetadataRequest, ImportMetadataRepository};
 use flowplane::storage::repository::{
-    ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteRequest,
-    ListenerRepository, RouteRepository,
+    ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRequest,
+    ListenerRepository, RouteConfigRepository,
 };
 
 async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
@@ -67,9 +67,9 @@ async fn test_source_enum_constraint_on_routes() {
         .await
         .unwrap();
 
-    // Try to insert route with invalid source value (should fail)
+    // Try to insert route config with invalid source value (should fail)
     let result = sqlx::query(
-        "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at)
+        "INSERT INTO route_configs (id, name, path_prefix, cluster_name, configuration, version, source, created_at, updated_at)
          VALUES ('test-id', 'test', '/', 'test-cluster', '{}', 1, 'bad_source', datetime('now'), datetime('now'))"
     )
     .execute(&pool)
@@ -100,7 +100,7 @@ async fn test_valid_source_values_accepted() {
 
     let listener_repo = ListenerRepository::new(pool.clone());
     let cluster_repo = ClusterRepository::new(pool.clone());
-    let route_repo = RouteRepository::new(pool.clone());
+    let route_config_repo = RouteConfigRepository::new(pool.clone());
 
     // Create resources with valid 'native_api' source (default)
     let listener = listener_repo
@@ -131,8 +131,8 @@ async fn test_valid_source_values_accepted() {
 
     assert_eq!(cluster.source, "native_api");
 
-    let route = route_repo
-        .create(CreateRouteRequest {
+    let route_config = route_config_repo
+        .create(CreateRouteConfigRequest {
             name: "test-route".to_string(),
             path_prefix: "/".to_string(),
             cluster_name: "test-cluster".to_string(),
@@ -145,7 +145,7 @@ async fn test_valid_source_values_accepted() {
         .await
         .unwrap();
 
-    assert_eq!(route.source, "native_api");
+    assert_eq!(route_config.source, "native_api");
 }
 
 // ============================================================================

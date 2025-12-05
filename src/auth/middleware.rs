@@ -314,13 +314,13 @@ pub async fn ensure_scopes(
 ///
 /// # How it works
 ///
-/// 1. Extracts the resource from the path (e.g., `/api/v1/routes` → "routes")
+/// 1. Extracts the resource from the path (e.g., `/api/v1/route-configs` → "routes")
 /// 2. Derives the action from the HTTP method (e.g., GET → "read", POST → "write")
 /// 3. Checks permissions using `require_resource_access`
 ///
 /// # Examples
 ///
-/// - GET /api/v1/routes → requires "routes:read"
+/// - GET /api/v1/route-configs → requires "routes:read"
 /// - POST /api/v1/clusters → requires "clusters:write"
 /// - DELETE /api/v1/listeners/foo → requires "listeners:delete"
 pub async fn ensure_dynamic_scopes(

@@ -1,4 +1,4 @@
-//! Route validation and utility functions
+//! Route configuration validation and utility functions
 
 use envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig;
 use prost::Message;
@@ -8,27 +8,31 @@ use crate::{
     api::{error::ApiError, routes::ApiState},
     errors::Error,
     openapi::strip_gateway_tags,
-    storage::{RouteData, RouteRepository},
+    storage::{RouteConfigData, RouteConfigRepository},
     xds::route::RouteConfig as XdsRouteConfig,
 };
 
 use super::types::{
-    PathMatchDefinition, RouteActionDefinition, RouteDefinition, RouteMatchDefinition,
-    RouteResponse,
+    PathMatchDefinition, RouteActionDefinition, RouteConfigDefinition, RouteConfigResponse,
+    RouteMatchDefinition,
 };
 
-/// Extract route repository from API state
-pub(super) fn require_route_repository(state: &ApiState) -> Result<RouteRepository, ApiError> {
+/// Extract route config repository from API state
+pub(super) fn require_route_config_repository(
+    state: &ApiState,
+) -> Result<RouteConfigRepository, ApiError> {
     state
         .xds_state
-        .route_repository
+        .route_config_repository
         .as_ref()
         .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Route repository not configured"))
+        .ok_or_else(|| ApiError::service_unavailable("Route config repository not configured"))
 }
 
-/// Convert database route data to API response
-pub(super) fn route_response_from_data(data: RouteData) -> Result<RouteResponse, ApiError> {
+/// Convert database route config data to API response
+pub(super) fn route_config_response_from_data(
+    data: RouteConfigData,
+) -> Result<RouteConfigResponse, ApiError> {
     let mut value: Value = serde_json::from_str(&data.configuration).map_err(|err| {
         ApiError::from(Error::internal(format!(
             "Failed to parse stored route configuration: {}",
@@ -47,9 +51,9 @@ pub(super) fn route_response_from_data(data: RouteData) -> Result<RouteResponse,
 
     // Use team from database, or empty string if None (should not happen with explicit team requirement)
     let team = data.team.clone().unwrap_or_default();
-    let config = RouteDefinition::from_xds_config(&xds_config, team.clone());
+    let config = RouteConfigDefinition::from_xds_config(&xds_config, team.clone());
 
-    Ok(RouteResponse {
+    Ok(RouteConfigResponse {
         name: data.name,
         team,
         path_prefix: data.path_prefix,
@@ -60,8 +64,8 @@ pub(super) fn route_response_from_data(data: RouteData) -> Result<RouteResponse,
     })
 }
 
-/// Extract summary information from route definition for display
-pub(super) fn summarize_route(definition: &RouteDefinition) -> (String, String) {
+/// Extract summary information from route config definition for display
+pub(super) fn summarize_route_config(definition: &RouteConfigDefinition) -> (String, String) {
     let path_prefix = definition
         .virtual_hosts
         .iter()
@@ -99,8 +103,10 @@ pub(super) fn validate_route_config(config: XdsRouteConfig) -> Result<XdsRouteCo
     Ok(config)
 }
 
-/// Validate route definition payload before persistence
-pub(super) fn validate_route_payload(definition: &RouteDefinition) -> Result<(), ApiError> {
+/// Validate route config definition payload before persistence
+pub(super) fn validate_route_config_payload(
+    definition: &RouteConfigDefinition,
+) -> Result<(), ApiError> {
     use validator::Validate;
 
     definition.validate().map_err(|err| ApiError::from(Error::from(err)))?;

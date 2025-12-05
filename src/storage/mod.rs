@@ -16,15 +16,21 @@ pub use migrations::{
 };
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
 pub use repositories::{
-    AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
-    CreateFilterRequest, FilterData, FilterRepository, ListenerAutoFilterData,
-    ListenerAutoFilterRepository, UpdateFilterRequest,
+    AggregatedSchemaData, AggregatedSchemaRepository, ClusterEndpointData,
+    ClusterEndpointRepository, CreateAggregatedSchemaRequest, CreateEndpointRequest,
+    CreateFilterRequest, CreateRouteAutoFilterRequest, CreateRouteConfigAutoFilterRequest,
+    CreateRouteRequest, CreateVirtualHostAutoFilterRequest, CreateVirtualHostRequest, FilterData,
+    FilterRepository, ListenerAutoFilterData, ListenerAutoFilterRepository,
+    ListenerRouteConfigData, ListenerRouteConfigRepository, RouteData, RouteFilterData,
+    RouteFilterRepository, RouteRepository, UpdateEndpointRequest, UpdateFilterRequest,
+    UpdateRouteRequest, UpdateVirtualHostRequest, VirtualHostData, VirtualHostFilterData,
+    VirtualHostFilterRepository, VirtualHostRepository,
 };
 pub use repository::{
     AuditEvent, AuditLogRepository, ClusterData, ClusterRepository, CreateClusterRequest,
-    CreateListenerRequest, CreateRouteRequest as CreateRouteRepositoryRequest, ListenerData,
-    ListenerRepository, RouteData, RouteRepository, UpdateClusterRequest, UpdateListenerRequest,
-    UpdateRouteRequest as UpdateRouteRepositoryRequest,
+    CreateListenerRequest, CreateRouteConfigRequest as CreateRouteConfigRepositoryRequest,
+    ListenerData, ListenerRepository, RouteConfigData, RouteConfigRepository, UpdateClusterRequest,
+    UpdateListenerRequest, UpdateRouteConfigRequest as UpdateRouteConfigRepositoryRequest,
 };
 
 use crate::errors::{FlowplaneError, Result};

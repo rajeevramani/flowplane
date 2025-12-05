@@ -36,11 +36,12 @@ async fn ensure_default_gateway_resources_creates_default_resources() {
             .unwrap();
     assert_eq!(cluster_count, 1, "Expected default gateway cluster to be created");
 
-    let route_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM routes WHERE name = 'default-gateway-routes'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let route_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM route_configs WHERE name = 'default-gateway-routes'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(route_count, 1, "Expected default gateway routes to be created");
 
     let listener_count: i64 = sqlx::query_scalar(

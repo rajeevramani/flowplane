@@ -12,7 +12,8 @@ use crate::{
     services::LearningSessionService,
     storage::{
         AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
-        ListenerAutoFilterRepository, ListenerRepository, RouteRepository,
+        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
+        RouteFilterRepository, RouteRepository, VirtualHostFilterRepository, VirtualHostRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -60,11 +61,16 @@ pub struct XdsState {
     pub config: SimpleXdsConfig,
     pub version: Arc<std::sync::atomic::AtomicU64>,
     pub cluster_repository: Option<ClusterRepository>,
-    pub route_repository: Option<RouteRepository>,
+    pub route_config_repository: Option<RouteConfigRepository>,
     pub listener_repository: Option<ListenerRepository>,
     pub filter_repository: Option<FilterRepository>,
     pub listener_auto_filter_repository: Option<ListenerAutoFilterRepository>,
     pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
+    // Hierarchical filter attachment repositories
+    pub virtual_host_repository: Option<VirtualHostRepository>,
+    pub route_repository: Option<RouteRepository>,
+    pub virtual_host_filter_repository: Option<VirtualHostFilterRepository>,
+    pub route_filter_repository: Option<RouteFilterRepository>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
     pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
@@ -79,11 +85,15 @@ impl XdsState {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: None,
-            route_repository: None,
+            route_config_repository: None,
             listener_repository: None,
             filter_repository: None,
             listener_auto_filter_repository: None,
             aggregated_schema_repository: None,
+            virtual_host_repository: None,
+            route_repository: None,
+            virtual_host_filter_repository: None,
+            route_filter_repository: None,
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
@@ -95,20 +105,29 @@ impl XdsState {
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
         let cluster_repository = ClusterRepository::new(pool.clone());
-        let route_repository = RouteRepository::new(pool.clone());
+        let route_config_repository = RouteConfigRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
         let filter_repository = FilterRepository::new(pool.clone());
         let listener_auto_filter_repository = ListenerAutoFilterRepository::new(pool.clone());
-        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
+        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool.clone());
+        // Hierarchical filter attachment repositories
+        let virtual_host_repository = VirtualHostRepository::new(pool.clone());
+        let route_repository = RouteRepository::new(pool.clone());
+        let virtual_host_filter_repository = VirtualHostFilterRepository::new(pool.clone());
+        let route_filter_repository = RouteFilterRepository::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: Some(cluster_repository),
-            route_repository: Some(route_repository),
+            route_config_repository: Some(route_config_repository),
             listener_repository: Some(listener_repository),
             filter_repository: Some(filter_repository),
             listener_auto_filter_repository: Some(listener_auto_filter_repository),
             aggregated_schema_repository: Some(aggregated_schema_repository),
+            virtual_host_repository: Some(virtual_host_repository),
+            route_repository: Some(route_repository),
+            virtual_host_filter_repository: Some(virtual_host_filter_repository),
+            route_filter_repository: Some(route_filter_repository),
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
@@ -276,22 +295,22 @@ impl XdsState {
     /// Refresh the route cache from the backing repository (if available).
     #[instrument(skip(self), name = "xds_refresh_routes")]
     pub async fn refresh_routes_from_repository(&self) -> Result<()> {
-        let repository = match &self.route_repository {
+        let repository = match &self.route_config_repository {
             Some(repo) => repo.clone(),
             None => return Ok(()),
         };
 
-        let mut route_rows = repository.list(Some(1000), None).await?;
+        let mut route_config_rows = repository.list(Some(1000), None).await?;
 
         // Inject attached filters into route configurations
-        if let Err(e) = self.inject_route_filters(&mut route_rows).await {
-            warn!(error = %e, "Failed to inject filters into routes, continuing without filters");
+        if let Err(e) = self.inject_route_config_filters(&mut route_config_rows).await {
+            warn!(error = %e, "Failed to inject filters into route configs, continuing without filters");
         }
 
-        let built = if route_rows.is_empty() {
+        let built = if route_config_rows.is_empty() {
             routes_from_config(&self.config)?
         } else {
-            routes_from_database_entries(route_rows, "cache_refresh")?
+            routes_from_database_entries(route_config_rows, "cache_refresh")?
         };
 
         let total_resources = built.len();
@@ -324,20 +343,24 @@ impl XdsState {
 
     /// Inject attached filters into route configurations
     ///
-    /// This modifies the route's JSON configuration to include any filters
-    /// attached via the route_filters junction table.
+    /// This modifies the route config's JSON configuration to include any filters
+    /// attached via the route_config_filters junction table.
     ///
-    /// Delegates to [`crate::xds::filters::injection::inject_route_filters`].
-    pub async fn inject_route_filters(
+    /// Delegates to [`crate::xds::filters::injection::inject_route_config_filters`].
+    pub async fn inject_route_config_filters(
         &self,
-        routes: &mut [crate::storage::RouteData],
+        route_configs: &mut [crate::storage::RouteConfigData],
     ) -> Result<()> {
         let filter_repository = match &self.filter_repository {
             Some(repo) => repo,
             None => return Ok(()),
         };
 
-        crate::xds::filters::injection::inject_route_filters(routes, filter_repository).await
+        crate::xds::filters::injection::inject_route_config_filters(
+            route_configs,
+            filter_repository,
+        )
+        .await
     }
 
     /// Refresh the listener cache from the backing repository (if available).
@@ -466,13 +489,13 @@ impl XdsState {
             }
         };
 
-        let route_repository = self.route_repository.as_ref();
+        let route_config_repository = self.route_config_repository.as_ref();
 
         crate::xds::filters::injection::inject_listener_filters(
             built_listeners,
             filter_repository,
             listener_repository,
-            route_repository,
+            route_config_repository,
             self,
         )
         .await
