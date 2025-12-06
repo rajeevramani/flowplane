@@ -847,7 +847,7 @@ export interface RouteSummary {
 	id: string;
 	name: string;
 	pathPattern: string;
-	matchType: 'prefix' | 'exact' | 'regex' | 'template';
+	matchType: 'prefix' | 'exact' | 'regex' | 'path_template' | 'connect_matcher';
 	ruleOrder: number;
 	filterCount: number;
 }

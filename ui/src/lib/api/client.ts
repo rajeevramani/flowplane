@@ -590,14 +590,23 @@ class ApiClient {
 
 	// List virtual hosts within a route config
 	async listVirtualHosts(routeConfigName: string): Promise<VirtualHostSummary[]> {
-		return this.get<VirtualHostSummary[]>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts`);
+		const response = await this.get<{ routeConfigName: string; virtualHosts: VirtualHostSummary[] }>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts`
+		);
+		return response.virtualHosts;
 	}
 
 	// List routes within a virtual host
-	async listRoutesInVirtualHost(routeConfigName: string, virtualHostName: string): Promise<RouteSummary[]> {
-		return this.get<RouteSummary[]>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`
-		);
+	async listRoutesInVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string
+	): Promise<RouteSummary[]> {
+		const response = await this.get<{
+			routeConfigName: string;
+			virtualHostName: string;
+			routes: RouteSummary[];
+		}>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`);
+		return response.routes;
 	}
 
 	// Virtual Host Filter Attachment

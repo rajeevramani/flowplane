@@ -2,7 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Plus, Edit, Trash2, Filter as FilterIcon, Settings } from 'lucide-svelte';
+	import { Plus, Edit, Trash2, Filter as FilterIcon, Settings, Clock, Link } from 'lucide-svelte';
 	import type { FilterResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
@@ -49,7 +49,8 @@
 	// Calculate stats
 	let stats = $derived({
 		totalFilters: filters.filter(f => f.team === currentTeam).length,
-		headerMutationFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'header_mutation').length
+		headerMutationFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'header_mutation').length,
+		rateLimitFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'local_rate_limit').length
 	});
 
 	// Filter filters by team and search
@@ -109,9 +110,9 @@
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8">
-		<h1 class="text-3xl font-bold text-gray-900">Filters</h1>
+		<h1 class="text-3xl font-bold text-gray-900">HTTP Filters</h1>
 		<p class="mt-2 text-sm text-gray-600">
-			Manage reusable filters for the <span class="font-medium">{currentTeam}</span> team
+			Manage reusable HTTP filters for the <span class="font-medium">{currentTeam}</span> team
 		</p>
 	</div>
 
@@ -124,7 +125,7 @@
 	</div>
 
 	<!-- Stats Cards -->
-	<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+	<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
 			<div class="flex items-center justify-between">
 				<div>
@@ -145,6 +146,18 @@
 				</div>
 				<div class="p-3 bg-green-100 rounded-lg">
 					<Settings class="h-6 w-6 text-green-600" />
+				</div>
+			</div>
+		</div>
+
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">Rate Limit</p>
+					<p class="text-2xl font-bold text-gray-900">{stats.rateLimitFilters}</p>
+				</div>
+				<div class="p-3 bg-orange-100 rounded-lg">
+					<Clock class="h-6 w-6 text-orange-600" />
 				</div>
 			</div>
 		</div>
@@ -261,6 +274,13 @@
 							<!-- Actions -->
 							<td class="px-6 py-4 text-right">
 								<div class="flex justify-end gap-2">
+									<button
+										onclick={() => goto(`/filters/attach?filterId=${encodeURIComponent(filter.id)}`)}
+										class="p-2 text-purple-600 hover:bg-purple-50 rounded-md transition-colors"
+										title="Attach filter to resources"
+									>
+										<Link class="h-4 w-4" />
+									</button>
 									<button
 										onclick={() => handleEdit(filter.id)}
 										class="p-2 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"

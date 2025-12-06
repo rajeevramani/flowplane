@@ -10,7 +10,10 @@
 		Users,
 		Building2,
 		Key,
-		FileText
+		FileText,
+		ChevronDown,
+		List,
+		Link
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -29,13 +32,21 @@
 
 	let { sessionInfo, resourceCounts }: Props = $props();
 
-	// Resources navigation items
+	// Track HTTP Filters menu expansion state
+	let filtersMenuOpen = $state(true);
+
+	// Resources navigation items (without filters - handled separately)
 	const resourceItems = [
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
-		{ id: 'filters', label: 'Filters', href: '/filters', icon: Filter },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
+	];
+
+	// HTTP Filters submenu items
+	const filtersSubmenu = [
+		{ id: 'manage-filters', label: 'Manage Filters', href: '/filters', icon: List },
+		{ id: 'attach-filters', label: 'Attach Filters', href: '/filters/attach', icon: Link }
 	];
 
 	// Admin navigation items
@@ -51,7 +62,22 @@
 		if (href === '/dashboard') {
 			return currentPath === '/dashboard' || currentPath === '/';
 		}
+		// Special handling for /filters to not match /filters/attach
+		if (href === '/filters') {
+			return currentPath === '/filters' || currentPath === '/filters/create' || currentPath.startsWith('/filters/') && !currentPath.startsWith('/filters/attach');
+		}
 		return currentPath.startsWith(href);
+	}
+
+	// Check if any filter submenu item is active
+	function isFiltersActive(): boolean {
+		const currentPath = $page.url.pathname;
+		return currentPath.startsWith('/filters');
+	}
+
+	// Toggle filters submenu
+	function toggleFiltersMenu() {
+		filtersMenuOpen = !filtersMenuOpen;
 	}
 
 	function getCount(id: string): number | undefined {
@@ -126,6 +152,53 @@
 						{/if}
 					</a>
 				{/each}
+
+				<!-- HTTP Filters - Expandable with submenu -->
+				<div class="space-y-1">
+					<button
+						onclick={toggleFiltersMenu}
+						class="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium transition-colors
+							{isFiltersActive()
+							? 'bg-blue-600 text-white'
+							: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+					>
+						<div class="flex items-center gap-3">
+							<Filter class="h-5 w-5" />
+							HTTP Filters
+						</div>
+						<div class="flex items-center gap-2">
+							{#if resourceCounts?.filters !== undefined && resourceCounts.filters > 0}
+								<span
+									class="px-2 py-0.5 text-xs rounded-full
+									{isFiltersActive() ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-300'}"
+								>
+									{resourceCounts.filters}
+								</span>
+							{/if}
+							<ChevronDown
+								class="h-4 w-4 transition-transform {filtersMenuOpen ? 'rotate-180' : ''}"
+							/>
+						</div>
+					</button>
+
+					<!-- Submenu -->
+					{#if filtersMenuOpen}
+						<div class="ml-4 pl-4 border-l border-gray-700 space-y-1">
+							{#each filtersSubmenu as subItem}
+								<a
+									href={subItem.href}
+									class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+										{isActive(subItem.href)
+										? 'bg-gray-800 text-white'
+										: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+								>
+									<subItem.icon class="h-4 w-4" />
+									{subItem.label}
+								</a>
+							{/each}
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 

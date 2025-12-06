@@ -23,8 +23,9 @@ pub struct AttachFilterRequest {
 
 // === Response Types ===
 
-/// Response for a virtual host
+/// Response for a virtual host with counts
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VirtualHostResponse {
     /// Unique ID of the virtual host
     pub id: String,
@@ -32,26 +33,35 @@ pub struct VirtualHostResponse {
     pub name: String,
     /// Domains the virtual host matches
     pub domains: Vec<String>,
-    /// When the virtual host was created
-    pub created_at: DateTime<Utc>,
-    /// When the virtual host was last updated
-    pub updated_at: DateTime<Utc>,
+    /// Order of the virtual host within the route config
+    pub rule_order: i32,
+    /// Number of routes in this virtual host
+    pub route_count: i64,
+    /// Number of filters attached to this virtual host
+    pub filter_count: i64,
 }
 
-impl From<VirtualHostData> for VirtualHostResponse {
-    fn from(data: VirtualHostData) -> Self {
+impl VirtualHostResponse {
+    /// Create a VirtualHostResponse from data with counts
+    pub fn from_data_with_counts(
+        data: VirtualHostData,
+        route_count: i64,
+        filter_count: i64,
+    ) -> Self {
         Self {
             id: data.id.to_string(),
             name: data.name,
             domains: data.domains,
-            created_at: data.created_at,
-            updated_at: data.updated_at,
+            rule_order: data.rule_order,
+            route_count,
+            filter_count,
         }
     }
 }
 
 /// Response for listing virtual hosts
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ListVirtualHostsResponse {
     /// Name of the route configuration
     pub route_config_name: String,
@@ -59,8 +69,9 @@ pub struct ListVirtualHostsResponse {
     pub virtual_hosts: Vec<VirtualHostResponse>,
 }
 
-/// Response for a route rule
+/// Response for a route rule with filter count
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteRuleResponse {
     /// Unique ID of the route rule
     pub id: String,
@@ -72,34 +83,34 @@ pub struct RouteRuleResponse {
     pub match_type: RouteMatchType,
     /// Order of the rule within the virtual host
     pub rule_order: i32,
-    /// When the route rule was created
-    pub created_at: DateTime<Utc>,
-    /// When the route rule was last updated
-    pub updated_at: DateTime<Utc>,
+    /// Number of filters attached to this route
+    pub filter_count: i64,
 }
 
-impl From<RouteData> for RouteRuleResponse {
-    fn from(data: RouteData) -> Self {
+impl RouteRuleResponse {
+    /// Create a RouteRuleResponse from data with filter count
+    pub fn from_data_with_count(data: RouteData, filter_count: i64) -> Self {
         Self {
             id: data.id.to_string(),
             name: data.name,
             path_pattern: data.path_pattern,
             match_type: data.match_type,
             rule_order: data.rule_order,
-            created_at: data.created_at,
-            updated_at: data.updated_at,
+            filter_count,
         }
     }
 }
 
 /// Response for listing route rules
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ListRouteRulesResponse {
     /// Name of the route configuration
     pub route_config_name: String,
     /// Name of the virtual host
     pub virtual_host_name: String,
-    /// List of route rules
+    /// List of route rules - uses "routes" for Envoy terminology alignment
+    #[serde(rename = "routes")]
     pub route_rules: Vec<RouteRuleResponse>,
 }
 
@@ -135,6 +146,7 @@ impl From<FilterData> for FilterResponse {
 
 /// Response for listing virtual host filters
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VirtualHostFiltersResponse {
     /// Name of the route configuration
     pub route_config_name: String,
@@ -146,6 +158,7 @@ pub struct VirtualHostFiltersResponse {
 
 /// Response for listing route rule filters
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteRuleFiltersResponse {
     /// Name of the route configuration
     pub route_config_name: String,

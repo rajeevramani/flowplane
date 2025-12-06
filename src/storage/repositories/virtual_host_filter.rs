@@ -244,4 +244,24 @@ impl VirtualHostFilterRepository {
 
         Ok(count)
     }
+
+    /// Count filters attached to a virtual host.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_count_vh_filters")]
+    pub async fn count_by_virtual_host(&self, virtual_host_id: &VirtualHostId) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM virtual_host_filters WHERE virtual_host_id = $1",
+        )
+        .bind(virtual_host_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, vh_id = %virtual_host_id, "Failed to count filters");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count filters for virtual host '{}'", virtual_host_id),
+            }
+        })?;
+
+        Ok(count)
+    }
 }

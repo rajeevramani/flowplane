@@ -231,4 +231,23 @@ impl RouteFilterRepository {
 
         Ok(count)
     }
+
+    /// Count filters attached to a route.
+    #[instrument(skip(self), fields(route_id = %route_id), name = "db_count_filters_by_route")]
+    pub async fn count_by_route(&self, route_id: &RouteId) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM route_filters WHERE route_id = $1")
+                .bind(route_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, route_id = %route_id, "Failed to count filters");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: format!("Failed to count filters for route '{}'", route_id),
+                    }
+                })?;
+
+        Ok(count)
+    }
 }

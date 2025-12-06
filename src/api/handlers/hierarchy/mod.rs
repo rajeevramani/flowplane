@@ -153,11 +153,29 @@ pub async fn list_virtual_hosts_handler(
             ApiError::service_unavailable("Virtual host repository not available")
         })?;
 
+    let route_repository = state
+        .xds_state
+        .route_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Route repository not available"))?;
+
+    let vh_filter_repository =
+        state.xds_state.virtual_host_filter_repository.as_ref().ok_or_else(|| {
+            ApiError::service_unavailable("Virtual host filter repository not available")
+        })?;
+
     let virtual_hosts =
         vh_repository.list_by_route_config(&route_config.id).await.map_err(ApiError::from)?;
 
-    let items: Vec<VirtualHostResponse> =
-        virtual_hosts.into_iter().map(VirtualHostResponse::from).collect();
+    // Build responses with counts
+    let mut items = Vec::with_capacity(virtual_hosts.len());
+    for vh in virtual_hosts {
+        let route_count =
+            route_repository.count_by_virtual_host(&vh.id).await.map_err(ApiError::from)?;
+        let filter_count =
+            vh_filter_repository.count_by_virtual_host(&vh.id).await.map_err(ApiError::from)?;
+        items.push(VirtualHostResponse::from_data_with_counts(vh, route_count, filter_count));
+    }
 
     Ok(Json(ListVirtualHostsResponse { route_config_name, virtual_hosts: items }))
 }
@@ -273,10 +291,21 @@ pub async fn list_route_rules_handler(
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Route repository not available"))?;
 
+    let route_filter_repository =
+        state.xds_state.route_filter_repository.as_ref().ok_or_else(|| {
+            ApiError::service_unavailable("Route filter repository not available")
+        })?;
+
     let routes =
         route_repository.list_by_virtual_host(&virtual_host.id).await.map_err(ApiError::from)?;
 
-    let items: Vec<RouteRuleResponse> = routes.into_iter().map(RouteRuleResponse::from).collect();
+    // Build responses with filter counts
+    let mut items = Vec::with_capacity(routes.len());
+    for route in routes {
+        let filter_count =
+            route_filter_repository.count_by_route(&route.id).await.map_err(ApiError::from)?;
+        items.push(RouteRuleResponse::from_data_with_count(route, filter_count));
+    }
 
     Ok(Json(ListRouteRulesResponse {
         route_config_name,

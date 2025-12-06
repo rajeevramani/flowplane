@@ -214,6 +214,27 @@ impl RouteRepository {
         rows.into_iter().map(RouteData::try_from).collect()
     }
 
+    /// Count routes for a virtual host.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_count_routes_by_vh")]
+    pub async fn count_by_virtual_host(&self, virtual_host_id: &VirtualHostId) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM routes WHERE virtual_host_id = $1")
+                .bind(virtual_host_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, vh_id = %virtual_host_id, "Failed to count routes");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: format!(
+                            "Failed to count routes for virtual host '{}'",
+                            virtual_host_id
+                        ),
+                    }
+                })?;
+        Ok(count)
+    }
+
     /// Update a route.
     #[instrument(skip(self, request), fields(id = %id), name = "db_update_route")]
     pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {
