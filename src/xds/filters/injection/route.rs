@@ -25,9 +25,6 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 /// Context for hierarchical filter injection.
-///
-/// NOTE: Will be used in Phase 6 when API endpoints wire up hierarchical injection.
-#[allow(dead_code)]
 pub struct HierarchicalFilterContext {
     pub filter_repo: FilterRepository,
     pub vhost_repo: VirtualHostRepository,
@@ -210,9 +207,6 @@ fn inject_into_virtual_hosts(
 /// 1. RouteConfig-level filters → applied to ALL routes
 /// 2. VirtualHost-level filters → applied to routes in that vhost (overrides #1)
 /// 3. Route-level filters → applied to specific routes only (overrides #2)
-///
-/// NOTE: Will be wired up in Phase 6 when API endpoints enable VH/Route filter attachment.
-#[allow(dead_code)]
 pub async fn inject_route_filters_hierarchical(
     route_configs: &mut [RouteConfigData],
     ctx: &HierarchicalFilterContext,
@@ -307,7 +301,6 @@ pub async fn inject_route_filters_hierarchical(
 /// Apply hierarchical filter injection to a route configuration.
 ///
 /// Returns true if any modifications were made.
-#[allow(dead_code)]
 fn inject_hierarchical(
     config: &mut serde_json::Value,
     route_filters: &[FilterData],
@@ -396,7 +389,6 @@ fn inject_hierarchical(
 }
 
 /// Convert a FilterData to its scoped config representation.
-#[allow(dead_code)]
 fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpScopedConfig)> {
     let filter_config: FilterConfig = match serde_json::from_str(&filter_data.configuration) {
         Ok(cfg) => cfg,

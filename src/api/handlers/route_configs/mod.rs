@@ -25,6 +25,7 @@ use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
+    domain::RouteConfigId,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
     storage::{
@@ -125,6 +126,15 @@ pub async fn create_route_config_handler(
     let created = route_config_repository.create(request).await.map_err(ApiError::from)?;
 
     info!(route_config_id = %created.id, route_config_name = %created.name, "Route config created via API");
+
+    // Sync route hierarchy (extract virtual hosts and routes to database tables)
+    if let Some(ref sync_service) = state.xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(created.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
+            error!(error = %err, route_config_id = %created.id, "Failed to sync route hierarchy after creation");
+            // Continue anyway - the route config was created, hierarchy sync is optional
+        }
+    }
 
     state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
         error!(error = %err, "Failed to refresh xDS caches after route config creation");
@@ -275,6 +285,15 @@ pub async fn update_route_config_handler(
     let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
 
     info!(route_config_id = %updated.id, route_config_name = %updated.name, "Route config updated via API");
+
+    // Sync route hierarchy (re-sync virtual hosts and routes after update)
+    if let Some(ref sync_service) = state.xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(updated.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
+            error!(error = %err, route_config_id = %updated.id, "Failed to sync route hierarchy after update");
+            // Continue anyway - the route config was updated, hierarchy sync is optional
+        }
+    }
 
     state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
         error!(error = %err, "Failed to refresh xDS caches after route config update");

@@ -13,6 +13,7 @@ use crate::{
 
 /// Request to attach a filter to a virtual host or route rule
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachFilterRequest {
     /// ID of the filter to attach
     pub filter_id: String,

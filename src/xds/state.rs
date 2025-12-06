@@ -9,7 +9,7 @@ use crate::xds::resources::{
 };
 use crate::{
     config::SimpleXdsConfig,
-    services::LearningSessionService,
+    services::{LearningSessionService, RouteHierarchySyncService},
     storage::{
         AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
         ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
@@ -71,6 +71,8 @@ pub struct XdsState {
     pub route_repository: Option<RouteRepository>,
     pub virtual_host_filter_repository: Option<VirtualHostFilterRepository>,
     pub route_filter_repository: Option<RouteFilterRepository>,
+    // Sync services
+    pub route_hierarchy_sync_service: Option<RouteHierarchySyncService>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
     pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
@@ -94,6 +96,7 @@ impl XdsState {
             route_repository: None,
             virtual_host_filter_repository: None,
             route_filter_repository: None,
+            route_hierarchy_sync_service: None,
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
@@ -114,7 +117,9 @@ impl XdsState {
         let virtual_host_repository = VirtualHostRepository::new(pool.clone());
         let route_repository = RouteRepository::new(pool.clone());
         let virtual_host_filter_repository = VirtualHostFilterRepository::new(pool.clone());
-        let route_filter_repository = RouteFilterRepository::new(pool);
+        let route_filter_repository = RouteFilterRepository::new(pool.clone());
+        // Sync services
+        let route_hierarchy_sync_service = RouteHierarchySyncService::new(pool);
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -128,6 +133,7 @@ impl XdsState {
             route_repository: Some(route_repository),
             virtual_host_filter_repository: Some(virtual_host_filter_repository),
             route_filter_repository: Some(route_filter_repository),
+            route_hierarchy_sync_service: Some(route_hierarchy_sync_service),
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
@@ -346,19 +352,54 @@ impl XdsState {
     /// This modifies the route config's JSON configuration to include any filters
     /// attached via the route_config_filters junction table.
     ///
-    /// Delegates to [`crate::xds::filters::injection::inject_route_config_filters`].
+    /// Supports 3-level hierarchical filter attachment:
+    /// 1. RouteConfig-level filters - applied to ALL routes
+    /// 2. VirtualHost-level filters - applied to routes in that vhost
+    /// 3. Route-level filters - applied to specific routes only (most specific wins)
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_route_filters_hierarchical`]
+    /// when hierarchical repositories are available, otherwise falls back to
+    /// [`crate::xds::filters::injection::inject_route_config_filters`].
     pub async fn inject_route_config_filters(
         &self,
         route_configs: &mut [crate::storage::RouteConfigData],
     ) -> Result<()> {
         let filter_repository = match &self.filter_repository {
-            Some(repo) => repo,
+            Some(repo) => repo.clone(),
             None => return Ok(()),
         };
 
+        // Try hierarchical injection if all required repositories are available
+        if let (
+            Some(vhost_repo),
+            Some(route_repo),
+            Some(vhost_filter_repo),
+            Some(route_filter_repo),
+        ) = (
+            &self.virtual_host_repository,
+            &self.route_repository,
+            &self.virtual_host_filter_repository,
+            &self.route_filter_repository,
+        ) {
+            let ctx = crate::xds::filters::injection::HierarchicalFilterContext {
+                filter_repo: filter_repository,
+                vhost_repo: vhost_repo.clone(),
+                route_repo: route_repo.clone(),
+                vhost_filter_repo: vhost_filter_repo.clone(),
+                route_filter_repo: route_filter_repo.clone(),
+            };
+
+            return crate::xds::filters::injection::inject_route_filters_hierarchical(
+                route_configs,
+                &ctx,
+            )
+            .await;
+        }
+
+        // Fallback to simple route-config-only injection
         crate::xds::filters::injection::inject_route_config_filters(
             route_configs,
-            filter_repository,
+            &filter_repository,
         )
         .await
     }
