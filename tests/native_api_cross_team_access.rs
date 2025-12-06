@@ -14,14 +14,17 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
 use hyper::Response;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
+
+#[path = "common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
 // === Test Infrastructure ===
 
@@ -29,6 +32,8 @@ pub struct NativeApiApp {
     state: Arc<XdsState>,
     pub pool: DbPool,
     token_service: TokenService,
+    #[allow(dead_code)]
+    test_db: TestDatabase,
 }
 
 impl NativeApiApp {
@@ -54,13 +59,8 @@ impl NativeApiApp {
 }
 
 pub async fn setup_native_api_app() -> NativeApiApp {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("create sqlite pool");
-
-    storage::run_migrations(&pool).await.expect("run migrations for tests");
+    let test_db = TestDatabase::new("native_api_cross_team").await;
+    let pool = test_db.pool().clone();
 
     // Create teams required for cross-team tests
     let team_id_a = uuid::Uuid::new_v4().to_string();
@@ -88,7 +88,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
 
-    NativeApiApp { state, pool, token_service }
+    NativeApiApp { state, pool, token_service, test_db }
 }
 
 pub async fn send_request(

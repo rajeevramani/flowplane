@@ -12,19 +12,24 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
 use hyper::Response;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
+
+#[path = "../common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
 pub struct TestApp {
     state: Arc<XdsState>,
     pub pool: DbPool,
     pub token_service: TokenService,
+    #[allow(dead_code)]
+    test_db: TestDatabase,
 }
 
 impl TestApp {
@@ -52,21 +57,15 @@ impl TestApp {
 }
 
 pub async fn setup_test_app() -> TestApp {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("create sqlite pool");
-
-    // Use the same migration system as production instead of manual table creation
-    storage::run_migrations(&pool).await.expect("run migrations for tests");
+    let test_db = TestDatabase::new("auth_test").await;
+    let pool = test_db.pool().clone();
 
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
 
-    TestApp { state, pool, token_service }
+    TestApp { state, pool, token_service, test_db }
 }
 
 pub async fn send_request(

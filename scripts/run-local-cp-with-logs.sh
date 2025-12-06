@@ -19,7 +19,7 @@ cargo clean
 
   
 
-  FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db \
+  FLOWPLANE_DATABASE_URL=sqlite://./data/development/flowplane.db \
   FLOWPLANE_UI_ORIGIN=http://localhost:5173 \
   FLOWPLANE_OTLP_ENDPOINT=http://localhost:4317 \
   FLOWPLANE_LOG_LEVEL=info \
