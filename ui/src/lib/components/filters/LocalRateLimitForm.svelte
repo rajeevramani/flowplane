@@ -15,6 +15,8 @@
 	let tokensPerFill = $state(config.token_bucket?.tokens_per_fill ?? undefined);
 	let fillIntervalMs = $state(config.token_bucket?.fill_interval_ms ?? 1000);
 	let statusCode = $state(config.status_code ?? 429);
+	// Default to false - global rate limit is the common use case
+	// Per-connection rate limiting is only useful for specific scenarios
 	let perDownstreamConnection = $state(config.per_downstream_connection ?? false);
 	let rateLimitedAsResourceExhausted = $state(config.rate_limited_as_resource_exhausted ?? false);
 
@@ -24,7 +26,7 @@
 	let filterEnforcedActive = $state(config.filter_enforced !== undefined);
 	let filterEnforcedNumerator = $state(config.filter_enforced?.numerator ?? 100);
 	let maxDynamicDescriptors = $state<number | undefined>(config.max_dynamic_descriptors);
-	let alwaysConsumeDefaultTokenBucket = $state(config.always_consume_default_token_bucket ?? false);
+	let alwaysConsumeDefaultTokenBucket = $state(config.always_consume_default_token_bucket ?? true);
 
 	// Advanced options toggle
 	let showAdvanced = $state(false);
@@ -307,7 +309,7 @@
 					<div>
 						<span class="text-sm font-medium text-gray-700">Per Downstream Connection</span>
 						<p class="text-xs text-gray-500">
-							Apply rate limit per connection instead of globally
+							When enabled, each TCP connection gets its own token bucket. Leave disabled for global rate limiting across all connections (recommended for most use cases).
 						</p>
 					</div>
 				</label>
@@ -339,7 +341,7 @@
 					<div>
 						<span class="text-sm font-medium text-gray-700">Always Consume Default Token Bucket</span>
 						<p class="text-xs text-gray-500">
-							Always consume from default bucket even when descriptor matches
+							Consume tokens from the default bucket for every request. Required for rate limiting to work when no descriptors are configured.
 						</p>
 					</div>
 				</label>

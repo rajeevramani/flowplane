@@ -410,7 +410,7 @@
 			<div class="flex items-center justify-between mb-4">
 				<h2 class="text-lg font-semibold text-gray-900">Attachment Points</h2>
 				<div class="flex gap-1">
-					{#if filter.filterType === 'jwt_auth' || filter.filterType === 'rate_limit'}
+					{#if filter.filterType === 'jwt_auth' || filter.filterType === 'local_rate_limit'}
 						<Badge variant="blue">Routes</Badge>
 						<Badge variant="blue">Listeners</Badge>
 					{:else}
@@ -421,8 +421,8 @@
 			<p class="text-sm text-gray-500">
 				{#if filter.filterType === 'jwt_auth'}
 					JWT Auth filters can attach to routes or listeners (L7 HTTP filter)
-				{:else if filter.filterType === 'rate_limit'}
-					Rate Limit filters can attach to routes or listeners (L7 HTTP filter)
+				{:else if filter.filterType === 'local_rate_limit'}
+					Local Rate Limit filters can attach to routes or listeners (L7 HTTP filter)
 				{:else}
 					HeaderMutation filters can only attach to routes (L7 HTTP filter)
 				{/if}
@@ -434,8 +434,8 @@
 			{#if filter.filterType === 'jwt_auth'}
 				<h2 class="text-lg font-semibold text-gray-900 mb-4">JWT Authentication Configuration</h2>
 				<JwtAuthConfigForm config={jwtAuthConfig} onConfigChange={handleJwtConfigChange} />
-			{:else if filter.filterType === 'rate_limit'}
-				<h2 class="text-lg font-semibold text-gray-900 mb-4">Rate Limit Configuration</h2>
+			{:else if filter.filterType === 'local_rate_limit'}
+				<h2 class="text-lg font-semibold text-gray-900 mb-4">Local Rate Limit Configuration</h2>
 				<LocalRateLimitForm config={localRateLimitConfig} onConfigChange={handleLocalRateLimitConfigChange} />
 			{:else}
 				<h2 class="text-lg font-semibold text-gray-900 mb-4">Header Mutation Configuration</h2>
