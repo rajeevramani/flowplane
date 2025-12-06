@@ -47,7 +47,7 @@
 		isLoadingData = true;
 		try {
 			const [routesData, listenersData] = await Promise.all([
-				apiClient.listRoutes(),
+				apiClient.listRouteConfigs(),
 				apiClient.listListeners()
 			]);
 			routeConfigs = routesData;

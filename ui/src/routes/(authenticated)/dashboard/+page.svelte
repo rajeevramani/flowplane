@@ -32,7 +32,7 @@
 						? apiClient.listImports(team)
 						: Promise.resolve([]),
 				apiClient.listListeners(),
-				apiClient.listRoutes(),
+				apiClient.listRouteConfigs(),
 				apiClient.listClusters()
 			]);
 

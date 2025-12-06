@@ -827,3 +827,73 @@ export interface ListenerFiltersResponse {
 	listenerId: string;
 	filters: FilterResponse[];
 }
+
+// ============================================================================
+// Route Hierarchy Types (Virtual Hosts and Routes)
+// ============================================================================
+
+// Virtual host summary as returned by the API
+export interface VirtualHostSummary {
+	id: string;
+	name: string;
+	domains: string[];
+	ruleOrder: number;
+	routeCount: number;
+	filterCount: number;
+}
+
+// Route (individual route rule) summary as returned by the API
+export interface RouteSummary {
+	id: string;
+	name: string;
+	pathPattern: string;
+	matchType: 'prefix' | 'exact' | 'regex' | 'template';
+	ruleOrder: number;
+	filterCount: number;
+}
+
+// Virtual host filters response
+export interface VirtualHostFiltersResponse {
+	virtualHostId: string;
+	virtualHostName: string;
+	filters: FilterResponse[];
+}
+
+// Route filters response (individual route within virtual host)
+export interface RouteHierarchyFiltersResponse {
+	routeId: string;
+	routeName: string;
+	filters: FilterResponse[];
+}
+
+// Hierarchy filter summary for displaying inherited filters
+export interface HierarchyFilterSummary {
+	routeConfigFilters: FilterResponse[];
+	virtualHostFilters: FilterResponse[];
+	routeFilters: FilterResponse[];
+}
+
+// Effective filters after applying inheritance/override rules
+export interface EffectiveFilter {
+	filter: FilterResponse;
+	source: 'route_config' | 'virtual_host' | 'route';
+	isOverridden: boolean;
+	overriddenBy?: 'virtual_host' | 'route';
+}
+
+// Hierarchical filter attachment context - used by FilterSelectorModal
+export type HierarchyLevel = 'route_config' | 'virtual_host' | 'route';
+
+export interface HierarchicalFilterContext {
+	level: HierarchyLevel;
+	routeConfigName: string;
+	virtualHostName?: string;
+	routeName?: string;
+}
+
+// Attached filter with source information for display
+export interface AttachedFilterWithSource {
+	filter: FilterResponse;
+	level: HierarchyLevel;
+	order: number;
+}

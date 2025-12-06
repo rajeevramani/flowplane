@@ -51,7 +51,7 @@
 	async function loadResourceCounts() {
 		try {
 			const [routes, clusters, listeners, filters, imports] = await Promise.all([
-				apiClient.listRoutes(),
+				apiClient.listRouteConfigs(),
 				apiClient.listClusters(),
 				apiClient.listListeners(),
 				apiClient.listFilters(),

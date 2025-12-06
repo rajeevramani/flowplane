@@ -52,6 +52,12 @@
 			attachmentPoints: ['Routes', 'Listeners'],
 			available: true
 		},
+		rate_limit: {
+			label: 'Rate Limit',
+			description: 'Distributed rate limiting service',
+			attachmentPoints: ['Routes', 'Listeners'],
+			available: false
+		},
 		ext_authz: {
 			label: 'External Auth',
 			description: 'External authorization service',

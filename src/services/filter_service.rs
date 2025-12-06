@@ -17,9 +17,10 @@ use crate::{
         add_http_filter_before_router, listener_has_http_filter, remove_http_filter_from_listener,
     },
     storage::{
-        CreateFilterRequest, CreateRouteConfigAutoFilterRequest, FilterData, FilterRepository,
-        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
-        UpdateFilterRequest,
+        CreateFilterRequest, CreateRouteAutoFilterRequest, CreateRouteConfigAutoFilterRequest,
+        CreateVirtualHostAutoFilterRequest, FilterData, FilterRepository,
+        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository, RouteRepository,
+        UpdateFilterRequest, VirtualHostRepository,
     },
     xds::{listener::ListenerConfig, XdsState},
 };
@@ -73,6 +74,24 @@ impl FilterService {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::internal("Listener auto-filter repository not configured"))
+    }
+
+    /// Get the virtual host repository
+    fn virtual_host_repository(&self) -> Result<VirtualHostRepository, Error> {
+        self.xds_state
+            .virtual_host_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Virtual host repository not configured"))
+    }
+
+    /// Get the route repository (for route rules within virtual hosts)
+    fn route_repository(&self) -> Result<RouteRepository, Error> {
+        self.xds_state
+            .route_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Route repository not configured"))
     }
 
     /// Create a new filter
@@ -879,6 +898,228 @@ impl FilterService {
         Ok(())
     }
 
+    /// Ensure listeners referencing this virtual host's route config have the required HTTP filter
+    ///
+    /// When a filter is attached to a virtual host, the corresponding HTTP filter must
+    /// exist in the listener's filter chain for `typed_per_filter_config` to work.
+    async fn ensure_listener_http_filters_for_vh(
+        &self,
+        virtual_host_id: &VirtualHostId,
+        filter_id: &FilterId,
+        filter_type: FilterType,
+    ) -> Result<(), Error> {
+        let vh_repo = self.virtual_host_repository()?;
+        let route_config_repo = self.route_config_repository()?;
+        let listener_repo = self.listener_repository()?;
+        let auto_filter_repo = self.auto_filter_repository()?;
+        let filter_repo = self.repository()?;
+
+        // Get the virtual host to find its route config
+        let virtual_host = vh_repo.get_by_id(virtual_host_id).await?;
+        let route_config_id = &virtual_host.route_config_id;
+
+        // Get route config to find its name
+        let route_config = route_config_repo.get_by_id(route_config_id).await?;
+
+        // Find listeners using this route config
+        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
+
+        if listeners.is_empty() {
+            debug!(
+                virtual_host_id = %virtual_host_id,
+                route_config_name = %route_config.name,
+                "No listeners found referencing this route config"
+            );
+            return Ok(());
+        }
+
+        let http_filter_name = filter_type.http_filter_name();
+        let requires_listener_attachment = filter_type.requires_listener_config();
+
+        for listener in listeners {
+            if requires_listener_attachment {
+                // Check if filter already attached to listener
+                let existing_listener_filters =
+                    filter_repo.list_listener_filters(&listener.id).await?;
+                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
+
+                if !already_attached {
+                    // Auto-attach filter to listener
+                    let order = existing_listener_filters.len() as i64;
+                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
+
+                    info!(
+                        listener_id = %listener.id,
+                        filter_id = %filter_id,
+                        filter_type = %filter_type,
+                        "Auto-attached filter to listener for VH-level requirement"
+                    );
+                }
+            }
+
+            // Add HTTP filter to listener if needed and track auto-addition
+            // Check if already tracked (idempotent)
+            if auto_filter_repo
+                .exists_for_virtual_host(&listener.id, http_filter_name, filter_id, virtual_host_id)
+                .await?
+            {
+                debug!(
+                    listener_id = %listener.id,
+                    http_filter_name = %http_filter_name,
+                    "VH auto-filter tracking record already exists"
+                );
+                continue;
+            }
+
+            // Load listener config and add filter if not present
+            let mut config: ListenerConfig = serde_json::from_str(&listener.configuration)
+                .map_err(|err| {
+                    Error::internal(format!("Failed to parse listener configuration: {}", err))
+                })?;
+
+            if !listener_has_http_filter(&config, http_filter_name)
+                && add_http_filter_before_router(&mut config, http_filter_name)
+            {
+                let new_config = serde_json::to_string(&config).map_err(|err| {
+                    Error::internal(format!("Failed to serialize listener configuration: {}", err))
+                })?;
+                listener_repo.update_configuration(&listener.id, &new_config).await?;
+
+                info!(
+                    listener_id = %listener.id,
+                    http_filter_name = %http_filter_name,
+                    "Auto-added HTTP filter to listener for VH attachment"
+                );
+            }
+
+            // Track auto-added filter for VH level
+            auto_filter_repo
+                .create_for_virtual_host(CreateVirtualHostAutoFilterRequest {
+                    listener_id: listener.id.clone(),
+                    http_filter_name: http_filter_name.to_string(),
+                    source_filter_id: filter_id.clone(),
+                    route_config_id: route_config_id.clone(),
+                    source_virtual_host_id: virtual_host_id.clone(),
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Ensure listeners referencing this route's route config have the required HTTP filter
+    ///
+    /// When a filter is attached to a route, the corresponding HTTP filter must
+    /// exist in the listener's filter chain for `typed_per_filter_config` to work.
+    async fn ensure_listener_http_filters_for_route(
+        &self,
+        route_id: &RouteId,
+        filter_id: &FilterId,
+        filter_type: FilterType,
+    ) -> Result<(), Error> {
+        let route_repo = self.route_repository()?;
+        let vh_repo = self.virtual_host_repository()?;
+        let route_config_repo = self.route_config_repository()?;
+        let listener_repo = self.listener_repository()?;
+        let auto_filter_repo = self.auto_filter_repository()?;
+        let filter_repo = self.repository()?;
+
+        // Get the route to find its virtual host
+        let route = route_repo.get_by_id(route_id).await?;
+
+        // Get the virtual host to find its route config
+        let virtual_host = vh_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config_id = &virtual_host.route_config_id;
+
+        // Get route config to find its name
+        let route_config = route_config_repo.get_by_id(route_config_id).await?;
+
+        // Find listeners using this route config
+        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
+
+        if listeners.is_empty() {
+            debug!(
+                route_id = %route_id,
+                route_config_name = %route_config.name,
+                "No listeners found referencing this route config"
+            );
+            return Ok(());
+        }
+
+        let http_filter_name = filter_type.http_filter_name();
+        let requires_listener_attachment = filter_type.requires_listener_config();
+
+        for listener in listeners {
+            if requires_listener_attachment {
+                // Check if filter already attached to listener
+                let existing_listener_filters =
+                    filter_repo.list_listener_filters(&listener.id).await?;
+                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
+
+                if !already_attached {
+                    // Auto-attach filter to listener
+                    let order = existing_listener_filters.len() as i64;
+                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
+
+                    info!(
+                        listener_id = %listener.id,
+                        filter_id = %filter_id,
+                        filter_type = %filter_type,
+                        "Auto-attached filter to listener for route-level requirement"
+                    );
+                }
+            }
+
+            // Add HTTP filter to listener if needed and track auto-addition
+            // Check if already tracked (idempotent)
+            if auto_filter_repo
+                .exists_for_route(&listener.id, http_filter_name, filter_id, route_id)
+                .await?
+            {
+                debug!(
+                    listener_id = %listener.id,
+                    http_filter_name = %http_filter_name,
+                    "Route auto-filter tracking record already exists"
+                );
+                continue;
+            }
+
+            // Load listener config and add filter if not present
+            let mut config: ListenerConfig = serde_json::from_str(&listener.configuration)
+                .map_err(|err| {
+                    Error::internal(format!("Failed to parse listener configuration: {}", err))
+                })?;
+
+            if !listener_has_http_filter(&config, http_filter_name)
+                && add_http_filter_before_router(&mut config, http_filter_name)
+            {
+                let new_config = serde_json::to_string(&config).map_err(|err| {
+                    Error::internal(format!("Failed to serialize listener configuration: {}", err))
+                })?;
+                listener_repo.update_configuration(&listener.id, &new_config).await?;
+
+                info!(
+                    listener_id = %listener.id,
+                    http_filter_name = %http_filter_name,
+                    "Auto-added HTTP filter to listener for route attachment"
+                );
+            }
+
+            // Track auto-added filter for route level
+            auto_filter_repo
+                .create_for_route(CreateRouteAutoFilterRequest {
+                    listener_id: listener.id.clone(),
+                    http_filter_name: http_filter_name.to_string(),
+                    source_filter_id: filter_id.clone(),
+                    route_config_id: route_config_id.clone(),
+                    source_route_id: route_id.clone(),
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
     // =========================================================================
     // Virtual Host and Route Rule Filter Attachment (Hierarchical Filters)
     // =========================================================================
@@ -936,6 +1177,10 @@ impl FilterService {
                 order = %order,
                 "Filter attached to virtual host"
             );
+
+            // Auto-add HTTP filter to connected listeners
+            self.ensure_listener_http_filters_for_vh(virtual_host_id, filter_id, filter_type)
+                .await?;
 
             self.refresh_xds().await?;
 
@@ -1052,6 +1297,9 @@ impl FilterService {
                 order = %order,
                 "Filter attached to route"
             );
+
+            // Auto-add HTTP filter to connected listeners
+            self.ensure_listener_http_filters_for_route(route_id, filter_id, filter_type).await?;
 
             self.refresh_xds().await?;
 

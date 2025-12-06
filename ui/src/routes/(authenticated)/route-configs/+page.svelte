@@ -43,7 +43,7 @@
 
 		try {
 			const [routesData, clustersData, listenersData, importsData] = await Promise.all([
-				apiClient.listRoutes(),
+				apiClient.listRouteConfigs(),
 				apiClient.listClusters(),
 				apiClient.listListeners(),
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([])
@@ -76,7 +76,7 @@
 			for (let i = 0; i < routes.length; i += batchSize) {
 				const batch = routes.slice(i, i + batchSize);
 				const results = await Promise.allSettled(
-					batch.map(route => apiClient.listRouteFilters(route.name))
+					batch.map(route => apiClient.listRouteConfigFilters(route.name))
 				);
 
 				results.forEach((result, index) => {
@@ -180,7 +180,7 @@
 		}
 
 		try {
-			await apiClient.deleteRoute(config.name);
+			await apiClient.deleteRouteConfig(config.name);
 			await loadData();
 		} catch (err: any) {
 			error = err instanceof Error ? err.message : 'Failed to delete configuration';

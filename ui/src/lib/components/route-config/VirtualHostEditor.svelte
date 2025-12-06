@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-svelte';
-	import type { VirtualHostDefinition, RouteRuleDefinition } from '$lib/api/types';
+	import { Plus, Trash2, ChevronDown, ChevronUp, Filter, X } from 'lucide-svelte';
+	import type { VirtualHostDefinition, RouteRuleDefinition, FilterResponse, HierarchyLevel } from '$lib/api/types';
 
 	interface Props {
 		virtualHost: VirtualHostFormState;
@@ -9,6 +9,14 @@
 		onUpdate: (vh: VirtualHostFormState) => void;
 		onRemove: () => void;
 		availableClusters: string[];
+		// Hierarchical filter props
+		routeConfigName: string;
+		virtualHostFilters?: FilterResponse[];
+		routeFilters?: Map<string, FilterResponse[]>; // routeName -> filters
+		onAddVirtualHostFilter?: (virtualHostName: string) => void;
+		onDetachVirtualHostFilter?: (virtualHostName: string, filterId: string) => void;
+		onAddRouteFilter?: (virtualHostName: string, routeName: string) => void;
+		onDetachRouteFilter?: (virtualHostName: string, routeName: string, filterId: string) => void;
 	}
 
 	export interface VirtualHostFormState {
@@ -44,7 +52,14 @@
 		canRemove,
 		onUpdate,
 		onRemove,
-		availableClusters
+		availableClusters,
+		routeConfigName,
+		virtualHostFilters = [],
+		routeFilters = new Map(),
+		onAddVirtualHostFilter,
+		onDetachVirtualHostFilter,
+		onAddRouteFilter,
+		onDetachRouteFilter
 	}: Props = $props();
 
 	let isExpanded = $state(true);
@@ -53,6 +68,51 @@
 
 	// Placeholder text with curly braces for template examples
 	const templatePlaceholder = '/users/{user_id}';
+
+	// Get filter type display label
+	function getFilterTypeLabel(filterType: string): string {
+		switch (filterType) {
+			case 'header_mutation':
+				return 'Header Mutation';
+			case 'jwt_auth':
+			case 'jwt_authn':
+				return 'JWT Auth';
+			case 'cors':
+				return 'CORS';
+			case 'rate_limit':
+			case 'local_rate_limit':
+				return 'Rate Limit';
+			case 'ext_authz':
+				return 'External Auth';
+			default:
+				return filterType;
+		}
+	}
+
+	// Get filter type badge color
+	function getFilterTypeBadgeColor(filterType: string): string {
+		switch (filterType) {
+			case 'header_mutation':
+				return 'bg-blue-100 text-blue-800';
+			case 'jwt_auth':
+			case 'jwt_authn':
+				return 'bg-green-100 text-green-800';
+			case 'cors':
+				return 'bg-purple-100 text-purple-800';
+			case 'rate_limit':
+			case 'local_rate_limit':
+				return 'bg-orange-100 text-orange-800';
+			case 'ext_authz':
+				return 'bg-red-100 text-red-800';
+			default:
+				return 'bg-gray-100 text-gray-800';
+		}
+	}
+
+	// Check if route has filters attached
+	function getRouteFilterCount(routeName: string): number {
+		return routeFilters.get(routeName)?.length ?? 0;
+	}
 
 	// Add domain
 	function handleAddDomain() {
@@ -225,6 +285,11 @@
 			<span class="text-xs text-gray-500">
 				{virtualHost.routes.length} route{virtualHost.routes.length !== 1 ? 's' : ''}
 			</span>
+			{#if virtualHostFilters.length > 0}
+				<span class="px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-800">
+					{virtualHostFilters.length} filter{virtualHostFilters.length !== 1 ? 's' : ''}
+				</span>
+			{/if}
 		</div>
 		{#if canRemove}
 			<button
@@ -323,6 +388,51 @@
 				</p>
 			</div>
 
+			<!-- Virtual Host Filters Section -->
+			{#if onAddVirtualHostFilter}
+				<div class="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+					<div class="flex items-center justify-between mb-3">
+						<div class="flex items-center gap-2">
+							<Filter class="w-4 h-4 text-emerald-600" />
+							<span class="text-sm font-medium text-emerald-800">Virtual Host Filters</span>
+							<span class="text-xs text-emerald-600">(apply to all routes in this host)</span>
+						</div>
+						<button
+							onclick={() => onAddVirtualHostFilter?.(virtualHost.name)}
+							class="px-3 py-1.5 text-sm text-emerald-700 border border-emerald-300 rounded-md hover:bg-emerald-100 transition-colors"
+						>
+							<Plus class="h-4 w-4 inline mr-1" />
+							Add Filter
+						</button>
+					</div>
+
+					{#if virtualHostFilters.length > 0}
+						<div class="space-y-2">
+							{#each virtualHostFilters as filter, filterIndex}
+								<div class="flex items-center justify-between p-3 bg-white border border-emerald-200 rounded-lg">
+									<div class="flex items-center gap-3">
+										<span class="text-xs font-medium text-gray-400">{filterIndex + 1}</span>
+										<span class="text-sm font-medium text-gray-900">{filter.name}</span>
+										<span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded {getFilterTypeBadgeColor(filter.filterType)}">
+											{getFilterTypeLabel(filter.filterType)}
+										</span>
+									</div>
+									<button
+										onclick={() => onDetachVirtualHostFilter?.(virtualHost.name, filter.id)}
+										class="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
+										title="Detach filter"
+									>
+										<Trash2 class="h-4 w-4" />
+									</button>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-sm text-emerald-700">No filters attached to this virtual host</p>
+					{/if}
+				</div>
+			{/if}
+
 			<!-- Routes Section -->
 			<div>
 				<div class="flex items-center justify-between mb-2">
@@ -352,12 +462,24 @@
 				{:else}
 					<div class="space-y-3">
 						{#each virtualHost.routes as route}
-							<div class="border border-gray-200 rounded-md p-3 bg-gray-50">
+							{@const routeFilterList = routeFilters.get(route.name) ?? []}
+							{@const hasRouteFilters = routeFilterList.length > 0}
+							<div class="border {hasRouteFilters ? 'border-amber-200 bg-amber-50/50' : 'border-gray-200 bg-gray-50'} rounded-md p-3">
 								<div class="flex items-center justify-between mb-3">
 									<span class="text-sm font-medium text-gray-900">
 										{route.method} {route.path}
 									</span>
 									<div class="flex items-center gap-2">
+										{#if onAddRouteFilter && !hasRouteFilters}
+											<button
+												onclick={() => onAddRouteFilter?.(virtualHost.name, route.name)}
+												class="text-xs text-amber-600 hover:text-amber-800 hover:bg-amber-50 px-2 py-1 rounded transition-colors"
+												title="Add route-specific filter"
+											>
+												<Plus class="h-3.5 w-3.5 inline mr-1" />
+												Filter
+											</button>
+										{/if}
 										<button
 											onclick={() => toggleRouteAdvanced(route.id)}
 											class="text-xs text-blue-600 hover:text-blue-800"
@@ -453,6 +575,43 @@
 										</select>
 									</div>
 								</div>
+
+								<!-- Route Filters (inline) -->
+								{#if hasRouteFilters && onAddRouteFilter}
+									<div class="border-t border-amber-200 pt-3 mt-3">
+										<div class="flex items-center justify-between mb-2">
+											<div class="flex items-center gap-2">
+												<Filter class="w-3.5 h-3.5 text-amber-600" />
+												<span class="text-xs font-medium text-amber-800">Route Filters</span>
+												<span class="text-xs text-amber-600">(apply only to this route)</span>
+											</div>
+											<button
+												onclick={() => onAddRouteFilter?.(virtualHost.name, route.name)}
+												class="text-xs text-amber-600 hover:text-amber-800 hover:bg-amber-100 px-2 py-1 rounded transition-colors"
+											>
+												<Plus class="h-3 w-3 inline mr-1" />
+												Add
+											</button>
+										</div>
+										<div class="flex flex-wrap gap-2">
+											{#each routeFilterList as routeFilter}
+												<span class="inline-flex items-center gap-2 px-2.5 py-1.5 bg-white rounded border border-amber-200 text-sm group">
+													<span class="text-gray-700">{routeFilter.name}</span>
+													<span class="px-1.5 py-0.5 text-xs rounded {getFilterTypeBadgeColor(routeFilter.filterType)}">
+														{getFilterTypeLabel(routeFilter.filterType)}
+													</span>
+													<button
+														onclick={() => onDetachRouteFilter?.(virtualHost.name, route.name, routeFilter.id)}
+														class="text-gray-400 hover:text-red-500 transition-colors"
+														title="Detach"
+													>
+														<X class="w-3.5 h-3.5" />
+													</button>
+												</span>
+											{/each}
+										</div>
+									</div>
+								{/if}
 
 								<!-- Advanced Settings (Collapsible) -->
 								{#if expandedRoutes.has(route.id)}

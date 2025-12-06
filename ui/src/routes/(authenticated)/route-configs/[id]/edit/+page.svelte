@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { Plus, ChevronDown, ChevronUp, ArrowLeft, Filter } from 'lucide-svelte';
-	import type { ClusterResponse, RouteResponse, CreateRouteBody, FilterResponse } from '$lib/api/types';
+	import type { ClusterResponse, RouteResponse, CreateRouteBody, FilterResponse, HierarchicalFilterContext } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import VirtualHostEditor, {
 		type VirtualHostFormState,
@@ -31,13 +31,18 @@
 	let originalConfig = $state<RouteResponse | null>(null);
 	let activeTab = $state<'configuration' | 'json'>('configuration');
 
-	// Filter attachment state
+	// Filter attachment state (config-level)
 	let attachedFilters = $state<FilterResponse[]>([]);
 	let availableFilters = $state<FilterResponse[]>([]);
 	let isLoadingFilters = $state(false);
 	let filtersExpanded = $state(true);
 	let showFilterModal = $state(false);
 	let filterError = $state<string | null>(null);
+
+	// Hierarchical filter state
+	let virtualHostFiltersMap = $state<Map<string, FilterResponse[]>>(new Map());
+	let routeFiltersMap = $state<Map<string, Map<string, FilterResponse[]>>>(new Map()); // vhName -> (routeName -> filters)
+	let currentFilterContext = $state<HierarchicalFilterContext | null>(null);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -68,7 +73,7 @@
 
 		try {
 			const [config, clustersData] = await Promise.all([
-				apiClient.getRoute(configId),
+				apiClient.getRouteConfig(configId),
 				apiClient.listClusters()
 			]);
 
@@ -97,14 +102,17 @@
 		filterError = null;
 
 		try {
-			// Load attached filters and all available filters in parallel
+			// Load config-level filters and all available filters in parallel
 			const [routeFiltersResponse, allFilters] = await Promise.all([
-				apiClient.listRouteFilters(configId),
+				apiClient.listRouteConfigFilters(configId),
 				apiClient.listFilters()
 			]);
 
 			attachedFilters = routeFiltersResponse.filters;
 			availableFilters = allFilters;
+
+			// Also load hierarchical filters for each virtual host and route
+			await loadHierarchicalFilters();
 
 			console.debug('Loaded filters:', {
 				attached: attachedFilters.length,
@@ -122,12 +130,47 @@
 		}
 	}
 
-	async function handleAttachFilter(filterId: string, order?: number) {
+	async function loadHierarchicalFilters() {
+		if (!configId) return;
+
+		const newVhFiltersMap = new Map<string, FilterResponse[]>();
+		const newRouteFiltersMap = new Map<string, Map<string, FilterResponse[]>>();
+
+		// Load filters for each virtual host
+		for (const vh of formState.virtualHosts) {
+			try {
+				const vhFiltersResponse = await apiClient.listVirtualHostFilters(configId, vh.name);
+				newVhFiltersMap.set(vh.name, vhFiltersResponse.filters);
+
+				// Load filters for each route in this virtual host
+				const routeMap = new Map<string, FilterResponse[]>();
+				for (const route of vh.routes) {
+					try {
+						const routeFiltersResponse = await apiClient.listRouteHierarchyFilters(configId, vh.name, route.name);
+						routeMap.set(route.name, routeFiltersResponse.filters);
+					} catch (e) {
+						console.debug(`No route filters for ${vh.name}/${route.name}:`, e);
+						routeMap.set(route.name, []);
+					}
+				}
+				newRouteFiltersMap.set(vh.name, routeMap);
+			} catch (e) {
+				console.debug(`No VH filters for ${vh.name}:`, e);
+				newVhFiltersMap.set(vh.name, []);
+				newRouteFiltersMap.set(vh.name, new Map());
+			}
+		}
+
+		virtualHostFiltersMap = newVhFiltersMap;
+		routeFiltersMap = newRouteFiltersMap;
+	}
+
+	// Config-level filter handlers
+	async function handleAttachConfigFilter(filterId: string, order?: number) {
 		if (!configId) return;
 
 		try {
-			await apiClient.attachFilter(configId, { filterId, order });
-			// Reload filters to show the newly attached filter
+			await apiClient.attachFilterToRouteConfig(configId, { filterId, order });
 			await loadFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to attach filter';
@@ -135,12 +178,11 @@
 		}
 	}
 
-	async function handleDetachFilter(filterId: string) {
+	async function handleDetachConfigFilter(filterId: string) {
 		if (!configId) return;
 
 		try {
-			await apiClient.detachFilter(configId, filterId);
-			// Reload filters to update the list
+			await apiClient.detachFilterFromRouteConfig(configId, filterId);
 			await loadFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to detach filter';
@@ -148,8 +190,121 @@
 		}
 	}
 
-	// Derived: IDs of already attached filters for the modal
-	let attachedFilterIds = $derived(attachedFilters.map((f) => f.id));
+	// Virtual Host filter handlers
+	function handleOpenVirtualHostFilterModal(virtualHostName: string) {
+		currentFilterContext = {
+			level: 'virtual_host',
+			routeConfigName: configId!,
+			virtualHostName
+		};
+		showFilterModal = true;
+	}
+
+	async function handleAttachVirtualHostFilter(virtualHostName: string, filterId: string, order?: number) {
+		if (!configId) return;
+
+		try {
+			await apiClient.attachFilterToVirtualHost(configId, virtualHostName, { filterId, order });
+			await loadHierarchicalFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to attach filter to virtual host';
+			console.error('Failed to attach filter to virtual host:', e);
+		}
+	}
+
+	async function handleDetachVirtualHostFilter(virtualHostName: string, filterId: string) {
+		if (!configId) return;
+
+		try {
+			await apiClient.detachFilterFromVirtualHost(configId, virtualHostName, filterId);
+			await loadHierarchicalFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to detach filter from virtual host';
+			console.error('Failed to detach filter from virtual host:', e);
+		}
+	}
+
+	// Route filter handlers
+	function handleOpenRouteFilterModal(virtualHostName: string, routeName: string) {
+		currentFilterContext = {
+			level: 'route',
+			routeConfigName: configId!,
+			virtualHostName,
+			routeName
+		};
+		showFilterModal = true;
+	}
+
+	async function handleAttachRouteFilter(virtualHostName: string, routeName: string, filterId: string, order?: number) {
+		if (!configId) return;
+
+		try {
+			await apiClient.attachFilterToRoute(configId, virtualHostName, routeName, { filterId, order });
+			await loadHierarchicalFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to attach filter to route';
+			console.error('Failed to attach filter to route:', e);
+		}
+	}
+
+	async function handleDetachRouteFilter(virtualHostName: string, routeName: string, filterId: string) {
+		if (!configId) return;
+
+		try {
+			await apiClient.detachFilterFromRoute(configId, virtualHostName, routeName, filterId);
+			await loadHierarchicalFilters();
+		} catch (e) {
+			filterError = e instanceof Error ? e.message : 'Failed to detach filter from route';
+			console.error('Failed to detach filter from route:', e);
+		}
+	}
+
+	// Universal filter modal handler
+	async function handleFilterModalSelect(filterId: string, order?: number) {
+		if (!currentFilterContext) return;
+
+		switch (currentFilterContext.level) {
+			case 'route_config':
+				await handleAttachConfigFilter(filterId, order);
+				break;
+			case 'virtual_host':
+				if (currentFilterContext.virtualHostName) {
+					await handleAttachVirtualHostFilter(currentFilterContext.virtualHostName, filterId, order);
+				}
+				break;
+			case 'route':
+				if (currentFilterContext.virtualHostName && currentFilterContext.routeName) {
+					await handleAttachRouteFilter(
+						currentFilterContext.virtualHostName,
+						currentFilterContext.routeName,
+						filterId,
+						order
+					);
+				}
+				break;
+		}
+	}
+
+	// Derived: IDs of already attached filters based on current context
+	let attachedFilterIds = $derived(() => {
+		if (!currentFilterContext) {
+			return attachedFilters.map((f) => f.id);
+		}
+
+		switch (currentFilterContext.level) {
+			case 'route_config':
+				return attachedFilters.map((f) => f.id);
+			case 'virtual_host':
+				const vhFilters = virtualHostFiltersMap.get(currentFilterContext.virtualHostName || '') || [];
+				return vhFilters.map((f) => f.id);
+			case 'route':
+				const routeMap = routeFiltersMap.get(currentFilterContext.virtualHostName || '');
+				const routeFilters = routeMap?.get(currentFilterContext.routeName || '') || [];
+				return routeFilters.map((f) => f.id);
+			default:
+				return attachedFilters.map((f) => f.id);
+		}
+	});
 
 	// Parse RouteResponse to form state
 	function parseRouteConfigToForm(config: RouteResponse): FormState {
@@ -328,7 +483,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Submitting payload:', payload);
-			await apiClient.updateRoute(configId!, payload);
+			await apiClient.updateRouteConfig(configId!, payload);
 			goto('/route-configs');
 		} catch (e) {
 			console.error('Update failed:', e);
@@ -346,6 +501,15 @@
 	// Handle cancel
 	function handleCancel() {
 		goto('/route-configs');
+	}
+
+	// Open config-level filter modal
+	function handleOpenConfigFilterModal() {
+		currentFilterContext = {
+			level: 'route_config',
+			routeConfigName: configId!
+		};
+		showFilterModal = true;
 	}
 </script>
 
@@ -469,6 +633,13 @@
 								onUpdate={(updated) => handleUpdateVirtualHost(index, updated)}
 								onRemove={() => handleRemoveVirtualHost(index)}
 								{availableClusters}
+								routeConfigName={configId || ''}
+								virtualHostFilters={virtualHostFiltersMap.get(vh.name) || []}
+								routeFilters={routeFiltersMap.get(vh.name) || new Map()}
+								onAddVirtualHostFilter={handleOpenVirtualHostFilterModal}
+								onDetachVirtualHostFilter={handleDetachVirtualHostFilter}
+								onAddRouteFilter={handleOpenRouteFilterModal}
+								onDetachRouteFilter={handleDetachRouteFilter}
 							/>
 						{/each}
 					</div>
@@ -492,7 +663,7 @@
 					</div>
 				</div>
 
-				<!-- Attached Filters (Collapsible) -->
+				<!-- Attached Filters (Config-level - Collapsible) -->
 				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
 					<button
 						onclick={() => (filtersExpanded = !filtersExpanded)}
@@ -531,7 +702,7 @@
 									Filters are executed in order. Lower order numbers execute first.
 								</p>
 								<Button
-									onclick={() => (showFilterModal = true)}
+									onclick={handleOpenConfigFilterModal}
 									variant="secondary"
 									disabled={isLoadingFilters}
 								>
@@ -542,14 +713,14 @@
 
 							<FilterAttachmentList
 								filters={attachedFilters}
-								onDetach={handleDetachFilter}
+								onDetach={handleDetachConfigFilter}
 								isLoading={isLoadingFilters}
 								emptyMessage="No filters attached to this route configuration"
 							/>
 
 							<div class="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
 								<strong>Note:</strong> Attached filters are applied to all routes in this configuration.
-								For route-specific header mutations, use the inline typedPerFilterConfig in the route definition.
+								For virtual-host-specific or route-specific filters, use the filter sections within each virtual host or route.
 							</div>
 						</div>
 					{/if}
@@ -598,9 +769,13 @@
 		isOpen={showFilterModal}
 		filters={availableFilters}
 		attachmentPoint="route"
-		alreadyAttachedIds={attachedFilterIds}
-		onSelect={handleAttachFilter}
-		onClose={() => (showFilterModal = false)}
+		alreadyAttachedIds={attachedFilterIds()}
+		onSelect={handleFilterModalSelect}
+		onClose={() => {
+			showFilterModal = false;
+			currentFilterContext = null;
+		}}
 		isLoading={isLoadingFilters}
+		hierarchyContext={currentFilterContext || undefined}
 	/>
 {/if}

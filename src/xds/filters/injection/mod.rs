@@ -42,7 +42,9 @@ mod route;
 pub use learning_session::{inject_access_logs, inject_ext_proc};
 pub use listener::inject_listener_filters;
 pub use merger::JwtConfigMerger;
-pub use route::{inject_route_config_filters, inject_route_filters_hierarchical, HierarchicalFilterContext};
+pub use route::{
+    inject_route_config_filters, inject_route_filters_hierarchical, HierarchicalFilterContext,
+};
 
 use crate::storage::{ClusterRepository, FilterRepository, RouteRepository};
 

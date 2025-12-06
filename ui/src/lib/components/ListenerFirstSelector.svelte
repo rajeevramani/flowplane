@@ -81,7 +81,7 @@
 			}
 
 			// Fetch the route config
-			const routeConfig = await apiClient.getRoute(routeConfigName);
+			const routeConfig = await apiClient.getRouteConfig(routeConfigName);
 
 			// Also fetch clusters to populate the cluster selector
 			const allClusters = await apiClient.listClusters();

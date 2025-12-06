@@ -29,6 +29,7 @@ use crate::{
         authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
         models::AuthContext,
     },
+    domain::RouteConfigId,
     openapi::{build_gateway_plan, GatewayOptions},
     storage::{
         repositories::{
@@ -597,7 +598,22 @@ async fn materialize_route(
     route_request.team = Some(team.to_string());
     route_request.route_order = Some(0);
 
-    route_config_repo.create(route_request).await.map_err(ApiError::from)?;
+    // Parse the configuration for hierarchy sync
+    let xds_config: crate::xds::route::RouteConfig =
+        serde_json::from_value(route_request.configuration.clone()).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse route configuration for sync: {}", e))
+        })?;
+
+    let created = route_config_repo.create(route_request).await.map_err(ApiError::from)?;
+
+    // Sync route hierarchy (extract virtual hosts and routes to database tables)
+    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(created.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
+            tracing::error!(error = %err, route_config_id = %created.id, "Failed to sync route hierarchy after OpenAPI import");
+            // Continue anyway - the route config was created, hierarchy sync is optional
+        }
+    }
 
     Ok(())
 }
@@ -700,6 +716,15 @@ async fn materialize_routes_from_virtual_host(
         virtual_hosts_count = route_config.virtual_hosts.len(),
         "Added virtual host to existing route config"
     );
+
+    // Sync route hierarchy (extract virtual hosts and routes to database tables)
+    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(existing_route_config.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &route_config).await {
+            tracing::error!(error = %err, route_config_id = %existing_route_config.id, "Failed to sync route hierarchy after adding virtual host");
+            // Continue anyway - the route config was updated, hierarchy sync is optional
+        }
+    }
 
     // Return 1 to indicate virtual host was added
     Ok(1)

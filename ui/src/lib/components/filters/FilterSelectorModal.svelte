@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { X, Filter, AlertCircle } from 'lucide-svelte';
-	import type { FilterResponse, AttachmentPoint, FilterType } from '$lib/api/types';
+	import type { FilterResponse, AttachmentPoint, FilterType, HierarchicalFilterContext, HierarchyLevel } from '$lib/api/types';
 	import { canAttachTo, getAttachmentErrorMessage } from '$lib/utils/filter-attachment';
 	import AttachmentPointBadge from './AttachmentPointBadge.svelte';
 	import Button from '$lib/components/Button.svelte';
@@ -13,6 +13,8 @@
 		onSelect: (filterId: string, order?: number) => void;
 		onClose: () => void;
 		isLoading?: boolean;
+		// Hierarchical context for modal title
+		hierarchyContext?: HierarchicalFilterContext;
 	}
 
 	let {
@@ -22,7 +24,8 @@
 		alreadyAttachedIds,
 		onSelect,
 		onClose,
-		isLoading = false
+		isLoading = false,
+		hierarchyContext
 	}: Props = $props();
 
 	let selectedFilterId = $state<string | null>(null);
@@ -37,6 +40,24 @@
 			searchQuery = '';
 		}
 	});
+
+	// Get modal title based on hierarchy context
+	function getModalTitle(): string {
+		if (!hierarchyContext) {
+			return 'Attach Filter';
+		}
+
+		switch (hierarchyContext.level) {
+			case 'route_config':
+				return `Attach Filter to Configuration`;
+			case 'virtual_host':
+				return `Attach Filter to Virtual Host: ${hierarchyContext.virtualHostName}`;
+			case 'route':
+				return `Attach Filter to Route: ${hierarchyContext.routeName}`;
+			default:
+				return 'Attach Filter';
+		}
+	}
 
 	// Filter and categorize available filters
 	let categorizedFilters = $derived(() => {
@@ -84,10 +105,12 @@
 			case 'header_mutation':
 				return 'Header Mutation';
 			case 'jwt_auth':
+			case 'jwt_authn':
 				return 'JWT Auth';
 			case 'cors':
 				return 'CORS';
 			case 'rate_limit':
+			case 'local_rate_limit':
 				return 'Rate Limit';
 			case 'ext_authz':
 				return 'External Auth';
@@ -101,15 +124,30 @@
 			case 'header_mutation':
 				return 'bg-blue-100 text-blue-800';
 			case 'jwt_auth':
+			case 'jwt_authn':
 				return 'bg-green-100 text-green-800';
 			case 'cors':
 				return 'bg-purple-100 text-purple-800';
 			case 'rate_limit':
+			case 'local_rate_limit':
 				return 'bg-orange-100 text-orange-800';
 			case 'ext_authz':
 				return 'bg-red-100 text-red-800';
 			default:
 				return 'bg-gray-100 text-gray-800';
+		}
+	}
+
+	// Get header color based on hierarchy level
+	function getHeaderColor(): string {
+		if (!hierarchyContext) return 'border-gray-200';
+		switch (hierarchyContext.level) {
+			case 'virtual_host':
+				return 'border-emerald-200 bg-emerald-50';
+			case 'route':
+				return 'border-amber-200 bg-amber-50';
+			default:
+				return 'border-gray-200';
 		}
 	}
 
@@ -151,8 +189,8 @@
 			aria-labelledby="modal-title"
 		>
 			<!-- Header -->
-			<div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-				<h2 id="modal-title" class="text-lg font-semibold text-gray-900">Attach Filter</h2>
+			<div class="flex items-center justify-between px-6 py-4 border-b {getHeaderColor()}">
+				<h2 id="modal-title" class="text-lg font-semibold text-gray-900">{getModalTitle()}</h2>
 				<button
 					onclick={onClose}
 					class="text-gray-400 hover:text-gray-600 transition-colors"

@@ -43,7 +43,7 @@
 		try {
 			const [importData, routesData, clustersData, listenersData] = await Promise.all([
 				apiClient.getImport(importId),
-				apiClient.listRoutes(),
+				apiClient.listRouteConfigs(),
 				apiClient.listClusters(),
 				apiClient.listListeners()
 			]);

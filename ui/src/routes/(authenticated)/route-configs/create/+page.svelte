@@ -173,7 +173,7 @@
 
 		try {
 			const payload = JSON.parse(jsonPayload);
-			await apiClient.createRoute(payload);
+			await apiClient.createRouteConfig(payload);
 			goto('/route-configs');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to create configuration';
@@ -290,6 +290,7 @@
 							onUpdate={(updated) => handleUpdateVirtualHost(index, updated)}
 							onRemove={() => handleRemoveVirtualHost(index)}
 							{availableClusters}
+							routeConfigName=""
 						/>
 					{/each}
 				</div>

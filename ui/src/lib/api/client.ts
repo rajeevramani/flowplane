@@ -49,7 +49,11 @@ import type {
 	UpdateFilterRequest,
 	AttachFilterRequest,
 	RouteFiltersResponse,
-	ListenerFiltersResponse
+	ListenerFiltersResponse,
+	VirtualHostSummary,
+	RouteSummary,
+	VirtualHostFiltersResponse,
+	RouteHierarchyFiltersResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -345,9 +349,9 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/listeners/${name}`);
 	}
 
-	// Route methods
-	async listRoutes(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
-		let path = '/api/v1/routes';
+	// Route Config methods
+	async listRouteConfigs(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
+		let path = '/api/v1/route-configs';
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -356,16 +360,16 @@ class ApiClient {
 		return this.get<RouteResponse[]>(path);
 	}
 
-	async getRoute(name: string): Promise<RouteResponse> {
-		return this.get<RouteResponse>(`/api/v1/routes/${name}`);
+	async getRouteConfig(name: string): Promise<RouteResponse> {
+		return this.get<RouteResponse>(`/api/v1/route-configs/${name}`);
 	}
 
-	async deleteRoute(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/routes/${name}`);
+	async deleteRouteConfig(name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/route-configs/${name}`);
 	}
 
-	async updateRoute(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
-		return this.put<RouteResponse>(`/api/v1/routes/${name}`, body);
+	async updateRouteConfig(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/route-configs/${name}`, body);
 	}
 
 	// Cluster methods
@@ -395,8 +399,8 @@ class ApiClient {
 		return this.put<ClusterResponse>(`/api/v1/clusters/${name}`, body);
 	}
 
-	async createRoute(body: CreateRouteBody): Promise<RouteResponse> {
-		return this.post<RouteResponse>('/api/v1/routes', body);
+	async createRouteConfig(body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>('/api/v1/route-configs', body);
 	}
 
 	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
@@ -554,17 +558,17 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/filters/${id}`);
 	}
 
-	// Route-Filter attachment methods
-	async listRouteFilters(routeId: string): Promise<RouteFiltersResponse> {
-		return this.get<RouteFiltersResponse>(`/api/v1/routes/${routeId}/filters`);
+	// Route Config Filter attachment methods
+	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
+		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
 	}
 
-	async attachFilter(routeId: string, body: AttachFilterRequest): Promise<void> {
-		return this.post<void>(`/api/v1/routes/${routeId}/filters`, body);
+	async attachFilterToRouteConfig(routeConfigName: string, body: AttachFilterRequest): Promise<void> {
+		return this.post<void>(`/api/v1/route-configs/${routeConfigName}/filters`, body);
 	}
 
-	async detachFilter(routeId: string, filterId: string): Promise<void> {
-		return this.delete<void>(`/api/v1/routes/${routeId}/filters/${filterId}`);
+	async detachFilterFromRouteConfig(routeConfigName: string, filterId: string): Promise<void> {
+		return this.delete<void>(`/api/v1/route-configs/${routeConfigName}/filters/${filterId}`);
 	}
 
 	// Listener-Filter attachment methods
@@ -578,6 +582,87 @@ class ApiClient {
 
 	async detachFilterFromListener(listenerId: string, filterId: string): Promise<void> {
 		return this.delete<void>(`/api/v1/listeners/${listenerId}/filters/${filterId}`);
+	}
+
+	// ============================================================================
+	// Route Hierarchy Methods (Virtual Hosts and Routes within RouteConfigs)
+	// ============================================================================
+
+	// List virtual hosts within a route config
+	async listVirtualHosts(routeConfigName: string): Promise<VirtualHostSummary[]> {
+		return this.get<VirtualHostSummary[]>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts`);
+	}
+
+	// List routes within a virtual host
+	async listRoutesInVirtualHost(routeConfigName: string, virtualHostName: string): Promise<RouteSummary[]> {
+		return this.get<RouteSummary[]>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`
+		);
+	}
+
+	// Virtual Host Filter Attachment
+	async listVirtualHostFilters(
+		routeConfigName: string,
+		virtualHostName: string
+	): Promise<VirtualHostFiltersResponse> {
+		return this.get<VirtualHostFiltersResponse>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`
+		);
+	}
+
+	async attachFilterToVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string,
+		body: AttachFilterRequest
+	): Promise<void> {
+		return this.post<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`,
+			body
+		);
+	}
+
+	async detachFilterFromVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string,
+		filterId: string
+	): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters/${filterId}`
+		);
+	}
+
+	// Route (within Virtual Host) Filter Attachment
+	async listRouteHierarchyFilters(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string
+	): Promise<RouteHierarchyFiltersResponse> {
+		return this.get<RouteHierarchyFiltersResponse>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
+		);
+	}
+
+	async attachFilterToRoute(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string,
+		body: AttachFilterRequest
+	): Promise<void> {
+		return this.post<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`,
+			body
+		);
+	}
+
+	async detachFilterFromRoute(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string,
+		filterId: string
+	): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters/${filterId}`
+		);
 	}
 }
 
