@@ -138,6 +138,9 @@ impl HeaderMutationConfig {
                 Some(Action::Remove(name)) => {
                     request_headers_to_remove.push(name.clone());
                 }
+                Some(Action::RemoveOnMatch(_)) => {
+                    // RemoveOnMatch not yet supported in config, skip
+                }
                 None => {}
             }
         }
@@ -154,6 +157,9 @@ impl HeaderMutationConfig {
                 }
                 Some(Action::Remove(name)) => {
                     response_headers_to_remove.push(name.clone());
+                }
+                Some(Action::RemoveOnMatch(_)) => {
+                    // RemoveOnMatch not yet supported in config, skip
                 }
                 None => {}
             }
@@ -343,6 +349,9 @@ impl HeaderMutationPerRouteConfig {
                 Some(Action::Remove(name)) => {
                     request_headers_to_remove.push(name.clone());
                 }
+                Some(Action::RemoveOnMatch(_)) => {
+                    // RemoveOnMatch not yet supported in config, skip
+                }
                 None => {}
             }
         }
@@ -359,6 +368,9 @@ impl HeaderMutationPerRouteConfig {
                 }
                 Some(Action::Remove(name)) => {
                     response_headers_to_remove.push(name.clone());
+                }
+                Some(Action::RemoveOnMatch(_)) => {
+                    // RemoveOnMatch not yet supported in config, skip
                 }
                 None => {}
             }

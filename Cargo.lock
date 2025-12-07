@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "envoy-types"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3f2f79e51091b99bf06dde01790e4958ca40f18109c4f900f7597639c020957"
+checksum = "9ebe897259c66ce9cca473ce000d60e21fc58124505c49f1bd1153049115bcb8"
 dependencies = [
  "futures-core",
  "prost",

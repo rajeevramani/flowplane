@@ -16,7 +16,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 tower_governor = "0.8.0"
 
 # Envoy xDS and protobuf - matched to PoC proven versions
-envoy-types = "0.7.0"
+envoy-types = "0.7.1"
 tonic = { version = "0.14.0", features = ["tls-ring"] }
 tonic-reflection = "0.14.0"
 prost = "0.14.0"

@@ -534,6 +534,8 @@ fn build_zipkin_provider(cfg: &ZipkinTracingConfig) -> Result<HttpTracing, crate
         collector_endpoint_version: endpoint_version as i32,
         collector_hostname: cfg.collector_hostname.clone().unwrap_or_default(),
         split_spans_for_request: false,
+        collector_service: None,
+        trace_context_option: 0,
     };
 
     let typed_config = EnvoyAny {
