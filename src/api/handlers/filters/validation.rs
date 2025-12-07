@@ -39,7 +39,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
     // Validate filter type is fully implemented
     if !payload.filter_type.is_fully_implemented() {
         return Err(ApiError::validation(format!(
-            "Filter type '{}' is not yet supported. Available types: header_mutation, jwt_auth, local_rate_limit",
+            "Filter type '{}' is not yet supported. Available types: header_mutation, jwt_auth, local_rate_limit, custom_response",
             payload.filter_type
         )));
     }
@@ -54,6 +54,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         (crate::domain::FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => Ok(()),
         (crate::domain::FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => Ok(()),
         (crate::domain::FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => Ok(()),
+        (crate::domain::FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => Ok(()),
         _ => {
             tracing::warn!(
                 filter_type = ?payload.filter_type,

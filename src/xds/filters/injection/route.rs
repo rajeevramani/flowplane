@@ -15,6 +15,7 @@ use crate::storage::{
     FilterData, FilterRepository, RouteConfigData, RouteFilterRepository, RouteRepository,
     VirtualHostFilterRepository, VirtualHostRepository,
 };
+use crate::xds::filters::http::custom_response::CustomResponsePerRouteConfig;
 use crate::xds::filters::http::header_mutation::{
     HeaderMutationEntry, HeaderMutationPerRouteConfig,
 };
@@ -137,6 +138,15 @@ pub async fn inject_route_config_filters(
                     (
                         "envoy.filters.http.local_ratelimit".to_string(),
                         HttpScopedConfig::LocalRateLimit(config),
+                    )
+                }
+                FilterConfig::CustomResponse(_) => {
+                    // CustomResponse per-route is typically used to disable the filter
+                    // The main config is at the listener level
+                    let per_route = CustomResponsePerRouteConfig { disabled: false };
+                    (
+                        "envoy.filters.http.custom_response".to_string(),
+                        HttpScopedConfig::CustomResponse(per_route),
                     )
                 }
             };
@@ -442,6 +452,15 @@ fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpSco
             "envoy.filters.http.local_ratelimit".to_string(),
             HttpScopedConfig::LocalRateLimit(config),
         )),
+        FilterConfig::CustomResponse(_) => {
+            // CustomResponse per-route is typically used to disable the filter
+            // The main config is at the listener level
+            let per_route = CustomResponsePerRouteConfig { disabled: false };
+            Some((
+                "envoy.filters.http.custom_response".to_string(),
+                HttpScopedConfig::CustomResponse(per_route),
+            ))
+        }
     }
 }
 

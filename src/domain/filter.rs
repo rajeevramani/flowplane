@@ -1,3 +1,4 @@
+use crate::xds::filters::http::custom_response::CustomResponseConfig;
 use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,8 @@ pub enum FilterType {
     /// External/distributed rate limiting (requires gRPC service)
     RateLimit,
     ExtAuthz,
+    /// Custom response filter for modifying responses based on status codes
+    CustomResponse,
 }
 
 impl FilterType {
@@ -45,7 +48,7 @@ impl FilterType {
     ///
     /// Filter types have different scopes:
     /// - HeaderMutation, Cors: Route-level only (L7 HTTP route filters)
-    /// - JwtAuth, RateLimit, ExtAuthz: Can apply at both route and listener levels
+    /// - JwtAuth, RateLimit, ExtAuthz, CustomResponse: Can apply at both route and listener levels
     pub fn allowed_attachment_points(&self) -> Vec<AttachmentPoint> {
         match self {
             FilterType::HeaderMutation => vec![AttachmentPoint::Route],
@@ -54,6 +57,7 @@ impl FilterType {
             FilterType::LocalRateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::RateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::ExtAuthz => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+            FilterType::CustomResponse => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
         }
     }
 
@@ -84,6 +88,7 @@ impl FilterType {
             FilterType::LocalRateLimit => "envoy.filters.http.local_ratelimit",
             FilterType::RateLimit => "envoy.filters.http.ratelimit",
             FilterType::ExtAuthz => "envoy.filters.http.ext_authz",
+            FilterType::CustomResponse => "envoy.filters.http.custom_response",
         }
     }
 
@@ -94,7 +99,10 @@ impl FilterType {
     pub fn is_fully_implemented(&self) -> bool {
         matches!(
             self,
-            FilterType::HeaderMutation | FilterType::JwtAuth | FilterType::LocalRateLimit
+            FilterType::HeaderMutation
+                | FilterType::JwtAuth
+                | FilterType::LocalRateLimit
+                | FilterType::CustomResponse
         )
     }
 
@@ -107,6 +115,7 @@ impl FilterType {
     /// - LocalRateLimit: Requires token_bucket configuration
     /// - RateLimit: Requires gRPC service configuration
     /// - ExtAuthz: Requires service configuration
+    /// - CustomResponse: Requires matcher configuration
     ///
     /// Filters that work as placeholders (HeaderMutation, Cors) return false.
     pub fn requires_listener_config(&self) -> bool {
@@ -116,6 +125,7 @@ impl FilterType {
                 | FilterType::LocalRateLimit
                 | FilterType::RateLimit
                 | FilterType::ExtAuthz
+                | FilterType::CustomResponse
         )
     }
 }
@@ -129,6 +139,7 @@ impl fmt::Display for FilterType {
             FilterType::LocalRateLimit => write!(f, "local_rate_limit"),
             FilterType::RateLimit => write!(f, "rate_limit"),
             FilterType::ExtAuthz => write!(f, "ext_authz"),
+            FilterType::CustomResponse => write!(f, "custom_response"),
         }
     }
 }
@@ -144,6 +155,7 @@ impl std::str::FromStr for FilterType {
             "local_rate_limit" => Ok(FilterType::LocalRateLimit),
             "rate_limit" => Ok(FilterType::RateLimit),
             "ext_authz" => Ok(FilterType::ExtAuthz),
+            "custom_response" => Ok(FilterType::CustomResponse),
             _ => Err(format!("Unknown filter type: {}", s)),
         }
     }
@@ -176,6 +188,7 @@ pub enum FilterConfig {
     HeaderMutation(HeaderMutationFilterConfig),
     JwtAuth(JwtAuthenticationConfig),
     LocalRateLimit(LocalRateLimitConfig),
+    CustomResponse(CustomResponseConfig),
     // Future filter types will be added here:
     // Cors(CorsConfig),
 }
@@ -186,6 +199,7 @@ impl FilterConfig {
             FilterConfig::HeaderMutation(_) => FilterType::HeaderMutation,
             FilterConfig::JwtAuth(_) => FilterType::JwtAuth,
             FilterConfig::LocalRateLimit(_) => FilterType::LocalRateLimit,
+            FilterConfig::CustomResponse(_) => FilterType::CustomResponse,
         }
     }
 }
@@ -369,6 +383,7 @@ mod tests {
         assert!(FilterType::HeaderMutation.is_fully_implemented());
         assert!(FilterType::JwtAuth.is_fully_implemented());
         assert!(FilterType::LocalRateLimit.is_fully_implemented());
+        assert!(FilterType::CustomResponse.is_fully_implemented());
 
         // Not yet implemented filters
         assert!(!FilterType::Cors.is_fully_implemented());
@@ -383,6 +398,7 @@ mod tests {
         assert!(FilterType::LocalRateLimit.requires_listener_config());
         assert!(FilterType::RateLimit.requires_listener_config());
         assert!(FilterType::ExtAuthz.requires_listener_config());
+        assert!(FilterType::CustomResponse.requires_listener_config());
 
         // Filters that work as empty placeholders in HCM filter chain
         assert!(!FilterType::HeaderMutation.requires_listener_config());
@@ -521,5 +537,127 @@ mod tests {
         });
 
         assert_eq!(config.filter_type(), FilterType::LocalRateLimit);
+    }
+
+    // CustomResponse filter tests
+
+    #[test]
+    fn test_custom_response_attaches_to_routes_and_listeners() {
+        let ft = FilterType::CustomResponse;
+        assert!(ft.can_attach_to(AttachmentPoint::Route));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
+        assert_eq!(
+            ft.allowed_attachment_points(),
+            vec![AttachmentPoint::Route, AttachmentPoint::Listener]
+        );
+    }
+
+    #[test]
+    fn test_custom_response_http_filter_name() {
+        assert_eq!(
+            FilterType::CustomResponse.http_filter_name(),
+            "envoy.filters.http.custom_response"
+        );
+    }
+
+    #[test]
+    fn test_custom_response_from_str() {
+        assert_eq!("custom_response".parse::<FilterType>().unwrap(), FilterType::CustomResponse);
+    }
+
+    #[test]
+    fn test_custom_response_display() {
+        assert_eq!(FilterType::CustomResponse.to_string(), "custom_response");
+    }
+
+    #[test]
+    fn test_custom_response_filter_config_filter_type() {
+        use crate::xds::filters::http::custom_response::{
+            CustomResponseConfig, LocalResponsePolicy, ResponseMatcherRule, StatusCodeMatcher,
+        };
+
+        let config = FilterConfig::CustomResponse(CustomResponseConfig {
+            matchers: vec![ResponseMatcherRule {
+                status_code: StatusCodeMatcher::Exact { code: 429 },
+                response: LocalResponsePolicy::json_error(429, "rate limited"),
+            }],
+            custom_response_matcher: None,
+        });
+
+        assert_eq!(config.filter_type(), FilterType::CustomResponse);
+    }
+
+    #[test]
+    fn test_custom_response_filter_config_serialization() {
+        use crate::xds::filters::http::custom_response::{
+            CustomResponseConfig, LocalResponsePolicy, ResponseMatcherRule, StatusCodeMatcher,
+        };
+
+        let config = FilterConfig::CustomResponse(CustomResponseConfig {
+            matchers: vec![ResponseMatcherRule {
+                status_code: StatusCodeMatcher::Exact { code: 429 },
+                response: LocalResponsePolicy::json_error(429, "rate limited"),
+            }],
+            custom_response_matcher: None,
+        });
+
+        let json = serde_json::to_string(&config).unwrap();
+        // Should be tagged enum format
+        assert!(json.contains(r#""type":"custom_response""#), "JSON: {}", json);
+        assert!(json.contains(r#""config":"#), "JSON: {}", json);
+        assert!(json.contains("429"), "JSON: {}", json);
+
+        // Round-trip test
+        let parsed: FilterConfig = serde_json::from_str(&json).unwrap();
+        match parsed {
+            FilterConfig::CustomResponse(cr_config) => {
+                assert_eq!(cr_config.matchers.len(), 1);
+                assert_eq!(
+                    cr_config.matchers[0].status_code,
+                    StatusCodeMatcher::Exact { code: 429 }
+                );
+            }
+            _ => panic!("Expected CustomResponse config"),
+        }
+    }
+
+    #[test]
+    fn test_custom_response_filter_config_with_range_and_list() {
+        use crate::xds::filters::http::custom_response::{
+            CustomResponseConfig, LocalResponsePolicy, ResponseMatcherRule, StatusCodeMatcher,
+        };
+
+        let config = FilterConfig::CustomResponse(CustomResponseConfig {
+            matchers: vec![
+                ResponseMatcherRule {
+                    status_code: StatusCodeMatcher::Range { min: 500, max: 599 },
+                    response: LocalResponsePolicy::json_error(500, "server error"),
+                },
+                ResponseMatcherRule {
+                    status_code: StatusCodeMatcher::List { codes: vec![400, 401, 403] },
+                    response: LocalResponsePolicy::json_error(400, "client error"),
+                },
+            ],
+            custom_response_matcher: None,
+        });
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: FilterConfig = serde_json::from_str(&json).unwrap();
+
+        match parsed {
+            FilterConfig::CustomResponse(cr_config) => {
+                assert_eq!(cr_config.matchers.len(), 2);
+                assert!(matches!(
+                    cr_config.matchers[0].status_code,
+                    StatusCodeMatcher::Range { min: 500, max: 599 }
+                ));
+                assert!(matches!(
+                    cr_config.matchers[1].status_code,
+                    StatusCodeMatcher::List { .. }
+                ));
+            }
+            _ => panic!("Expected CustomResponse config"),
+        }
     }
 }

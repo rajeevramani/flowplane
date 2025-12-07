@@ -120,6 +120,7 @@ impl FilterService {
                 (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
                 (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                 (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
+                (FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => {}
                 _ => return Err(Error::validation("Filter type and configuration do not match")),
             }
 
@@ -234,6 +235,7 @@ impl FilterService {
                     (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
                     (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                     (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
+                    (FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => {}
                     _ => {
                         return Err(Error::validation("Cannot change filter type, config mismatch"))
                     }

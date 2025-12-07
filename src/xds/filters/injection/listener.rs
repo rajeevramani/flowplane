@@ -266,6 +266,35 @@ fn process_filters(
                     }
                 }
             }
+            FilterConfig::CustomResponse(config) => {
+                // Convert CustomResponseConfig to HttpFilter
+                match config.to_any() {
+                    Ok(any) => {
+                        let http_filter = HttpFilter {
+                            name: "envoy.filters.http.custom_response".to_string(),
+                            config_type: Some(
+                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
+                            ),
+                            is_optional: false,
+                            disabled: false,
+                        };
+                        other_filters.push(http_filter);
+                        info!(
+                            listener = %listener_name,
+                            filter_name = %filter_data.name,
+                            "Prepared CustomResponse filter for injection"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            listener = %listener_name,
+                            filter_name = %filter_data.name,
+                            error = %e,
+                            "Failed to convert CustomResponse config to protobuf, skipping"
+                        );
+                    }
+                }
+            }
         }
     }
 
