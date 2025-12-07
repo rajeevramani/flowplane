@@ -28,8 +28,8 @@ use crate::{
 };
 
 use validation::{
-    filter_response_from_data, require_filter_repository, validate_create_filter_request,
-    validate_update_filter_request, verify_filter_access,
+    filter_response_from_data, filter_response_from_data_with_count, require_filter_repository,
+    validate_create_filter_request, validate_update_filter_request, verify_filter_access,
 };
 
 // === Helper Functions ===
@@ -107,10 +107,19 @@ pub async fn list_filters_handler(
         .await
         .map_err(ApiError::from)?;
 
-    let responses: Result<Vec<FilterResponse>, ApiError> =
-        filters.into_iter().map(filter_response_from_data).collect();
+    // Build responses with attachment counts
+    let mut responses = Vec::with_capacity(filters.len());
+    for filter_data in filters {
+        let filter_id = filter_data.id.clone();
+        let attachment_count = repository
+            .count_attachments(&filter_id)
+            .await
+            .ok(); // Ignore errors, return None for count
+        let response = filter_response_from_data_with_count(filter_data, attachment_count)?;
+        responses.push(response);
+    }
 
-    Ok(Json(responses?))
+    Ok(Json(responses))
 }
 
 #[utoipa::path(

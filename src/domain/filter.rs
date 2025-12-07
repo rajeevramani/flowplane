@@ -1,6 +1,7 @@
 use crate::xds::filters::http::custom_response::CustomResponseConfig;
 use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
+use crate::xds::filters::http::mcp::McpFilterConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
@@ -41,6 +42,9 @@ pub enum FilterType {
     ExtAuthz,
     /// Custom response filter for modifying responses based on status codes
     CustomResponse,
+    /// Model Context Protocol (MCP) filter for AI/LLM gateway traffic
+    /// Inspects and validates JSON-RPC 2.0 and SSE stream traffic
+    Mcp,
 }
 
 impl FilterType {
@@ -58,6 +62,7 @@ impl FilterType {
             FilterType::RateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::ExtAuthz => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             FilterType::CustomResponse => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
+            FilterType::Mcp => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
         }
     }
 
@@ -89,6 +94,7 @@ impl FilterType {
             FilterType::RateLimit => "envoy.filters.http.ratelimit",
             FilterType::ExtAuthz => "envoy.filters.http.ext_authz",
             FilterType::CustomResponse => "envoy.filters.http.custom_response",
+            FilterType::Mcp => "envoy.filters.http.mcp",
         }
     }
 
@@ -103,6 +109,7 @@ impl FilterType {
                 | FilterType::JwtAuth
                 | FilterType::LocalRateLimit
                 | FilterType::CustomResponse
+                | FilterType::Mcp
         )
     }
 
@@ -116,6 +123,7 @@ impl FilterType {
     /// - RateLimit: Requires gRPC service configuration
     /// - ExtAuthz: Requires service configuration
     /// - CustomResponse: Requires matcher configuration
+    /// - Mcp: Requires traffic_mode configuration
     ///
     /// Filters that work as placeholders (HeaderMutation, Cors) return false.
     pub fn requires_listener_config(&self) -> bool {
@@ -126,6 +134,7 @@ impl FilterType {
                 | FilterType::RateLimit
                 | FilterType::ExtAuthz
                 | FilterType::CustomResponse
+                | FilterType::Mcp
         )
     }
 }
@@ -140,6 +149,7 @@ impl fmt::Display for FilterType {
             FilterType::RateLimit => write!(f, "rate_limit"),
             FilterType::ExtAuthz => write!(f, "ext_authz"),
             FilterType::CustomResponse => write!(f, "custom_response"),
+            FilterType::Mcp => write!(f, "mcp"),
         }
     }
 }
@@ -156,6 +166,7 @@ impl std::str::FromStr for FilterType {
             "rate_limit" => Ok(FilterType::RateLimit),
             "ext_authz" => Ok(FilterType::ExtAuthz),
             "custom_response" => Ok(FilterType::CustomResponse),
+            "mcp" => Ok(FilterType::Mcp),
             _ => Err(format!("Unknown filter type: {}", s)),
         }
     }
@@ -189,6 +200,8 @@ pub enum FilterConfig {
     JwtAuth(JwtAuthenticationConfig),
     LocalRateLimit(LocalRateLimitConfig),
     CustomResponse(CustomResponseConfig),
+    /// Model Context Protocol (MCP) filter configuration
+    Mcp(McpFilterConfig),
     // Future filter types will be added here:
     // Cors(CorsConfig),
 }
@@ -200,6 +213,7 @@ impl FilterConfig {
             FilterConfig::JwtAuth(_) => FilterType::JwtAuth,
             FilterConfig::LocalRateLimit(_) => FilterType::LocalRateLimit,
             FilterConfig::CustomResponse(_) => FilterType::CustomResponse,
+            FilterConfig::Mcp(_) => FilterType::Mcp,
         }
     }
 }

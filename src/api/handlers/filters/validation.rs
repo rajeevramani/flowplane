@@ -97,6 +97,15 @@ pub fn filter_response_from_data(data: FilterData) -> Result<FilterResponse, Api
     Ok(FilterResponse::from_data(data, config))
 }
 
+/// Convert FilterData to FilterResponse with attachment count
+pub fn filter_response_from_data_with_count(
+    data: FilterData,
+    attachment_count: Option<i64>,
+) -> Result<FilterResponse, ApiError> {
+    let config = parse_filter_config(&data)?;
+    Ok(FilterResponse::from_data_with_count(data, config, attachment_count))
+}
+
 /// Verify that a filter belongs to one of the user's teams
 pub async fn verify_filter_access(
     filter: FilterData,

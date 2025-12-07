@@ -13,6 +13,7 @@ pub mod header_mutation;
 pub mod health_check;
 pub mod jwt_auth;
 pub mod local_rate_limit;
+pub mod mcp;
 pub mod rate_limit;
 pub mod rate_limit_quota;
 
@@ -26,6 +27,7 @@ use crate::xds::filters::http::header_mutation::{HeaderMutationConfig, HeaderMut
 use crate::xds::filters::http::health_check::HealthCheckConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
+use crate::xds::filters::http::mcp::{McpFilterConfig, McpPerRouteConfig, MCP_PER_ROUTE_TYPE_URL};
 use crate::xds::filters::http::rate_limit::{RateLimitConfig, RateLimitPerRouteConfig};
 use crate::xds::filters::http::rate_limit_quota::{RateLimitQuotaConfig, RateLimitQuotaOverrideConfig};
 use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
@@ -100,6 +102,8 @@ pub enum HttpFilterKind {
     CustomResponse(CustomResponseConfig),
     /// Envoy External Processor filter
     ExtProc(ExtProcConfig),
+    /// Envoy MCP (Model Context Protocol) filter for AI/LLM gateway traffic
+    Mcp(McpFilterConfig),
     /// Arbitrary filter expressed as a typed config payload
     Custom {
         #[serde(flatten)]
@@ -125,6 +129,7 @@ impl HttpFilterKind {
             Self::CredentialInjector(_) => "envoy.filters.http.credential_injector",
             Self::CustomResponse(_) => "envoy.filters.http.custom_response",
             Self::ExtProc(_) => "envoy.filters.http.ext_proc",
+            Self::Mcp(_) => "envoy.filters.http.mcp",
             Self::Custom { .. } => "custom.http.filter",
         }
     }
@@ -149,6 +154,7 @@ impl HttpFilterKind {
             Self::CredentialInjector(cfg) => cfg.to_any().map(Some),
             Self::CustomResponse(cfg) => cfg.to_any().map(Some),
             Self::ExtProc(cfg) => cfg.to_any().map(Some),
+            Self::Mcp(cfg) => cfg.to_any().map(Some),
             Self::Custom { config } => Ok(Some(config.to_any())),
         }
     }
@@ -172,6 +178,8 @@ pub enum HttpScopedConfig {
     RateLimitQuota(RateLimitQuotaOverrideConfig),
     /// Custom response per-route overrides
     CustomResponse(CustomResponsePerRouteConfig),
+    /// MCP per-route overrides
+    Mcp(McpPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -191,6 +199,7 @@ impl HttpScopedConfig {
             Self::RateLimit(cfg) => cfg.to_any(),
             Self::RateLimitQuota(cfg) => cfg.to_any(),
             Self::CustomResponse(cfg) => cfg.to_any(),
+            Self::Mcp(cfg) => cfg.to_any(),
         }
     }
 
@@ -264,6 +273,15 @@ impl HttpScopedConfig {
             })?;
             let cfg = CustomResponsePerRouteConfig::from_proto(&proto)?;
             return Ok(HttpScopedConfig::CustomResponse(cfg));
+        }
+
+        if any.type_url == MCP_PER_ROUTE_TYPE_URL {
+            use envoy_types::pb::envoy::config::route::v3::FilterConfig;
+            let proto = FilterConfig::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!("Failed to decode MCP per-route config: {}", err))
+            })?;
+            let cfg = McpPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::Mcp(cfg));
         }
 
         Ok(HttpScopedConfig::Typed(TypedConfig {

@@ -139,6 +139,7 @@ fn get_filter_default_name(filter: &HttpFilterKind) -> &'static str {
         HttpFilterKind::CredentialInjector(_) => "envoy.filters.http.credential_injector",
         HttpFilterKind::CustomResponse(_) => "envoy.filters.http.custom_response",
         HttpFilterKind::ExtProc(_) => "envoy.filters.http.ext_proc",
+        HttpFilterKind::Mcp(_) => "envoy.filters.http.mcp",
         HttpFilterKind::Custom { .. } => "custom.http.filter",
     }
 }

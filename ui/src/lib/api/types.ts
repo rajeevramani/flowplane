@@ -606,7 +606,7 @@ export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 
 // Filter type uses snake_case to match backend serde serialization
 // Note: jwt_authn is the Envoy filter name variant (with 'n')
-export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz';
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz' | 'custom_response' | 'mcp';
 
 // ============================================================================
 // JWT Authentication Filter Types
@@ -767,6 +767,46 @@ export interface LocalRateLimitConfig {
 }
 
 // ============================================================================
+// Custom Response Filter Types
+// ============================================================================
+
+// Status code matcher for custom response rules
+export type StatusCodeMatcher =
+	| { type: 'exact'; code: number }
+	| { type: 'range'; min: number; max: number }
+	| { type: 'list'; codes: number[] };
+
+// Local response policy for custom responses
+export interface LocalResponsePolicy {
+	status_code?: number;
+	body?: string;
+	headers?: Record<string, string>;
+}
+
+// Custom response matcher rule
+export interface ResponseMatcherRule {
+	status_code: StatusCodeMatcher;
+	response: LocalResponsePolicy;
+}
+
+// Custom response filter configuration
+export interface CustomResponseConfig {
+	matchers: ResponseMatcherRule[];
+}
+
+// ============================================================================
+// MCP Filter Types
+// ============================================================================
+
+// Traffic mode for MCP filter
+export type McpTrafficMode = 'pass_through' | 'reject_no_mcp';
+
+// MCP filter configuration
+export interface McpFilterConfig {
+	traffic_mode: McpTrafficMode;
+}
+
+// ============================================================================
 // FilterConfig Union Type
 // ============================================================================
 
@@ -775,7 +815,9 @@ export interface LocalRateLimitConfig {
 export type FilterConfig =
 	| { type: 'header_mutation'; config: HeaderMutationFilterConfig }
 	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig }
-	| { type: 'local_rate_limit'; config: LocalRateLimitConfig };
+	| { type: 'local_rate_limit'; config: LocalRateLimitConfig }
+	| { type: 'custom_response'; config: CustomResponseConfig }
+	| { type: 'mcp'; config: McpFilterConfig };
 
 // Backend uses snake_case field names for HeaderMutationFilterConfig
 export interface HeaderMutationFilterConfig {
@@ -797,6 +839,8 @@ export interface FilterResponse {
 	createdAt: string;
 	updatedAt: string;
 	allowedAttachmentPoints: AttachmentPoint[];
+	/** Number of resources this filter is attached to (optional, may not be returned by all endpoints) */
+	attachmentCount?: number;
 }
 
 export interface CreateFilterRequest {

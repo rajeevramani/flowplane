@@ -56,11 +56,23 @@ pub struct FilterResponse {
     pub updated_at: String,
     /// Valid attachment points for this filter type
     pub allowed_attachment_points: Vec<AttachmentPoint>,
+    /// Number of resources this filter is attached to (routes + listeners)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment_count: Option<i64>,
 }
 
 impl FilterResponse {
     /// Convert from FilterData and parsed config
     pub fn from_data(data: FilterData, config: FilterConfig) -> Self {
+        Self::from_data_with_count(data, config, None)
+    }
+
+    /// Convert from FilterData and parsed config with attachment count
+    pub fn from_data_with_count(
+        data: FilterData,
+        config: FilterConfig,
+        attachment_count: Option<i64>,
+    ) -> Self {
         // Parse filter type to get allowed attachment points
         let allowed_attachment_points = data
             .filter_type
@@ -80,6 +92,7 @@ impl FilterResponse {
             created_at: data.created_at.to_rfc3339(),
             updated_at: data.updated_at.to_rfc3339(),
             allowed_attachment_points,
+            attachment_count,
         }
     }
 }

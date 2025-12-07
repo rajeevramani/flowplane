@@ -20,6 +20,7 @@ use crate::xds::filters::http::header_mutation::{
     HeaderMutationEntry, HeaderMutationPerRouteConfig,
 };
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
+use crate::xds::filters::http::mcp::McpPerRouteConfig;
 use crate::xds::filters::http::HttpScopedConfig;
 use crate::Result;
 use std::collections::HashMap;
@@ -148,6 +149,12 @@ pub async fn inject_route_config_filters(
                         "envoy.filters.http.custom_response".to_string(),
                         HttpScopedConfig::CustomResponse(per_route),
                     )
+                }
+                FilterConfig::Mcp(_) => {
+                    // MCP per-route is typically used to disable the filter
+                    // The main config is at the listener level
+                    let per_route = McpPerRouteConfig { disabled: false };
+                    ("envoy.filters.http.mcp".to_string(), HttpScopedConfig::Mcp(per_route))
                 }
             };
 
@@ -460,6 +467,12 @@ fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpSco
                 "envoy.filters.http.custom_response".to_string(),
                 HttpScopedConfig::CustomResponse(per_route),
             ))
+        }
+        FilterConfig::Mcp(_) => {
+            // MCP per-route is typically used to disable the filter
+            // The main config is at the listener level
+            let per_route = McpPerRouteConfig { disabled: false };
+            Some(("envoy.filters.http.mcp".to_string(), HttpScopedConfig::Mcp(per_route)))
         }
     }
 }

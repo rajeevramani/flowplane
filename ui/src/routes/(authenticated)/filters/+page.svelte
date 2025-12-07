@@ -228,6 +228,9 @@
 							Description
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Attachments
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Team
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -259,6 +262,19 @@
 								<span class="text-sm text-gray-600">
 									{filter.description || '-'}
 								</span>
+							</td>
+
+							<!-- Attachments -->
+							<td class="px-6 py-4">
+								{#if filter.attachmentCount && filter.attachmentCount > 0}
+									<span class="px-2 py-0.5 text-xs rounded bg-indigo-100 text-indigo-700">
+										{filter.attachmentCount} {filter.attachmentCount === 1 ? 'resource' : 'resources'}
+									</span>
+								{:else}
+									<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">
+										Not attached
+									</span>
+								{/if}
 							</td>
 
 							<!-- Team -->

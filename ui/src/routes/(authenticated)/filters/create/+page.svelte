@@ -9,13 +9,18 @@
 		HeaderMutationConfig,
 		HeaderMutationFilterConfig,
 		JwtAuthenticationFilterConfig,
-		LocalRateLimitConfig
+		LocalRateLimitConfig,
+		CustomResponseConfig,
+		McpFilterConfig,
+		McpTrafficMode
 	} from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import HeaderMutationConfigForm from '$lib/components/filters/HeaderMutationConfigForm.svelte';
 	import JwtAuthConfigForm from '$lib/components/filters/JwtAuthConfigForm.svelte';
 	import LocalRateLimitForm from '$lib/components/filters/LocalRateLimitForm.svelte';
+	import McpConfigForm from '$lib/components/filters/McpConfigForm.svelte';
+	import CustomResponseConfigForm from '$lib/components/filters/CustomResponseConfigForm.svelte';
 
 	// Filter type metadata (using snake_case to match backend)
 	const FILTER_TYPE_INFO: Record<
@@ -63,6 +68,18 @@
 			description: 'External authorization service',
 			attachmentPoints: ['Routes', 'Listeners'],
 			available: false
+		},
+		custom_response: {
+			label: 'Custom Response',
+			description: 'Custom error responses based on status codes',
+			attachmentPoints: ['Routes', 'Listeners'],
+			available: true
+		},
+		mcp: {
+			label: 'MCP',
+			description: 'Model Context Protocol traffic inspection for AI/LLM gateways',
+			attachmentPoints: ['Routes', 'Listeners'],
+			available: true
 		}
 	};
 
@@ -100,6 +117,16 @@
 		status_code: 429
 	});
 
+	// MCP config
+	let mcpConfig = $state<McpFilterConfig>({
+		traffic_mode: 'pass_through'
+	});
+
+	// CustomResponse config
+	let customResponseConfig = $state<CustomResponseConfig>({
+		matchers: []
+	});
+
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
 		currentTeam = value;
@@ -122,6 +149,20 @@
 			return {
 				type: 'local_rate_limit',
 				config: localRateLimitConfig
+			};
+		}
+
+		if (filterType === 'mcp') {
+			return {
+				type: 'mcp',
+				config: mcpConfig
+			};
+		}
+
+		if (filterType === 'custom_response') {
+			return {
+				type: 'custom_response',
+				config: customResponseConfig
 			};
 		}
 
@@ -157,6 +198,14 @@
 
 		if (filterType === 'local_rate_limit') {
 			return validateLocalRateLimitConfig();
+		}
+
+		if (filterType === 'mcp') {
+			return validateMcpConfig();
+		}
+
+		if (filterType === 'custom_response') {
+			return validateCustomResponseConfig();
 		}
 
 		// Validate at least one header operation is configured
@@ -243,6 +292,63 @@
 		return null;
 	}
 
+	// Validate MCP config
+	function validateMcpConfig(): string | null {
+		// MCP config is always valid - traffic_mode has default value
+		return null;
+	}
+
+	// Validate CustomResponse config
+	function validateCustomResponseConfig(): string | null {
+		if (customResponseConfig.matchers.length === 0) {
+			return 'Please add at least one response matcher rule';
+		}
+
+		for (let i = 0; i < customResponseConfig.matchers.length; i++) {
+			const rule = customResponseConfig.matchers[i];
+			const ruleNum = i + 1;
+
+			// Validate status code matcher
+			if (rule.status_code.type === 'exact') {
+				if (rule.status_code.code < 100 || rule.status_code.code > 599) {
+					return `Rule ${ruleNum}: Status code must be between 100 and 599`;
+				}
+			} else if (rule.status_code.type === 'range') {
+				if (rule.status_code.min < 100 || rule.status_code.min > 599) {
+					return `Rule ${ruleNum}: Minimum status code must be between 100 and 599`;
+				}
+				if (rule.status_code.max < 100 || rule.status_code.max > 599) {
+					return `Rule ${ruleNum}: Maximum status code must be between 100 and 599`;
+				}
+				if (rule.status_code.min > rule.status_code.max) {
+					return `Rule ${ruleNum}: Minimum status code cannot be greater than maximum`;
+				}
+			} else if (rule.status_code.type === 'list') {
+				if (rule.status_code.codes.length === 0) {
+					return `Rule ${ruleNum}: Status code list cannot be empty`;
+				}
+				for (const code of rule.status_code.codes) {
+					if (code < 100 || code > 599) {
+						return `Rule ${ruleNum}: Status code ${code} must be between 100 and 599`;
+					}
+				}
+			}
+
+			// Validate response policy
+			if (rule.response.status_code !== undefined) {
+				if (rule.response.status_code < 100 || rule.response.status_code > 599) {
+					return `Rule ${ruleNum}: Response status code must be between 100 and 599`;
+				}
+			}
+
+			if (rule.response.body !== undefined && rule.response.body.trim() === '') {
+				return `Rule ${ruleNum}: Response body cannot be empty if provided`;
+			}
+		}
+
+		return null;
+	}
+
 	// Handle form submission
 	async function handleSubmit() {
 		error = null;
@@ -289,6 +395,16 @@
 	// Handle local rate limit config change
 	function handleLocalRateLimitConfigChange(config: LocalRateLimitConfig) {
 		localRateLimitConfig = config;
+	}
+
+	// Handle MCP config change
+	function handleMcpConfigChange(config: McpFilterConfig) {
+		mcpConfig = config;
+	}
+
+	// Handle CustomResponse config change
+	function handleCustomResponseConfigChange(config: CustomResponseConfig) {
+		customResponseConfig = config;
 	}
 </script>
 
@@ -405,6 +521,12 @@
 		{:else if filterType === 'local_rate_limit'}
 			<h2 class="text-lg font-semibold text-gray-900 mb-4">Local Rate Limit Configuration</h2>
 			<LocalRateLimitForm config={localRateLimitConfig} onConfigChange={handleLocalRateLimitConfigChange} />
+		{:else if filterType === 'mcp'}
+			<h2 class="text-lg font-semibold text-gray-900 mb-4">MCP Filter Configuration</h2>
+			<McpConfigForm config={mcpConfig} onConfigChange={handleMcpConfigChange} />
+		{:else if filterType === 'custom_response'}
+			<h2 class="text-lg font-semibold text-gray-900 mb-4">Custom Response Configuration</h2>
+			<CustomResponseConfigForm config={customResponseConfig} onConfigChange={handleCustomResponseConfigChange} />
 		{:else}
 			<div class="text-center py-8 text-gray-500">
 				<p>Configuration for this filter type is not yet available.</p>

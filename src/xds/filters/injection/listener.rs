@@ -295,6 +295,35 @@ fn process_filters(
                     }
                 }
             }
+            FilterConfig::Mcp(config) => {
+                // Convert McpFilterConfig to HttpFilter
+                match config.to_any() {
+                    Ok(any) => {
+                        let http_filter = HttpFilter {
+                            name: "envoy.filters.http.mcp".to_string(),
+                            config_type: Some(
+                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
+                            ),
+                            is_optional: false,
+                            disabled: false,
+                        };
+                        other_filters.push(http_filter);
+                        info!(
+                            listener = %listener_name,
+                            filter_name = %filter_data.name,
+                            "Prepared MCP filter for injection"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            listener = %listener_name,
+                            filter_name = %filter_data.name,
+                            error = %e,
+                            "Failed to convert MCP config to protobuf, skipping"
+                        );
+                    }
+                }
+            }
         }
     }
 

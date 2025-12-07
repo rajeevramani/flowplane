@@ -16,7 +16,9 @@ const FILTER_ATTACHMENT_RULES: Record<FilterType, AttachmentPoint[]> = {
 	jwt_authn: ['route', 'listener'], // Legacy name from Envoy filter
 	local_rate_limit: ['route', 'listener'],
 	rate_limit: ['route', 'listener'],
-	ext_authz: ['route', 'listener']
+	ext_authz: ['route', 'listener'],
+	custom_response: ['route', 'listener'],
+	mcp: ['route', 'listener']
 };
 
 /**
