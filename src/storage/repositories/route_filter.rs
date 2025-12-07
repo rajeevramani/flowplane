@@ -74,6 +74,41 @@ impl RouteFilterRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
+            // Check for unique constraint violations and provide helpful error messages
+            if let Some(db_err) = e.as_database_error() {
+                if let Some(code) = db_err.code() {
+                    // SQLite UNIQUE constraint violation code is 2067
+                    if code.as_ref() == "2067" {
+                        let msg = db_err.message();
+                        // Check which constraint was violated
+                        if msg.contains("filter_order") {
+                            tracing::warn!(
+                                route_id = %route_id,
+                                filter_id = %filter_id,
+                                order = order,
+                                "Filter order already in use on route"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: format!(
+                                    "Filter order {} is already in use on this route. Choose a different order value.",
+                                    order
+                                ),
+                                resource_type: "route_filter".to_string(),
+                            };
+                        } else if msg.contains("filter_id") {
+                            tracing::warn!(
+                                route_id = %route_id,
+                                filter_id = %filter_id,
+                                "Filter already attached to route"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: "This filter is already attached to the route.".to_string(),
+                                resource_type: "route_filter".to_string(),
+                            };
+                        }
+                    }
+                }
+            }
             tracing::error!(error = %e, route_id = %route_id, filter_id = %filter_id, "Failed to attach filter to route");
             FlowplaneError::Database {
                 source: e,

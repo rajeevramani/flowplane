@@ -556,6 +556,41 @@ impl FilterRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
+            // Check for unique constraint violations and provide helpful error messages
+            if let Some(db_err) = e.as_database_error() {
+                if let Some(code) = db_err.code() {
+                    // SQLite UNIQUE constraint violation code is 2067
+                    if code.as_ref() == "2067" {
+                        let msg = db_err.message();
+                        // Check which constraint was violated
+                        if msg.contains("filter_order") {
+                            tracing::warn!(
+                                listener_id = %listener_id,
+                                filter_id = %filter_id,
+                                order = %order,
+                                "Filter order already in use on listener"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: format!(
+                                    "Filter order {} is already in use on this listener. Choose a different order value.",
+                                    order
+                                ),
+                                resource_type: "listener_filter".to_string(),
+                            };
+                        } else if msg.contains("filter_id") {
+                            tracing::warn!(
+                                listener_id = %listener_id,
+                                filter_id = %filter_id,
+                                "Filter already attached to listener"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: "This filter is already attached to the listener.".to_string(),
+                                resource_type: "listener_filter".to_string(),
+                            };
+                        }
+                    }
+                }
+            }
             tracing::error!(error = %e, listener_id = %listener_id, filter_id = %filter_id, "Failed to attach filter to listener");
             FlowplaneError::Database {
                 source: e,

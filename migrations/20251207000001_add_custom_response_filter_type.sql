@@ -1,8 +1,10 @@
 -- Add custom_response to the filter_type CHECK constraint
--- No data migration needed - no production data yet
+-- SQLite requires table recreation to modify CHECK constraints
 
+-- Drop old table (no data to preserve - pre-production)
 DROP TABLE IF EXISTS filters;
 
+-- Create table with updated constraint
 CREATE TABLE filters (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
