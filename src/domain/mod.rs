@@ -40,8 +40,8 @@ pub use filter::{
     AttachmentPoint, FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig,
 };
 pub use id::{
-    ClusterId, EndpointId, FilterId, ListenerId, RouteConfigId, RouteId, ScopeId, TeamId, TokenId,
-    UserId, VirtualHostId,
+    ClusterId, EndpointId, FilterId, ListenerId, ProxyCertificateId, RouteConfigId, RouteId,
+    ScopeId, TeamId, TokenId, UserId, VirtualHostId,
 };
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,

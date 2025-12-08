@@ -15,6 +15,7 @@ pub mod learning_session;
 pub mod listener;
 pub mod listener_auto_filter;
 pub mod listener_route_config;
+pub mod proxy_certificate;
 pub mod reporting;
 pub mod route;
 pub mod route_config;
@@ -53,6 +54,10 @@ pub use listener_auto_filter::{
     CreateVirtualHostAutoFilterRequest, ListenerAutoFilterData, ListenerAutoFilterRepository,
 };
 pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepository};
+pub use proxy_certificate::{
+    CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
+    SqlxProxyCertificateRepository,
+};
 pub use reporting::{ReportingRepository, RouteFlowRow};
 pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
 pub use route_config::{

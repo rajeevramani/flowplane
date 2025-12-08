@@ -173,6 +173,11 @@ domain_id!(
     EndpointId
 );
 
+domain_id!(
+    /// Unique identifier for a proxy certificate
+    ProxyCertificateId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,6 +11,7 @@ pub mod hierarchy;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod openapi_import;
+pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
 pub mod scopes;
@@ -49,6 +50,10 @@ pub use listeners::{
     update_listener_handler,
 };
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
+pub use proxy_certificates::{
+    generate_certificate_handler, get_certificate_handler, list_certificates_handler,
+    revoke_certificate_handler,
+};
 pub use reporting::list_route_flows_handler;
 pub use route_configs::{
     create_route_config_handler, delete_route_config_handler, get_route_config_handler,
@@ -87,6 +92,10 @@ pub use filters::{
 };
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
+};
+pub use proxy_certificates::{
+    CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
+    ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
 };
 pub use teams::{AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse};
 pub use users::ListUsersResponse;

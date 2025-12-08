@@ -31,19 +31,20 @@ use super::{
         delete_learning_session_handler, delete_listener_handler, delete_route_config_handler,
         delete_user, detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler, detach_filter_handler,
-        export_aggregated_schema_handler, get_aggregated_schema_handler, get_cluster_handler,
+        export_aggregated_schema_handler, generate_certificate_handler,
+        get_aggregated_schema_handler, get_certificate_handler, get_cluster_handler,
         get_filter_handler, get_learning_session_handler, get_listener_handler,
         get_route_config_handler, get_session_info_handler, get_team_bootstrap_handler,
         get_token_handler, get_user, health_handler, list_aggregated_schemas_handler,
-        list_all_scopes_handler, list_audit_logs, list_clusters_handler, list_filters_handler,
-        list_learning_sessions_handler, list_listener_filters_handler, list_listeners_handler,
-        list_route_configs_handler, list_route_filters_handler, list_route_flows_handler,
-        list_route_rule_filters_handler, list_route_rules_handler, list_scopes_handler,
-        list_teams_handler, list_tokens_handler, list_user_teams, list_users,
+        list_all_scopes_handler, list_audit_logs, list_certificates_handler, list_clusters_handler,
+        list_filters_handler, list_learning_sessions_handler, list_listener_filters_handler,
+        list_listeners_handler, list_route_configs_handler, list_route_filters_handler,
+        list_route_flows_handler, list_route_rule_filters_handler, list_route_rules_handler,
+        list_scopes_handler, list_teams_handler, list_tokens_handler, list_user_teams, list_users,
         list_virtual_host_filters_handler, list_virtual_hosts_handler, login_handler,
-        logout_handler, remove_team_membership, revoke_token_handler, rotate_token_handler,
-        update_cluster_handler, update_filter_handler, update_listener_handler,
-        update_route_config_handler, update_token_handler, update_user,
+        logout_handler, remove_team_membership, revoke_certificate_handler, revoke_token_handler,
+        rotate_token_handler, update_cluster_handler, update_filter_handler,
+        update_listener_handler, update_route_config_handler, update_token_handler, update_user,
     },
 };
 
@@ -211,6 +212,11 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         // Team endpoints
         .route("/api/v1/teams", get(list_teams_handler))
         .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
+        // Proxy certificate endpoints (mTLS)
+        .route("/api/v1/teams/{team}/proxy-certificates", get(list_certificates_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates", post(generate_certificate_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates/{id}", get(get_certificate_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates/{id}/revoke", post(revoke_certificate_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
         .route("/api/v1/listeners", post(create_listener_handler))

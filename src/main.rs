@@ -78,6 +78,23 @@ async fn main() -> Result<()> {
     init_scope_registry(pool.clone()).await?;
     info!("Scope registry initialized");
 
+    // Check mTLS configuration status
+    if flowplane::secrets::PkiConfig::is_mtls_enabled() {
+        let pki_config = flowplane::secrets::PkiConfig::from_env()
+            .expect("PKI config should be available when mTLS is enabled");
+        info!(
+            pki_mount = %pki_config.mount_path,
+            pki_role = %pki_config.role_name,
+            trust_domain = %pki_config.trust_domain,
+            "mTLS enabled - proxies will be authenticated via client certificates"
+        );
+    } else {
+        tracing::warn!(
+            "mTLS disabled - FLOWPLANE_VAULT_PKI_MOUNT_PATH not configured. \
+             Proxies will not be authenticated. This is insecure for production use."
+        );
+    }
+
     // Create shutdown signal handler
     let simple_xds_config: SimpleXdsConfig = config.xds.clone();
     let api_config: ApiServerConfig = config.api.clone();

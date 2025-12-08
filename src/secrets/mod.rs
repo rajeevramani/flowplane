@@ -112,4 +112,7 @@ pub use client::{SecretMetadata, SecretsClient};
 pub use env::EnvVarSecretsClient;
 pub use error::{Result, SecretsError};
 pub use fallback::FallbackSecretsClient;
-pub use vault::{VaultConfig, VaultSecretsClient};
+pub use vault::{
+    parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri, GeneratedCertificate, PkiConfig,
+    VaultConfig, VaultSecretsClient,
+};
