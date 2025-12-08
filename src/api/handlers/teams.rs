@@ -29,9 +29,68 @@ use crate::{
 /// Query parameters for bootstrap endpoint
 #[derive(Debug, Clone, Deserialize, Serialize, IntoParams, ToSchema)]
 pub struct BootstrapQuery {
+    /// Output format: yaml or json (default: yaml)
     #[serde(default)]
     #[param(required = false)]
-    pub format: Option<String>, // yaml|json (default yaml)
+    pub format: Option<String>,
+
+    /// Enable mTLS configuration in bootstrap. When true, adds transport_socket
+    /// with TLS settings to the xds_cluster. Defaults to true if control plane
+    /// has mTLS configured.
+    #[serde(default)]
+    #[param(required = false)]
+    pub mtls: Option<bool>,
+
+    /// Path to client certificate file (default: /etc/envoy/certs/client.pem)
+    #[serde(default)]
+    #[param(required = false)]
+    pub cert_path: Option<String>,
+
+    /// Path to client private key file (default: /etc/envoy/certs/client-key.pem)
+    #[serde(default)]
+    #[param(required = false)]
+    pub key_path: Option<String>,
+
+    /// Path to CA certificate file (default: /etc/envoy/certs/ca.pem)
+    #[serde(default)]
+    #[param(required = false)]
+    pub ca_path: Option<String>,
+}
+
+/// Default certificate paths for mTLS
+const DEFAULT_CERT_PATH: &str = "/etc/envoy/certs/client.pem";
+const DEFAULT_KEY_PATH: &str = "/etc/envoy/certs/client-key.pem";
+const DEFAULT_CA_PATH: &str = "/etc/envoy/certs/ca.pem";
+
+/// Build transport_socket configuration for mTLS
+fn build_mtls_transport_socket(
+    cert_path: &str,
+    key_path: &str,
+    ca_path: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": "envoy.transport_sockets.tls",
+        "typed_config": {
+            "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
+            "common_tls_context": {
+                "tls_certificates": [
+                    {
+                        "certificate_chain": {
+                            "filename": cert_path
+                        },
+                        "private_key": {
+                            "filename": key_path
+                        }
+                    }
+                ],
+                "validation_context": {
+                    "trusted_ca": {
+                        "filename": ca_path
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// Get Envoy bootstrap configuration for a team
@@ -47,6 +106,16 @@ pub struct BootstrapQuery {
 /// - Node metadata with team information for server-side filtering
 /// - Dynamic resource configuration (ADS) pointing to xDS server
 /// - Static xDS cluster definition
+/// - mTLS transport socket (when enabled)
+///
+/// # mTLS Configuration
+///
+/// When mTLS is enabled (via `mtls=true` query param or when the control plane has
+/// mTLS configured), the xds_cluster will include a transport_socket with TLS settings.
+/// Default certificate paths are:
+/// - Client cert: /etc/envoy/certs/client.pem
+/// - Client key: /etc/envoy/certs/client-key.pem
+/// - CA cert: /etc/envoy/certs/ca.pem
 ///
 /// # Team Isolation
 ///
@@ -60,13 +129,13 @@ pub struct BootstrapQuery {
         BootstrapQuery
     ),
     responses(
-        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format. The configuration includes admin interface, node metadata, dynamic resource discovery (ADS) configuration, and xDS cluster definition. All resources (listeners, routes, clusters) are discovered dynamically via xDS based on team filtering.", content_type = "application/yaml"),
+        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format. The configuration includes admin interface, node metadata, dynamic resource discovery (ADS) configuration, and xDS cluster definition. When mTLS is enabled, includes transport_socket for client TLS.", content_type = "application/yaml"),
         (status = 403, description = "Forbidden - user does not have access to the specified team"),
         (status = 500, description = "Internal server error during bootstrap generation")
     ),
     tag = "teams"
 )]
-#[instrument(skip(state, q), fields(team = %team, user_id = ?context.user_id, format = ?q.format))]
+#[instrument(skip(state, q), fields(team = %team, user_id = ?context.user_id, format = ?q.format, mtls = ?q.mtls))]
 pub async fn get_team_bootstrap_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -82,6 +151,16 @@ pub async fn get_team_bootstrap_handler(
     require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
+
+    // Determine if mTLS should be enabled
+    // Priority: query param > control plane config
+    let control_plane_mtls_enabled = crate::xds::services::is_xds_mtls_enabled();
+    let mtls_enabled = q.mtls.unwrap_or(control_plane_mtls_enabled);
+
+    // Get certificate paths (use defaults if not specified)
+    let cert_path = q.cert_path.as_deref().unwrap_or(DEFAULT_CERT_PATH);
+    let key_path = q.key_path.as_deref().unwrap_or(DEFAULT_KEY_PATH);
+    let ca_path = q.ca_path.as_deref().unwrap_or(DEFAULT_CA_PATH);
 
     // Build ADS bootstrap with node metadata for team-based filtering
     let xds_addr = state.xds_state.config.bind_address.clone();
@@ -106,6 +185,50 @@ pub async fn get_team_bootstrap_handler(
     // Use team-specific port if available, otherwise fall back to global config
     let admin_port =
         team_data.as_ref().and_then(|t| t.envoy_admin_port).unwrap_or(envoy_admin.port);
+
+    // Build xds_cluster configuration
+    let mut xds_cluster = serde_json::json!({
+        "name": "xds_cluster",
+        "type": "LOGICAL_DNS",
+        "dns_lookup_family": "V4_ONLY",
+        "connect_timeout": "1s",
+        "http2_protocol_options": {},
+        "load_assignment": {
+            "cluster_name": "xds_cluster",
+            "endpoints": [
+                {
+                    "lb_endpoints": [
+                        {
+                            "endpoint": {
+                                "address": {
+                                    "socket_address": {
+                                        "address": xds_addr,
+                                        "port_value": xds_port
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+
+    // Add transport_socket for mTLS if enabled
+    if mtls_enabled {
+        let transport_socket = build_mtls_transport_socket(cert_path, key_path, ca_path);
+        xds_cluster
+            .as_object_mut()
+            .expect("xds_cluster should be an object")
+            .insert("transport_socket".to_string(), transport_socket);
+
+        tracing::debug!(
+            cert_path = %cert_path,
+            key_path = %key_path,
+            ca_path = %ca_path,
+            "mTLS enabled in bootstrap config"
+        );
+    }
 
     // Generate Envoy bootstrap configuration
     // This is minimal - it only tells Envoy where to find the xDS server
@@ -141,34 +264,7 @@ pub async fn get_team_bootstrap_handler(
             }
         },
         "static_resources": {
-            "clusters": [
-                {
-                    "name": "xds_cluster",
-                    "type": "LOGICAL_DNS",
-                    "dns_lookup_family": "V4_ONLY",
-                    "connect_timeout": "1s",
-                    "http2_protocol_options": {},
-                    "load_assignment": {
-                        "cluster_name": "xds_cluster",
-                        "endpoints": [
-                            {
-                                "lb_endpoints": [
-                                    {
-                                        "endpoint": {
-                                            "address": {
-                                                "socket_address": {
-                                                    "address": xds_addr,
-                                                    "port_value": xds_port
-                                                }
-                                            }
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                }
-            ]
+            "clusters": [xds_cluster]
         }
     });
 
@@ -505,4 +601,89 @@ pub async fn admin_delete_team(
 /// Convert domain errors to API errors.
 fn convert_error(error: Error) -> ApiError {
     ApiError::from(error)
+}
+
+/// Response for mTLS status endpoint
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MtlsStatusResponse {
+    /// Whether mTLS is fully enabled (PKI configured + xDS TLS configured)
+    pub enabled: bool,
+
+    /// Whether the xDS server has TLS enabled (server certificate configured)
+    pub xds_server_tls: bool,
+
+    /// Whether client certificate authentication is required
+    pub client_auth_required: bool,
+
+    /// SPIFFE trust domain for certificate identity URIs
+    pub trust_domain: String,
+
+    /// Whether Vault PKI mount is configured for certificate generation
+    pub pki_mount_configured: bool,
+
+    /// Message describing the current mTLS status
+    pub message: String,
+}
+
+/// Get mTLS configuration status
+///
+/// Returns the current mTLS configuration status for the control plane.
+/// This endpoint helps operators and developers understand whether mTLS
+/// is enabled and properly configured.
+///
+/// # Response Fields
+///
+/// - `enabled`: True if both PKI and xDS TLS are configured
+/// - `xds_server_tls`: True if xDS server has TLS certificate configured
+/// - `client_auth_required`: True if client certificates are required
+/// - `trust_domain`: The SPIFFE trust domain being used
+/// - `pki_mount_configured`: True if Vault PKI is configured for cert generation
+#[utoipa::path(
+    get,
+    path = "/api/v1/mtls/status",
+    responses(
+        (status = 200, description = "mTLS configuration status", body = MtlsStatusResponse),
+    ),
+    tag = "mtls"
+)]
+#[instrument]
+pub async fn get_mtls_status_handler() -> Json<MtlsStatusResponse> {
+    // Check if xDS server TLS is enabled
+    let xds_server_tls =
+        std::env::var("FLOWPLANE_XDS_TLS_CERT_PATH").ok().filter(|v| !v.is_empty()).is_some();
+
+    // Check if client auth is required (enabled by default when TLS is enabled)
+    let client_auth_required = crate::xds::services::is_xds_mtls_enabled();
+
+    // Check if Vault PKI is configured
+    let pki_mount_configured =
+        std::env::var("FLOWPLANE_VAULT_PKI_MOUNT_PATH").ok().filter(|v| !v.is_empty()).is_some();
+
+    // Get trust domain
+    let trust_domain = std::env::var("FLOWPLANE_SPIFFE_TRUST_DOMAIN")
+        .unwrap_or_else(|_| "flowplane.local".to_string());
+
+    // mTLS is fully enabled when both PKI and xDS TLS are configured
+    let enabled = pki_mount_configured && client_auth_required;
+
+    let message = if enabled {
+        "mTLS is fully enabled. Proxies must present valid client certificates.".to_string()
+    } else if xds_server_tls && !client_auth_required {
+        "TLS is enabled but client authentication is disabled. Proxies are not authenticated."
+            .to_string()
+    } else if pki_mount_configured && !xds_server_tls {
+        "Vault PKI is configured but xDS server TLS is not enabled. Configure FLOWPLANE_XDS_TLS_* environment variables.".to_string()
+    } else {
+        "mTLS is disabled. Configure FLOWPLANE_VAULT_PKI_MOUNT_PATH and FLOWPLANE_XDS_TLS_* to enable.".to_string()
+    };
+
+    Json(MtlsStatusResponse {
+        enabled,
+        xds_server_tls,
+        client_auth_required,
+        trust_domain,
+        pki_mount_configured,
+        message,
+    })
 }

@@ -62,7 +62,7 @@ pub use route_configs::{
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
-    get_team_bootstrap_handler, list_teams_handler,
+    get_mtls_status_handler, get_team_bootstrap_handler, list_teams_handler,
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
@@ -97,7 +97,10 @@ pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
     ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
 };
-pub use teams::{AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse};
+pub use teams::{
+    AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse,
+    MtlsStatusResponse,
+};
 pub use users::ListUsersResponse;
 
 // Hierarchy DTOs for route hierarchy filter attachment

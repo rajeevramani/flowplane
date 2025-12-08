@@ -68,6 +68,8 @@ use crate::xds::{
         crate::api::handlers::teams::admin_get_team,
         crate::api::handlers::teams::admin_update_team,
         crate::api::handlers::teams::admin_delete_team,
+        // mTLS status endpoint
+        crate::api::handlers::teams::get_mtls_status_handler,
         // User management endpoints
         crate::api::handlers::users::create_user,
         crate::api::handlers::users::list_users,
@@ -149,6 +151,7 @@ use crate::xds::{
             crate::api::handlers::teams::BootstrapQuery,
             crate::api::handlers::teams::ListTeamsResponse,
             crate::api::handlers::teams::AdminListTeamsResponse,
+            crate::api::handlers::teams::MtlsStatusResponse,
             crate::auth::team::Team,
             crate::auth::team::CreateTeamRequest,
             crate::auth::team::UpdateTeamRequest,

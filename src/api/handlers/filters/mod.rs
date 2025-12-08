@@ -111,10 +111,7 @@ pub async fn list_filters_handler(
     let mut responses = Vec::with_capacity(filters.len());
     for filter_data in filters {
         let filter_id = filter_data.id.clone();
-        let attachment_count = repository
-            .count_attachments(&filter_id)
-            .await
-            .ok(); // Ignore errors, return None for count
+        let attachment_count = repository.count_attachments(&filter_id).await.ok(); // Ignore errors, return None for count
         let response = filter_response_from_data_with_count(filter_data, attachment_count)?;
         responses.push(response);
     }
