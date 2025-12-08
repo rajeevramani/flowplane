@@ -657,13 +657,45 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         let parent_context =
             crate::xds::services::stream::extract_trace_context(request.metadata());
 
-        // Extract team from node metadata for connection tracking
+        // Extract mTLS identity from client certificate (if mTLS is enabled)
+        let mtls_identity = if super::mtls::is_xds_mtls_enabled() {
+            if let Some(peer_certs) = request.peer_certs() {
+                match super::mtls::extract_client_identity(peer_certs.as_slice()) {
+                    Some(identity) => {
+                        info!(
+                            team = %identity.team,
+                            proxy_id = %identity.proxy_id,
+                            serial = %identity.serial_number,
+                            "Client authenticated via mTLS"
+                        );
+                        Some(identity)
+                    }
+                    None => {
+                        warn!("mTLS enabled but no valid SPIFFE identity in client certificate");
+                        return Err(Status::unauthenticated(
+                            "Client certificate does not contain valid SPIFFE identity",
+                        ));
+                    }
+                }
+            } else {
+                warn!("mTLS enabled but client did not present certificate");
+                return Err(Status::unauthenticated(
+                    "Client certificate required for mTLS authentication",
+                ));
+            }
+        } else {
+            // mTLS not enabled, will use node metadata for team identity
+            None
+        };
+
+        // Extract team from node metadata for connection tracking (fallback when mTLS disabled)
         let metadata = request.metadata();
         if let Some(node_id) = metadata.get("node-id").and_then(|v| v.to_str().ok()) {
-            // Try to parse team from node_id or metadata
-            // For now, we'll track this when we see the first request with node metadata
             tracing::debug!(node_id, "xDS stream established");
         }
+
+        // Store mTLS team override for use in stream processing
+        let mtls_team_override = mtls_identity.map(|id| id.team);
 
         let state = self.state.clone();
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
@@ -672,12 +704,13 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
                 as Pin<Box<dyn Future<Output = Result<DiscoveryResponse>> + Send>>
         };
 
-        let stream = crate::xds::services::stream::run_stream_loop(
+        let stream = crate::xds::services::stream::run_stream_loop_with_mtls(
             state,
             request.into_inner(),
             responder,
             "database-enabled",
             Some(parent_context),
+            mtls_team_override,
         );
 
         Ok(Response::new(Box::pin(stream)))
@@ -694,18 +727,52 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         let parent_context =
             crate::xds::services::stream::extract_trace_context(request.metadata());
 
+        // Extract mTLS identity from client certificate (if mTLS is enabled)
+        let mtls_identity = if super::mtls::is_xds_mtls_enabled() {
+            if let Some(peer_certs) = request.peer_certs() {
+                match super::mtls::extract_client_identity(peer_certs.as_slice()) {
+                    Some(identity) => {
+                        info!(
+                            team = %identity.team,
+                            proxy_id = %identity.proxy_id,
+                            serial = %identity.serial_number,
+                            "Client authenticated via mTLS (Delta)"
+                        );
+                        Some(identity)
+                    }
+                    None => {
+                        warn!("mTLS enabled but no valid SPIFFE identity in client certificate");
+                        return Err(Status::unauthenticated(
+                            "Client certificate does not contain valid SPIFFE identity",
+                        ));
+                    }
+                }
+            } else {
+                warn!("mTLS enabled but client did not present certificate");
+                return Err(Status::unauthenticated(
+                    "Client certificate required for mTLS authentication",
+                ));
+            }
+        } else {
+            None
+        };
+
+        // Store mTLS team override for use in stream processing
+        let mtls_team_override = mtls_identity.map(|id| id.team);
+
         let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
             let service = DatabaseAggregatedDiscoveryService { state };
             Box::pin(async move { service.create_delta_response(&request).await })
                 as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
         };
 
-        let stream = crate::xds::services::stream::run_delta_loop(
+        let stream = crate::xds::services::stream::run_delta_loop_with_mtls(
             self.state.clone(),
             request.into_inner(),
             responder,
             "database-enabled",
             Some(parent_context),
+            mtls_team_override,
         );
 
         Ok(Response::new(Box::pin(stream)))

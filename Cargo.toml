@@ -86,6 +86,9 @@ clap = { version = "4.5.48", features = ["derive"] }
 dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# X.509 certificate parsing for mTLS identity extraction
+x509-parser = "0.16"
+
 # Utilities
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }

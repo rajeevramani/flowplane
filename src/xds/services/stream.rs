@@ -155,10 +155,35 @@ fn extract_team_from_node(
 /// A `ReceiverStream` that produces DiscoveryResponse messages to send to Envoy
 pub fn run_stream_loop<F>(
     state: Arc<XdsState>,
+    in_stream: tonic::Streaming<DiscoveryRequest>,
+    responder: F,
+    label: &str,
+    parent_context: Option<opentelemetry::Context>,
+) -> ReceiverStream<std::result::Result<DiscoveryResponse, Status>>
+where
+    F: Fn(
+            Arc<XdsState>,
+            DiscoveryRequest,
+        ) -> Pin<Box<dyn Future<Output = crate::Result<DiscoveryResponse>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    run_stream_loop_with_mtls(state, in_stream, responder, label, parent_context, None)
+}
+
+/// Run the shared SOTW ADS stream loop with mTLS team override.
+///
+/// When `mtls_team` is Some, it takes precedence over node metadata for team identity.
+/// This ensures the cryptographically verified team from the client certificate is used
+/// rather than trusting the self-reported node metadata.
+pub fn run_stream_loop_with_mtls<F>(
+    state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DiscoveryRequest>,
     responder: F,
     label: &str,
     parent_context: Option<opentelemetry::Context>,
+    mtls_team: Option<String>,
 ) -> ReceiverStream<std::result::Result<DiscoveryResponse, Status>>
 where
     F: Fn(
@@ -178,8 +203,10 @@ where
     let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
 
     // Track the team for this stream to decrement connection metric on stream close
-    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // If mTLS team is provided, it takes precedence over node metadata
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(mtls_team.clone()));
     let team_for_cleanup = team_for_stream.clone();
+    let mtls_team_set = mtls_team.is_some();
 
     // Track the node metadata from the initial connection to preserve team context in push updates
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
@@ -209,6 +236,7 @@ where
                             );
 
                             // Extract and track team from node metadata on first request
+                            // Note: If mTLS team was already set, we don't override it
                             let team_extracted = extract_team_from_node(&discovery_request.node);
                             {
                                 let mut team_guard = team_for_stream.lock().await;
@@ -218,6 +246,17 @@ where
                                     if let Some(ref team) = team_extracted {
                                         crate::observability::metrics::record_team_xds_connection(team, true).await;
                                         info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
+                                    }
+                                } else if mtls_team_set && team_guard.is_some() {
+                                    // Log if node metadata team differs from mTLS team (potential misconfiguration)
+                                    if let Some(ref node_team) = team_extracted {
+                                        if team_guard.as_ref() != Some(node_team) {
+                                            tracing::warn!(
+                                                mtls_team = ?team_guard,
+                                                node_team = %node_team,
+                                                "Node metadata team differs from mTLS certificate team - using mTLS team"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -488,10 +527,33 @@ where
 /// A `ReceiverStream` that produces DeltaDiscoveryResponse messages to send to Envoy
 pub fn run_delta_loop<F>(
     state: Arc<XdsState>,
+    in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
+    responder: F,
+    label: &str,
+    parent_context: Option<opentelemetry::Context>,
+) -> ReceiverStream<std::result::Result<DeltaDiscoveryResponse, Status>>
+where
+    F: Fn(
+            Arc<XdsState>,
+            DeltaDiscoveryRequest,
+        ) -> Pin<Box<dyn Future<Output = crate::Result<DeltaDiscoveryResponse>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    run_delta_loop_with_mtls(state, in_stream, responder, label, parent_context, None)
+}
+
+/// Run the shared Delta xDS ADS stream loop with mTLS team override.
+///
+/// When `mtls_team` is Some, it takes precedence over node metadata for team identity.
+pub fn run_delta_loop_with_mtls<F>(
+    state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
     responder: F,
     label: &str,
     parent_context: Option<opentelemetry::Context>,
+    mtls_team: Option<String>,
 ) -> ReceiverStream<std::result::Result<DeltaDiscoveryResponse, Status>>
 where
     F: Fn(
@@ -509,8 +571,10 @@ where
     let mut update_rx = state.subscribe_updates();
 
     // Track the team for this stream to decrement connection metric on stream close
-    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // If mTLS team is provided, it takes precedence over node metadata
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(mtls_team.clone()));
     let team_for_cleanup = team_for_stream.clone();
+    let mtls_team_set = mtls_team.is_some();
 
     // Track the node metadata from the initial connection to preserve team context in push updates
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
@@ -540,6 +604,7 @@ where
                                 );
 
                                 // Extract and track team from node metadata on first request
+                                // Note: If mTLS team was already set, we don't override it
                                 let team_extracted = extract_team_from_node(&delta_request.node);
                                 {
                                     let mut team_guard = team_for_stream.lock().await;
@@ -549,6 +614,17 @@ where
                                         if let Some(ref team) = team_extracted {
                                             crate::observability::metrics::record_team_xds_connection(team, true).await;
                                             info!(stream = %label, team = %team, "New Delta xDS stream established, incrementing connection gauge");
+                                        }
+                                    } else if mtls_team_set && team_guard.is_some() {
+                                        // Log if node metadata team differs from mTLS team (potential misconfiguration)
+                                        if let Some(ref node_team) = team_extracted {
+                                            if team_guard.as_ref() != Some(node_team) {
+                                                tracing::warn!(
+                                                    mtls_team = ?team_guard,
+                                                    node_team = %node_team,
+                                                    "Node metadata team differs from mTLS certificate team - using mTLS team"
+                                                );
+                                            }
                                         }
                                     }
                                 }
