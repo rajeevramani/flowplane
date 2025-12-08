@@ -40,6 +40,9 @@ export VAULT_TOKEN=flowplane-dev-token
 
 # Flowplane configuration
 FLOWPLANE_DATABASE_URL=sqlite://./data/development/flowplane.db \
+FLOWPLANE_XDS_TLS_CERT_PATH=`pwd`/.local/certs/server/xds-server.pem \
+FLOWPLANE_XDS_TLS_KEY_PATH=`pwd`/.local/certs/server/xds-server.key \
+FLOWPLANE_XDS_TLS_CLIENT_CA_PATH=`pwd`/.local/certs/server/xds-ca.pem \
 FLOWPLANE_UI_ORIGIN=http://localhost:5173 \
 FLOWPLANE_OTLP_ENDPOINT=http://localhost:4317 \
 FLOWPLANE_LOG_LEVEL=info \
