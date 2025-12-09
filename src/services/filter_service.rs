@@ -121,6 +121,7 @@ impl FilterService {
                 (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                 (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
                 (FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => {}
+                (FilterType::Mcp, FilterConfig::Mcp(_)) => {}
                 _ => return Err(Error::validation("Filter type and configuration do not match")),
             }
 

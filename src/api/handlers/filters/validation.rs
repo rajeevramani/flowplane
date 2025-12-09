@@ -55,6 +55,7 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         (crate::domain::FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => Ok(()),
         (crate::domain::FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => Ok(()),
         (crate::domain::FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => Ok(()),
+        (crate::domain::FilterType::Mcp, FilterConfig::Mcp(_)) => Ok(()),
         _ => {
             tracing::warn!(
                 filter_type = ?payload.filter_type,
