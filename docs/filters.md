@@ -255,7 +255,7 @@ The Header Mutation filter provides request and response header manipulation, ma
 ### Example Filter Entry
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+curl -sS -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

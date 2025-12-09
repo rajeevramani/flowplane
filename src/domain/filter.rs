@@ -6,6 +6,153 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
 
+/// Describes how a filter type handles per-route configuration.
+///
+/// Different Envoy filters have varying levels of per-route customization support:
+/// - Some can be fully overridden per route (e.g., HeaderMutation with full config)
+/// - Some only allow referencing pre-defined configs (e.g., JWT with requirement_name)
+/// - Some can only be disabled (e.g., generic FilterConfig with disabled flag)
+/// - Some have no per-route support at all
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerRouteBehavior {
+    /// Full configuration override at per-route level (HeaderMutation, LocalRateLimit, CustomResponse)
+    FullConfig,
+    /// Reference to listener-level config by name (JwtAuth with requirement_name)
+    ReferenceOnly,
+    /// Only supports disabling the filter per-route (generic FilterConfig disabled flag)
+    DisableOnly,
+    /// No per-route configuration support
+    NotSupported,
+}
+
+/// Static metadata about a filter type's capabilities.
+///
+/// This struct provides a single source of truth for all filter type metadata,
+/// eliminating scattered match statements across the codebase. Filter metadata
+/// is tied to Envoy protobuf definitions and provides compile-time type safety.
+#[derive(Debug, Clone)]
+pub struct FilterTypeMetadata {
+    /// The filter type this metadata describes
+    pub filter_type: FilterType,
+    /// Envoy HTTP filter name (e.g., "envoy.filters.http.header_mutation")
+    pub http_filter_name: &'static str,
+    /// Full protobuf type URL for listener-level configuration
+    pub type_url: &'static str,
+    /// Full protobuf type URL for per-route configuration (if supported)
+    pub per_route_type_url: Option<&'static str>,
+    /// Valid attachment points for this filter
+    pub attachment_points: &'static [AttachmentPoint],
+    /// Whether this filter requires listener-level configuration
+    pub requires_listener_config: bool,
+    /// How this filter handles per-route configuration
+    pub per_route_behavior: PerRouteBehavior,
+    /// Whether this filter type has full implementation support
+    pub is_implemented: bool,
+    /// Human-readable description of the filter
+    pub description: &'static str,
+}
+
+/// Static attachment point arrays for filter metadata
+const ROUTE_ONLY: &[AttachmentPoint] = &[AttachmentPoint::Route];
+const ROUTE_AND_LISTENER: &[AttachmentPoint] = &[AttachmentPoint::Route, AttachmentPoint::Listener];
+
+/// Returns metadata for a given filter type.
+///
+/// This is the central registry of filter metadata, providing a single source
+/// of truth for all filter capabilities and configuration.
+fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
+    match filter_type {
+        FilterType::HeaderMutation => FilterTypeMetadata {
+            filter_type: FilterType::HeaderMutation,
+            http_filter_name: "envoy.filters.http.header_mutation",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutationPerRoute"),
+            attachment_points: ROUTE_ONLY,
+            requires_listener_config: false,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: true,
+            description: "Add, modify, or remove HTTP headers",
+        },
+        FilterType::JwtAuth => FilterTypeMetadata {
+            filter_type: FilterType::JwtAuth,
+            http_filter_name: "envoy.filters.http.jwt_authn",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::ReferenceOnly,
+            is_implemented: true,
+            description: "JSON Web Token authentication",
+        },
+        FilterType::Cors => FilterTypeMetadata {
+            filter_type: FilterType::Cors,
+            http_filter_name: "envoy.filters.http.cors",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy"),
+            attachment_points: ROUTE_ONLY,
+            requires_listener_config: false,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: false,
+            description: "Cross-Origin Resource Sharing policy",
+        },
+        FilterType::LocalRateLimit => FilterTypeMetadata {
+            filter_type: FilterType::LocalRateLimit,
+            http_filter_name: "envoy.filters.http.local_ratelimit",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: true,
+            description: "Local (in-memory) rate limiting",
+        },
+        FilterType::RateLimit => FilterTypeMetadata {
+            filter_type: FilterType::RateLimit,
+            http_filter_name: "envoy.filters.http.ratelimit",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimitPerRoute"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: false,
+            description: "External/distributed rate limiting (requires gRPC service)",
+        },
+        FilterType::ExtAuthz => FilterTypeMetadata {
+            filter_type: FilterType::ExtAuthz,
+            http_filter_name: "envoy.filters.http.ext_authz",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: false,
+            description: "External authorization service",
+        },
+        FilterType::CustomResponse => FilterTypeMetadata {
+            filter_type: FilterType::CustomResponse,
+            http_filter_name: "envoy.filters.http.custom_response",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: true,
+            description: "Custom response filter for modifying responses based on status codes",
+        },
+        FilterType::Mcp => FilterTypeMetadata {
+            filter_type: FilterType::Mcp,
+            http_filter_name: "envoy.filters.http.mcp",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.mcp.v3.Mcp",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.mcp.v3.Mcp"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::DisableOnly,
+            is_implemented: true,
+            description: "Model Context Protocol filter for AI/LLM gateway traffic",
+        },
+    }
+}
+
 /// Represents the resource types that a filter can attach to.
 /// Different filter types have different valid attachment points based on their scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Hash)]
@@ -48,32 +195,31 @@ pub enum FilterType {
 }
 
 impl FilterType {
+    /// Returns the static metadata for this filter type.
+    ///
+    /// This provides a single source of truth for all filter capabilities
+    /// and configuration details.
+    pub fn metadata(&self) -> FilterTypeMetadata {
+        filter_registry(*self)
+    }
+
     /// Returns the valid attachment points for this filter type.
     ///
     /// Filter types have different scopes:
     /// - HeaderMutation, Cors: Route-level only (L7 HTTP route filters)
     /// - JwtAuth, RateLimit, ExtAuthz, CustomResponse: Can apply at both route and listener levels
     pub fn allowed_attachment_points(&self) -> Vec<AttachmentPoint> {
-        match self {
-            FilterType::HeaderMutation => vec![AttachmentPoint::Route],
-            FilterType::Cors => vec![AttachmentPoint::Route],
-            FilterType::JwtAuth => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-            FilterType::LocalRateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-            FilterType::RateLimit => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-            FilterType::ExtAuthz => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-            FilterType::CustomResponse => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-            FilterType::Mcp => vec![AttachmentPoint::Route, AttachmentPoint::Listener],
-        }
+        self.metadata().attachment_points.to_vec()
     }
 
     /// Checks if this filter type can attach to the given attachment point.
     pub fn can_attach_to(&self, point: AttachmentPoint) -> bool {
-        self.allowed_attachment_points().contains(&point)
+        self.metadata().attachment_points.contains(&point)
     }
 
     /// Returns a human-readable description of allowed attachment points.
     pub fn allowed_attachment_points_display(&self) -> String {
-        let points = self.allowed_attachment_points();
+        let points = self.metadata().attachment_points;
         if points.len() == 1 {
             format!("{} only", points[0])
         } else {
@@ -86,16 +232,7 @@ impl FilterType {
     /// This is the canonical name used in Envoy's HTTP connection manager filter chain
     /// and in `typed_per_filter_config` entries.
     pub fn http_filter_name(&self) -> &'static str {
-        match self {
-            FilterType::HeaderMutation => "envoy.filters.http.header_mutation",
-            FilterType::JwtAuth => "envoy.filters.http.jwt_authn",
-            FilterType::Cors => "envoy.filters.http.cors",
-            FilterType::LocalRateLimit => "envoy.filters.http.local_ratelimit",
-            FilterType::RateLimit => "envoy.filters.http.ratelimit",
-            FilterType::ExtAuthz => "envoy.filters.http.ext_authz",
-            FilterType::CustomResponse => "envoy.filters.http.custom_response",
-            FilterType::Mcp => "envoy.filters.http.mcp",
-        }
+        self.metadata().http_filter_name
     }
 
     /// Returns true if this filter type has full implementation support.
@@ -103,14 +240,7 @@ impl FilterType {
     /// Used for API validation to reject unsupported filter creation.
     /// Filter types that are defined but not yet fully implemented will return false.
     pub fn is_fully_implemented(&self) -> bool {
-        matches!(
-            self,
-            FilterType::HeaderMutation
-                | FilterType::JwtAuth
-                | FilterType::LocalRateLimit
-                | FilterType::CustomResponse
-                | FilterType::Mcp
-        )
+        self.metadata().is_implemented
     }
 
     /// Returns whether this filter type requires listener-level configuration.
@@ -127,15 +257,32 @@ impl FilterType {
     ///
     /// Filters that work as placeholders (HeaderMutation, Cors) return false.
     pub fn requires_listener_config(&self) -> bool {
-        matches!(
-            self,
-            FilterType::JwtAuth
-                | FilterType::LocalRateLimit
-                | FilterType::RateLimit
-                | FilterType::ExtAuthz
-                | FilterType::CustomResponse
-                | FilterType::Mcp
-        )
+        self.metadata().requires_listener_config
+    }
+
+    /// Returns the per-route behavior for this filter type.
+    ///
+    /// Describes how this filter handles per-route configuration overrides.
+    pub fn per_route_behavior(&self) -> PerRouteBehavior {
+        self.metadata().per_route_behavior
+    }
+
+    /// Looks up a filter type by its Envoy HTTP filter name.
+    ///
+    /// Returns `None` if no filter type matches the given name.
+    pub fn from_http_filter_name(name: &str) -> Option<Self> {
+        [
+            FilterType::HeaderMutation,
+            FilterType::JwtAuth,
+            FilterType::Cors,
+            FilterType::LocalRateLimit,
+            FilterType::RateLimit,
+            FilterType::ExtAuthz,
+            FilterType::CustomResponse,
+            FilterType::Mcp,
+        ]
+        .into_iter()
+        .find(|filter_type| filter_type.http_filter_name() == name)
     }
 }
 
@@ -672,6 +819,126 @@ mod tests {
                 ));
             }
             _ => panic!("Expected CustomResponse config"),
+        }
+    }
+
+    // FilterTypeMetadata tests
+
+    #[test]
+    fn test_metadata_returns_correct_values() {
+        let metadata = FilterType::HeaderMutation.metadata();
+        assert_eq!(metadata.filter_type, FilterType::HeaderMutation);
+        assert_eq!(metadata.http_filter_name, "envoy.filters.http.header_mutation");
+        assert_eq!(
+            metadata.type_url,
+            "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation"
+        );
+        assert!(metadata.per_route_type_url.is_some());
+        assert_eq!(metadata.attachment_points, &[AttachmentPoint::Route]);
+        assert!(!metadata.requires_listener_config);
+        assert_eq!(metadata.per_route_behavior, PerRouteBehavior::FullConfig);
+        assert!(metadata.is_implemented);
+    }
+
+    #[test]
+    fn test_metadata_consistency_with_existing_methods() {
+        // Ensure metadata values match existing method implementations
+        for filter_type in [
+            FilterType::HeaderMutation,
+            FilterType::JwtAuth,
+            FilterType::Cors,
+            FilterType::LocalRateLimit,
+            FilterType::RateLimit,
+            FilterType::ExtAuthz,
+            FilterType::CustomResponse,
+            FilterType::Mcp,
+        ] {
+            let metadata = filter_type.metadata();
+
+            // http_filter_name should match
+            assert_eq!(
+                metadata.http_filter_name,
+                filter_type.http_filter_name(),
+                "http_filter_name mismatch for {:?}",
+                filter_type
+            );
+
+            // is_implemented should match
+            assert_eq!(
+                metadata.is_implemented,
+                filter_type.is_fully_implemented(),
+                "is_implemented mismatch for {:?}",
+                filter_type
+            );
+
+            // requires_listener_config should match
+            assert_eq!(
+                metadata.requires_listener_config,
+                filter_type.requires_listener_config(),
+                "requires_listener_config mismatch for {:?}",
+                filter_type
+            );
+
+            // attachment_points should match (compare as vec)
+            assert_eq!(
+                metadata.attachment_points.to_vec(),
+                filter_type.allowed_attachment_points(),
+                "attachment_points mismatch for {:?}",
+                filter_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_per_route_behavior_values() {
+        assert_eq!(FilterType::HeaderMutation.per_route_behavior(), PerRouteBehavior::FullConfig);
+        assert_eq!(FilterType::JwtAuth.per_route_behavior(), PerRouteBehavior::ReferenceOnly);
+        assert_eq!(FilterType::LocalRateLimit.per_route_behavior(), PerRouteBehavior::FullConfig);
+        assert_eq!(FilterType::CustomResponse.per_route_behavior(), PerRouteBehavior::FullConfig);
+        assert_eq!(FilterType::Mcp.per_route_behavior(), PerRouteBehavior::DisableOnly);
+    }
+
+    #[test]
+    fn test_from_http_filter_name() {
+        assert_eq!(
+            FilterType::from_http_filter_name("envoy.filters.http.header_mutation"),
+            Some(FilterType::HeaderMutation)
+        );
+        assert_eq!(
+            FilterType::from_http_filter_name("envoy.filters.http.jwt_authn"),
+            Some(FilterType::JwtAuth)
+        );
+        assert_eq!(
+            FilterType::from_http_filter_name("envoy.filters.http.custom_response"),
+            Some(FilterType::CustomResponse)
+        );
+        assert_eq!(
+            FilterType::from_http_filter_name("envoy.filters.http.mcp"),
+            Some(FilterType::Mcp)
+        );
+        assert_eq!(FilterType::from_http_filter_name("unknown.filter"), None);
+    }
+
+    #[test]
+    fn test_all_filter_types_have_metadata() {
+        // Ensure all filter types return valid metadata (no panic)
+        let all_types = [
+            FilterType::HeaderMutation,
+            FilterType::JwtAuth,
+            FilterType::Cors,
+            FilterType::LocalRateLimit,
+            FilterType::RateLimit,
+            FilterType::ExtAuthz,
+            FilterType::CustomResponse,
+            FilterType::Mcp,
+        ];
+
+        for ft in all_types {
+            let m = ft.metadata();
+            assert_eq!(m.filter_type, ft, "Metadata filter_type should match for {:?}", ft);
+            assert!(!m.http_filter_name.is_empty(), "http_filter_name should not be empty");
+            assert!(!m.type_url.is_empty(), "type_url should not be empty");
+            assert!(!m.description.is_empty(), "description should not be empty");
         }
     }
 }

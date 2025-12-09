@@ -24,7 +24,7 @@ Goal: shift a percentage of traffic to a new cluster while keeping the majority 
 1. **Clusters** – register `service-blue` and `service-green` (cluster cookbook §1).
 2. **Route** – use a weighted action with `totalWeight` and per-cluster `typedPerFilterConfig` as needed (routing cookbook §2).
 3. **Listener** – reference the route config; add tracing/logging if you need extra observability (listener cookbook §4).
-4. Adjust weights over time via `PUT /api/v1/routes/{name}`.
+4. Adjust weights over time via `PUT /api/v1/route-configs/{name}`.
 
 ## 4. Terminate TLS at the Edge and Forward with mTLS
 Goal: accept HTTPS from clients, terminate TLS at Envoy, and forward to an upstream that expects TLS.

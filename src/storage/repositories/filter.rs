@@ -652,6 +652,29 @@ impl FilterRepository {
         Ok(rows.into_iter().map(FilterData::from).collect())
     }
 
+    /// Get the next available order for a listener's filter chain.
+    #[instrument(skip(self), fields(listener_id = %listener_id), name = "db_next_listener_filter_order")]
+    pub async fn get_next_listener_filter_order(&self, listener_id: &ListenerId) -> Result<i64> {
+        let max_order: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(filter_order) FROM listener_filters WHERE listener_id = $1",
+        )
+        .bind(listener_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %listener_id, "Failed to get max filter order");
+            FlowplaneError::Database {
+                source: e,
+                context: format!(
+                    "Failed to get max filter order for listener '{}'",
+                    listener_id
+                ),
+            }
+        })?;
+
+        Ok(max_order.unwrap_or(0) + 1)
+    }
+
     #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_list_filter_listeners")]
     pub async fn list_filter_listeners(&self, filter_id: &FilterId) -> Result<Vec<ListenerId>> {
         let listener_ids: Vec<String> = sqlx::query_scalar(

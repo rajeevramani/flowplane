@@ -58,7 +58,7 @@ const RATE_LIMIT_PER_ROUTE_TYPE_URL: &str =
 const RATE_LIMIT_QUOTA_OVERRIDE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.rate_limit_quota.v3.RateLimitQuotaOverride";
 const CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL: &str =
-    "type.googleapis.com/envoy.config.route.v3.FilterConfig";
+    "type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse";
 
 /// REST representation of an HTTP filter entry
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -161,13 +161,34 @@ impl HttpFilterKind {
 }
 
 /// Scoped configuration for HTTP filters (e.g. per-route overrides)
+///
+/// Uses internally tagged serialization with a `filter_type` discriminator to ensure
+/// unambiguous deserialization. Each filter config's fields are flattened into the
+/// same object as the tag.
+///
+/// ## JSON Format
+///
+/// ```json
+/// // Local rate limit
+/// {"filter_type": "local_rate_limit", "stat_prefix": "route", ...}
+///
+/// // JWT authentication (disabled)
+/// {"filter_type": "jwt_authn", "disabled": true}
+///
+/// // JWT authentication (requirement name)
+/// {"filter_type": "jwt_authn", "requirement_name": "primary"}
+///
+/// // Custom response
+/// {"filter_type": "custom_response", "disabled": false}
+///
+/// // Raw typed config (for unsupported filter types)
+/// {"filter_type": "typed", "type_url": "...", "value": "base64..."}
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(untagged)]
+#[serde(tag = "filter_type", rename_all = "snake_case")]
 pub enum HttpScopedConfig {
     /// Local Rate Limit config expressed in structured form
     LocalRateLimit(LocalRateLimitConfig),
-    /// JWT auth per-route overrides
-    JwtAuthn(JwtPerRouteConfig),
     /// CORS per-route policy overrides
     Cors(CorsPerRouteConfig),
     /// Header mutation per-route overrides
@@ -180,6 +201,8 @@ pub enum HttpScopedConfig {
     CustomResponse(CustomResponsePerRouteConfig),
     /// MCP per-route overrides
     Mcp(McpPerRouteConfig),
+    /// JWT auth per-route overrides
+    JwtAuthn(JwtPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -264,23 +287,22 @@ impl HttpScopedConfig {
         }
 
         if any.type_url == CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL {
-            use envoy_types::pb::envoy::config::route::v3::FilterConfig;
-            let proto = FilterConfig::decode(any.value.as_slice()).map_err(|err| {
-                crate::Error::config(format!(
-                    "Failed to decode custom response per-route config: {}",
-                    err
-                ))
-            })?;
-            let cfg = CustomResponsePerRouteConfig::from_proto(&proto)?;
+            let proto = custom_response::CustomResponseProto::decode(any.value.as_slice())
+                .map_err(|err| {
+                    crate::Error::config(format!(
+                        "Failed to decode custom response per-route config: {}",
+                        err
+                    ))
+                })?;
+            let cfg = CustomResponsePerRouteConfig::from_custom_response_proto(&proto)?;
             return Ok(HttpScopedConfig::CustomResponse(cfg));
         }
 
         if any.type_url == MCP_PER_ROUTE_TYPE_URL {
-            use envoy_types::pb::envoy::config::route::v3::FilterConfig;
-            let proto = FilterConfig::decode(any.value.as_slice()).map_err(|err| {
+            let proto = mcp::McpProto::decode(any.value.as_slice()).map_err(|err| {
                 crate::Error::config(format!("Failed to decode MCP per-route config: {}", err))
             })?;
-            let cfg = McpPerRouteConfig::from_proto(&proto)?;
+            let cfg = McpPerRouteConfig::from_mcp_proto(&proto)?;
             return Ok(HttpScopedConfig::Mcp(cfg));
         }
 
@@ -580,6 +602,240 @@ mod tests {
         match restored {
             HttpScopedConfig::RateLimitQuota(config) => {
                 assert_eq!(config.domain, "quota-override-domain");
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn custom_response_deserializes_with_filter_type_tag() {
+        // With internally tagged enums, filter_type discriminator is required
+        let json = r#"{"filter_type": "custom_response", "disabled": false}"#;
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match &scoped {
+            HttpScopedConfig::CustomResponse(cfg) => {
+                assert!(!cfg.disabled, "CustomResponse should have disabled=false");
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+
+        // Verify it can be converted to proto successfully
+        let result = scoped.to_any();
+        assert!(result.is_ok(), "to_any should succeed for CustomResponse");
+    }
+
+    #[test]
+    fn mcp_deserializes_with_filter_type_tag() {
+        let json = r#"{"filter_type": "mcp", "disabled": false}"#;
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match scoped {
+            HttpScopedConfig::Mcp(cfg) => {
+                assert!(!cfg.disabled, "Mcp should have disabled=false");
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn jwt_disabled_deserializes_with_filter_type_tag() {
+        // JWT with disabled=true using filter_type tag
+        let json = r#"{"filter_type": "jwt_authn", "disabled": true}"#;
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match &scoped {
+            HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::Disabled { disabled }) => {
+                assert!(*disabled, "JWT should have disabled=true");
+            }
+            other => panic!("Expected JwtAuthn::Disabled, got: {:?}", other),
+        }
+
+        let result = scoped.to_any();
+        assert!(result.is_ok(), "to_any should succeed for JWT disabled=true");
+    }
+
+    #[test]
+    fn jwt_requirement_name_deserializes_with_filter_type_tag() {
+        // JWT with requirement_name using filter_type tag
+        let json = r#"{"filter_type": "jwt_authn", "requirement_name": "my-requirement"}"#;
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match scoped {
+            HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::RequirementName { requirement_name }) => {
+                assert_eq!(requirement_name, "my-requirement");
+            }
+            other => panic!("Expected JwtAuthn::RequirementName, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn header_mutation_deserializes_with_filter_type_tag() {
+        let json = r#"{"filter_type": "header_mutation", "request_headers_to_add": [{"key": "X-Test", "value": "test"}]}"#;
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match scoped {
+            HttpScopedConfig::HeaderMutation(cfg) => {
+                assert_eq!(cfg.request_headers_to_add.len(), 1);
+                assert_eq!(cfg.request_headers_to_add[0].key, "X-Test");
+            }
+            other => panic!("Expected HeaderMutation, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tagged_enum_prevents_ambiguous_deserialization() {
+        // This test verifies that without the filter_type tag, deserialization fails
+        // (instead of silently picking the wrong variant like with untagged enums)
+        let json_without_tag = r#"{"disabled": false}"#;
+        let result: Result<HttpScopedConfig, _> = serde_json::from_str(json_without_tag);
+        assert!(result.is_err(), "Should fail without filter_type tag");
+
+        // But with the tag, it succeeds
+        let json_with_tag = r#"{"filter_type": "custom_response", "disabled": false}"#;
+        let result: Result<HttpScopedConfig, _> = serde_json::from_str(json_with_tag);
+        assert!(result.is_ok(), "Should succeed with filter_type tag");
+    }
+
+    #[test]
+    fn tagged_enum_serialization_includes_filter_type() {
+        // Verify serialization includes the filter_type tag
+        let scoped = HttpScopedConfig::CustomResponse(CustomResponsePerRouteConfig {
+            disabled: false,
+            matchers: vec![],
+        });
+        let json = serde_json::to_string(&scoped).expect("serialize");
+        assert!(json.contains("filter_type"), "Serialized JSON should include filter_type");
+        assert!(json.contains("custom_response"), "Serialized JSON should include variant name");
+    }
+
+    #[test]
+    fn custom_response_scoped_round_trip() {
+        // Test round-trip for CustomResponse - note: the 'disabled' flag is not
+        // preserved through proto serialization as CustomResponse proto doesn't
+        // have a disabled field. Disabling is handled at the route config level.
+        let scoped = HttpScopedConfig::CustomResponse(CustomResponsePerRouteConfig {
+            disabled: false,
+            matchers: vec![],
+        });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::CustomResponse(cfg) => {
+                // disabled defaults to false when deserializing from proto
+                assert!(!cfg.disabled);
+                assert!(cfg.matchers.is_empty(), "matchers should be empty");
+            }
+            other => panic!("unexpected scoped config: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn custom_response_scoped_with_matchers_converts_to_any() {
+        use crate::xds::filters::http::custom_response::{
+            LocalResponsePolicy, ResponseMatcherRule, StatusCodeMatcher,
+        };
+        use std::collections::HashMap;
+
+        // Test CustomResponse with full matchers support
+        let scoped = HttpScopedConfig::CustomResponse(CustomResponsePerRouteConfig {
+            disabled: false,
+            matchers: vec![
+                ResponseMatcherRule {
+                    status_code: StatusCodeMatcher::Exact { code: 429 },
+                    response: LocalResponsePolicy {
+                        status_code: Some(429),
+                        body: Some("{\"error\": \"rate limited\"}".to_string()),
+                        headers: {
+                            let mut h = HashMap::new();
+                            h.insert("content-type".to_string(), "application/json".to_string());
+                            h.insert("retry-after".to_string(), "60".to_string());
+                            h
+                        },
+                    },
+                },
+                ResponseMatcherRule {
+                    status_code: StatusCodeMatcher::Range { min: 500, max: 599 },
+                    response: LocalResponsePolicy {
+                        status_code: Some(503),
+                        body: Some("{\"error\": \"service unavailable\"}".to_string()),
+                        headers: HashMap::new(),
+                    },
+                },
+            ],
+        });
+
+        // Verify conversion to Any succeeds
+        let any = scoped.to_any().expect("to_any should succeed with matchers");
+        assert_eq!(any.type_url, CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL);
+        assert!(!any.value.is_empty(), "encoded value should not be empty");
+
+        // Verify the proto is a valid CustomResponse
+        use prost::Message;
+        let cr_proto = custom_response::CustomResponseProto::decode(any.value.as_slice())
+            .expect("decode CustomResponse");
+        // The proto should have a matcher tree
+        assert!(cr_proto.custom_response_matcher.is_some());
+    }
+
+    #[test]
+    fn custom_response_scoped_serde_with_matchers() {
+        use crate::xds::filters::http::custom_response::StatusCodeMatcher;
+
+        // Test JSON serialization/deserialization with matchers
+        let json = r#"{
+            "filter_type": "custom_response",
+            "disabled": false,
+            "matchers": [
+                {
+                    "status_code": {"type": "exact", "code": 429},
+                    "response": {
+                        "status_code": 429,
+                        "body": "{\"error\": \"rate limited\"}",
+                        "headers": {"content-type": "application/json"}
+                    }
+                }
+            ]
+        }"#;
+
+        let scoped: HttpScopedConfig = serde_json::from_str(json).expect("deserialize");
+
+        match &scoped {
+            HttpScopedConfig::CustomResponse(cfg) => {
+                assert!(!cfg.disabled);
+                assert_eq!(cfg.matchers.len(), 1);
+                assert!(matches!(
+                    cfg.matchers[0].status_code,
+                    StatusCodeMatcher::Exact { code: 429 }
+                ));
+                assert_eq!(cfg.matchers[0].response.status_code, Some(429));
+            }
+            other => panic!("expected CustomResponse, got: {:?}", other),
+        }
+
+        // Verify to_any works after deserialization
+        let any = scoped.to_any().expect("to_any should succeed");
+        assert_eq!(any.type_url, CUSTOM_RESPONSE_PER_ROUTE_TYPE_URL);
+    }
+
+    #[test]
+    fn mcp_scoped_round_trip() {
+        // Test round-trip for Mcp - note: the 'disabled' flag is not preserved
+        // through proto serialization as Mcp proto doesn't have a disabled field.
+        // Disabling is handled at the route config level.
+        let scoped = HttpScopedConfig::Mcp(McpPerRouteConfig { disabled: false });
+
+        let any = scoped.to_any().expect("to_any");
+        assert_eq!(any.type_url, MCP_PER_ROUTE_TYPE_URL);
+
+        let restored = HttpScopedConfig::from_any(&any).expect("from_any");
+        match restored {
+            HttpScopedConfig::Mcp(cfg) => {
+                // disabled defaults to false when deserializing from proto
+                assert!(!cfg.disabled);
             }
             other => panic!("unexpected scoped config: {:?}", other),
         }

@@ -23,6 +23,7 @@ import type {
 	RouteResponse,
 	ClusterResponse,
 	BootstrapConfigRequest,
+	BootstrapConfigRequestWithMtls,
 	ListTeamsResponse,
 	TeamResponse,
 	CreateTeamRequest,
@@ -53,7 +54,13 @@ import type {
 	VirtualHostSummary,
 	RouteSummary,
 	VirtualHostFiltersResponse,
-	RouteHierarchyFiltersResponse
+	RouteHierarchyFiltersResponse,
+	MtlsStatusResponse,
+	GenerateCertificateRequest,
+	GenerateCertificateResponse,
+	CertificateMetadata,
+	ListCertificatesResponse,
+	ListCertificatesQuery
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -412,9 +419,16 @@ class ApiClient {
 	}
 
 	// Bootstrap configuration methods
-	async getBootstrapConfig(request: BootstrapConfigRequest): Promise<string> {
+	async getBootstrapConfig(request: BootstrapConfigRequest | BootstrapConfigRequestWithMtls): Promise<string> {
 		const params = new URLSearchParams();
 		if (request.format) params.append('format', request.format);
+
+		// Handle mTLS options if present
+		const mtlsRequest = request as BootstrapConfigRequestWithMtls;
+		if (mtlsRequest.mtls !== undefined) params.append('mtls', mtlsRequest.mtls.toString());
+		if (mtlsRequest.certPath) params.append('cert_path', mtlsRequest.certPath);
+		if (mtlsRequest.keyPath) params.append('key_path', mtlsRequest.keyPath);
+		if (mtlsRequest.caPath) params.append('ca_path', mtlsRequest.caPath);
 
 		const path = `/api/v1/teams/${request.team}/bootstrap${params.toString() ? `?${params.toString()}` : ''}`;
 
@@ -671,6 +685,72 @@ class ApiClient {
 	): Promise<void> {
 		return this.delete<void>(
 			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters/${filterId}`
+		);
+	}
+
+	// ============================================================================
+	// mTLS and Proxy Certificate Methods
+	// ============================================================================
+
+	/**
+	 * Get mTLS configuration status for the control plane.
+	 * This endpoint helps understand whether mTLS is enabled and properly configured.
+	 */
+	async getMtlsStatus(): Promise<MtlsStatusResponse> {
+		return this.get<MtlsStatusResponse>('/api/v1/mtls/status');
+	}
+
+	/**
+	 * Generate a new proxy certificate for mTLS authentication.
+	 * The private key is only returned once at generation time.
+	 */
+	async generateProxyCertificate(
+		team: string,
+		request: GenerateCertificateRequest
+	): Promise<GenerateCertificateResponse> {
+		return this.post<GenerateCertificateResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates`,
+			request
+		);
+	}
+
+	/**
+	 * List all proxy certificates for a team.
+	 * Returns certificate metadata without private keys.
+	 */
+	async listProxyCertificates(
+		team: string,
+		query?: ListCertificatesQuery
+	): Promise<ListCertificatesResponse> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<ListCertificatesResponse>(path);
+	}
+
+	/**
+	 * Get a specific proxy certificate by ID.
+	 * Returns certificate metadata without the private key.
+	 */
+	async getProxyCertificate(team: string, id: string): Promise<CertificateMetadata> {
+		return this.get<CertificateMetadata>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Revoke a proxy certificate.
+	 */
+	async revokeProxyCertificate(
+		team: string,
+		id: string,
+		reason: string
+	): Promise<CertificateMetadata> {
+		return this.post<CertificateMetadata>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates/${encodeURIComponent(id)}/revoke`,
+			{ reason }
 		);
 	}
 }

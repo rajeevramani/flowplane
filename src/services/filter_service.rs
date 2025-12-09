@@ -702,15 +702,16 @@ impl FilterService {
                 let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
 
                 if !already_attached {
-                    // Auto-attach filter to listener
-                    let order = existing_listener_filters.len() as i64;
+                    // Auto-attach filter to listener using next available order
+                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
                     filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
 
                     info!(
                         listener_id = %listener.id,
                         filter_id = %filter_id,
                         filter_type = %filter_type,
-                        "Auto-attached filter to listener for route-level requirement"
+                        order = %order,
+                        "Auto-attached filter to listener for route-config-level requirement"
                     );
                 }
             }
@@ -946,14 +947,15 @@ impl FilterService {
                 let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
 
                 if !already_attached {
-                    // Auto-attach filter to listener
-                    let order = existing_listener_filters.len() as i64;
+                    // Auto-attach filter to listener using next available order
+                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
                     filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
 
                     info!(
                         listener_id = %listener.id,
                         filter_id = %filter_id,
                         filter_type = %filter_type,
+                        order = %order,
                         "Auto-attached filter to listener for VH-level requirement"
                     );
                 }
@@ -1059,14 +1061,15 @@ impl FilterService {
                 let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
 
                 if !already_attached {
-                    // Auto-attach filter to listener
-                    let order = existing_listener_filters.len() as i64;
+                    // Auto-attach filter to listener using next available order
+                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
                     filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
 
                     info!(
                         listener_id = %listener.id,
                         filter_id = %filter_id,
                         filter_type = %filter_type,
+                        order = %order,
                         "Auto-attached filter to listener for route-level requirement"
                     );
                 }

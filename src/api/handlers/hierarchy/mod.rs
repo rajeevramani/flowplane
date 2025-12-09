@@ -4,14 +4,14 @@
 //! virtual host and route levels within a route configuration.
 //!
 //! API Endpoints:
-//! - GET  /route-configs/{route_config_name}/virtual-hosts - List virtual hosts
-//! - GET  /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - List VH filters
-//! - POST /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - Attach filter to VH
-//! - DELETE /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id} - Detach filter from VH
-//! - GET  /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes - List routes
-//! - GET  /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - List route filters
-//! - POST /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - Attach filter to route
-//! - DELETE /route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id} - Detach filter
+//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts - List virtual hosts
+//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - List VH filters
+//! - POST /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - Attach filter to VH
+//! - DELETE /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id} - Detach filter from VH
+//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes - List routes
+//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - List route filters
+//! - POST /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - Attach filter to route
+//! - DELETE /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id} - Detach filter
 
 mod types;
 
@@ -23,6 +23,7 @@ use axum::{
     Extension, Json,
 };
 use tracing::{info, instrument};
+use utoipa;
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -136,6 +137,19 @@ async fn resolve_route(
 // === Virtual Host Handlers ===
 
 /// List all virtual hosts for a route config
+#[utoipa::path(
+    get,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+    ),
+    responses(
+        (status = 200, description = "List of virtual hosts", body = ListVirtualHostsResponse),
+        (status = 404, description = "Route config not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, user_id = ?context.user_id))]
 pub async fn list_virtual_hosts_handler(
     State(state): State<ApiState>,
@@ -181,6 +195,20 @@ pub async fn list_virtual_hosts_handler(
 }
 
 /// List filters attached to a virtual host
+#[utoipa::path(
+    get,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+    ),
+    responses(
+        (status = 200, description = "List of filters attached to virtual host", body = VirtualHostFiltersResponse),
+        (status = 404, description = "Route config or virtual host not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_virtual_host_filters_handler(
     State(state): State<ApiState>,
@@ -208,6 +236,22 @@ pub async fn list_virtual_host_filters_handler(
 }
 
 /// Attach a filter to a virtual host
+#[utoipa::path(
+    post,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+    ),
+    request_body = AttachFilterRequest,
+    responses(
+        (status = 204, description = "Filter attached to virtual host"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Route config, virtual host, or filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_virtual_host_handler(
     State(state): State<ApiState>,
@@ -240,6 +284,21 @@ pub async fn attach_filter_to_virtual_host_handler(
 }
 
 /// Detach a filter from a virtual host
+#[utoipa::path(
+    delete,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+        ("filter_id" = String, Path, description = "Filter ID"),
+    ),
+    responses(
+        (status = 204, description = "Filter detached from virtual host"),
+        (status = 404, description = "Route config, virtual host, filter, or attachment not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_virtual_host_handler(
     State(state): State<ApiState>,
@@ -273,6 +332,20 @@ pub async fn detach_filter_from_virtual_host_handler(
 // === Route Rule Handlers ===
 
 /// List all routes for a virtual host
+#[utoipa::path(
+    get,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+    ),
+    responses(
+        (status = 200, description = "List of routes in virtual host", body = ListRouteRulesResponse),
+        (status = 404, description = "Route config or virtual host not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_route_rules_handler(
     State(state): State<ApiState>,
@@ -315,6 +388,21 @@ pub async fn list_route_rules_handler(
 }
 
 /// List filters attached to a route
+#[utoipa::path(
+    get,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+        ("route_name" = String, Path, description = "Route name"),
+    ),
+    responses(
+        (status = 200, description = "List of filters attached to route", body = RouteRuleFiltersResponse),
+        (status = 404, description = "Route config, virtual host, or route not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_rule_filters_handler(
     State(state): State<ApiState>,
@@ -342,6 +430,23 @@ pub async fn list_route_rule_filters_handler(
 }
 
 /// Attach a filter to a route
+#[utoipa::path(
+    post,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+        ("route_name" = String, Path, description = "Route name"),
+    ),
+    request_body = AttachFilterRequest,
+    responses(
+        (status = 204, description = "Filter attached to route"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Route config, virtual host, route, or filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_route_rule_handler(
     State(state): State<ApiState>,
@@ -375,6 +480,22 @@ pub async fn attach_filter_to_route_rule_handler(
 }
 
 /// Detach a filter from a route
+#[utoipa::path(
+    delete,
+    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+    params(
+        ("route_config_name" = String, Path, description = "Route config name"),
+        ("vhost_name" = String, Path, description = "Virtual host name"),
+        ("route_name" = String, Path, description = "Route name"),
+        ("filter_id" = String, Path, description = "Filter ID"),
+    ),
+    responses(
+        (status = 204, description = "Filter detached from route"),
+        (status = 404, description = "Route config, virtual host, route, filter, or attachment not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "hierarchy"
+)]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_route_rule_handler(
     State(state): State<ApiState>,

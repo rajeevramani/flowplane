@@ -100,7 +100,16 @@ use crate::xds::{
         crate::api::handlers::aggregated_schemas::list_aggregated_schemas_handler,
         crate::api::handlers::aggregated_schemas::get_aggregated_schema_handler,
         crate::api::handlers::aggregated_schemas::compare_aggregated_schemas_handler,
-        crate::api::handlers::aggregated_schemas::export_aggregated_schema_handler
+        crate::api::handlers::aggregated_schemas::export_aggregated_schema_handler,
+        // Hierarchy endpoints (virtual host and route filter attachments)
+        crate::api::handlers::hierarchy::list_virtual_hosts_handler,
+        crate::api::handlers::hierarchy::list_virtual_host_filters_handler,
+        crate::api::handlers::hierarchy::attach_filter_to_virtual_host_handler,
+        crate::api::handlers::hierarchy::detach_filter_from_virtual_host_handler,
+        crate::api::handlers::hierarchy::list_route_rules_handler,
+        crate::api::handlers::hierarchy::list_route_rule_filters_handler,
+        crate::api::handlers::hierarchy::attach_filter_to_route_rule_handler,
+        crate::api::handlers::hierarchy::detach_filter_from_route_rule_handler
     ),
     components(
         schemas(
@@ -199,7 +208,16 @@ use crate::xds::{
             crate::api::handlers::aggregated_schemas::SchemaDifferences,
             crate::api::handlers::aggregated_schemas::ExportSchemaQuery,
             crate::api::handlers::aggregated_schemas::OpenApiExportResponse,
-            crate::api::handlers::aggregated_schemas::OpenApiInfo
+            crate::api::handlers::aggregated_schemas::OpenApiInfo,
+            // Hierarchy schemas (virtual host and route filter attachments)
+            crate::api::handlers::hierarchy::AttachFilterRequest,
+            crate::api::handlers::hierarchy::ListVirtualHostsResponse,
+            crate::api::handlers::hierarchy::VirtualHostResponse,
+            crate::api::handlers::hierarchy::VirtualHostFiltersResponse,
+            crate::api::handlers::hierarchy::ListRouteRulesResponse,
+            crate::api::handlers::hierarchy::RouteRuleResponse,
+            crate::api::handlers::hierarchy::RouteRuleFiltersResponse,
+            crate::api::handlers::hierarchy::FilterResponse
         )
     ),
     tags(
@@ -217,7 +235,8 @@ use crate::xds::{
         (name = "audit", description = "Audit log queries (admin only)"),
         (name = "reports", description = "Platform visibility and reporting endpoints"),
         (name = "learning-sessions", description = "API schema learning and traffic observation"),
-        (name = "aggregated-schemas", description = "Learned API schemas and catalog management")
+        (name = "aggregated-schemas", description = "Learned API schemas and catalog management"),
+        (name = "hierarchy", description = "Hierarchical filter attachment to virtual hosts and routes")
     ),
     security(
         ("bearerAuth" = [])

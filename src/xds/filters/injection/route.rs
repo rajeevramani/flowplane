@@ -15,12 +15,6 @@ use crate::storage::{
     FilterData, FilterRepository, RouteConfigData, RouteFilterRepository, RouteRepository,
     VirtualHostFilterRepository, VirtualHostRepository,
 };
-use crate::xds::filters::http::custom_response::CustomResponsePerRouteConfig;
-use crate::xds::filters::http::header_mutation::{
-    HeaderMutationEntry, HeaderMutationPerRouteConfig,
-};
-use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
-use crate::xds::filters::http::mcp::McpPerRouteConfig;
 use crate::xds::filters::http::HttpScopedConfig;
 use crate::Result;
 use std::collections::HashMap;
@@ -86,75 +80,26 @@ pub async fn inject_route_config_filters(
                 }
             };
 
-            // Convert to per-route config based on filter type
-            let (filter_name, scoped_config) = match filter_config {
-                FilterConfig::HeaderMutation(hm_config) => {
-                    let per_route = HeaderMutationPerRouteConfig {
-                        request_headers_to_add: hm_config
-                            .request_headers_to_add
-                            .into_iter()
-                            .map(|e| HeaderMutationEntry {
-                                key: e.key,
-                                value: e.value,
-                                append: e.append,
-                            })
-                            .collect(),
-                        request_headers_to_remove: hm_config.request_headers_to_remove,
-                        response_headers_to_add: hm_config
-                            .response_headers_to_add
-                            .into_iter()
-                            .map(|e| HeaderMutationEntry {
-                                key: e.key,
-                                value: e.value,
-                                append: e.append,
-                            })
-                            .collect(),
-                        response_headers_to_remove: hm_config.response_headers_to_remove,
-                    };
-
-                    (
-                        "envoy.filters.http.header_mutation".to_string(),
-                        HttpScopedConfig::HeaderMutation(per_route),
-                    )
+            // Use unified conversion to get per-route config
+            let (filter_name, scoped_config) = match filter_config.to_per_route_config() {
+                Ok(Some((name, config))) => (name, config),
+                Ok(None) => {
+                    // Filter doesn't support per-route config
+                    debug!(
+                        filter_id = %filter_data.id,
+                        filter_name = %filter_data.name,
+                        "Filter doesn't support per-route config, skipping"
+                    );
+                    continue;
                 }
-                FilterConfig::JwtAuth(jwt_config) => {
-                    // Per-route JWT uses requirement_name to reference listener-level config
-                    // Use the first provider name as the default requirement
-                    let per_route = jwt_config
-                        .providers
-                        .keys()
-                        .next()
-                        .map(|name| JwtPerRouteConfig::RequirementName {
-                            requirement_name: name.clone(),
-                        })
-                        .unwrap_or(JwtPerRouteConfig::Disabled { disabled: true });
-
-                    (
-                        "envoy.filters.http.jwt_authn".to_string(),
-                        HttpScopedConfig::JwtAuthn(per_route),
-                    )
-                }
-                FilterConfig::LocalRateLimit(config) => {
-                    // LocalRateLimit can be used as per-route config
-                    (
-                        "envoy.filters.http.local_ratelimit".to_string(),
-                        HttpScopedConfig::LocalRateLimit(config),
-                    )
-                }
-                FilterConfig::CustomResponse(_) => {
-                    // CustomResponse per-route is typically used to disable the filter
-                    // The main config is at the listener level
-                    let per_route = CustomResponsePerRouteConfig { disabled: false };
-                    (
-                        "envoy.filters.http.custom_response".to_string(),
-                        HttpScopedConfig::CustomResponse(per_route),
-                    )
-                }
-                FilterConfig::Mcp(_) => {
-                    // MCP per-route is typically used to disable the filter
-                    // The main config is at the listener level
-                    let per_route = McpPerRouteConfig { disabled: false };
-                    ("envoy.filters.http.mcp".to_string(), HttpScopedConfig::Mcp(per_route))
+                Err(e) => {
+                    warn!(
+                        filter_id = %filter_data.id,
+                        filter_name = %filter_data.name,
+                        error = %e,
+                        "Failed to convert filter to per-route config, skipping"
+                    );
+                    continue;
                 }
             };
 
@@ -406,6 +351,9 @@ fn inject_hierarchical(
 }
 
 /// Convert a FilterData to its scoped config representation.
+///
+/// Uses the unified conversion framework to delegate to the appropriate
+/// filter-specific conversion logic.
 fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpScopedConfig)> {
     let filter_config: FilterConfig = match serde_json::from_str(&filter_data.configuration) {
         Ok(cfg) => cfg,
@@ -420,59 +368,25 @@ fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpSco
         }
     };
 
-    match filter_config {
-        FilterConfig::HeaderMutation(hm_config) => {
-            let per_route = HeaderMutationPerRouteConfig {
-                request_headers_to_add: hm_config
-                    .request_headers_to_add
-                    .into_iter()
-                    .map(|e| HeaderMutationEntry { key: e.key, value: e.value, append: e.append })
-                    .collect(),
-                request_headers_to_remove: hm_config.request_headers_to_remove,
-                response_headers_to_add: hm_config
-                    .response_headers_to_add
-                    .into_iter()
-                    .map(|e| HeaderMutationEntry { key: e.key, value: e.value, append: e.append })
-                    .collect(),
-                response_headers_to_remove: hm_config.response_headers_to_remove,
-            };
-
-            Some((
-                "envoy.filters.http.header_mutation".to_string(),
-                HttpScopedConfig::HeaderMutation(per_route),
-            ))
+    // Use unified conversion
+    match filter_config.to_per_route_config() {
+        Ok(Some((name, config))) => Some((name, config)),
+        Ok(None) => {
+            debug!(
+                filter_id = %filter_data.id,
+                filter_name = %filter_data.name,
+                "Filter doesn't support per-route config"
+            );
+            None
         }
-        FilterConfig::JwtAuth(jwt_config) => {
-            let per_route = jwt_config
-                .providers
-                .keys()
-                .next()
-                .map(|name| JwtPerRouteConfig::RequirementName { requirement_name: name.clone() })
-                .unwrap_or(JwtPerRouteConfig::Disabled { disabled: true });
-
-            Some((
-                "envoy.filters.http.jwt_authn".to_string(),
-                HttpScopedConfig::JwtAuthn(per_route),
-            ))
-        }
-        FilterConfig::LocalRateLimit(config) => Some((
-            "envoy.filters.http.local_ratelimit".to_string(),
-            HttpScopedConfig::LocalRateLimit(config),
-        )),
-        FilterConfig::CustomResponse(_) => {
-            // CustomResponse per-route is typically used to disable the filter
-            // The main config is at the listener level
-            let per_route = CustomResponsePerRouteConfig { disabled: false };
-            Some((
-                "envoy.filters.http.custom_response".to_string(),
-                HttpScopedConfig::CustomResponse(per_route),
-            ))
-        }
-        FilterConfig::Mcp(_) => {
-            // MCP per-route is typically used to disable the filter
-            // The main config is at the listener level
-            let per_route = McpPerRouteConfig { disabled: false };
-            Some(("envoy.filters.http.mcp".to_string(), HttpScopedConfig::Mcp(per_route)))
+        Err(e) => {
+            warn!(
+                filter_id = %filter_data.id,
+                filter_name = %filter_data.name,
+                error = %e,
+                "Failed to convert filter to per-route config"
+            );
+            None
         }
     }
 }
@@ -480,6 +394,10 @@ fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpSco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xds::filters::http::header_mutation::{
+        HeaderMutationEntry, HeaderMutationPerRouteConfig,
+    };
+    use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
     use serde_json::json;
 
     #[test]

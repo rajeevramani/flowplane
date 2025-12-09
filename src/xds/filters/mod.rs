@@ -46,6 +46,7 @@
 //! let any = config.to_any()?;
 //! ```
 
+pub mod conversion;
 pub mod http;
 pub mod injection;
 

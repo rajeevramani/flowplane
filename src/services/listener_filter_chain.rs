@@ -4,6 +4,8 @@
 //! to add or remove HTTP filters from the filter chain. Used by the automatic
 //! listener filter chain management system.
 
+use crate::domain::FilterType as DomainFilterType;
+use crate::xds::filters::conversion::create_empty_listener_filter;
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind, ROUTER_FILTER_NAME};
 use crate::xds::listener::{FilterType, ListenerConfig};
 
@@ -70,7 +72,7 @@ pub fn add_http_filter_before_router(config: &mut ListenerConfig, filter_name: &
 
                 // Create the new filter entry based on filter name
                 // Some filters (like JWT) cannot be created as empty placeholders
-                let new_filter = match create_empty_http_filter(filter_name) {
+                let new_filter = match create_empty_http_filter_entry(filter_name) {
                     Some(filter) => filter,
                     None => {
                         // Filter requires proper config, skip adding placeholder
@@ -156,64 +158,24 @@ fn is_router_filter(filter: &HttpFilterKind) -> bool {
 ///
 /// Returns `None` for filters that require valid configuration (like JWT auth,
 /// local rate limit) and cannot work as empty placeholders.
-fn create_empty_http_filter(filter_name: &str) -> Option<HttpFilterConfigEntry> {
-    // Create the appropriate filter kind based on name
-    let filter = match filter_name {
-        "envoy.filters.http.header_mutation" => HttpFilterKind::HeaderMutation(
-            crate::xds::filters::http::header_mutation::HeaderMutationConfig::default(),
-        ),
-        // JWT authn requires valid providers - can't create empty placeholder
-        // For route-level JWT filters, the actual JWT config must be attached to the listener
-        // via the listener_filters junction table. The inject_listener_auto_filters function
-        // will inject the properly configured JWT filter from there.
-        "envoy.filters.http.jwt_authn" => {
-            tracing::debug!(
-                filter_name = %filter_name,
-                "JWT auth requires listener-attached config via listener_filters table, skipping empty placeholder"
-            );
-            return None;
-        }
-        // Local rate limit requires token bucket config - can't create empty placeholder
-        // The actual config must be attached via the listener_filters junction table.
-        "envoy.filters.http.local_ratelimit" => {
-            tracing::debug!(
-                filter_name = %filter_name,
-                "Local rate limit requires listener-attached config via listener_filters table, skipping empty placeholder"
-            );
-            return None;
-        }
-        "envoy.filters.http.cors" => {
-            // CORS requires a policy
-            HttpFilterKind::Cors(crate::xds::filters::http::cors::CorsConfig {
-                policy: crate::xds::filters::http::cors::CorsPolicyConfig::default(),
-            })
-        }
-        // External rate limit and other complex filters that require valid service config
-        // are better handled as custom filters for now
-        "envoy.filters.http.ratelimit" | "envoy.filters.http.ext_authz" => {
+///
+/// Uses the unified conversion framework via `FilterType::from_http_filter_name()`
+/// and `create_empty_listener_filter()`.
+fn create_empty_http_filter_entry(filter_name: &str) -> Option<HttpFilterConfigEntry> {
+    // Look up the filter type from the Envoy filter name
+    let filter_type = match DomainFilterType::from_http_filter_name(filter_name) {
+        Some(ft) => ft,
+        None => {
             tracing::warn!(
                 filter_name = %filter_name,
-                "Complex filter type requires service configuration, using custom config placeholder"
+                "Unknown HTTP filter type, cannot create empty placeholder"
             );
-            HttpFilterKind::Custom {
-                config: crate::xds::filters::TypedConfig {
-                    type_url: format!("type.googleapis.com/{}", filter_name),
-                    value: crate::xds::filters::Base64Bytes(Vec::new()),
-                },
-            }
-        }
-        // For unknown filters, we can't create a typed config
-        // This shouldn't happen if the caller is using FilterType::http_filter_name()
-        _ => {
-            tracing::warn!(filter_name = %filter_name, "Unknown HTTP filter type, using empty custom config");
-            HttpFilterKind::Custom {
-                config: crate::xds::filters::TypedConfig {
-                    type_url: format!("type.googleapis.com/{}", filter_name),
-                    value: crate::xds::filters::Base64Bytes(Vec::new()),
-                },
-            }
+            return None;
         }
     };
+
+    // Use the unified conversion to create an empty filter
+    let filter = create_empty_listener_filter(filter_type)?;
 
     Some(HttpFilterConfigEntry {
         name: Some(filter_name.to_string()),

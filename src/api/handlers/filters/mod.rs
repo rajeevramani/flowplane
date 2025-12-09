@@ -314,15 +314,15 @@ pub async fn delete_filter_handler(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/routes/{route_id}/filters",
+    path = "/api/v1/route-configs/{route_config_id}/filters",
     params(
-        ("route_id" = String, Path, description = "Route ID"),
+        ("route_config_id" = String, Path, description = "Route config name"),
     ),
     request_body = AttachFilterRequest,
     responses(
-        (status = 204, description = "Filter attached to route"),
+        (status = 204, description = "Filter attached to route config"),
         (status = 400, description = "Validation error"),
-        (status = 404, description = "Route or filter not found"),
+        (status = 404, description = "Route config or filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "filters"
@@ -359,14 +359,14 @@ pub async fn attach_filter_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/routes/{route_id}/filters/{filter_id}",
+    path = "/api/v1/route-configs/{route_config_id}/filters/{filter_id}",
     params(
-        ("route_id" = String, Path, description = "Route ID"),
+        ("route_config_id" = String, Path, description = "Route config name"),
         ("filter_id" = String, Path, description = "Filter ID"),
     ),
     responses(
-        (status = 204, description = "Filter detached from route"),
-        (status = 404, description = "Route, filter, or attachment not found"),
+        (status = 204, description = "Filter detached from route config"),
+        (status = 404, description = "Route config, filter, or attachment not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "filters"
@@ -402,13 +402,13 @@ pub async fn detach_filter_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/routes/{route_id}/filters",
+    path = "/api/v1/route-configs/{route_config_id}/filters",
     params(
-        ("route_id" = String, Path, description = "Route ID"),
+        ("route_config_id" = String, Path, description = "Route config name"),
     ),
     responses(
-        (status = 200, description = "Filters attached to route", body = RouteFiltersResponse),
-        (status = 404, description = "Route not found"),
+        (status = 200, description = "Filters attached to route config", body = RouteFiltersResponse),
+        (status = 404, description = "Route config not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "filters"

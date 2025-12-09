@@ -203,6 +203,8 @@ pub async fn inject_listener_filters(
 }
 
 /// Process filter data and return a JWT merger and list of other HTTP filters.
+///
+/// Uses the unified conversion framework for filter-to-protobuf conversion.
 fn process_filters(
     filters: &[FilterData],
     listener_name: &str,
@@ -225,104 +227,53 @@ fn process_filters(
             }
         };
 
-        match filter_config {
-            FilterConfig::JwtAuth(jwt_config) => {
-                jwt_merger.add(&jwt_config);
-            }
-            FilterConfig::HeaderMutation(_) => {
-                // HeaderMutation is route-level only, skip for listener injection
-                debug!(
+        let filter_type = filter_config.filter_type();
+        let metadata = filter_type.metadata();
+
+        // JWT requires special handling for merging
+        if let FilterConfig::JwtAuth(jwt_config) = &filter_config {
+            jwt_merger.add(jwt_config);
+            continue;
+        }
+
+        // Route-only filters shouldn't be injected at listener level
+        if !filter_type.can_attach_to(crate::domain::AttachmentPoint::Listener) {
+            debug!(
+                listener = %listener_name,
+                filter_name = %filter_data.name,
+                filter_type = %filter_type,
+                "Filter is route-level only, skipping listener injection"
+            );
+            continue;
+        }
+
+        // Use unified conversion for all other filters
+        match filter_config.to_listener_any() {
+            Ok(any) => {
+                let http_filter = HttpFilter {
+                    name: metadata.http_filter_name.to_string(),
+                    config_type: Some(
+                        envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
+                    ),
+                    is_optional: false,
+                    disabled: false,
+                };
+                other_filters.push(http_filter);
+                info!(
                     listener = %listener_name,
                     filter_name = %filter_data.name,
-                    "HeaderMutation filter is route-level only, skipping listener injection"
+                    filter_type = %filter_type,
+                    "Prepared filter for injection"
                 );
             }
-            FilterConfig::LocalRateLimit(config) => {
-                // Convert LocalRateLimitConfig to HttpFilter
-                match config.to_any() {
-                    Ok(any) => {
-                        let http_filter = HttpFilter {
-                            name: "envoy.filters.http.local_ratelimit".to_string(),
-                            config_type: Some(
-                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
-                            ),
-                            is_optional: false,
-                            disabled: false,
-                        };
-                        other_filters.push(http_filter);
-                        info!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            "Prepared LocalRateLimit filter for injection"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            error = %e,
-                            "Failed to convert LocalRateLimit config to protobuf, skipping"
-                        );
-                    }
-                }
-            }
-            FilterConfig::CustomResponse(config) => {
-                // Convert CustomResponseConfig to HttpFilter
-                match config.to_any() {
-                    Ok(any) => {
-                        let http_filter = HttpFilter {
-                            name: "envoy.filters.http.custom_response".to_string(),
-                            config_type: Some(
-                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
-                            ),
-                            is_optional: false,
-                            disabled: false,
-                        };
-                        other_filters.push(http_filter);
-                        info!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            "Prepared CustomResponse filter for injection"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            error = %e,
-                            "Failed to convert CustomResponse config to protobuf, skipping"
-                        );
-                    }
-                }
-            }
-            FilterConfig::Mcp(config) => {
-                // Convert McpFilterConfig to HttpFilter
-                match config.to_any() {
-                    Ok(any) => {
-                        let http_filter = HttpFilter {
-                            name: "envoy.filters.http.mcp".to_string(),
-                            config_type: Some(
-                                envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
-                            ),
-                            is_optional: false,
-                            disabled: false,
-                        };
-                        other_filters.push(http_filter);
-                        info!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            "Prepared MCP filter for injection"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            listener = %listener_name,
-                            filter_name = %filter_data.name,
-                            error = %e,
-                            "Failed to convert MCP config to protobuf, skipping"
-                        );
-                    }
-                }
+            Err(e) => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter_data.name,
+                    filter_type = %filter_type,
+                    error = %e,
+                    "Failed to convert filter config to protobuf, skipping"
+                );
             }
         }
     }

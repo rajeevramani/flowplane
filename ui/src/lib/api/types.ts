@@ -941,3 +941,94 @@ export interface AttachedFilterWithSource {
 	level: HierarchyLevel;
 	order: number;
 }
+
+// ============================================================================
+// mTLS and Proxy Certificate Types
+// ============================================================================
+
+// mTLS status response
+export interface MtlsStatusResponse {
+	/** Whether mTLS is fully enabled (PKI configured + xDS TLS configured) */
+	enabled: boolean;
+	/** Whether the xDS server has TLS enabled (server certificate configured) */
+	xdsServerTls: boolean;
+	/** Whether client certificate authentication is required */
+	clientAuthRequired: boolean;
+	/** SPIFFE trust domain for certificate identity URIs */
+	trustDomain: string;
+	/** Whether Vault PKI mount is configured for certificate generation */
+	pkiMountConfigured: boolean;
+	/** Message describing the current mTLS status */
+	message: string;
+}
+
+// Request to generate a proxy certificate
+export interface GenerateCertificateRequest {
+	/** Unique identifier for the proxy instance (e.g., hostname, pod name) */
+	proxyId: string;
+}
+
+// Response after generating a certificate
+export interface GenerateCertificateResponse {
+	/** Certificate record ID */
+	id: string;
+	/** Proxy instance identifier */
+	proxyId: string;
+	/** SPIFFE URI embedded in the certificate */
+	spiffeUri: string;
+	/** PEM-encoded X.509 certificate */
+	certificate: string;
+	/** PEM-encoded private key (only returned once at generation time) */
+	privateKey: string;
+	/** PEM-encoded CA certificate chain */
+	caChain: string;
+	/** Certificate expiration timestamp (ISO 8601) */
+	expiresAt: string;
+}
+
+// Certificate metadata (without private key)
+export interface CertificateMetadata {
+	id: string;
+	proxyId: string;
+	spiffeUri: string;
+	serialNumber: string;
+	issuedAt: string;
+	expiresAt: string;
+	isValid: boolean;
+	isExpired: boolean;
+	isRevoked: boolean;
+	revokedAt: string | null;
+	revokedReason: string | null;
+}
+
+// Response for listing certificates
+export interface ListCertificatesResponse {
+	/** List of certificates (without private keys) */
+	certificates: CertificateMetadata[];
+	/** Total number of certificates for this team */
+	total: number;
+	/** Pagination limit used */
+	limit: number;
+	/** Pagination offset used */
+	offset: number;
+}
+
+// Query parameters for listing certificates
+export interface ListCertificatesQuery {
+	/** Maximum number of certificates to return */
+	limit?: number;
+	/** Offset for pagination */
+	offset?: number;
+}
+
+// Bootstrap configuration request with mTLS options
+export interface BootstrapConfigRequestWithMtls extends BootstrapConfigRequest {
+	/** Enable mTLS configuration in bootstrap */
+	mtls?: boolean;
+	/** Path to client certificate file */
+	certPath?: string;
+	/** Path to client private key file */
+	keyPath?: string;
+	/** Path to CA certificate file */
+	caPath?: string;
+}

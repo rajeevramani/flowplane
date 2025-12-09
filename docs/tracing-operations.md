@@ -184,7 +184,7 @@ The control plane automatically instruments:
 
 **API Handlers:**
 - All `/api/v1/clusters` operations
-- All `/api/v1/routes` operations
+- All `/api/v1/route-configs` operations
 - All `/api/v1/listeners` operations
 - Token management endpoints
 - OpenAPI import endpoints

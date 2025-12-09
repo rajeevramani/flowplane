@@ -38,7 +38,7 @@ curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
 ### Step 2: Create Route Configuration
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+curl -sS -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -62,7 +62,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
 
 # Verify
 curl -sS -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/routes/httpbin-routes | jq .name
+  http://127.0.0.1:8080/api/v1/route-configs/httpbin-routes | jq .name
 ```
 
 ### Step 3: Create Listener

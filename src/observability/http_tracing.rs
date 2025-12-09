@@ -110,7 +110,7 @@ pub async fn trace_http_requests(request: Request, next: Next) -> Response {
 fn normalize_path_for_metrics(path: &str) -> String {
     // Common patterns to normalize:
     // - /api/v1/clusters/{uuid} -> /api/v1/clusters/:id
-    // - /api/v1/routes/{uuid} -> /api/v1/routes/:id
+    // - /api/v1/route-configs/{name} -> /api/v1/route-configs/:id
     // - /api/v1/listeners/{name} -> /api/v1/listeners/:name
 
     let segments: Vec<&str> = path.split('/').collect();
@@ -132,13 +132,16 @@ fn normalize_path_for_metrics(path: &str) -> String {
             && matches!(
                 segments.get(i - 1).copied(),
                 Some("clusters")
-                    | Some("routes")
+                    | Some("route-configs")
                     | Some("listeners")
                     | Some("teams")
                     | Some("users")
                     | Some("tokens")
                     | Some("learning-sessions")
                     | Some("aggregated-schemas")
+                    | Some("filters")
+                    | Some("openapi")
+                    | Some("proxy-certificates")
             );
 
         if is_uuid || is_numeric || (prev_is_collection && !segment.is_empty()) {
@@ -213,7 +216,7 @@ mod tests {
     #[test]
     fn test_normalize_path_for_metrics_basic() {
         assert_eq!(normalize_path_for_metrics("/api/v1/clusters"), "/api/v1/clusters");
-        assert_eq!(normalize_path_for_metrics("/api/v1/routes"), "/api/v1/routes");
+        assert_eq!(normalize_path_for_metrics("/api/v1/route-configs"), "/api/v1/route-configs");
         assert_eq!(normalize_path_for_metrics("/health"), "/health");
     }
 
@@ -224,8 +227,10 @@ mod tests {
             "/api/v1/clusters/:id"
         );
         assert_eq!(
-            normalize_path_for_metrics("/api/v1/routes/123e4567-e89b-12d3-a456-426614174000"),
-            "/api/v1/routes/:id"
+            normalize_path_for_metrics(
+                "/api/v1/route-configs/123e4567-e89b-12d3-a456-426614174000"
+            ),
+            "/api/v1/route-configs/:id"
         );
     }
 

@@ -37,7 +37,8 @@ pub use cluster::{
 };
 pub use endpoint::EndpointHealthStatus;
 pub use filter::{
-    AttachmentPoint, FilterConfig, FilterType, HeaderMutationEntry, HeaderMutationFilterConfig,
+    AttachmentPoint, FilterConfig, FilterType, FilterTypeMetadata, HeaderMutationEntry,
+    HeaderMutationFilterConfig, PerRouteBehavior,
 };
 pub use id::{
     ClusterId, EndpointId, FilterId, ListenerId, ProxyCertificateId, RouteConfigId, RouteId,

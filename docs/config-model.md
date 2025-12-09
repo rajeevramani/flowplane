@@ -34,8 +34,8 @@ Key fields:
 * `tracing` – provider name + arbitrary string map.
 * `httpFilters` – ordered list of `HttpFilterConfigEntry` items (see [filters](filters.md)). The router filter is appended automatically if you omit it.
 
-## Routes
-Endpoint: `POST /api/v1/routes`
+## Route Configs
+Endpoint: `POST /api/v1/route-configs`
 
 Structure:
 
