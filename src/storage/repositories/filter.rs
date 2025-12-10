@@ -449,6 +449,41 @@ impl FilterRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
+            // Check for unique constraint violations and provide helpful error messages
+            if let Some(db_err) = e.as_database_error() {
+                if let Some(code) = db_err.code() {
+                    // SQLite UNIQUE constraint violation code is 2067
+                    if code.as_ref() == "2067" {
+                        let msg = db_err.message();
+                        // Check which constraint was violated
+                        if msg.contains("filter_order") {
+                            tracing::warn!(
+                                route_config_id = %route_config_id,
+                                filter_id = %filter_id,
+                                order = %order,
+                                "Filter order already in use on route config"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: format!(
+                                    "Filter order {} is already in use on this route config. Choose a different order value.",
+                                    order
+                                ),
+                                resource_type: "route_config_filter".to_string(),
+                            };
+                        } else if msg.contains("filter_id") {
+                            tracing::warn!(
+                                route_config_id = %route_config_id,
+                                filter_id = %filter_id,
+                                "Filter already attached to route config"
+                            );
+                            return FlowplaneError::Conflict {
+                                message: "This filter is already attached to the route config.".to_string(),
+                                resource_type: "route_config_filter".to_string(),
+                            };
+                        }
+                    }
+                }
+            }
             tracing::error!(error = %e, route_config_id = %route_config_id, filter_id = %filter_id, "Failed to attach filter to route config");
             FlowplaneError::Database {
                 source: e,
@@ -485,6 +520,32 @@ impl FilterRepository {
         }
 
         Ok(())
+    }
+
+    /// Get the next available order for a route config's filter chain.
+    #[instrument(skip(self), fields(route_config_id = %route_config_id), name = "db_next_route_config_filter_order")]
+    pub async fn get_next_route_config_filter_order(
+        &self,
+        route_config_id: &RouteConfigId,
+    ) -> Result<i64> {
+        let max_order: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(filter_order) FROM route_config_filters WHERE route_config_id = $1",
+        )
+        .bind(route_config_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_config_id = %route_config_id, "Failed to get max filter order");
+            FlowplaneError::Database {
+                source: e,
+                context: format!(
+                    "Failed to get max filter order for route config '{}'",
+                    route_config_id
+                ),
+            }
+        })?;
+
+        Ok(max_order.unwrap_or(0) + 1)
     }
 
     #[instrument(skip(self), fields(route_config_id = %route_config_id), name = "db_list_route_config_filters")]

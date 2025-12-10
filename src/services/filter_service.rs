@@ -375,13 +375,10 @@ impl FilterService {
                 )));
             }
 
-            // Determine order (default: append to end)
+            // Determine order (default: append to end using MAX + 1)
             let order = match order {
                 Some(o) => o,
-                None => {
-                    let existing = repository.list_route_config_filters(route_config_id).await?;
-                    existing.len() as i64
-                }
+                None => repository.get_next_route_config_filter_order(route_config_id).await?,
             };
 
             let mut db_span =
