@@ -1,0 +1,35 @@
+name: cors
+display_name: CORS
+description: Cross-Origin Resource Sharing policy
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.cors
+  type_url: type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+
+capabilities:
+  attachment_points:
+    - route
+  requires_listener_config: false
+  per_route_behavior: full_config
+
+is_implemented: false
+
+config_schema:
+  type: object
+  properties:
+    allow_origin:
+      type: array
+      items:
+        type: object
+    allow_methods:
+      type: array
+      items:
+        type: string
+    allow_headers:
+      type: array
+      items:
+        type: string
+    max_age:
+      type: integer

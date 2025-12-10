@@ -1,0 +1,93 @@
+name: local_rate_limit
+display_name: Local Rate Limit
+description: Limit request rate using an in-memory token bucket algorithm
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.local_ratelimit
+  type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  required:
+    - stat_prefix
+    - token_bucket
+  properties:
+    stat_prefix:
+      type: string
+      title: Stats Prefix
+      description: Prefix for rate limit stats metrics
+      minLength: 1
+    token_bucket:
+      type: object
+      title: Token Bucket
+      description: Token bucket configuration for rate limiting
+      required:
+        - max_tokens
+        - fill_interval_ms
+      properties:
+        max_tokens:
+          type: integer
+          title: Max Tokens
+          description: Maximum number of tokens in the bucket
+          minimum: 1
+          default: 100
+        tokens_per_fill:
+          type: integer
+          title: Tokens Per Fill
+          description: Number of tokens added per fill interval (defaults to max_tokens)
+          minimum: 1
+        fill_interval_ms:
+          type: integer
+          title: Fill Interval (ms)
+          description: How often to add tokens to the bucket in milliseconds
+          minimum: 1
+          default: 1000
+    filter_enabled:
+      type: boolean
+      title: Filter Enabled
+      description: Whether rate limiting is enabled
+      default: true
+    filter_enforced:
+      type: boolean
+      title: Filter Enforced
+      description: Whether to enforce rate limiting (reject requests) or just track
+      default: true
+    status_code:
+      type: integer
+      title: Response Status Code
+      description: HTTP status code to return when rate limited
+      minimum: 100
+      maximum: 599
+      default: 429
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Basic Configuration
+      fields:
+        - stat_prefix
+      collapsible: false
+      collapsed_by_default: false
+    - name: Token Bucket
+      fields:
+        - token_bucket
+      collapsible: false
+      collapsed_by_default: false
+    - name: Advanced Options
+      fields:
+        - filter_enabled
+        - filter_enforced
+        - status_code
+      collapsible: true
+      collapsed_by_default: true

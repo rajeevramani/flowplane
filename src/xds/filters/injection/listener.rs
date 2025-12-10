@@ -2,10 +2,16 @@
 //!
 //! Injects filter configurations into listener HCM filter chains by modifying
 //! the protobuf representation of the listener.
+//!
+//! This module uses the dynamic filter schema system for converting filter
+//! configurations to Envoy protobuf messages.
 
 use super::JwtConfigMerger;
-use crate::domain::FilterConfig;
+use crate::domain::filter_schema::FilterSchemaRegistry;
+use crate::domain::AttachmentPoint;
 use crate::storage::{FilterData, FilterRepository, ListenerRepository, RouteConfigRepository};
+use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
+use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
 use crate::xds::helpers::ListenerModifier;
 use crate::xds::resources::{create_jwks_cluster, BuiltResource, CLUSTER_TYPE_URL};
 use crate::xds::state::XdsState;
@@ -22,6 +28,9 @@ use tracing::{debug, info, warn};
 /// 3. Merges compatible filters (specifically JWT authentication)
 /// 4. Injects the filters into the listener's HCM filter chain
 ///
+/// Uses the dynamic filter schema system to convert filter configurations to
+/// Envoy protobuf messages without hardcoded type-specific conversion code.
+///
 /// # Arguments
 ///
 /// * `built_listeners` - Mutable slice of built listener resources to modify
@@ -29,6 +38,7 @@ use tracing::{debug, info, warn};
 /// * `listener_repo` - Repository for listener metadata
 /// * `route_config_repo` - Optional repository for route config metadata
 /// * `xds_state` - XDS state for cluster management and cached resource access
+/// * `schema_registry` - Filter schema registry for dynamic conversion
 ///
 /// # Returns
 ///
@@ -40,6 +50,7 @@ pub async fn inject_listener_filters(
     listener_repo: &ListenerRepository,
     route_config_repo: Option<&RouteConfigRepository>,
     xds_state: &XdsState,
+    schema_registry: &FilterSchemaRegistry,
 ) -> Result<()> {
     for built in built_listeners.iter_mut() {
         // Get the listener data by name to retrieve the ListenerId
@@ -122,8 +133,8 @@ pub async fn inject_listener_filters(
             continue;
         }
 
-        // 3. Process and merge filters
-        let (jwt_merger, other_filters) = process_filters(&filters, &built.name)?;
+        // 3. Process and merge filters using dynamic schema-driven conversion
+        let (jwt_merger, other_filters) = process_filters(&filters, &built.name, schema_registry)?;
 
         // Build the final list of HTTP filters to inject
         let mut http_filters_to_inject = other_filters;
@@ -204,40 +215,83 @@ pub async fn inject_listener_filters(
 
 /// Process filter data and return a JWT merger and list of other HTTP filters.
 ///
-/// Uses the unified conversion framework for filter-to-protobuf conversion.
+/// Uses the dynamic filter schema system for converting filter configurations
+/// to Envoy protobuf messages. This enables adding new filter types via YAML
+/// schemas without modifying this code.
 fn process_filters(
     filters: &[FilterData],
     listener_name: &str,
+    schema_registry: &FilterSchemaRegistry,
 ) -> Result<(JwtConfigMerger, Vec<HttpFilter>)> {
     let mut jwt_merger = JwtConfigMerger::new();
     let mut other_filters: Vec<HttpFilter> = Vec::new();
+    let converter = DynamicFilterConverter::new(schema_registry);
 
     for filter_data in filters {
-        let filter_config: FilterConfig = match serde_json::from_str(&filter_data.configuration) {
-            Ok(config) => config,
+        let filter_type = &filter_data.filter_type;
+
+        // Get schema for this filter type
+        let schema = match schema_registry.get(filter_type) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter_data.name,
+                    filter_type = %filter_type,
+                    "Unknown filter type, no schema found, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Parse the JSON configuration
+        let config_json: serde_json::Value = match serde_json::from_str(&filter_data.configuration)
+        {
+            Ok(json) => json,
             Err(e) => {
                 warn!(
                     listener = %listener_name,
                     filter_id = %filter_data.id,
                     filter_name = %filter_data.name,
                     error = %e,
-                    "Failed to parse filter configuration, skipping"
+                    "Failed to parse filter configuration JSON, skipping"
                 );
                 continue;
             }
         };
 
-        let filter_type = filter_config.filter_type();
-        let metadata = filter_type.metadata();
+        // Extract the inner config (handle both wrapped and unwrapped formats)
+        let inner_config = if let Some(obj) = config_json.as_object() {
+            if let Some(config) = obj.get("config") {
+                config.clone()
+            } else {
+                config_json.clone()
+            }
+        } else {
+            config_json.clone()
+        };
 
-        // JWT requires special handling for merging
-        if let FilterConfig::JwtAuth(jwt_config) = &filter_config {
-            jwt_merger.add(jwt_config);
-            continue;
+        // JWT requires special handling for merging multiple providers
+        if filter_type == "jwt_auth" {
+            match serde_json::from_value::<JwtAuthenticationConfig>(inner_config.clone()) {
+                Ok(jwt_config) => {
+                    jwt_merger.add(&jwt_config);
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        listener = %listener_name,
+                        filter_name = %filter_data.name,
+                        error = %e,
+                        "Failed to parse JWT config, skipping"
+                    );
+                    continue;
+                }
+            }
         }
 
         // Route-only filters shouldn't be injected at listener level
-        if !filter_type.can_attach_to(crate::domain::AttachmentPoint::Listener) {
+        if !schema.capabilities.attachment_points.contains(&AttachmentPoint::Listener) {
             debug!(
                 listener = %listener_name,
                 filter_name = %filter_data.name,
@@ -247,11 +301,19 @@ fn process_filters(
             continue;
         }
 
-        // Use unified conversion for all other filters
-        match filter_config.to_listener_any() {
+        // Try to use strongly-typed FilterConfig conversion first (proper protobuf),
+        // fall back to dynamic Struct-based conversion for unknown filter types
+        let any_result = try_typed_conversion(filter_type, &inner_config)
+            .or_else(|| {
+                // Fall back to dynamic conversion for unknown filter types
+                Some(converter.to_listener_any(filter_type, &inner_config))
+            })
+            .unwrap();
+
+        match any_result {
             Ok(any) => {
                 let http_filter = HttpFilter {
-                    name: metadata.http_filter_name.to_string(),
+                    name: schema.envoy.http_filter_name.clone(),
                     config_type: Some(
                         envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any),
                     ),
@@ -279,6 +341,75 @@ fn process_filters(
     }
 
     Ok((jwt_merger, other_filters))
+}
+
+/// Try to convert filter config using strongly-typed FilterConfig conversion.
+///
+/// This uses the proper protobuf conversion for known filter types, which produces
+/// correct Envoy protobuf messages that can be deserialized properly.
+///
+/// Returns None if the filter type is not a known built-in type, allowing the caller
+/// to fall back to dynamic Struct-based conversion.
+fn try_typed_conversion(
+    filter_type: &str,
+    config: &serde_json::Value,
+) -> Option<Result<envoy_types::pb::google::protobuf::Any>> {
+    use crate::xds::filters::http::custom_response::CustomResponseConfig;
+    use crate::xds::filters::http::header_mutation::HeaderMutationConfig;
+    use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
+    use crate::xds::filters::http::mcp::McpFilterConfig;
+
+    match filter_type {
+        "header_mutation" => {
+            // Parse and convert using proper protobuf
+            let config: HeaderMutationConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!(
+                        "Invalid header_mutation config: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "local_rate_limit" => {
+            let config: LocalRateLimitConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!(
+                        "Invalid local_rate_limit config: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "custom_response" => {
+            let config: CustomResponseConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!(
+                        "Invalid custom_response config: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "mcp" => {
+            let config: McpFilterConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!("Invalid mcp config: {}", e))))
+                }
+            };
+            Some(config.to_any())
+        }
+        // JWT is handled specially in process_filters, so we don't need it here
+        // Unknown filter types return None to fall back to dynamic conversion
+        _ => None,
+    }
 }
 
 /// Auto-create JWKS clusters for remote JWT providers.
@@ -332,7 +463,7 @@ mod tests {
     use super::*;
     use crate::domain::FilterId;
     use crate::xds::filters::http::jwt_auth::{
-        JwtAuthenticationConfig, JwtJwksSourceConfig, JwtProviderConfig, LocalJwksConfig,
+        JwtJwksSourceConfig, JwtProviderConfig, LocalJwksConfig,
     };
     use chrono::Utc;
     use std::collections::HashMap;
@@ -354,6 +485,8 @@ mod tests {
 
     #[test]
     fn test_process_filters_jwt_merging() {
+        let registry = FilterSchemaRegistry::with_builtin_schemas();
+
         let mut providers = HashMap::new();
         providers.insert(
             "test-provider".to_string(),
@@ -367,16 +500,22 @@ mod tests {
             },
         );
 
-        let jwt_config =
-            FilterConfig::JwtAuth(JwtAuthenticationConfig { providers, ..Default::default() });
+        let jwt_config = JwtAuthenticationConfig { providers, ..Default::default() };
+
+        // Create JSON config in the format stored in the database
+        let config_json = serde_json::json!({
+            "type": "jwt_auth",
+            "config": jwt_config
+        });
 
         let filter_data = make_test_filter_data(
             "jwt-filter",
             "jwt_auth",
-            serde_json::to_string(&jwt_config).unwrap(),
+            serde_json::to_string(&config_json).unwrap(),
         );
 
-        let (jwt_merger, other_filters) = process_filters(&[filter_data], "test-listener").unwrap();
+        let (jwt_merger, other_filters) =
+            process_filters(&[filter_data], "test-listener", &registry).unwrap();
 
         assert!(jwt_merger.has_providers());
         assert_eq!(jwt_merger.provider_count(), 1);
@@ -385,59 +524,117 @@ mod tests {
 
     #[test]
     fn test_process_filters_skips_header_mutation() {
-        use crate::domain::HeaderMutationFilterConfig;
+        let registry = FilterSchemaRegistry::with_builtin_schemas();
 
-        let hm_config = FilterConfig::HeaderMutation(HeaderMutationFilterConfig {
-            request_headers_to_add: vec![],
-            request_headers_to_remove: vec![],
-            response_headers_to_add: vec![],
-            response_headers_to_remove: vec![],
+        // Header mutation is route-only, so it should be skipped for listener injection
+        let config_json = serde_json::json!({
+            "type": "header_mutation",
+            "config": {
+                "request_headers_to_add": [],
+                "request_headers_to_remove": [],
+                "response_headers_to_add": [],
+                "response_headers_to_remove": []
+            }
         });
 
         let filter_data = make_test_filter_data(
             "hm-filter",
             "header_mutation",
-            serde_json::to_string(&hm_config).unwrap(),
+            serde_json::to_string(&config_json).unwrap(),
         );
 
-        let (jwt_merger, other_filters) = process_filters(&[filter_data], "test-listener").unwrap();
+        let (jwt_merger, other_filters) =
+            process_filters(&[filter_data], "test-listener", &registry).unwrap();
 
         assert!(!jwt_merger.has_providers());
+        // Header mutation is route-only, should be skipped
         assert!(other_filters.is_empty());
     }
 
     #[test]
     fn test_process_filters_local_rate_limit() {
-        use crate::xds::filters::http::local_rate_limit::{
-            LocalRateLimitConfig, TokenBucketConfig,
-        };
+        let registry = FilterSchemaRegistry::with_builtin_schemas();
 
-        let rate_limit_config = FilterConfig::LocalRateLimit(LocalRateLimitConfig {
-            stat_prefix: "test_rate_limit".to_string(),
-            token_bucket: Some(TokenBucketConfig {
-                max_tokens: 100,
-                tokens_per_fill: Some(10),
-                fill_interval_ms: 1000,
-            }),
-            status_code: Some(429),
-            filter_enabled: None,
-            filter_enforced: None,
-            per_downstream_connection: None,
-            rate_limited_as_resource_exhausted: None,
-            max_dynamic_descriptors: None,
-            always_consume_default_token_bucket: None,
+        let config_json = serde_json::json!({
+            "type": "local_rate_limit",
+            "config": {
+                "stat_prefix": "test_rate_limit",
+                "token_bucket": {
+                    "max_tokens": 100,
+                    "tokens_per_fill": 10,
+                    "fill_interval_ms": 1000
+                },
+                "status_code": 429
+            }
         });
 
         let filter_data = make_test_filter_data(
             "rate-limit-filter",
-            "rate_limit",
-            serde_json::to_string(&rate_limit_config).unwrap(),
+            "local_rate_limit",
+            serde_json::to_string(&config_json).unwrap(),
         );
 
-        let (jwt_merger, other_filters) = process_filters(&[filter_data], "test-listener").unwrap();
+        let (jwt_merger, other_filters) =
+            process_filters(&[filter_data], "test-listener", &registry).unwrap();
 
         assert!(!jwt_merger.has_providers());
         assert_eq!(other_filters.len(), 1);
         assert_eq!(other_filters[0].name, "envoy.filters.http.local_ratelimit");
+    }
+
+    #[test]
+    fn test_process_filters_custom_response() {
+        let registry = FilterSchemaRegistry::with_builtin_schemas();
+
+        let config_json = serde_json::json!({
+            "type": "custom_response",
+            "config": {
+                "matchers": [{
+                    "status_code": {"type": "exact", "code": 429},
+                    "response": {
+                        "status_code": 429,
+                        "body": "Rate limited"
+                    }
+                }]
+            }
+        });
+
+        let filter_data = make_test_filter_data(
+            "custom-response-filter",
+            "custom_response",
+            serde_json::to_string(&config_json).unwrap(),
+        );
+
+        let (jwt_merger, other_filters) =
+            process_filters(&[filter_data], "test-listener", &registry).unwrap();
+
+        assert!(!jwt_merger.has_providers());
+        assert_eq!(other_filters.len(), 1);
+        assert_eq!(other_filters[0].name, "envoy.filters.http.custom_response");
+    }
+
+    #[test]
+    fn test_process_filters_mcp() {
+        let registry = FilterSchemaRegistry::with_builtin_schemas();
+
+        let config_json = serde_json::json!({
+            "type": "mcp",
+            "config": {
+                "traffic_mode": "pass_through"
+            }
+        });
+
+        let filter_data = make_test_filter_data(
+            "mcp-filter",
+            "mcp",
+            serde_json::to_string(&config_json).unwrap(),
+        );
+
+        let (jwt_merger, other_filters) =
+            process_filters(&[filter_data], "test-listener", &registry).unwrap();
+
+        assert!(!jwt_merger.has_providers());
+        assert_eq!(other_filters.len(), 1);
+        assert_eq!(other_filters[0].name, "envoy.filters.http.mcp");
     }
 }

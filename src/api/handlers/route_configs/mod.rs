@@ -446,7 +446,7 @@ mod tests {
         .expect("create tables");
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool.clone());
-        let api_state = ApiState { xds_state: Arc::new(state) };
+        let api_state = ApiState { xds_state: Arc::new(state), filter_schema_registry: None };
 
         // Seed a cluster for route references
         let cluster_repo =

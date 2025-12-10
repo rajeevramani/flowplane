@@ -3,10 +3,15 @@
 //! This module provides CRUD operations for filters through the REST API,
 //! with validation, team isolation, and XDS state synchronization.
 
+mod filter_types;
 mod types;
 mod validation;
 
 // Re-export public types
+pub use filter_types::{
+    get_filter_type_handler, list_filter_types_handler, reload_filter_schemas_handler,
+    FilterTypeFormSection, FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse,
+};
 pub use types::{
     AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
     ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,

@@ -37,8 +37,9 @@ pub use clusters::{
 pub use filters::{
     attach_filter_handler, attach_filter_to_listener_handler, create_filter_handler,
     delete_filter_handler, detach_filter_from_listener_handler, detach_filter_handler,
-    get_filter_handler, list_filters_handler, list_listener_filters_handler,
-    list_route_filters_handler, update_filter_handler,
+    get_filter_handler, get_filter_type_handler, list_filter_types_handler, list_filters_handler,
+    list_listener_filters_handler, list_route_filters_handler, reload_filter_schemas_handler,
+    update_filter_handler,
 };
 pub use health::health_handler;
 pub use learning_sessions::{
@@ -87,7 +88,8 @@ pub use clusters::{
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
 };
 pub use filters::{
-    AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
+    AttachFilterRequest, CreateFilterRequest, FilterResponse, FilterTypeFormSection,
+    FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse, ListFiltersQuery,
     ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
 };
 pub use learning_sessions::{

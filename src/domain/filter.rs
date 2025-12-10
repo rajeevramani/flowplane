@@ -13,9 +13,11 @@ use utoipa::ToSchema;
 /// - Some only allow referencing pre-defined configs (e.g., JWT with requirement_name)
 /// - Some can only be disabled (e.g., generic FilterConfig with disabled flag)
 /// - Some have no per-route support at all
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PerRouteBehavior {
     /// Full configuration override at per-route level (HeaderMutation, LocalRateLimit, CustomResponse)
+    #[default]
     FullConfig,
     /// Reference to listener-level config by name (JwtAuth with requirement_name)
     ReferenceOnly,
@@ -283,6 +285,18 @@ impl FilterType {
         ]
         .into_iter()
         .find(|filter_type| filter_type.http_filter_name() == name)
+    }
+
+    /// Create a FilterType from a string, supporting both built-in and dynamic types.
+    ///
+    /// This is used by the dynamic schema system to convert schema names to FilterType.
+    /// For built-in types, returns the corresponding enum variant.
+    /// For unknown types, returns the first matching built-in type or falls back to HeaderMutation.
+    ///
+    /// Note: In a fully dynamic system, this would return a Dynamic(String) variant,
+    /// but we maintain backward compatibility with the existing enum-based system.
+    pub fn from_str_dynamic(s: &str) -> Self {
+        s.parse().unwrap_or(FilterType::HeaderMutation)
     }
 }
 

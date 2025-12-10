@@ -9,24 +9,38 @@
 //! 3. RouteRule-level filters - applied to specific routes only
 //!
 //! More specific filters override less specific ones.
+//!
+//! ## Dynamic Filter Support
+//!
+//! This module supports both static (hardcoded) and dynamic filter types:
+//! - Static filters use `FilterConfig` enum for strongly-typed conversion
+//! - Dynamic filters use `DynamicFilterConverter` with schema-driven conversion
+//!
+//! For dynamic filters, the configuration is converted to a `google.protobuf.Struct`
+//! wrapped as `TypedConfig`, which Envoy can interpret at runtime.
 
+use crate::domain::filter_schema::FilterSchemaRegistry;
 use crate::domain::FilterConfig;
 use crate::storage::{
     FilterData, FilterRepository, RouteConfigData, RouteFilterRepository, RouteRepository,
     VirtualHostFilterRepository, VirtualHostRepository,
 };
+use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
 use crate::xds::filters::http::HttpScopedConfig;
+use crate::xds::filters::{Base64Bytes, TypedConfig};
 use crate::Result;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 /// Context for hierarchical filter injection.
-pub struct HierarchicalFilterContext {
+pub struct HierarchicalFilterContext<'a> {
     pub filter_repo: FilterRepository,
     pub vhost_repo: VirtualHostRepository,
     pub route_repo: RouteRepository,
     pub vhost_filter_repo: VirtualHostFilterRepository,
     pub route_filter_repo: RouteFilterRepository,
+    /// Schema registry for dynamic filter type conversion
+    pub schema_registry: &'a FilterSchemaRegistry,
 }
 
 /// Inject attached filters into route configurations.
@@ -34,10 +48,15 @@ pub struct HierarchicalFilterContext {
 /// This modifies the route config's JSON configuration to include any filters
 /// attached via the route_config_filters junction table.
 ///
+/// Supports both static (hardcoded) and dynamic filter types:
+/// - Static filters use `FilterConfig` enum for strongly-typed conversion
+/// - Dynamic filters use `DynamicFilterConverter` with schema-driven conversion
+///
 /// # Arguments
 ///
 /// * `route_configs` - Mutable slice of route config data to inject filters into
 /// * `filter_repo` - Repository for loading filter configurations
+/// * `schema_registry` - Registry for dynamic filter type schemas
 ///
 /// # Returns
 ///
@@ -45,7 +64,10 @@ pub struct HierarchicalFilterContext {
 pub async fn inject_route_config_filters(
     route_configs: &mut [RouteConfigData],
     filter_repo: &FilterRepository,
+    schema_registry: &FilterSchemaRegistry,
 ) -> Result<()> {
+    let converter = DynamicFilterConverter::new(schema_registry);
+
     for route_config in route_configs.iter_mut() {
         // Get filters attached to this route config (RouteConfig level)
         let filters = filter_repo.list_route_config_filters(&route_config.id).await?;
@@ -65,43 +87,20 @@ pub async fn inject_route_config_filters(
 
         // Process each filter and add to typed_per_filter_config
         for filter_data in filters {
-            // Parse the filter configuration
-            let filter_config: FilterConfig = match serde_json::from_str(&filter_data.configuration)
-            {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    warn!(
-                        filter_id = %filter_data.id,
-                        filter_name = %filter_data.name,
-                        error = %e,
-                        "Failed to parse filter configuration, skipping"
-                    );
-                    continue;
-                }
-            };
-
-            // Use unified conversion to get per-route config
-            let (filter_name, scoped_config) = match filter_config.to_per_route_config() {
-                Ok(Some((name, config))) => (name, config),
-                Ok(None) => {
-                    // Filter doesn't support per-route config
-                    debug!(
-                        filter_id = %filter_data.id,
-                        filter_name = %filter_data.name,
-                        "Filter doesn't support per-route config, skipping"
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    warn!(
-                        filter_id = %filter_data.id,
-                        filter_name = %filter_data.name,
-                        error = %e,
-                        "Failed to convert filter to per-route config, skipping"
-                    );
-                    continue;
-                }
-            };
+            // Try to convert using static or dynamic approach
+            let (filter_name, scoped_config) =
+                match convert_filter_to_scoped_config(&filter_data, &converter) {
+                    Some(result) => result,
+                    None => {
+                        debug!(
+                            filter_id = %filter_data.id,
+                            filter_name = %filter_data.name,
+                            filter_type = %filter_data.filter_type,
+                            "Filter doesn't support per-route config, skipping"
+                        );
+                        continue;
+                    }
+                };
 
             // Inject into the route's virtual hosts
             inject_into_virtual_hosts(&mut config, &filter_name, &scoped_config);
@@ -165,14 +164,19 @@ fn inject_into_virtual_hosts(
 /// This applies filters at RouteConfig, VirtualHost, and Route levels,
 /// with more specific filters overriding less specific ones.
 ///
+/// Supports both static (hardcoded) and dynamic filter types using the
+/// schema registry for dynamic conversion.
+///
 /// Hierarchy (most specific wins):
 /// 1. RouteConfig-level filters → applied to ALL routes
 /// 2. VirtualHost-level filters → applied to routes in that vhost (overrides #1)
 /// 3. Route-level filters → applied to specific routes only (overrides #2)
 pub async fn inject_route_filters_hierarchical(
     route_configs: &mut [RouteConfigData],
-    ctx: &HierarchicalFilterContext,
+    ctx: &HierarchicalFilterContext<'_>,
 ) -> Result<()> {
+    let converter = DynamicFilterConverter::new(ctx.schema_registry);
+
     for route_config in route_configs.iter_mut() {
         // Parse the route configuration
         let mut config: serde_json::Value = serde_json::from_str(&route_config.configuration)
@@ -237,6 +241,7 @@ pub async fn inject_route_filters_hierarchical(
             &route_config_filters,
             &vhost_filter_map,
             &route_filter_map,
+            &converter,
         )?;
 
         if config_modified {
@@ -268,6 +273,7 @@ fn inject_hierarchical(
     route_filters: &[FilterData],
     vhost_filter_map: &HashMap<String, Vec<FilterData>>,
     rule_filter_map: &HashMap<(String, String), Vec<FilterData>>,
+    converter: &DynamicFilterConverter,
 ) -> Result<bool> {
     let mut modified = false;
 
@@ -322,7 +328,7 @@ fn inject_hierarchical(
                             // Apply effective filters to route
                             for filter_data in effective_filters.values() {
                                 if let Some((filter_name, scoped_config)) =
-                                    convert_to_scoped_config(filter_data)
+                                    convert_filter_to_scoped_config(filter_data, converter)
                                 {
                                     let tpfc = route_entry.as_object_mut().and_then(|obj| {
                                         obj.entry("typed_per_filter_config")
@@ -352,30 +358,69 @@ fn inject_hierarchical(
 
 /// Convert a FilterData to its scoped config representation.
 ///
-/// Uses the unified conversion framework to delegate to the appropriate
-/// filter-specific conversion logic.
-fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpScopedConfig)> {
-    let filter_config: FilterConfig = match serde_json::from_str(&filter_data.configuration) {
-        Ok(cfg) => cfg,
+/// This function uses a hybrid approach:
+/// 1. First tries to parse as a known `FilterConfig` enum variant (strongly typed)
+/// 2. Falls back to dynamic conversion using `DynamicFilterConverter` (schema-driven)
+///
+/// For dynamic filters, the configuration is wrapped as `HttpScopedConfig::Typed`
+/// with the protobuf bytes base64-encoded.
+fn convert_filter_to_scoped_config(
+    filter_data: &FilterData,
+    converter: &DynamicFilterConverter,
+) -> Option<(String, HttpScopedConfig)> {
+    // Try static conversion first (for known filter types)
+    if let Ok(filter_config) = serde_json::from_str::<FilterConfig>(&filter_data.configuration) {
+        match filter_config.to_per_route_config() {
+            Ok(Some((name, config))) => return Some((name, config)),
+            Ok(None) => {
+                debug!(
+                    filter_id = %filter_data.id,
+                    filter_name = %filter_data.name,
+                    filter_type = %filter_data.filter_type,
+                    "Static filter doesn't support per-route config"
+                );
+                return None;
+            }
+            Err(e) => {
+                warn!(
+                    filter_id = %filter_data.id,
+                    filter_name = %filter_data.name,
+                    error = %e,
+                    "Failed static conversion, trying dynamic"
+                );
+                // Fall through to dynamic conversion
+            }
+        }
+    }
+
+    // Fall back to dynamic conversion for unknown/custom filter types
+    let config_json: serde_json::Value = match serde_json::from_str(&filter_data.configuration) {
+        Ok(json) => json,
         Err(e) => {
             warn!(
                 filter_id = %filter_data.id,
                 filter_name = %filter_data.name,
                 error = %e,
-                "Failed to parse filter configuration"
+                "Failed to parse filter configuration as JSON"
             );
             return None;
         }
     };
 
-    // Use unified conversion
-    match filter_config.to_per_route_config() {
-        Ok(Some((name, config))) => Some((name, config)),
+    // Use dynamic converter to get per-route config
+    match converter.to_per_route_any(&filter_data.filter_type, &config_json) {
+        Ok(Some((filter_name, any))) => {
+            // Wrap the EnvoyAny as TypedConfig for JSON storage
+            let typed_config =
+                TypedConfig { type_url: any.type_url, value: Base64Bytes(any.value) };
+            Some((filter_name, HttpScopedConfig::Typed(typed_config)))
+        }
         Ok(None) => {
             debug!(
                 filter_id = %filter_data.id,
                 filter_name = %filter_data.name,
-                "Filter doesn't support per-route config"
+                filter_type = %filter_data.filter_type,
+                "Dynamic filter doesn't support per-route config"
             );
             None
         }
@@ -383,8 +428,9 @@ fn convert_to_scoped_config(filter_data: &FilterData) -> Option<(String, HttpSco
             warn!(
                 filter_id = %filter_data.id,
                 filter_name = %filter_data.name,
+                filter_type = %filter_data.filter_type,
                 error = %e,
-                "Failed to convert filter to per-route config"
+                "Failed to convert filter using dynamic converter"
             );
             None
         }

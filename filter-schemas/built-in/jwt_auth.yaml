@@ -1,0 +1,132 @@
+name: jwt_auth
+display_name: JWT Authentication
+description: Validate and authenticate requests using JSON Web Tokens (JWT)
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.jwt_authn
+  type_url: type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: reference_only
+
+is_implemented: true
+
+config_schema:
+  type: object
+  required:
+    - providers
+  properties:
+    providers:
+      type: object
+      title: JWT Providers
+      description: Named JWT provider configurations
+      additionalProperties:
+        type: object
+        title: Provider Configuration
+        required:
+          - jwks
+        properties:
+          issuer:
+            type: string
+            title: Issuer
+            description: The principal that issued the JWT (iss claim)
+          audiences:
+            type: array
+            title: Audiences
+            description: Acceptable audience values (aud claim)
+            items:
+              type: string
+          jwks:
+            type: object
+            title: JWKS Configuration
+            description: JSON Web Key Set configuration for verifying signatures
+            properties:
+              type:
+                type: string
+                enum:
+                  - remote
+                  - local
+                title: JWKS Type
+                description: Whether to fetch JWKS from a remote URL or use local keys
+                default: remote
+              http_uri:
+                type: object
+                title: Remote JWKS URI
+                description: Configuration for fetching JWKS from a remote endpoint
+                properties:
+                  uri:
+                    type: string
+                    title: JWKS URI
+                    description: The URL to fetch the JWKS from
+                    format: uri
+                  cluster:
+                    type: string
+                    title: Cluster Name
+                    description: The cluster to use for fetching the JWKS
+                  timeout_seconds:
+                    type: integer
+                    title: Timeout (seconds)
+                    description: Request timeout in seconds
+                    default: 5
+                    minimum: 1
+                    maximum: 60
+              inline_string:
+                type: string
+                title: Inline JWKS
+                description: The JWKS JSON content inline (for local type)
+              filename:
+                type: string
+                title: JWKS Filename
+                description: Path to a file containing the JWKS (for local type)
+          forward:
+            type: boolean
+            title: Forward JWT
+            description: Forward the original JWT to upstream
+            default: false
+          forward_payload_header:
+            type: string
+            title: Payload Header
+            description: Forward JWT payload as a header with this name
+          payload_in_metadata:
+            type: string
+            title: Payload Metadata Key
+            description: Store JWT payload in metadata with this key
+    bypass_cors_preflight:
+      type: boolean
+      title: Bypass CORS Preflight
+      description: Skip JWT validation for CORS preflight (OPTIONS) requests
+      default: false
+
+per_route_config_schema:
+  type: object
+  oneOf:
+    - properties:
+        disabled:
+          type: boolean
+      required:
+        - disabled
+    - properties:
+        requirement_name:
+          type: string
+      required:
+        - requirement_name
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Providers
+      fields:
+        - providers
+      collapsible: false
+      collapsed_by_default: false
+    - name: Options
+      fields:
+        - bypass_cors_preflight
+      collapsible: true
+      collapsed_by_default: true

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use crate::domain::filter_schema::FilterSchemaRegistry;
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
     listeners_from_config, listeners_from_database_entries, routes_from_config,
@@ -76,6 +77,8 @@ pub struct XdsState {
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
     pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
+    /// Dynamic filter schema registry for schema-driven filter conversion
+    pub filter_schema_registry: FilterSchemaRegistry,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -100,6 +103,7 @@ impl XdsState {
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
+            filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -137,6 +141,7 @@ impl XdsState {
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
+            filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -387,6 +392,7 @@ impl XdsState {
                 route_repo: route_repo.clone(),
                 vhost_filter_repo: vhost_filter_repo.clone(),
                 route_filter_repo: route_filter_repo.clone(),
+                schema_registry: &self.filter_schema_registry,
             };
 
             return crate::xds::filters::injection::inject_route_filters_hierarchical(
@@ -400,6 +406,7 @@ impl XdsState {
         crate::xds::filters::injection::inject_route_config_filters(
             route_configs,
             &filter_repository,
+            &self.filter_schema_registry,
         )
         .await
     }
@@ -538,6 +545,7 @@ impl XdsState {
             listener_repository,
             route_config_repository,
             self,
+            &self.filter_schema_registry,
         )
         .await
     }

@@ -1,0 +1,26 @@
+name: ext_authz
+display_name: External Authorization
+description: External authorization service
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.ext_authz
+  type_url: type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: false
+
+config_schema:
+  type: object
+  properties:
+    grpc_service:
+      type: object
+    http_service:
+      type: object

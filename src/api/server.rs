@@ -9,19 +9,27 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::{ApiServerConfig, ApiTlsConfig},
+    domain::filter_schema::create_shared_registry,
     errors::Error,
     utils::certificates::{load_certificate_bundle, CertificateInfo},
     xds::XdsState,
 };
 
-use super::routes::build_router;
+use super::routes::build_router_with_registry;
 
 pub async fn start_api_server(config: ApiServerConfig, state: Arc<XdsState>) -> crate::Result<()> {
     let addr: SocketAddr = format!("{}:{}", config.bind_address, config.port)
         .parse()
         .map_err(|e| Error::config(format!("Invalid API address: {}", e)))?;
 
-    let router: Router = build_router(state);
+    // Initialize filter schema registry with built-in schemas
+    let filter_schema_registry = create_shared_registry();
+    {
+        let registry = filter_schema_registry.read().await;
+        info!(filter_count = registry.len(), "Initialized filter schema registry");
+    }
+
+    let router: Router = build_router_with_registry(state, Some(filter_schema_registry));
 
     let listener = TcpListener::bind(addr)
         .await

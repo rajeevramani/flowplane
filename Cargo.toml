@@ -79,6 +79,8 @@ anyhow = "1.0"
 thiserror = "2.0"
 validator = { version = "0.20.0", features = ["derive"] }
 lazy_static = "1.4"
+jsonschema = "0.28"
+dashmap = "6.1"
 
 # Configuration and environment
 config = "0.15"

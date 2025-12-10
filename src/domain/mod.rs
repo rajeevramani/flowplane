@@ -25,6 +25,7 @@
 pub mod cluster;
 pub mod endpoint;
 pub mod filter;
+pub mod filter_schema;
 pub mod id;
 pub mod listener;
 pub mod route;
@@ -39,6 +40,11 @@ pub use endpoint::EndpointHealthStatus;
 pub use filter::{
     AttachmentPoint, FilterConfig, FilterType, FilterTypeMetadata, HeaderMutationEntry,
     HeaderMutationFilterConfig, PerRouteBehavior,
+};
+pub use filter_schema::{
+    create_shared_registry, create_shared_registry_from_dir, EnvoyFilterMetadata,
+    FilterCapabilities, FilterSchemaDefinition, FilterSchemaRegistry, FormLayout, FormSection,
+    SchemaLoadError, SchemaSource, SchemaValidationError, SharedFilterSchemaRegistry, UiHints,
 };
 pub use id::{
     ClusterId, EndpointId, FilterId, ListenerId, ProxyCertificateId, RouteConfigId, RouteId,

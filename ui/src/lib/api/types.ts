@@ -1032,3 +1032,91 @@ export interface BootstrapConfigRequestWithMtls extends BootstrapConfigRequest {
 	/** Path to CA certificate file */
 	caPath?: string;
 }
+
+// ============================================================================
+// Dynamic Filter Types API
+// ============================================================================
+
+/** UI hints for filter form generation */
+export interface FilterTypeUiHints {
+	/** Form layout style */
+	formLayout: 'flat' | 'sections' | 'tabs';
+	/** Form sections for grouped fields */
+	sections: FilterTypeFormSection[];
+	/** Custom form component name (if using a custom form) */
+	customFormComponent?: string;
+}
+
+/** A section in a form layout */
+export interface FilterTypeFormSection {
+	/** Section name/title */
+	name: string;
+	/** Field names included in this section */
+	fields: string[];
+	/** Whether the section is collapsible */
+	collapsible: boolean;
+	/** Whether the section is collapsed by default */
+	collapsedByDefault: boolean;
+}
+
+/** Information about a filter type available in the system */
+export interface FilterTypeInfo {
+	/** Unique filter type name (e.g., "header_mutation") */
+	name: string;
+	/** Human-readable display name (e.g., "Header Mutation") */
+	displayName: string;
+	/** Description of what this filter does */
+	description: string;
+	/** Schema version */
+	version: string;
+	/** Envoy HTTP filter name */
+	envoyFilterName: string;
+	/** Valid attachment points for this filter */
+	attachmentPoints: AttachmentPoint[];
+	/** Whether this filter requires listener-level configuration */
+	requiresListenerConfig: boolean;
+	/** How this filter handles per-route configuration */
+	perRouteBehavior: 'full_config' | 'reference_only' | 'disable_only' | 'not_supported';
+	/** Whether this filter type is fully implemented */
+	isImplemented: boolean;
+	/** Source of this filter definition (built_in or custom) */
+	source: 'built_in' | 'custom';
+	/** JSON Schema for configuration validation */
+	configSchema: JSONSchema7;
+	/** UI hints for form generation (if available) */
+	uiHints?: FilterTypeUiHints;
+}
+
+/** Response for listing all filter types */
+export interface FilterTypesResponse {
+	/** List of available filter types */
+	filterTypes: FilterTypeInfo[];
+	/** Total count of filter types */
+	total: number;
+	/** Count of implemented filter types */
+	implementedCount: number;
+}
+
+// JSON Schema type (simplified for our use case)
+export interface JSONSchema7 {
+	type?: string | string[];
+	properties?: Record<string, JSONSchema7>;
+	required?: string[];
+	items?: JSONSchema7;
+	enum?: (string | number | boolean | null)[];
+	const?: unknown;
+	default?: unknown;
+	title?: string;
+	description?: string;
+	minimum?: number;
+	maximum?: number;
+	minLength?: number;
+	maxLength?: number;
+	pattern?: string;
+	format?: string;
+	oneOf?: JSONSchema7[];
+	anyOf?: JSONSchema7[];
+	allOf?: JSONSchema7[];
+	$ref?: string;
+	additionalProperties?: boolean | JSONSchema7;
+}

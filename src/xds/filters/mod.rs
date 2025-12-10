@@ -47,6 +47,7 @@
 //! ```
 
 pub mod conversion;
+pub mod dynamic_conversion;
 pub mod http;
 pub mod injection;
 

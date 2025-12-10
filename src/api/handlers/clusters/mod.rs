@@ -347,7 +347,7 @@ mod tests {
         .expect("create table");
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
-        ApiState { xds_state: Arc::new(state) }
+        ApiState { xds_state: Arc::new(state), filter_schema_registry: None }
     }
 
     fn sample_request() -> CreateClusterBody {

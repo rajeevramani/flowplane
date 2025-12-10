@@ -60,7 +60,9 @@ import type {
 	GenerateCertificateResponse,
 	CertificateMetadata,
 	ListCertificatesResponse,
-	ListCertificatesQuery
+	ListCertificatesQuery,
+	FilterTypesResponse,
+	FilterTypeInfo
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -752,6 +754,34 @@ class ApiClient {
 			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates/${encodeURIComponent(id)}/revoke`,
 			{ reason }
 		);
+	}
+
+	// ============================================================================
+	// Filter Types API (Dynamic Filter Framework)
+	// ============================================================================
+
+	/**
+	 * List all available filter types with their schemas.
+	 * Used for dynamic form generation and filter type selection.
+	 */
+	async listFilterTypes(): Promise<FilterTypesResponse> {
+		return this.get<FilterTypesResponse>('/api/v1/filter-types');
+	}
+
+	/**
+	 * Get information about a specific filter type.
+	 * Returns the full schema and UI hints for form generation.
+	 */
+	async getFilterType(filterType: string): Promise<FilterTypeInfo> {
+		return this.get<FilterTypeInfo>(`/api/v1/filter-types/${encodeURIComponent(filterType)}`);
+	}
+
+	/**
+	 * Reload filter schemas from the schema directory (admin only).
+	 * This allows hot-reloading of custom filter schemas.
+	 */
+	async reloadFilterSchemas(): Promise<void> {
+		return this.post<void>('/api/v1/admin/filter-schemas/reload', {});
 	}
 }
 
