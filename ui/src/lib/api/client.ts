@@ -62,7 +62,13 @@ import type {
 	ListCertificatesResponse,
 	ListCertificatesQuery,
 	FilterTypesResponse,
-	FilterTypeInfo
+	FilterTypeInfo,
+	StatsEnabledResponse,
+	StatsOverviewResponse,
+	ClustersStatsResponse,
+	ClusterStatsResponse,
+	AppStatusResponse,
+	SetAppStatusRequest
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -782,6 +788,77 @@ class ApiClient {
 	 */
 	async reloadFilterSchemas(): Promise<void> {
 		return this.post<void>('/api/v1/admin/filter-schemas/reload', {});
+	}
+
+	// ============================================================================
+	// Stats Dashboard API
+	// ============================================================================
+
+	/**
+	 * Check if the stats dashboard is enabled.
+	 */
+	async isStatsEnabled(): Promise<StatsEnabledResponse> {
+		return this.get<StatsEnabledResponse>('/api/v1/stats/enabled');
+	}
+
+	/**
+	 * Get stats overview for a team.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getStatsOverview(team: string): Promise<StatsOverviewResponse> {
+		return this.get<StatsOverviewResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/overview`
+		);
+	}
+
+	/**
+	 * Get all cluster stats for a team.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getClusterStats(team: string): Promise<ClustersStatsResponse> {
+		return this.get<ClustersStatsResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/clusters`
+		);
+	}
+
+	/**
+	 * Get stats for a specific cluster.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getClusterStatsById(team: string, clusterName: string): Promise<ClusterStatsResponse> {
+		return this.get<ClusterStatsResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/clusters/${encodeURIComponent(clusterName)}`
+		);
+	}
+
+	// ============================================================================
+	// Admin App Management API
+	// ============================================================================
+
+	/**
+	 * List all instance apps (admin only).
+	 */
+	async listApps(): Promise<AppStatusResponse[]> {
+		return this.get<AppStatusResponse[]>('/api/v1/admin/apps');
+	}
+
+	/**
+	 * Get a specific app status (admin only).
+	 */
+	async getAppStatus(appId: string): Promise<AppStatusResponse> {
+		return this.get<AppStatusResponse>(
+			`/api/v1/admin/apps/${encodeURIComponent(appId)}`
+		);
+	}
+
+	/**
+	 * Enable or disable an app (admin only).
+	 */
+	async setAppStatus(appId: string, request: SetAppStatusRequest): Promise<AppStatusResponse> {
+		return this.put<AppStatusResponse>(
+			`/api/v1/admin/apps/${encodeURIComponent(appId)}`,
+			request
+		);
 	}
 }
 

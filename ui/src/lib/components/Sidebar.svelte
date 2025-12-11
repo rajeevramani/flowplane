@@ -13,7 +13,8 @@
 		FileText,
 		ChevronDown,
 		List,
-		Link
+		Link,
+		BarChart3
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -28,9 +29,10 @@
 	interface Props {
 		sessionInfo: SessionInfoResponse;
 		resourceCounts?: ResourceCounts;
+		statsEnabled?: boolean;
 	}
 
-	let { sessionInfo, resourceCounts }: Props = $props();
+	let { sessionInfo, resourceCounts, statsEnabled = false }: Props = $props();
 
 	// Track HTTP Filters menu expansion state
 	let filtersMenuOpen = $state(true);
@@ -122,6 +124,22 @@
 				Dashboard
 			</a>
 		</div>
+
+		<!-- Envoy Stats Dashboard (only when enabled) -->
+		{#if statsEnabled}
+			<div class="px-3 mb-4">
+				<a
+					href="/stats"
+					class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+						{isActive('/stats')
+						? 'bg-blue-600 text-white'
+						: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+				>
+					<BarChart3 class="h-5 w-5" />
+					Envoy Stats
+				</a>
+			</div>
+		{/if}
 
 		<!-- Resources Section -->
 		<div class="px-3 mb-4">

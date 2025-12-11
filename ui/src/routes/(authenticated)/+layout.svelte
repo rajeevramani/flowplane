@@ -5,6 +5,7 @@
 	import AppShell from '$lib/components/AppShell.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
+	import { checkStatsEnabled } from '$lib/stores/stats';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -19,6 +20,7 @@
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
 	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0 });
+	let statsEnabled = $state(false);
 
 	let { children } = $props();
 
@@ -38,8 +40,12 @@
 			// Initialize selected team from store/sessionStorage or first team
 			initializeSelectedTeam(availableTeams);
 
-			// Load resource counts
-			await loadResourceCounts();
+			// Load resource counts and stats enabled status in parallel
+			const [_, isEnabled] = await Promise.all([
+				loadResourceCounts(),
+				checkStatsEnabled()
+			]);
+			statsEnabled = isEnabled;
 
 			isLoading = false;
 		} catch (error) {
@@ -95,6 +101,7 @@
 		{availableTeams}
 		onTeamChange={handleTeamChange}
 		{resourceCounts}
+		{statsEnabled}
 	>
 		{@render children()}
 	</AppShell>

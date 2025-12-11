@@ -15,6 +15,7 @@ pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
 pub mod scopes;
+pub mod stats;
 pub mod teams;
 pub mod users;
 
@@ -61,6 +62,12 @@ pub use route_configs::{
     list_route_configs_handler, update_route_config_handler,
 };
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
+pub use stats::{
+    get_app_handler, get_stats_cluster_handler, get_stats_clusters_handler,
+    get_stats_enabled_handler, get_stats_overview_handler, list_apps_handler,
+    set_app_status_handler, AppStatusResponse, ClusterStatsResponse, ClustersStatsResponse,
+    ListAppsResponse, SetAppStatusRequest, StatsEnabledResponse, StatsOverviewResponse,
+};
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
     get_mtls_status_handler, get_team_bootstrap_handler, list_teams_handler,

@@ -17,6 +17,9 @@ pub mod route_hierarchy_sync;
 pub mod route_service;
 pub mod schema_aggregator;
 pub mod schema_diff;
+pub mod stats_cache;
+pub mod stats_data_source;
+pub mod team_stats_provider;
 pub mod webhook_service;
 
 pub use access_log_processor::{AccessLogProcessor, ProcessorConfig, ProcessorHandle};
@@ -34,4 +37,7 @@ pub use route_hierarchy_sync::RouteHierarchySyncService;
 pub use route_service::RouteService;
 pub use schema_aggregator::SchemaAggregator;
 pub use schema_diff::{detect_breaking_changes, BreakingChange, BreakingChangeType, SchemaDiff};
+pub use stats_cache::{StatsCache, StatsCacheConfig};
+pub use stats_data_source::{EnvoyAdminConfig, EnvoyAdminStats, StatsDataSource};
+pub use team_stats_provider::{StatsProviderConfig, TeamStatsProvider};
 pub use webhook_service::{LearningSessionWebhookEvent, WebhookEndpoint, WebhookService};

@@ -19,6 +19,7 @@
 		availableTeams: string[];
 		onTeamChange: (team: string) => void;
 		resourceCounts?: ResourceCounts;
+		statsEnabled?: boolean;
 		children: any;
 	}
 
@@ -28,6 +29,7 @@
 		availableTeams,
 		onTeamChange,
 		resourceCounts,
+		statsEnabled = false,
 		children
 	}: Props = $props();
 
@@ -57,7 +59,7 @@
 
 <div class="h-screen flex overflow-hidden bg-gray-100">
 	<!-- Sidebar -->
-	<Sidebar {sessionInfo} {resourceCounts} />
+	<Sidebar {sessionInfo} {resourceCounts} {statsEnabled} />
 
 	<!-- Main Content Area -->
 	<div class="flex-1 flex flex-col overflow-hidden">

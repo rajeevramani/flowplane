@@ -30,6 +30,7 @@ pub mod id;
 pub mod listener;
 pub mod route;
 pub mod route_hierarchy;
+pub mod stats;
 
 // Re-export main types from each module
 pub use cluster::{
@@ -60,3 +61,8 @@ pub use route::{
     WeightedCluster,
 };
 pub use route_hierarchy::{AttachmentLevel, RouteMatchType};
+pub use stats::{
+    ClusterStats, ConnectionMetrics, EnvoyHealthStatus, GaugeMetric, LatencyMetrics, ListenerStats,
+    MetricPoint, RequestMetrics, ResponseCodeMetrics, ServerStats, StatsFilters, StatsOverview,
+    StatsSnapshot,
+};

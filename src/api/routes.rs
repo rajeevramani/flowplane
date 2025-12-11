@@ -15,6 +15,7 @@ use crate::auth::{
 };
 use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
+use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
 use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
@@ -33,21 +34,23 @@ use super::{
         delete_user, detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler, detach_filter_handler,
         export_aggregated_schema_handler, generate_certificate_handler,
-        get_aggregated_schema_handler, get_certificate_handler, get_cluster_handler,
-        get_filter_handler, get_filter_type_handler, get_learning_session_handler,
-        get_listener_handler, get_mtls_status_handler, get_route_config_handler,
-        get_session_info_handler, get_team_bootstrap_handler, get_token_handler, get_user,
-        health_handler, list_aggregated_schemas_handler, list_all_scopes_handler, list_audit_logs,
-        list_certificates_handler, list_clusters_handler, list_filter_types_handler,
-        list_filters_handler, list_learning_sessions_handler, list_listener_filters_handler,
-        list_listeners_handler, list_route_configs_handler, list_route_filters_handler,
-        list_route_flows_handler, list_route_rule_filters_handler, list_route_rules_handler,
-        list_scopes_handler, list_teams_handler, list_tokens_handler, list_user_teams, list_users,
-        list_virtual_host_filters_handler, list_virtual_hosts_handler, login_handler,
-        logout_handler, reload_filter_schemas_handler, remove_team_membership,
+        get_aggregated_schema_handler, get_app_handler, get_certificate_handler,
+        get_cluster_handler, get_filter_handler, get_filter_type_handler,
+        get_learning_session_handler, get_listener_handler, get_mtls_status_handler,
+        get_route_config_handler, get_session_info_handler, get_stats_cluster_handler,
+        get_stats_clusters_handler, get_stats_enabled_handler, get_stats_overview_handler,
+        get_team_bootstrap_handler, get_token_handler, get_user, health_handler,
+        list_aggregated_schemas_handler, list_all_scopes_handler, list_apps_handler,
+        list_audit_logs, list_certificates_handler, list_clusters_handler,
+        list_filter_types_handler, list_filters_handler, list_learning_sessions_handler,
+        list_listener_filters_handler, list_listeners_handler, list_route_configs_handler,
+        list_route_filters_handler, list_route_flows_handler, list_route_rule_filters_handler,
+        list_route_rules_handler, list_scopes_handler, list_teams_handler, list_tokens_handler,
+        list_user_teams, list_users, list_virtual_host_filters_handler, list_virtual_hosts_handler,
+        login_handler, logout_handler, reload_filter_schemas_handler, remove_team_membership,
         revoke_certificate_handler, revoke_token_handler, rotate_token_handler,
-        update_cluster_handler, update_filter_handler, update_listener_handler,
-        update_route_config_handler, update_token_handler, update_user,
+        set_app_status_handler, update_cluster_handler, update_filter_handler,
+        update_listener_handler, update_route_config_handler, update_token_handler, update_user,
     },
 };
 
@@ -55,6 +58,7 @@ use super::{
 pub struct ApiState {
     pub xds_state: Arc<XdsState>,
     pub filter_schema_registry: Option<SharedFilterSchemaRegistry>,
+    pub stats_cache: Arc<StatsCache>,
 }
 
 /// Build CORS layer from environment configuration
@@ -104,7 +108,10 @@ pub fn build_router_with_registry(
     state: Arc<XdsState>,
     filter_schema_registry: Option<SharedFilterSchemaRegistry>,
 ) -> Router {
-    let api_state = ApiState { xds_state: state.clone(), filter_schema_registry };
+    // Create stats cache with default config (10 second TTL, 100 max entries)
+    let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
+
+    let api_state = ApiState { xds_state: state.clone(), filter_schema_registry, stats_cache };
 
     let cluster_repo = match &state.cluster_repository {
         Some(repo) => repo.clone(),
@@ -272,6 +279,15 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/scopes", get(list_all_scopes_handler))
         // Admin filter schema management
         .route("/api/v1/admin/filter-schemas/reload", post(reload_filter_schemas_handler))
+        // Admin app management endpoints
+        .route("/api/v1/admin/apps", get(list_apps_handler))
+        .route("/api/v1/admin/apps/{app_id}", get(get_app_handler))
+        .route("/api/v1/admin/apps/{app_id}", put(set_app_status_handler))
+        // Stats dashboard endpoints
+        .route("/api/v1/stats/enabled", get(get_stats_enabled_handler))
+        .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
+        .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
+        .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)

@@ -422,7 +422,9 @@ mod tests {
     async fn build_state() -> (Arc<XdsState>, ApiState) {
         let pool = create_test_pool().await;
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        let api_state = ApiState { xds_state: state.clone(), filter_schema_registry: None };
+        let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
+        let api_state =
+            ApiState { xds_state: state.clone(), filter_schema_registry: None, stats_cache };
         (state, api_state)
     }
 

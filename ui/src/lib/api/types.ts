@@ -1120,3 +1120,92 @@ export interface JSONSchema7 {
 	$ref?: string;
 	additionalProperties?: boolean | JSONSchema7;
 }
+
+// ============================================================================
+// Stats Dashboard Types
+// ============================================================================
+
+/** Response for checking if stats dashboard is enabled */
+export interface StatsEnabledResponse {
+	enabled: boolean;
+}
+
+/** Overview stats for team dashboard */
+export interface StatsOverviewResponse {
+	/** Team name */
+	team: string;
+	/** Total requests per second */
+	totalRps: number;
+	/** Total active connections */
+	totalConnections: number;
+	/** Error rate (0.0 - 1.0) */
+	errorRate: number;
+	/** P99 latency in milliseconds */
+	p99LatencyMs: number;
+	/** Number of healthy clusters */
+	healthyClusters: number;
+	/** Number of degraded clusters */
+	degradedClusters: number;
+	/** Number of unhealthy clusters */
+	unhealthyClusters: number;
+	/** Total clusters */
+	totalClusters: number;
+	/** Overall health status (healthy, degraded, unhealthy) */
+	healthStatus: 'healthy' | 'degraded' | 'unhealthy';
+	/** When this data was collected (ISO 8601) */
+	timestamp: string;
+}
+
+/** Single cluster stats */
+export interface ClusterStatsResponse {
+	/** Cluster name */
+	clusterName: string;
+	/** Health status */
+	healthStatus: 'healthy' | 'degraded' | 'unhealthy';
+	/** Number of healthy hosts */
+	healthyHosts: number;
+	/** Total hosts */
+	totalHosts: number;
+	/** Active connections */
+	activeConnections: number;
+	/** Active requests */
+	activeRequests: number;
+	/** Pending requests */
+	pendingRequests: number;
+	/** Success rate (0.0 - 1.0), null if no data */
+	successRate: number | null;
+	/** Circuit breaker is open */
+	circuitBreakerOpen: boolean;
+	/** Number of outlier ejections */
+	outlierEjections: number;
+}
+
+/** Response for cluster stats list */
+export interface ClustersStatsResponse {
+	/** Team name */
+	team: string;
+	/** Cluster stats */
+	clusters: ClusterStatsResponse[];
+	/** Total count */
+	count: number;
+}
+
+/** App status (for admin app management) */
+export interface AppStatusResponse {
+	/** App ID (e.g., "stats_dashboard") */
+	appId: string;
+	/** Whether the app is enabled */
+	enabled: boolean;
+	/** App configuration */
+	config: Record<string, unknown> | null;
+	/** Who enabled/disabled the app */
+	enabledBy: string | null;
+	/** When the app was enabled (ISO 8601) */
+	enabledAt: string | null;
+}
+
+/** Request to set app status */
+export interface SetAppStatusRequest {
+	enabled: boolean;
+	config?: Record<string, unknown>;
+}
