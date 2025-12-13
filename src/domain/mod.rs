@@ -30,6 +30,7 @@ pub mod id;
 pub mod listener;
 pub mod route;
 pub mod route_hierarchy;
+pub mod secret;
 pub mod stats;
 
 // Re-export main types from each module
@@ -49,7 +50,7 @@ pub use filter_schema::{
 };
 pub use id::{
     ClusterId, EndpointId, FilterId, ListenerId, ProxyCertificateId, RouteConfigId, RouteId,
-    ScopeId, TeamId, TokenId, UserId, VirtualHostId,
+    ScopeId, SecretId, TeamId, TokenId, UserId, VirtualHostId,
 };
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
@@ -61,6 +62,10 @@ pub use route::{
     WeightedCluster,
 };
 pub use route_hierarchy::{AttachmentLevel, RouteMatchType};
+pub use secret::{
+    CertificateValidationContextSpec, GenericSecretSpec, SecretSpec, SecretType,
+    SecretValidationError, SessionTicketKeySpec, StringMatcher, TlsCertificateSpec,
+};
 pub use stats::{
     ClusterStats, ConnectionMetrics, EnvoyHealthStatus, GaugeMetric, LatencyMetrics, ListenerStats,
     MetricPoint, RequestMetrics, ResponseCodeMetrics, ServerStats, StatsFilters, StatsOverview,

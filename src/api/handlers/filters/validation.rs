@@ -56,6 +56,11 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         (crate::domain::FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => Ok(()),
         (crate::domain::FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => Ok(()),
         (crate::domain::FilterType::Mcp, FilterConfig::Mcp(_)) => Ok(()),
+        (crate::domain::FilterType::Cors, FilterConfig::Cors(_)) => Ok(()),
+        (crate::domain::FilterType::Compressor, FilterConfig::Compressor(_)) => Ok(()),
+        (crate::domain::FilterType::ExtAuthz, FilterConfig::ExtAuthz(_)) => Ok(()),
+        (crate::domain::FilterType::Rbac, FilterConfig::Rbac(_)) => Ok(()),
+        (crate::domain::FilterType::OAuth2, FilterConfig::OAuth2(_)) => Ok(()),
         _ => {
             tracing::warn!(
                 filter_type = ?payload.filter_type,

@@ -322,7 +322,10 @@ mod tests {
 
         assert!(validator.is_filter_type_valid("header_mutation").await);
         assert!(validator.is_filter_type_valid("jwt_auth").await);
-        assert!(!validator.is_filter_type_valid("cors").await); // Not implemented
+        assert!(validator.is_filter_type_valid("cors").await); // Now implemented
+        assert!(validator.is_filter_type_valid("ext_authz").await); // Now implemented
+        assert!(validator.is_filter_type_valid("rbac").await); // Now implemented
+        assert!(!validator.is_filter_type_valid("rate_limit").await); // Not implemented
         assert!(!validator.is_filter_type_valid("unknown").await);
     }
 
@@ -332,7 +335,8 @@ mod tests {
         let validator = FilterConfigValidator::new(registry);
 
         assert!(validator.is_filter_type_known("header_mutation").await);
-        assert!(validator.is_filter_type_known("cors").await); // Known but not implemented
+        assert!(validator.is_filter_type_known("cors").await); // Known and now implemented
+        assert!(validator.is_filter_type_known("rate_limit").await); // Known but not implemented
         assert!(!validator.is_filter_type_known("unknown").await);
     }
 

@@ -15,6 +15,7 @@ pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
 pub mod scopes;
+pub mod secrets;
 pub mod stats;
 pub mod teams;
 pub mod users;
@@ -62,6 +63,10 @@ pub use route_configs::{
     list_route_configs_handler, update_route_config_handler,
 };
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
+pub use secrets::{
+    create_secret_handler, delete_secret_handler, get_secret_handler, list_secrets_handler,
+    update_secret_handler,
+};
 pub use stats::{
     get_app_handler, get_stats_cluster_handler, get_stats_clusters_handler,
     get_stats_enabled_handler, get_stats_overview_handler, list_apps_handler,
@@ -105,6 +110,10 @@ pub use learning_sessions::{
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
     ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
+};
+pub use secrets::{
+    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath, TeamSecretPath,
+    UpdateSecretRequest,
 };
 pub use teams::{
     AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse,

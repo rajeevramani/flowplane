@@ -5,6 +5,7 @@ use flowplane::{
     auth::scope_registry::init_scope_registry,
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
     observability::init_observability,
+    secrets::SecretBackendRegistry,
     services::{LearningSessionService, SchemaAggregator, WebhookService},
     storage::{
         create_pool,
@@ -23,7 +24,7 @@ use flowplane::{
 };
 use tokio::signal;
 use tokio::try_join;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 fn install_rustls_provider() {
     use rustls::crypto::{ring, CryptoProvider};
@@ -124,6 +125,27 @@ async fn main() -> Result<()> {
     let mut state_struct = XdsState::with_database(simple_xds_config.clone(), pool.clone());
     state_struct.access_log_service = Some(access_log_service.clone());
     state_struct.ext_proc_service = Some(ext_proc_service.clone());
+
+    // Initialize secret backend registry for external secrets (Vault, AWS, GCP)
+    if let Some(encryption) = state_struct.encryption_service.clone() {
+        let cache_ttl = std::env::var("FLOWPLANE_SECRET_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok());
+
+        match SecretBackendRegistry::from_env(pool.clone(), Some(encryption), cache_ttl).await {
+            Ok(registry) => {
+                info!(
+                    backends = ?registry.registered_backends(),
+                    "Initialized secret backend registry"
+                );
+                state_struct.set_secret_backend_registry(registry);
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize secret backend registry - external secrets will not work");
+            }
+        }
+    }
+
     let state = Arc::new(state_struct);
 
     // Create LearningSessionService with XdsState (Weak reference)

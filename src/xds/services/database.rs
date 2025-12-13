@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    storage::{ClusterRepository, ListenerRepository, RouteConfigRepository},
+    storage::{ClusterRepository, ListenerRepository, RouteConfigRepository, SecretRepository},
     Result,
 };
 use envoy_types::pb::envoy::service::discovery::v3::{
@@ -17,6 +17,7 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 
 use super::super::{
     resources::{self, BuiltResource},
+    secret::{secrets_from_database_entries, SECRET_TYPE_URL},
     XdsState,
 };
 
@@ -39,6 +40,10 @@ impl DatabaseAggregatedDiscoveryService {
 
         if let Some(repo) = &state.listener_repository {
             spawn_listener_watcher(state.clone(), repo.clone());
+        }
+
+        if let Some(repo) = &state.secret_repository {
+            spawn_secret_watcher(state.clone(), repo.clone());
         }
 
         Self { state }
@@ -406,6 +411,149 @@ impl DatabaseAggregatedDiscoveryService {
         resources::listeners_from_config(&self.state.config)
     }
 
+    /// Create secret resources from database for SDS (Secret Discovery Service)
+    ///
+    /// Supports both:
+    /// - Legacy database-stored secrets (encrypted configuration in DB)
+    /// - Reference-based secrets (backend/reference fields, fetched on-demand)
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
+    async fn create_secret_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
+        let Some(repo) = &self.state.secret_repository else {
+            info!("No secret repository available, returning empty secrets");
+            return Ok(Vec::new());
+        };
+
+        // Extract teams from scope for filtering
+        let teams = match scope {
+            Scope::All => vec![],
+            Scope::Team { team } => vec![team.clone()],
+            Scope::Allowlist { .. } => vec![],
+        };
+
+        // Record team filtering in span
+        let span = tracing::Span::current();
+        if teams.is_empty() {
+            span.record("teams", "all");
+        } else {
+            span.record("teams", format!("{:?}", teams).as_str());
+        }
+
+        match repo.list_by_teams(&teams, Some(100), None).await {
+            Ok(mut secret_data_list) => {
+                span.record("filtered_count", secret_data_list.len());
+
+                // Record team-scoped resource count metrics
+                if let Some(team) = teams.first() {
+                    crate::observability::metrics::update_team_resource_count(
+                        "secret",
+                        team,
+                        secret_data_list.len(),
+                    )
+                    .await;
+                }
+
+                if secret_data_list.is_empty() {
+                    info!("No secrets found in database for scope");
+                    return Ok(Vec::new());
+                }
+
+                // Resolve reference-based secrets from external backends
+                if let Some(registry) = &self.state.secret_backend_registry {
+                    info!(
+                        secret_count = secret_data_list.len(),
+                        "Resolving reference-based secrets from external backends"
+                    );
+                    self.resolve_reference_secrets(&mut secret_data_list, registry).await;
+                } else {
+                    warn!("No secret backend registry available, reference-based secrets will not be resolved");
+                }
+
+                info!(
+                    phase = "ads_response",
+                    secret_count = secret_data_list.len(),
+                    "Building secret resources from database for SDS response"
+                );
+
+                secrets_from_database_entries(secret_data_list, "ads_response")
+            }
+            Err(e) => {
+                warn!("Failed to load secrets from database: {}", e);
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Resolve reference-based secrets by fetching from external backends
+    ///
+    /// For secrets with `backend` and `reference` fields set, this method
+    /// fetches the actual secret from the external backend (Vault, AWS, GCP)
+    /// and populates the `configuration` field with the JSON serialization.
+    async fn resolve_reference_secrets(
+        &self,
+        secrets: &mut [crate::storage::SecretData],
+        registry: &crate::secrets::backends::SecretBackendRegistry,
+    ) {
+        use crate::secrets::backends::SecretBackendType;
+
+        for secret in secrets.iter_mut() {
+            // Skip if not a reference-based secret
+            let (Some(backend_str), Some(reference)) = (&secret.backend, &secret.reference) else {
+                continue;
+            };
+
+            // Parse backend type
+            let Some(backend_type) = SecretBackendType::from_str(backend_str) else {
+                warn!(
+                    secret_name = %secret.name,
+                    backend = %backend_str,
+                    "Unknown backend type for secret, skipping"
+                );
+                continue;
+            };
+
+            // Fetch from backend
+            info!(
+                secret_name = %secret.name,
+                backend = %backend_str,
+                reference = %reference,
+                "Fetching reference-based secret from backend"
+            );
+            match registry.fetch_secret(backend_type, reference, secret.secret_type).await {
+                Ok(spec) => {
+                    // Serialize the spec to JSON for consumption by secrets_from_database_entries
+                    match serde_json::to_string(&spec) {
+                        Ok(json) => {
+                            info!(
+                                secret_name = %secret.name,
+                                backend = %backend_str,
+                                reference = %reference,
+                                json_len = json.len(),
+                                "Resolved reference-based secret from backend"
+                            );
+                            secret.configuration = json;
+                        }
+                        Err(e) => {
+                            warn!(
+                                secret_name = %secret.name,
+                                error = %e,
+                                "Failed to serialize secret spec"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        secret_name = %secret.name,
+                        backend = %backend_str,
+                        reference = %reference,
+                        error = %e,
+                        "Failed to fetch secret from backend"
+                    );
+                }
+            }
+        }
+    }
+
     async fn build_resources(&self, type_url: &str, scope: &Scope) -> Result<Vec<BuiltResource>> {
         match type_url {
             "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
@@ -420,6 +568,7 @@ impl DatabaseAggregatedDiscoveryService {
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
             }
+            SECRET_TYPE_URL => self.create_secret_resources_from_db(scope).await,
             _ => {
                 warn!("Unknown resource type requested: {}", type_url);
                 Ok(Vec::new())
@@ -631,6 +780,56 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
                 },
                 Err(e) => {
                     warn!(error = %e, "Failed to poll listener state for change detection");
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
+fn spawn_secret_watcher(state: Arc<XdsState>, repository: SecretRepository) {
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        if let Err(error) = state.refresh_secrets_from_repository().await {
+            warn!(%error, "Failed to initialize secret cache from repository");
+        }
+
+        // Track secret state using count + last modification timestamp
+        let mut last_secret_state: Option<(i64, Option<String>)> = None;
+
+        loop {
+            // Query actual secret data: count and max updated_at timestamp
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM secrets",
+            )
+            .fetch_one(repository.pool())
+            .await;
+
+            match poll_result {
+                Ok(current_state) => match &last_secret_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual secret changes, skip update
+                    }
+                    Some(_) => {
+                        last_secret_state = Some(current_state.clone());
+                        info!(
+                            secret_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Secret data changed, refreshing secret cache"
+                        );
+                        if let Err(error) = state.refresh_secrets_from_repository().await {
+                            warn!(%error, "Failed to refresh secret cache from repository");
+                        }
+                    }
+                    None => {
+                        // First poll, just record the state without triggering update
+                        last_secret_state = Some(current_state);
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to poll secret state for change detection");
                 }
             }
 

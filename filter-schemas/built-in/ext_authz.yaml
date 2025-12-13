@@ -1,6 +1,6 @@
 name: ext_authz
 display_name: External Authorization
-description: External authorization service
+description: External authorization service for delegating access control decisions
 version: "1.0"
 
 envoy:
@@ -15,12 +15,143 @@ capabilities:
   requires_listener_config: true
   per_route_behavior: full_config
 
-is_implemented: false
+is_implemented: true
 
 config_schema:
   type: object
+  required:
+    - service
   properties:
-    grpc_service:
+    service:
       type: object
-    http_service:
+      description: Authorization service configuration (gRPC or HTTP)
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - grpc
+            - http
+          description: Service type
+        target_uri:
+          type: string
+          description: gRPC target cluster name (required for gRPC type)
+        timeout_ms:
+          type: integer
+          description: Timeout in milliseconds
+          minimum: 1
+          default: 200
+        initial_metadata:
+          type: array
+          description: Initial metadata for gRPC requests
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+        server_uri:
+          type: object
+          description: HTTP server URI (required for HTTP type)
+          properties:
+            uri:
+              type: string
+            cluster:
+              type: string
+            timeout_ms:
+              type: integer
+              default: 200
+        path_prefix:
+          type: string
+          description: Path prefix for HTTP requests
+        headers_to_add:
+          type: array
+          description: Headers to add to authorization requests
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+    failure_mode_allow:
+      type: boolean
+      description: Allow request if authz service fails
+      default: false
+    with_request_body:
       type: object
+      description: Request body handling configuration
+      properties:
+        max_request_bytes:
+          type: integer
+          description: Max bytes to buffer
+          minimum: 0
+        allow_partial_message:
+          type: boolean
+          default: false
+        pack_as_bytes:
+          type: boolean
+          default: false
+    clear_route_cache:
+      type: boolean
+      description: Clear route cache on successful authz
+      default: false
+    status_on_error:
+      type: integer
+      description: HTTP status code to return on error
+      minimum: 100
+      maximum: 599
+    stat_prefix:
+      type: string
+      description: Stat prefix for metrics
+    include_peer_certificate:
+      type: boolean
+      description: Include client certificate in authz request
+      default: false
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable ext_authz for this route
+      default: false
+    context_extensions:
+      type: object
+      description: Custom context extensions for authz service
+      additionalProperties:
+        type: string
+    disable_request_body_buffering:
+      type: boolean
+      description: Disable request body buffering for this route
+      default: false
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Service Configuration
+      fields:
+        - service.type
+        - service.target_uri
+        - service.server_uri
+        - service.timeout_ms
+      description: Configure the authorization service endpoint
+    - name: Failure Handling
+      fields:
+        - failure_mode_allow
+        - status_on_error
+        - clear_route_cache
+      collapsible: true
+    - name: Request Body
+      fields:
+        - with_request_body.max_request_bytes
+        - with_request_body.allow_partial_message
+      collapsible: true
+    - name: Advanced
+      fields:
+        - stat_prefix
+        - include_peer_certificate
+        - service.headers_to_add
+      collapsible: true

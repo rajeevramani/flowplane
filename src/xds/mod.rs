@@ -14,6 +14,7 @@ pub mod helpers;
 pub mod listener;
 pub(crate) mod resources;
 pub mod route;
+pub mod secret;
 pub mod services;
 mod state;
 

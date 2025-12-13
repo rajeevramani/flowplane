@@ -367,6 +367,12 @@ mod tests {
         ) -> Result<Option<crate::storage::repositories::StatsDashboardConfig>> {
             unimplemented!()
         }
+
+        async fn get_external_secrets_config(
+            &self,
+        ) -> Result<Option<crate::storage::repositories::ExternalSecretsConfig>> {
+            unimplemented!()
+        }
     }
 
     fn create_test_snapshot(team_id: &str) -> StatsSnapshot {

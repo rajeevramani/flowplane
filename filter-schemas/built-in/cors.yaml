@@ -1,6 +1,6 @@
 name: cors
 display_name: CORS
-description: Cross-Origin Resource Sharing policy
+description: Cross-Origin Resource Sharing policy for browser-based API access
 version: "1.0"
 
 envoy:
@@ -14,22 +14,149 @@ capabilities:
   requires_listener_config: false
   per_route_behavior: full_config
 
-is_implemented: false
+is_implemented: true
 
 config_schema:
   type: object
+  required:
+    - policy
   properties:
-    allow_origin:
-      type: array
-      items:
-        type: object
-    allow_methods:
-      type: array
-      items:
-        type: string
-    allow_headers:
-      type: array
-      items:
-        type: string
-    max_age:
-      type: integer
+    policy:
+      type: object
+      description: CORS policy configuration
+      required:
+        - allow_origin
+      properties:
+        allow_origin:
+          type: array
+          description: Origin matchers for allowed origins
+          minItems: 1
+          items:
+            type: object
+            required:
+              - type
+              - value
+            properties:
+              type:
+                type: string
+                enum:
+                  - exact
+                  - prefix
+                  - suffix
+                  - contains
+                  - regex
+                description: Type of string matching
+              value:
+                type: string
+                minLength: 1
+                description: Value to match against
+        allow_methods:
+          type: array
+          description: HTTP methods allowed for CORS requests
+          items:
+            type: string
+            enum:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - PATCH
+              - OPTIONS
+              - HEAD
+              - "*"
+        allow_headers:
+          type: array
+          description: Headers allowed in CORS requests
+          items:
+            type: string
+            minLength: 1
+        expose_headers:
+          type: array
+          description: Headers exposed to the browser
+          items:
+            type: string
+            minLength: 1
+        max_age:
+          type: integer
+          description: Max age in seconds for preflight cache
+          minimum: 0
+          maximum: 315576000000
+        allow_credentials:
+          type: boolean
+          description: Whether credentials (cookies, auth headers) are allowed
+          default: false
+        filter_enabled:
+          type: object
+          description: Fraction of requests where filter is enforced
+          properties:
+            runtime_key:
+              type: string
+              description: Optional runtime key for dynamic overrides
+            numerator:
+              type: integer
+              minimum: 0
+            denominator:
+              type: string
+              enum:
+                - hundred
+                - ten_thousand
+                - million
+              default: hundred
+        shadow_enabled:
+          type: object
+          description: Fraction of requests where policy is evaluated but not enforced
+          properties:
+            runtime_key:
+              type: string
+            numerator:
+              type: integer
+              minimum: 0
+            denominator:
+              type: string
+              enum:
+                - hundred
+                - ten_thousand
+                - million
+              default: hundred
+        allow_private_network_access:
+          type: boolean
+          description: Allow requests targeting a more private network
+          default: false
+        forward_not_matching_preflights:
+          type: boolean
+          description: Forward preflight requests that do not match configured origins
+          default: false
+
+per_route_config_schema:
+  type: object
+  required:
+    - policy
+  properties:
+    policy:
+      $ref: "#/config_schema/properties/policy"
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Origins
+      fields:
+        - policy.allow_origin
+      description: Configure which origins are allowed to make cross-origin requests
+    - name: Methods & Headers
+      fields:
+        - policy.allow_methods
+        - policy.allow_headers
+        - policy.expose_headers
+      collapsible: true
+    - name: Credentials & Caching
+      fields:
+        - policy.allow_credentials
+        - policy.max_age
+      collapsible: true
+    - name: Advanced
+      fields:
+        - policy.filter_enabled
+        - policy.shadow_enabled
+        - policy.allow_private_network_access
+        - policy.forward_not_matching_preflights
+      collapsible: true

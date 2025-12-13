@@ -131,6 +131,7 @@ pub fn remove_http_filter_from_listener(config: &mut ListenerConfig, filter_name
 fn get_filter_default_name(filter: &HttpFilterKind) -> &'static str {
     match filter {
         HttpFilterKind::Router => ROUTER_FILTER_NAME,
+        HttpFilterKind::Compressor(_) => "envoy.filters.http.compressor",
         HttpFilterKind::Cors(_) => "envoy.filters.http.cors",
         HttpFilterKind::LocalRateLimit(_) => "envoy.filters.http.local_ratelimit",
         HttpFilterKind::JwtAuthn(_) => "envoy.filters.http.jwt_authn",

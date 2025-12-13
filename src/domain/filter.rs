@@ -1,7 +1,12 @@
+use crate::xds::filters::http::compressor::CompressorConfig;
+use crate::xds::filters::http::cors::CorsConfig;
 use crate::xds::filters::http::custom_response::CustomResponseConfig;
+use crate::xds::filters::http::ext_authz::ExtAuthzConfig;
 use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
 use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
 use crate::xds::filters::http::mcp::McpFilterConfig;
+use crate::xds::filters::http::oauth2::OAuth2Config;
+use crate::xds::filters::http::rbac::RbacConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
@@ -94,8 +99,19 @@ fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
             attachment_points: ROUTE_ONLY,
             requires_listener_config: false,
             per_route_behavior: PerRouteBehavior::FullConfig,
-            is_implemented: false,
+            is_implemented: true,
             description: "Cross-Origin Resource Sharing policy",
+        },
+        FilterType::Compressor => FilterTypeMetadata {
+            filter_type: FilterType::Compressor,
+            http_filter_name: "envoy.filters.http.compressor",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.compressor.v3.CompressorPerRoute"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::DisableOnly,
+            is_implemented: true,
+            description: "Response compression filter (gzip)",
         },
         FilterType::LocalRateLimit => FilterTypeMetadata {
             filter_type: FilterType::LocalRateLimit,
@@ -127,8 +143,30 @@ fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
             attachment_points: ROUTE_AND_LISTENER,
             requires_listener_config: true,
             per_route_behavior: PerRouteBehavior::FullConfig,
-            is_implemented: false,
+            is_implemented: true,
             description: "External authorization service",
+        },
+        FilterType::Rbac => FilterTypeMetadata {
+            filter_type: FilterType::Rbac,
+            http_filter_name: "envoy.filters.http.rbac",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::FullConfig,
+            is_implemented: true,
+            description: "Role-based access control",
+        },
+        FilterType::OAuth2 => FilterTypeMetadata {
+            filter_type: FilterType::OAuth2,
+            http_filter_name: "envoy.filters.http.oauth2",
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2",
+            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2"),
+            attachment_points: ROUTE_AND_LISTENER,
+            requires_listener_config: true,
+            per_route_behavior: PerRouteBehavior::DisableOnly,
+            is_implemented: true,
+            description: "OAuth2 authentication filter",
         },
         FilterType::CustomResponse => FilterTypeMetadata {
             filter_type: FilterType::CustomResponse,
@@ -184,11 +222,18 @@ pub enum FilterType {
     HeaderMutation,
     JwtAuth,
     Cors,
+    /// Response compression (gzip)
+    Compressor,
     /// Local (in-memory) rate limiting
     LocalRateLimit,
     /// External/distributed rate limiting (requires gRPC service)
     RateLimit,
     ExtAuthz,
+    /// Role-based access control
+    Rbac,
+    /// OAuth2 authentication
+    #[serde(rename = "oauth2")]
+    OAuth2,
     /// Custom response filter for modifying responses based on status codes
     CustomResponse,
     /// Model Context Protocol (MCP) filter for AI/LLM gateway traffic
@@ -277,9 +322,12 @@ impl FilterType {
             FilterType::HeaderMutation,
             FilterType::JwtAuth,
             FilterType::Cors,
+            FilterType::Compressor,
             FilterType::LocalRateLimit,
             FilterType::RateLimit,
             FilterType::ExtAuthz,
+            FilterType::Rbac,
+            FilterType::OAuth2,
             FilterType::CustomResponse,
             FilterType::Mcp,
         ]
@@ -306,9 +354,12 @@ impl fmt::Display for FilterType {
             FilterType::HeaderMutation => write!(f, "header_mutation"),
             FilterType::JwtAuth => write!(f, "jwt_auth"),
             FilterType::Cors => write!(f, "cors"),
+            FilterType::Compressor => write!(f, "compressor"),
             FilterType::LocalRateLimit => write!(f, "local_rate_limit"),
             FilterType::RateLimit => write!(f, "rate_limit"),
             FilterType::ExtAuthz => write!(f, "ext_authz"),
+            FilterType::Rbac => write!(f, "rbac"),
+            FilterType::OAuth2 => write!(f, "oauth2"),
             FilterType::CustomResponse => write!(f, "custom_response"),
             FilterType::Mcp => write!(f, "mcp"),
         }
@@ -323,9 +374,12 @@ impl std::str::FromStr for FilterType {
             "header_mutation" => Ok(FilterType::HeaderMutation),
             "jwt_auth" => Ok(FilterType::JwtAuth),
             "cors" => Ok(FilterType::Cors),
+            "compressor" => Ok(FilterType::Compressor),
             "local_rate_limit" => Ok(FilterType::LocalRateLimit),
             "rate_limit" => Ok(FilterType::RateLimit),
             "ext_authz" => Ok(FilterType::ExtAuthz),
+            "rbac" => Ok(FilterType::Rbac),
+            "oauth2" => Ok(FilterType::OAuth2),
             "custom_response" => Ok(FilterType::CustomResponse),
             "mcp" => Ok(FilterType::Mcp),
             _ => Err(format!("Unknown filter type: {}", s)),
@@ -363,8 +417,17 @@ pub enum FilterConfig {
     CustomResponse(CustomResponseConfig),
     /// Model Context Protocol (MCP) filter configuration
     Mcp(McpFilterConfig),
-    // Future filter types will be added here:
-    // Cors(CorsConfig),
+    /// CORS filter configuration
+    Cors(CorsConfig),
+    /// Response compression filter configuration
+    Compressor(CompressorConfig),
+    /// External authorization filter configuration
+    ExtAuthz(ExtAuthzConfig),
+    /// Role-based access control filter configuration
+    Rbac(RbacConfig),
+    /// OAuth2 authentication filter configuration
+    #[serde(rename = "oauth2")]
+    OAuth2(OAuth2Config),
 }
 
 impl FilterConfig {
@@ -375,6 +438,11 @@ impl FilterConfig {
             FilterConfig::LocalRateLimit(_) => FilterType::LocalRateLimit,
             FilterConfig::CustomResponse(_) => FilterType::CustomResponse,
             FilterConfig::Mcp(_) => FilterType::Mcp,
+            FilterConfig::Cors(_) => FilterType::Cors,
+            FilterConfig::Compressor(_) => FilterType::Compressor,
+            FilterConfig::ExtAuthz(_) => FilterType::ExtAuthz,
+            FilterConfig::Rbac(_) => FilterType::Rbac,
+            FilterConfig::OAuth2(_) => FilterType::OAuth2,
         }
     }
 }
@@ -559,11 +627,15 @@ mod tests {
         assert!(FilterType::JwtAuth.is_fully_implemented());
         assert!(FilterType::LocalRateLimit.is_fully_implemented());
         assert!(FilterType::CustomResponse.is_fully_implemented());
+        assert!(FilterType::Cors.is_fully_implemented());
+        assert!(FilterType::Compressor.is_fully_implemented());
+        assert!(FilterType::ExtAuthz.is_fully_implemented());
+        assert!(FilterType::Rbac.is_fully_implemented());
+        assert!(FilterType::OAuth2.is_fully_implemented());
+        assert!(FilterType::Mcp.is_fully_implemented());
 
         // Not yet implemented filters
-        assert!(!FilterType::Cors.is_fully_implemented());
         assert!(!FilterType::RateLimit.is_fully_implemented());
-        assert!(!FilterType::ExtAuthz.is_fully_implemented());
     }
 
     #[test]
@@ -574,6 +646,10 @@ mod tests {
         assert!(FilterType::RateLimit.requires_listener_config());
         assert!(FilterType::ExtAuthz.requires_listener_config());
         assert!(FilterType::CustomResponse.requires_listener_config());
+        assert!(FilterType::Compressor.requires_listener_config());
+        assert!(FilterType::Rbac.requires_listener_config());
+        assert!(FilterType::OAuth2.requires_listener_config());
+        assert!(FilterType::Mcp.requires_listener_config());
 
         // Filters that work as empty placeholders in HCM filter chain
         assert!(!FilterType::HeaderMutation.requires_listener_config());
@@ -861,9 +937,12 @@ mod tests {
             FilterType::HeaderMutation,
             FilterType::JwtAuth,
             FilterType::Cors,
+            FilterType::Compressor,
             FilterType::LocalRateLimit,
             FilterType::RateLimit,
             FilterType::ExtAuthz,
+            FilterType::Rbac,
+            FilterType::OAuth2,
             FilterType::CustomResponse,
             FilterType::Mcp,
         ] {
@@ -940,9 +1019,12 @@ mod tests {
             FilterType::HeaderMutation,
             FilterType::JwtAuth,
             FilterType::Cors,
+            FilterType::Compressor,
             FilterType::LocalRateLimit,
             FilterType::RateLimit,
             FilterType::ExtAuthz,
+            FilterType::Rbac,
+            FilterType::OAuth2,
             FilterType::CustomResponse,
             FilterType::Mcp,
         ];
@@ -954,5 +1036,27 @@ mod tests {
             assert!(!m.type_url.is_empty(), "type_url should not be empty");
             assert!(!m.description.is_empty(), "description should not be empty");
         }
+    }
+
+    #[test]
+    fn test_oauth2_serialization_consistency() {
+        // Ensure OAuth2 uses "oauth2" not "o_auth2" for both FilterType and FilterConfig
+        let ft = FilterType::OAuth2;
+
+        // FilterType serialization
+        let json = serde_json::to_string(&ft).unwrap();
+        assert_eq!(json, r#""oauth2""#, "FilterType::OAuth2 should serialize as oauth2");
+
+        // FilterType deserialization
+        let parsed: FilterType = serde_json::from_str(r#""oauth2""#).unwrap();
+        assert_eq!(parsed, FilterType::OAuth2);
+
+        // Ensure "o_auth2" does NOT deserialize (it's invalid)
+        let invalid: Result<FilterType, _> = serde_json::from_str(r#""o_auth2""#);
+        assert!(invalid.is_err(), "o_auth2 should not be accepted");
+
+        // Display and FromStr consistency
+        assert_eq!(ft.to_string(), "oauth2");
+        assert_eq!("oauth2".parse::<FilterType>().unwrap(), FilterType::OAuth2);
     }
 }

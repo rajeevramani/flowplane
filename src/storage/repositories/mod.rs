@@ -22,6 +22,7 @@ pub mod route;
 pub mod route_config;
 pub mod route_filter;
 pub mod scope;
+pub mod secret;
 pub mod team;
 pub mod token;
 pub mod user;
@@ -44,8 +45,8 @@ pub use import_metadata::{
 };
 pub use inferred_schema::{InferredSchemaData, InferredSchemaRepository};
 pub use instance_app::{
-    app_ids, InstanceApp, InstanceAppRepository, SetAppStatusRequest, SqlxInstanceAppRepository,
-    StatsDashboardConfig,
+    app_ids, ExternalSecretsConfig, InstanceApp, InstanceAppRepository, SetAppStatusRequest,
+    SqlxInstanceAppRepository, StatsDashboardConfig,
 };
 pub use learning_session::{
     CreateLearningSessionRequest, LearningSessionData, LearningSessionRepository,
@@ -71,6 +72,10 @@ pub use route_config::{
 pub use route_filter::{RouteFilterData, RouteFilterRepository};
 pub use scope::{
     CreateScopeRequest, ScopeDefinition, ScopeRepository, SqlxScopeRepository, UpdateScopeRequest,
+};
+pub use secret::{
+    CreateSecretReferenceRequest, CreateSecretRequest, SecretData, SecretRepository,
+    UpdateSecretRequest,
 };
 pub use team::{SqlxTeamRepository, TeamRepository};
 pub use token::{SqlxTokenRepository, TokenRepository};

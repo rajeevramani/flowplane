@@ -129,6 +129,12 @@ pub async fn inject_listener_filters(
             }
         }
 
+        // Deduplicate filters based on ID, keeping the first occurrence
+        // This prevents the same filter from being injected twice if it's attached
+        // to both the listener and the route config
+        let mut seen_ids = HashSet::new();
+        filters.retain(|f| seen_ids.insert(f.id.to_string()));
+
         if filters.is_empty() {
             continue;
         }
@@ -354,12 +360,48 @@ fn try_typed_conversion(
     filter_type: &str,
     config: &serde_json::Value,
 ) -> Option<Result<envoy_types::pb::google::protobuf::Any>> {
+    use crate::xds::filters::http::compressor::CompressorConfig;
+    use crate::xds::filters::http::cors::CorsConfig;
     use crate::xds::filters::http::custom_response::CustomResponseConfig;
+    use crate::xds::filters::http::ext_authz::ExtAuthzConfig;
     use crate::xds::filters::http::header_mutation::HeaderMutationConfig;
     use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
     use crate::xds::filters::http::mcp::McpFilterConfig;
 
     match filter_type {
+        "ext_authz" => {
+            let config: ExtAuthzConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!(
+                        "Invalid ext_authz config: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "compressor" => {
+            let config: CompressorConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!(
+                        "Invalid compressor config: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "cors" => {
+            let config: CorsConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!("Invalid cors config: {}", e))))
+                }
+            };
+            Some(config.to_any())
+        }
         "header_mutation" => {
             // Parse and convert using proper protobuf
             let config: HeaderMutationConfig = match serde_json::from_value(config.clone()) {
@@ -402,6 +444,26 @@ fn try_typed_conversion(
                 Ok(c) => c,
                 Err(e) => {
                     return Some(Err(crate::Error::config(format!("Invalid mcp config: {}", e))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "rbac" => {
+            use crate::xds::filters::http::rbac::RbacConfig;
+            let config: RbacConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!("Invalid rbac config: {}", e))))
+                }
+            };
+            Some(config.to_any())
+        }
+        "oauth2" => {
+            use crate::xds::filters::http::oauth2::OAuth2Config;
+            let config: OAuth2Config = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!("Invalid oauth2 config: {}", e))))
                 }
             };
             Some(config.to_any())

@@ -316,6 +316,9 @@ impl FilterSchemaRegistry {
         ("cors", include_str!("../../filter-schemas/built-in/cors.yaml")),
         ("rate_limit", include_str!("../../filter-schemas/built-in/rate_limit.yaml")),
         ("ext_authz", include_str!("../../filter-schemas/built-in/ext_authz.yaml")),
+        ("compressor", include_str!("../../filter-schemas/built-in/compressor.yaml")),
+        ("rbac", include_str!("../../filter-schemas/built-in/rbac.yaml")),
+        ("oauth2", include_str!("../../filter-schemas/built-in/oauth2.yaml")),
     ];
 
     /// Load built-in filter schemas from embedded YAML files.
@@ -524,8 +527,14 @@ mod tests {
         let implemented = registry.list_implemented();
         assert!(implemented.iter().any(|s| s.name == "header_mutation"));
         assert!(implemented.iter().any(|s| s.name == "jwt_auth"));
-        // CORS is not implemented
-        assert!(!implemented.iter().any(|s| s.name == "cors"));
+        // CORS is now implemented
+        assert!(implemented.iter().any(|s| s.name == "cors"));
+        assert!(implemented.iter().any(|s| s.name == "ext_authz"));
+        assert!(implemented.iter().any(|s| s.name == "rbac"));
+        assert!(implemented.iter().any(|s| s.name == "compressor"));
+        assert!(implemented.iter().any(|s| s.name == "oauth2"));
+        // rate_limit is not implemented
+        assert!(!implemented.iter().any(|s| s.name == "rate_limit"));
     }
 
     #[test]

@@ -2,19 +2,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::domain::filter_schema::FilterSchemaRegistry;
+use crate::secrets::backends::SecretBackendRegistry;
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
     listeners_from_config, listeners_from_database_entries, routes_from_config,
     routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
     ROUTE_TYPE_URL,
 };
+use crate::xds::secret::{secrets_from_database_entries, SECRET_TYPE_URL};
 use crate::{
     config::SimpleXdsConfig,
-    services::{LearningSessionService, RouteHierarchySyncService},
+    services::{LearningSessionService, RouteHierarchySyncService, SecretEncryption},
     storage::{
         AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
         ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
-        RouteFilterRepository, RouteRepository, VirtualHostFilterRepository, VirtualHostRepository,
+        RouteFilterRepository, RouteRepository, SecretRepository, VirtualHostFilterRepository,
+        VirtualHostRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -77,6 +80,12 @@ pub struct XdsState {
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
     pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
+    /// Secret repository for SDS (Secret Discovery Service)
+    pub secret_repository: Option<SecretRepository>,
+    /// Encryption service for secret data
+    pub encryption_service: Option<Arc<SecretEncryption>>,
+    /// Secret backend registry for external secrets (Vault, AWS, GCP)
+    pub secret_backend_registry: Option<SecretBackendRegistry>,
     /// Dynamic filter schema registry for schema-driven filter conversion
     pub filter_schema_registry: FilterSchemaRegistry,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
@@ -103,6 +112,9 @@ impl XdsState {
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
+            secret_repository: None,
+            encryption_service: None,
+            secret_backend_registry: None,
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
@@ -123,7 +135,35 @@ impl XdsState {
         let virtual_host_filter_repository = VirtualHostFilterRepository::new(pool.clone());
         let route_filter_repository = RouteFilterRepository::new(pool.clone());
         // Sync services
-        let route_hierarchy_sync_service = RouteHierarchySyncService::new(pool);
+        let route_hierarchy_sync_service = RouteHierarchySyncService::new(pool.clone());
+
+        // Initialize secret repository and encryption service if encryption key is configured
+        let (secret_repository, encryption_service) =
+            match crate::services::SecretEncryptionConfig::from_env() {
+                Ok(encryption_config) => match SecretEncryption::new(&encryption_config) {
+                    Ok(encryption) => {
+                        let encryption = Arc::new(encryption);
+                        let secret_repo = SecretRepository::new(pool, encryption.clone());
+                        info!("Secret encryption configured, SDS enabled");
+                        (Some(secret_repo), Some(encryption))
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Failed to initialize secret encryption service, SDS disabled"
+                        );
+                        (None, None)
+                    }
+                },
+                Err(_) => {
+                    debug!(
+                        "FLOWPLANE_SECRET_ENCRYPTION_KEY not set, SDS disabled. \
+                         Set this env var to enable secret management."
+                    );
+                    (None, None)
+                }
+            };
+
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -141,10 +181,23 @@ impl XdsState {
             access_log_service: None,
             ext_proc_service: None,
             learning_session_service: RwLock::new(None),
+            secret_repository,
+            encryption_service,
+            secret_backend_registry: None, // Initialized separately via set_secret_backend_registry
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Set the secret backend registry for external secret backends
+    pub fn set_secret_backend_registry(&mut self, registry: SecretBackendRegistry) {
+        self.secret_backend_registry = Some(registry);
+    }
+
+    /// Get the secret backend registry
+    pub fn get_secret_backend_registry(&self) -> Option<&SecretBackendRegistry> {
+        self.secret_backend_registry.as_ref()
     }
 
     pub fn get_version(&self) -> String {
@@ -477,6 +530,133 @@ impl XdsState {
         }
 
         Ok(())
+    }
+
+    /// Refresh the secret cache from the backing repository (if available).
+    #[instrument(skip(self), name = "xds_refresh_secrets")]
+    pub async fn refresh_secrets_from_repository(&self) -> Result<()> {
+        let repository = match &self.secret_repository {
+            Some(repo) => repo.clone(),
+            None => {
+                debug!("No secret repository available, skipping secret refresh");
+                return Ok(());
+            }
+        };
+
+        let mut secret_rows = repository.list(Some(1000), None).await?;
+
+        // Resolve reference-based secrets from external backends (Vault, AWS, GCP)
+        if let Some(registry) = &self.secret_backend_registry {
+            info!(
+                secret_count = secret_rows.len(),
+                phase = "cache_refresh",
+                "Resolving reference-based secrets from external backends"
+            );
+            self.resolve_reference_secrets(&mut secret_rows, registry).await;
+        } else {
+            warn!(phase = "cache_refresh", "No secret backend registry available, reference-based secrets will not be resolved");
+        }
+
+        // Convert database entries to Envoy Secret resources
+        let built = secrets_from_database_entries(secret_rows, "cache_refresh")?;
+
+        let total_resources = built.len();
+        match self.apply_built_resources(SECRET_TYPE_URL, built) {
+            Some(update) => {
+                for delta in &update.deltas {
+                    info!(
+                        phase = "cache_refresh",
+                        type_url = %delta.type_url,
+                        added = delta.added_or_updated.len(),
+                        removed = delta.removed.len(),
+                        version = update.version,
+                        total_resources,
+                        "Secret cache refresh produced delta"
+                    );
+                }
+            }
+            None => {
+                debug!(
+                    phase = "cache_refresh",
+                    type_url = SECRET_TYPE_URL,
+                    total_resources,
+                    "Secret cache refresh detected no changes"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve reference-based secrets by fetching from external backends
+    ///
+    /// For secrets with `backend` and `reference` fields set, this method
+    /// fetches the actual secret from the external backend (Vault, AWS, GCP)
+    /// and populates the `configuration` field with the JSON serialization.
+    async fn resolve_reference_secrets(
+        &self,
+        secrets: &mut [crate::storage::SecretData],
+        registry: &SecretBackendRegistry,
+    ) {
+        use crate::secrets::backends::SecretBackendType;
+
+        for secret in secrets.iter_mut() {
+            // Skip if not a reference-based secret
+            let (Some(backend_str), Some(reference)) = (&secret.backend, &secret.reference) else {
+                continue;
+            };
+
+            // Parse backend type
+            let Some(backend_type) = SecretBackendType::from_str(backend_str) else {
+                tracing::warn!(
+                    secret_name = %secret.name,
+                    backend = %backend_str,
+                    "Unknown backend type for secret, skipping"
+                );
+                continue;
+            };
+
+            // Fetch from backend
+            info!(
+                secret_name = %secret.name,
+                backend = %backend_str,
+                reference = %reference,
+                "Fetching reference-based secret from backend (cache_refresh)"
+            );
+            match registry.fetch_secret(backend_type, reference, secret.secret_type).await {
+                Ok(spec) => {
+                    // Serialize the spec to JSON for consumption by secrets_from_database_entries
+                    match serde_json::to_string(&spec) {
+                        Ok(json) => {
+                            info!(
+                                secret_name = %secret.name,
+                                backend = %backend_str,
+                                reference = %reference,
+                                json_len = json.len(),
+                                "Resolved reference-based secret from backend (cache_refresh)"
+                            );
+                            secret.configuration = json;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                secret_name = %secret.name,
+                                error = %e,
+                                "Failed to serialize secret spec"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        secret_name = %secret.name,
+                        backend = %backend_str,
+                        reference = %reference,
+                        error = %e,
+                        "Failed to fetch secret from backend"
+                    );
+                }
+            }
+        }
     }
 
     /// Inject access log configuration into listeners for active learning sessions.

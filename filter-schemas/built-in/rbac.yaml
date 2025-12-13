@@ -1,0 +1,200 @@
+name: rbac
+display_name: Role-Based Access Control
+description: Role-based access control filter for enforcing access policies based on permissions and principals
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.rbac
+  type_url: type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  properties:
+    rules:
+      type: object
+      description: Primary RBAC rules for enforcement
+      properties:
+        action:
+          type: string
+          enum:
+            - allow
+            - deny
+            - log
+          description: Action to take when policy matches
+          default: allow
+        policies:
+          type: object
+          description: Named policies mapping
+          additionalProperties:
+            type: object
+            description: Policy definition
+            properties:
+              permissions:
+                type: array
+                description: Permission rules (what actions are allowed)
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - any
+                        - header
+                        - url_path
+                        - destination_port
+                        - metadata
+                        - and_rules
+                        - or_rules
+                        - not_rule
+                      description: Permission rule type
+                    any:
+                      type: boolean
+                      description: Match any request (for type=any)
+                    name:
+                      type: string
+                      description: Header name (for type=header)
+                    exact_match:
+                      type: string
+                      description: Exact header value match
+                    prefix_match:
+                      type: string
+                      description: Header value prefix match
+                    suffix_match:
+                      type: string
+                      description: Header value suffix match
+                    present_match:
+                      type: boolean
+                      description: Check header presence
+                    path:
+                      type: string
+                      description: URL path to match (for type=url_path)
+                    ignore_case:
+                      type: boolean
+                      description: Case-insensitive path matching
+                      default: false
+                    port:
+                      type: integer
+                      description: Destination port (for type=destination_port)
+                    rules:
+                      type: array
+                      description: Nested rules (for and_rules, or_rules)
+              principals:
+                type: array
+                description: Principal rules (who can perform actions)
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - any
+                        - authenticated
+                        - source_ip
+                        - direct_remote_ip
+                        - header
+                        - and_ids
+                        - or_ids
+                        - not_id
+                      description: Principal rule type
+                    any:
+                      type: boolean
+                      description: Match any principal (for type=any)
+                    principal_name:
+                      type: string
+                      description: Authenticated principal name (for type=authenticated)
+                    address_prefix:
+                      type: string
+                      description: IP address prefix (for source_ip, direct_remote_ip)
+                    prefix_len:
+                      type: integer
+                      description: IP prefix length
+                    name:
+                      type: string
+                      description: Header name (for type=header)
+                    exact_match:
+                      type: string
+                      description: Exact header value match
+                    prefix_match:
+                      type: string
+                      description: Header value prefix match
+                    ids:
+                      type: array
+                      description: Nested principal IDs (for and_ids, or_ids)
+    rules_stat_prefix:
+      type: string
+      description: Stat prefix for the primary rules
+    shadow_rules:
+      type: object
+      description: Shadow RBAC rules for testing (not enforced, just logged)
+      properties:
+        action:
+          type: string
+          enum:
+            - allow
+            - deny
+            - log
+          description: Action for shadow rules
+        policies:
+          type: object
+          additionalProperties:
+            type: object
+    shadow_rules_stat_prefix:
+      type: string
+      description: Stat prefix for shadow rules
+    track_per_rule_stats:
+      type: boolean
+      description: Track statistics per rule
+      default: false
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable RBAC for this route
+      default: false
+    rbac:
+      type: object
+      description: Override RBAC rules for this route
+      properties:
+        action:
+          type: string
+          enum:
+            - allow
+            - deny
+            - log
+        policies:
+          type: object
+          additionalProperties:
+            type: object
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Rules Configuration
+      fields:
+        - rules.action
+        - rules.policies
+      description: Configure the primary RBAC rules
+    - name: Shadow Mode
+      fields:
+        - shadow_rules.action
+        - shadow_rules.policies
+      description: Shadow rules for testing without enforcement
+      collapsible: true
+    - name: Statistics
+      fields:
+        - rules_stat_prefix
+        - shadow_rules_stat_prefix
+        - track_per_rule_stats
+      collapsible: true

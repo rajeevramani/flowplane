@@ -72,6 +72,11 @@ impl FilterConfig {
             FilterConfig::LocalRateLimit(config) => config.to_any(),
             FilterConfig::CustomResponse(config) => config.to_any(),
             FilterConfig::Mcp(config) => config.to_any(),
+            FilterConfig::Cors(config) => config.to_any(),
+            FilterConfig::Compressor(config) => config.to_any(),
+            FilterConfig::ExtAuthz(config) => config.to_any(),
+            FilterConfig::Rbac(config) => config.to_any(),
+            FilterConfig::OAuth2(config) => config.to_any(),
         }
     }
 
@@ -164,6 +169,31 @@ impl FilterConfig {
                 // So we skip injection (the listener handles the behavior)
                 Ok(None)
             }
+            FilterConfig::Cors(config) => {
+                use crate::xds::filters::http::cors::CorsPerRouteConfig;
+                let per_route = CorsPerRouteConfig { policy: config.policy.clone() };
+                Ok(Some((metadata.http_filter_name.to_string(), HttpScopedConfig::Cors(per_route))))
+            }
+            FilterConfig::Compressor(_config) => {
+                // Compressor only supports disable-only per-route config
+                // When attached at route level, we don't want to disable it
+                Ok(None)
+            }
+            FilterConfig::ExtAuthz(_config) => {
+                // ExtAuthz supports per-route config but requires special handling
+                // For now, skip per-route injection (listener handles the behavior)
+                Ok(None)
+            }
+            FilterConfig::Rbac(_config) => {
+                // RBAC supports per-route config but requires special handling
+                // For now, skip per-route injection (listener handles the behavior)
+                Ok(None)
+            }
+            FilterConfig::OAuth2(_config) => {
+                // OAuth2 only supports disable-only per-route config
+                // When attached at route level, we don't want to disable it
+                Ok(None)
+            }
         }
     }
 }
@@ -220,7 +250,10 @@ pub fn create_empty_listener_filter(
         FilterType::JwtAuth
         | FilterType::LocalRateLimit
         | FilterType::RateLimit
-        | FilterType::ExtAuthz => {
+        | FilterType::ExtAuthz
+        | FilterType::Compressor
+        | FilterType::Rbac
+        | FilterType::OAuth2 => {
             tracing::debug!(
                 filter_name = %metadata.http_filter_name,
                 "Filter requires valid configuration, cannot create empty placeholder"

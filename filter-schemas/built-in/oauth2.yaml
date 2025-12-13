@@ -1,0 +1,173 @@
+name: oauth2
+display_name: OAuth2 Authentication
+description: OAuth2 authentication filter for protecting HTTP services with OAuth2/OIDC flows
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.oauth2
+  type_url: type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: disable_only
+
+is_implemented: true
+
+config_schema:
+  type: object
+  required:
+    - token_endpoint
+    - authorization_endpoint
+    - credentials
+    - redirect_uri
+  properties:
+    token_endpoint:
+      type: object
+      description: Token endpoint configuration
+      required:
+        - uri
+        - cluster
+      properties:
+        uri:
+          type: string
+          description: URI for the token endpoint
+        cluster:
+          type: string
+          description: Cluster name for the token endpoint
+        timeout_ms:
+          type: integer
+          description: Timeout in milliseconds
+          default: 5000
+          minimum: 1
+    authorization_endpoint:
+      type: string
+      description: URL of the OAuth2 authorization endpoint
+    credentials:
+      type: object
+      description: OAuth2 client credentials
+      required:
+        - client_id
+      properties:
+        client_id:
+          type: string
+          description: OAuth2 client ID
+        token_secret:
+          type: object
+          description: Token secret configuration (delivered via SDS)
+          required:
+            - name
+          properties:
+            name:
+              type: string
+              description: Name of the SDS secret for the OAuth2 token
+        cookie_domain:
+          type: string
+          description: Domain for OAuth cookies
+        cookie_names:
+          type: object
+          description: Custom cookie names
+          properties:
+            bearer_token:
+              type: string
+            oauth_hmac:
+              type: string
+            oauth_expires:
+              type: string
+            id_token:
+              type: string
+            refresh_token:
+              type: string
+    redirect_uri:
+      type: string
+      description: OAuth2 redirect URI (callback URL)
+    redirect_path:
+      type: string
+      description: Path that handles the OAuth2 callback
+      default: /oauth2/callback
+    signout_path:
+      type: string
+      description: Path for signing out (clears OAuth cookies)
+    auth_scopes:
+      type: array
+      description: OAuth2 scopes to request
+      items:
+        type: string
+      default:
+        - openid
+        - profile
+        - email
+    auth_type:
+      type: string
+      enum:
+        - url_encoded_body
+        - basic_auth
+      description: Client authentication method
+      default: url_encoded_body
+    forward_bearer_token:
+      type: boolean
+      description: Forward OAuth token to upstream as Bearer token
+      default: true
+    preserve_authorization_header:
+      type: boolean
+      description: Preserve existing authorization header
+      default: false
+    use_refresh_token:
+      type: boolean
+      description: Enable automatic token refresh using refresh tokens
+      default: false
+    default_expires_in_seconds:
+      type: integer
+      description: Default token expiration in seconds (if not provided by server)
+      minimum: 1
+    stat_prefix:
+      type: string
+      description: Stat prefix for metrics
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable OAuth2 for this route
+      default: false
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: OAuth2 Provider
+      fields:
+        - authorization_endpoint
+        - token_endpoint.uri
+        - token_endpoint.cluster
+        - token_endpoint.timeout_ms
+      description: Configure the OAuth2 provider endpoints
+    - name: Client Credentials
+      fields:
+        - credentials.client_id
+        - credentials.token_secret
+        - redirect_uri
+        - redirect_path
+      description: Client credentials and redirect configuration
+    - name: Scopes & Authentication
+      fields:
+        - auth_scopes
+        - auth_type
+      collapsible: true
+    - name: Token Handling
+      fields:
+        - forward_bearer_token
+        - preserve_authorization_header
+        - use_refresh_token
+        - default_expires_in_seconds
+      collapsible: true
+    - name: Advanced
+      fields:
+        - credentials.cookie_domain
+        - credentials.cookie_names
+        - signout_path
+        - stat_prefix
+      collapsible: true

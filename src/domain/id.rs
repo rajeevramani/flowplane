@@ -178,6 +178,11 @@ domain_id!(
     ProxyCertificateId
 );
 
+domain_id!(
+    /// Unique identifier for a secret resource (SDS)
+    SecretId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

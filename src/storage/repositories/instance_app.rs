@@ -16,6 +16,8 @@ use utoipa::ToSchema;
 pub mod app_ids {
     /// Stats Dashboard app
     pub const STATS_DASHBOARD: &str = "stats_dashboard";
+    /// External Secrets app - enables fetching secrets from external backends
+    pub const EXTERNAL_SECRETS: &str = "external_secrets";
 }
 
 /// Database row structure for instance_apps table
@@ -108,6 +110,52 @@ fn default_history_size() -> usize {
     100
 }
 
+/// External Secrets specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalSecretsConfig {
+    /// Backend type: "vault", "aws_secrets_manager", "gcp_secret_manager"
+    pub backend_type: String,
+
+    /// Vault-specific settings
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_kv_mount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_namespace: Option<String>,
+
+    /// AWS-specific settings (uses IAM role by default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_region: Option<String>,
+
+    /// GCP-specific settings
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcp_project_id: Option<String>,
+
+    /// Cache TTL in seconds (default: 300)
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_seconds: u64,
+}
+
+impl Default for ExternalSecretsConfig {
+    fn default() -> Self {
+        Self {
+            backend_type: "vault".to_string(),
+            vault_addr: None,
+            vault_kv_mount: None,
+            vault_namespace: None,
+            aws_region: None,
+            gcp_project_id: None,
+            cache_ttl_seconds: default_cache_ttl(),
+        }
+    }
+}
+
+fn default_cache_ttl() -> u64 {
+    300
+}
+
 /// Repository trait for instance app operations
 #[async_trait]
 pub trait InstanceAppRepository: Send + Sync {
@@ -139,6 +187,9 @@ pub trait InstanceAppRepository: Send + Sync {
 
     /// Get the stats dashboard configuration (convenience method)
     async fn get_stats_dashboard_config(&self) -> Result<Option<StatsDashboardConfig>>;
+
+    /// Get the external secrets configuration (convenience method)
+    async fn get_external_secrets_config(&self) -> Result<Option<ExternalSecretsConfig>>;
 }
 
 /// SQLx implementation of InstanceAppRepository
@@ -295,6 +346,19 @@ impl InstanceAppRepository for SqlxInstanceAppRepository {
 
     async fn get_stats_dashboard_config(&self) -> Result<Option<StatsDashboardConfig>> {
         let app = self.get_app(app_ids::STATS_DASHBOARD).await?;
+
+        match app {
+            Some(a) if a.enabled => {
+                let config =
+                    a.config.and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
+                Ok(Some(config))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn get_external_secrets_config(&self) -> Result<Option<ExternalSecretsConfig>> {
+        let app = self.get_app(app_ids::EXTERNAL_SECRETS).await?;
 
         match app {
             Some(a) if a.enabled => {

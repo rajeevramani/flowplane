@@ -5,18 +5,25 @@
 //! messages. Individual filters (e.g. Local Rate Limit) live in dedicated
 //! submodules and register their configuration structs here.
 
+pub mod compressor;
 pub mod cors;
 pub mod credential_injector;
 pub mod custom_response;
+pub mod ext_authz;
 pub mod ext_proc;
 pub mod header_mutation;
 pub mod health_check;
 pub mod jwt_auth;
 pub mod local_rate_limit;
 pub mod mcp;
+pub mod oauth2;
 pub mod rate_limit;
 pub mod rate_limit_quota;
+pub mod rbac;
 
+use crate::xds::filters::http::compressor::{
+    CompressorConfig, CompressorPerRouteConfig, COMPRESSOR_PER_ROUTE_TYPE_URL,
+};
 use crate::xds::filters::http::cors::{
     CorsConfig as CorsFilterConfig, CorsPerRouteConfig, FILTER_CORS_POLICY_TYPE_URL,
 };
@@ -34,6 +41,7 @@ use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedCo
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
+use envoy_types::pb::envoy::extensions::filters::http::compressor::v3::CompressorPerRoute as CompressorPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy as FilterCorsPolicyProto;
@@ -82,6 +90,8 @@ pub struct HttpFilterConfigEntry {
 pub enum HttpFilterKind {
     /// Built-in Envoy router filter
     Router,
+    /// Envoy Compressor filter for response compression
+    Compressor(CompressorConfig),
     /// Envoy CORS filter
     Cors(CorsFilterConfig),
     /// Envoy Local Rate Limit filter
@@ -119,6 +129,7 @@ impl HttpFilterKind {
     fn default_name(&self) -> &'static str {
         match self {
             Self::Router => ROUTER_FILTER_NAME,
+            Self::Compressor(_) => "envoy.filters.http.compressor",
             Self::Cors(_) => "envoy.filters.http.cors",
             Self::LocalRateLimit(_) => "envoy.filters.http.local_ratelimit",
             Self::JwtAuthn(_) => "envoy.filters.http.jwt_authn",
@@ -140,6 +151,7 @@ impl HttpFilterKind {
                 "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
                 &RouterFilter::default(),
             ))),
+            Self::Compressor(cfg) => cfg.to_any().map(Some),
             Self::Cors(_cfg) => {
                 // Validate the config but use the empty marker for the HTTP filter chain
                 _cfg.policy.validate()?;
@@ -187,6 +199,8 @@ impl HttpFilterKind {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "filter_type", rename_all = "snake_case")]
 pub enum HttpScopedConfig {
+    /// Compressor per-route overrides
+    Compressor(CompressorPerRouteConfig),
     /// Local Rate Limit config expressed in structured form
     LocalRateLimit(LocalRateLimitConfig),
     /// CORS per-route policy overrides
@@ -212,6 +226,7 @@ impl HttpScopedConfig {
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
         match self {
             Self::Typed(config) => Ok(config.to_any()),
+            Self::Compressor(cfg) => cfg.to_any(),
             Self::LocalRateLimit(cfg) => cfg.to_any(),
             Self::Cors(cfg) => cfg.to_any(),
             Self::JwtAuthn(cfg) => {
@@ -228,6 +243,17 @@ impl HttpScopedConfig {
 
     /// Build scoped configuration from Envoy Any payload
     pub fn from_any(any: &EnvoyAny) -> Result<Self, crate::Error> {
+        if any.type_url == COMPRESSOR_PER_ROUTE_TYPE_URL {
+            let proto = CompressorPerRouteProto::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!(
+                    "Failed to decode compressor per-route config: {}",
+                    err
+                ))
+            })?;
+            let cfg = CompressorPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::Compressor(cfg));
+        }
+
         if any.type_url == LOCAL_RATE_LIMIT_TYPE_URL {
             let proto = LocalRateLimitProto::decode(any.value.as_slice()).map_err(|err| {
                 crate::Error::config(format!("Failed to decode local rate limit config: {}", err))

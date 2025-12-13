@@ -59,7 +59,9 @@ CLAUDE.md
 CLAUDE.md.backup
 
 Database
-data/
+data/*
+!data/logs/
+!data/logs/*.log
 flowplane.db-shm
 flowplane.db-wal
 
