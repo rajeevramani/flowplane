@@ -233,7 +233,29 @@ export function generateFormFields(schema: JSONSchema7): FormField[] {
 }
 
 /**
+ * Get a nested field by dot-notation path (e.g., "token_endpoint.uri")
+ */
+export function getFieldByPath(fields: FormField[], path: string): FormField | undefined {
+	const parts = path.split('.');
+	if (parts.length === 1) {
+		return fields.find((f) => f.name === path);
+	}
+
+	// Find the top-level field
+	const topLevelName = parts[0];
+	const topLevelField = fields.find((f) => f.name === topLevelName);
+	if (!topLevelField || !topLevelField.nested) {
+		return undefined;
+	}
+
+	// Recursively search nested fields
+	const remainingPath = parts.slice(1).join('.');
+	return getFieldByPath(topLevelField.nested, remainingPath);
+}
+
+/**
  * Organize form fields into sections based on UI hints
+ * Supports dot-notation paths for nested fields (e.g., "token_endpoint.uri")
  */
 function organizeFieldsIntoSections(
 	fields: FormField[],
@@ -251,14 +273,17 @@ function organizeFieldsIntoSections(
 		];
 	}
 
-	const fieldMap = new Map(fields.map((f) => [f.name, f]));
-	const usedFields = new Set<string>();
+	const usedTopLevelFields = new Set<string>();
 
 	const sections: FormSection[] = uiHints.sections.map((section: FilterTypeFormSection) => {
 		const sectionFields = section.fields
-			.map((fieldName: string) => {
-				usedFields.add(fieldName);
-				return fieldMap.get(fieldName);
+			.map((fieldPath: string) => {
+				// Track top-level field usage for "Other" section
+				const topLevelName = fieldPath.split('.')[0];
+				usedTopLevelFields.add(topLevelName);
+
+				// Get field by path (supports nested paths)
+				return getFieldByPath(fields, fieldPath);
 			})
 			.filter((f): f is FormField => f !== undefined);
 
@@ -270,8 +295,8 @@ function organizeFieldsIntoSections(
 		};
 	});
 
-	// Add any fields not assigned to a section
-	const unassignedFields = fields.filter((f) => !usedFields.has(f.name));
+	// Add any top-level fields not assigned to a section
+	const unassignedFields = fields.filter((f) => !usedTopLevelFields.has(f.name));
 	if (unassignedFields.length > 0) {
 		sections.push({
 			name: 'Other',
