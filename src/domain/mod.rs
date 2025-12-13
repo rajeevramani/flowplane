@@ -35,8 +35,9 @@ pub mod stats;
 
 // Re-export main types from each module
 pub use cluster::{
-    CircuitBreaker, ClusterSpec, ClusterValidationError, Endpoint, EndpointAddress, HealthCheck,
-    HealthCheckProtocol, HealthStatus, LoadBalancingPolicy, OutlierDetection, UpstreamTlsConfig,
+    CircuitBreaker, ClusterDependency, ClusterSpec, ClusterValidationError, Endpoint,
+    EndpointAddress, HealthCheck, HealthCheckProtocol, HealthStatus, LoadBalancingPolicy,
+    OutlierDetection, UpstreamTlsConfig,
 };
 pub use endpoint::EndpointHealthStatus;
 pub use filter::{

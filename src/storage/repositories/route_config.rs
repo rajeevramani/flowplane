@@ -508,6 +508,29 @@ impl RouteConfigRepository {
         Ok(())
     }
 
+    /// Find all route configs that reference a specific cluster.
+    ///
+    /// Used for cluster deletion protection to check dependencies.
+    #[instrument(skip(self), fields(cluster_name = %cluster_name), name = "db_find_route_configs_by_cluster")]
+    pub async fn find_by_cluster(&self, cluster_name: &str) -> Result<Vec<RouteConfigData>> {
+        let rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
+            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
+             FROM route_configs WHERE cluster_name = $1"
+        )
+        .bind(cluster_name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, cluster_name = %cluster_name, "Failed to find route configs by cluster");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to find route configs using cluster '{}'", cluster_name),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(RouteConfigData::from).collect())
+    }
+
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }

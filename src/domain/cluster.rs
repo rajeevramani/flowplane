@@ -364,6 +364,56 @@ pub enum ClusterValidationError {
     InvalidTimeout,
 }
 
+/// Represents a dependency on a cluster from another resource.
+///
+/// Used to track what resources reference a cluster, enabling
+/// proper deletion protection and dependency visualization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct ClusterDependency {
+    /// Type of the resource that depends on the cluster
+    pub resource_type: String,
+
+    /// ID of the dependent resource
+    pub resource_id: String,
+
+    /// Name of the dependent resource
+    pub resource_name: String,
+
+    /// Path within the resource where the cluster is referenced
+    pub reference_path: String,
+}
+
+impl ClusterDependency {
+    /// Create a new cluster dependency
+    pub fn new(
+        resource_type: impl Into<String>,
+        resource_id: impl Into<String>,
+        resource_name: impl Into<String>,
+        reference_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            resource_name: resource_name.into(),
+            reference_path: reference_path.into(),
+        }
+    }
+
+    /// Create a dependency for a route config
+    pub fn route_config(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new("route_config", id, name, "cluster_name")
+    }
+
+    /// Create a dependency for a filter
+    pub fn filter(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        reference_path: impl Into<String>,
+    ) -> Self {
+        Self::new("filter", id, name, reference_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

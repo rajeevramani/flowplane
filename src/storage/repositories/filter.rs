@@ -789,4 +789,124 @@ impl FilterRepository {
 
         Ok(route_count + listener_count)
     }
+
+    /// Find all filters that reference a specific cluster in their configuration.
+    ///
+    /// Scans filter configuration JSON for cluster references in:
+    /// - OAuth2: `token_endpoint.cluster`
+    /// - JWT: `providers[].jwks.http_uri.cluster`
+    /// - ExtAuthz: `service.http.server_uri.cluster`
+    ///
+    /// Returns tuples of (FilterData, reference_path) for each match.
+    #[instrument(skip(self), fields(cluster_name = %cluster_name), name = "db_find_filters_by_cluster")]
+    pub async fn find_by_cluster(&self, cluster_name: &str) -> Result<Vec<(FilterData, String)>> {
+        // Get all filters and check their JSON configuration for cluster references
+        let rows = sqlx::query_as::<Sqlite, FilterRow>(
+            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
+             FROM filters WHERE filter_type IN ('oauth2', 'jwt_auth', 'ext_authz')"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, cluster_name = %cluster_name, "Failed to query filters for cluster references");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to find filters using cluster '{}'", cluster_name),
+            }
+        })?;
+
+        let mut results = Vec::new();
+
+        for row in rows {
+            let filter = FilterData::from(row.clone());
+
+            // Parse the configuration JSON and check for cluster references
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&filter.configuration) {
+                let reference_path = match filter.filter_type.as_str() {
+                    "oauth2" => {
+                        // Check token_endpoint.cluster
+                        if let Some(token_endpoint) =
+                            config.get("config").and_then(|c| c.get("token_endpoint"))
+                        {
+                            if let Some(cluster) =
+                                token_endpoint.get("cluster").and_then(|c| c.as_str())
+                            {
+                                if cluster == cluster_name {
+                                    Some("token_endpoint.cluster".to_string())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    "jwt_auth" => {
+                        // Check providers[].jwks.http_uri.cluster
+                        if let Some(providers) =
+                            config.get("config").and_then(|c| c.get("providers"))
+                        {
+                            if let Some(providers_map) = providers.as_object() {
+                                for (provider_name, provider_config) in providers_map {
+                                    if let Some(jwks) = provider_config.get("jwks") {
+                                        if let Some(http_uri) = jwks.get("http_uri") {
+                                            if let Some(cluster) =
+                                                http_uri.get("cluster").and_then(|c| c.as_str())
+                                            {
+                                                if cluster == cluster_name {
+                                                    return Ok(vec![(
+                                                        filter,
+                                                        format!(
+                                                            "providers.{}.jwks.http_uri.cluster",
+                                                            provider_name
+                                                        ),
+                                                    )]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    }
+                    "ext_authz" => {
+                        // Check service.http.server_uri.cluster
+                        if let Some(service) = config.get("config").and_then(|c| c.get("service")) {
+                            if let Some(http) = service.get("http") {
+                                if let Some(server_uri) = http.get("server_uri") {
+                                    if let Some(cluster) =
+                                        server_uri.get("cluster").and_then(|c| c.as_str())
+                                    {
+                                        if cluster == cluster_name {
+                                            Some("service.http.server_uri.cluster".to_string())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(path) = reference_path {
+                    results.push((filter, path));
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
