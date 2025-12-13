@@ -24,6 +24,16 @@
 	// For array fields, track items
 	let arrayItems = $derived(Array.isArray(value) ? (value as unknown[]) : []);
 
+	// For map fields (additionalProperties), track entries
+	let mapEntries = $derived(
+		typeof value === 'object' && value !== null && !Array.isArray(value)
+			? Object.entries(value as Record<string, unknown>)
+			: []
+	);
+
+	// New key input for adding map entries
+	let newMapKey = $state('');
+
 	function handleStringChange(e: Event) {
 		const target = e.target as HTMLInputElement;
 		onChange(target.value);
@@ -72,6 +82,32 @@
 		const newItems = [...arrayItems];
 		newItems[index] = itemValue;
 		onChange(newItems);
+	}
+
+	// Map entry management functions
+	function addMapEntry() {
+		if (!newMapKey.trim() || !field.additionalPropertiesSchema) return;
+		const currentMap = (value as Record<string, unknown>) || {};
+		const defaultValue = getFieldDefaultValue(field.additionalPropertiesSchema);
+		onChange({
+			...currentMap,
+			[newMapKey.trim()]: defaultValue
+		});
+		newMapKey = '';
+	}
+
+	function removeMapEntry(key: string) {
+		const currentMap = (value as Record<string, unknown>) || {};
+		const { [key]: _, ...rest } = currentMap;
+		onChange(rest);
+	}
+
+	function updateMapEntry(key: string, entryValue: unknown) {
+		const currentMap = (value as Record<string, unknown>) || {};
+		onChange({
+			...currentMap,
+			[key]: entryValue
+		});
 	}
 
 	const hasError = $derived(errors.length > 0);
@@ -164,6 +200,74 @@
 					depth={depth + 1}
 				/>
 			{/each}
+		</div>
+	{:else if field.type === 'object' && field.additionalPropertiesSchema}
+		<!-- Map/Dictionary field with named entries -->
+		<div class="space-y-3">
+			{#each mapEntries as [entryKey, entryValue]}
+				<div class="border border-gray-200 rounded-md overflow-hidden">
+					<!-- Entry header with key and remove button -->
+					<div class="flex items-center justify-between px-3 py-2 bg-gray-100 border-b border-gray-200">
+						<span class="text-sm font-medium text-gray-700">{entryKey}</span>
+						<button
+							type="button"
+							onclick={() => removeMapEntry(entryKey)}
+							class="p-1 text-red-600 hover:bg-red-50 rounded transition-colors"
+							title="Remove {entryKey}"
+						>
+							<Trash2 class="w-4 h-4" />
+						</button>
+					</div>
+					<!-- Entry value fields -->
+					<div class="p-3 bg-gray-50 space-y-3">
+						{#if field.additionalPropertiesSchema.type === 'object' && field.additionalPropertiesSchema.nested}
+							{#each field.additionalPropertiesSchema.nested as nestedField}
+								<svelte:self
+									field={nestedField}
+									value={(entryValue as Record<string, unknown>)?.[nestedField.name]}
+									onChange={(v: unknown) => {
+										const currentEntry = (entryValue as Record<string, unknown>) || {};
+										updateMapEntry(entryKey, { ...currentEntry, [nestedField.name]: v });
+									}}
+									depth={depth + 1}
+								/>
+							{/each}
+						{:else}
+							<svelte:self
+								field={field.additionalPropertiesSchema}
+								value={entryValue}
+								onChange={(v: unknown) => updateMapEntry(entryKey, v)}
+								depth={depth + 1}
+							/>
+						{/if}
+					</div>
+				</div>
+			{/each}
+
+			<!-- Add new entry -->
+			<div class="flex items-center gap-2">
+				<input
+					type="text"
+					bind:value={newMapKey}
+					class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+					placeholder="Enter name for new {field.label.toLowerCase().replace(/s$/, '')}"
+					onkeydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							addMapEntry();
+						}
+					}}
+				/>
+				<button
+					type="button"
+					onclick={addMapEntry}
+					disabled={!newMapKey.trim()}
+					class="flex items-center gap-1 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+				>
+					<Plus class="w-4 h-4" />
+					Add
+				</button>
+			</div>
 		</div>
 	{:else if field.type === 'object'}
 		<!-- Object with additionalProperties (like headers map) - show as key-value JSON editor -->

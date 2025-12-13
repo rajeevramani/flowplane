@@ -147,6 +147,23 @@
 			}
 		});
 	}
+
+	// Get primary host from cluster config for display
+	function getClusterDisplayInfo(cluster: ClusterResponse): string {
+		const endpoints = cluster.config?.endpoints;
+		if (!endpoints || !Array.isArray(endpoints) || endpoints.length === 0) {
+			return cluster.name;
+		}
+		const firstEndpoint = endpoints[0];
+		const host = firstEndpoint.host || firstEndpoint.address;
+		const port = firstEndpoint.port;
+		if (host) {
+			const hostDisplay = port ? `${host}:${port}` : host;
+			const moreCount = endpoints.length > 1 ? ` (+${endpoints.length - 1} more)` : '';
+			return `${cluster.name} → ${hostDisplay}${moreCount}`;
+		}
+		return cluster.name;
+	}
 </script>
 
 <div class="space-y-3">
@@ -174,7 +191,7 @@
 				>
 					<option value="">Select a cluster...</option>
 					{#each clusters as cluster}
-						<option value={cluster.name}>{cluster.name}</option>
+						<option value={cluster.name}>{getClusterDisplayInfo(cluster)}</option>
 					{/each}
 				</select>
 			{/if}

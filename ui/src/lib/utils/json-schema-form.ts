@@ -45,12 +45,16 @@ export interface FormField {
 	nested?: FormField[];
 	/** For array fields, the item schema */
 	itemSchema?: FormField;
+	/** For object fields with additionalProperties (maps/dictionaries), the value schema */
+	additionalPropertiesSchema?: FormField;
 	/** Original JSON Schema (for complex cases) */
 	originalSchema: JSONSchema7;
 	/** UI hint: placeholder text */
 	placeholder?: string;
 	/** UI hint: input format (e.g., 'uri', 'email') */
 	format?: string;
+	/** Full path for nested fields extracted into sections (e.g., "credentials.client_id") */
+	fullPath?: string;
 }
 
 /** Form section for grouped fields */
@@ -208,6 +212,12 @@ function schemaToFormField(
 		);
 	}
 
+	// Handle object fields with additionalProperties (maps/dictionaries)
+	if (fieldType === 'object' && schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+		const additionalPropsSchema = schema.additionalProperties as JSONSchema7;
+		field.additionalPropertiesSchema = schemaToFormField('value', additionalPropsSchema, []);
+	}
+
 	// Handle array fields - generate item schema
 	if (fieldType === 'array' && schema.items) {
 		const itemSchema = schema.items as JSONSchema7;
@@ -254,6 +264,47 @@ export function getFieldByPath(fields: FormField[], path: string): FormField | u
 }
 
 /**
+ * Get a value from an object by dot-notation path (e.g., "credentials.client_id")
+ */
+export function getValueByPath(obj: Record<string, unknown>, path: string): unknown {
+	const parts = path.split('.');
+	let current: unknown = obj;
+
+	for (const part of parts) {
+		if (current === null || current === undefined || typeof current !== 'object') {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[part];
+	}
+
+	return current;
+}
+
+/**
+ * Set a value in an object by dot-notation path (e.g., "credentials.client_id")
+ * Returns a new object with the updated value (immutable)
+ */
+export function setValueByPath(
+	obj: Record<string, unknown>,
+	path: string,
+	value: unknown
+): Record<string, unknown> {
+	const parts = path.split('.');
+
+	if (parts.length === 1) {
+		return { ...obj, [path]: value };
+	}
+
+	const [first, ...rest] = parts;
+	const nestedObj = (obj[first] as Record<string, unknown>) || {};
+
+	return {
+		...obj,
+		[first]: setValueByPath(nestedObj, rest.join('.'), value)
+	};
+}
+
+/**
  * Organize form fields into sections based on UI hints
  * Supports dot-notation paths for nested fields (e.g., "token_endpoint.uri")
  */
@@ -283,7 +334,18 @@ function organizeFieldsIntoSections(
 				usedTopLevelFields.add(topLevelName);
 
 				// Get field by path (supports nested paths)
-				return getFieldByPath(fields, fieldPath);
+				const field = getFieldByPath(fields, fieldPath);
+				if (!field) {
+					return undefined;
+				}
+
+				// For nested fields (paths with dots), create a copy with fullPath set
+				// This allows DynamicFilterForm to correctly get/set values
+				if (fieldPath.includes('.')) {
+					return { ...field, fullPath: fieldPath };
+				}
+
+				return field;
 			})
 			.filter((f): f is FormField => f !== undefined);
 

@@ -3,6 +3,8 @@
 	import type { FilterTypeInfo } from '$lib/api/types';
 	import {
 		generateForm,
+		getValueByPath,
+		setValueByPath,
 		type FormField,
 		type FormSection,
 		type FormConfig
@@ -35,11 +37,16 @@
 		collapsedSections = initial;
 	});
 
-	function handleFieldChange(fieldName: string, value: unknown) {
-		onConfigChange({
-			...config,
-			[fieldName]: value
-		});
+	// Get field value, using fullPath for nested fields extracted into sections
+	function getFieldValue(field: FormField): unknown {
+		const path = field.fullPath || field.name;
+		return getValueByPath(config, path);
+	}
+
+	// Handle field change, using fullPath for nested fields extracted into sections
+	function handleFieldChange(field: FormField, value: unknown) {
+		const path = field.fullPath || field.name;
+		onConfigChange(setValueByPath(config, path, value));
 	}
 
 	function toggleSection(sectionName: string) {
@@ -73,9 +80,9 @@
 			{#each formConfig.allFields as field}
 				<DynamicFormField
 					{field}
-					value={config[field.name]}
-					onChange={(value) => handleFieldChange(field.name, value)}
-					errors={getFieldErrors(field.name)}
+					value={getFieldValue(field)}
+					onChange={(value) => handleFieldChange(field, value)}
+					errors={getFieldErrors(field.fullPath || field.name)}
 				/>
 			{/each}
 		</div>
@@ -109,9 +116,9 @@
 						{#each section.fields as field}
 							<DynamicFormField
 								{field}
-								value={config[field.name]}
-								onChange={(value) => handleFieldChange(field.name, value)}
-								errors={getFieldErrors(field.name)}
+								value={getFieldValue(field)}
+								onChange={(value) => handleFieldChange(field, value)}
+								errors={getFieldErrors(field.fullPath || field.name)}
 							/>
 						{/each}
 					</div>
