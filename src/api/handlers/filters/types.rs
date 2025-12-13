@@ -5,6 +5,69 @@ use utoipa::ToSchema;
 
 use crate::domain::{AttachmentPoint, FilterConfig, FilterType};
 use crate::storage::FilterData;
+use crate::xds::ClusterSpec;
+
+/// Mode for cluster handling when creating filters
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterMode {
+    /// Create a new cluster with the provided configuration
+    Create,
+    /// Reuse an existing cluster by name
+    Reuse,
+}
+
+impl Default for ClusterMode {
+    fn default() -> Self {
+        Self::Reuse
+    }
+}
+
+/// Configuration for cluster creation or reuse when creating a filter
+///
+/// Filters like OAuth2, JWT Auth, and ExtAuthz require clusters for their
+/// backend services. This config allows creating a new cluster inline or
+/// reusing an existing one.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterCreationConfig {
+    /// Mode: "create" to create a new cluster, "reuse" to use existing
+    #[serde(default)]
+    pub mode: ClusterMode,
+    /// Name of the cluster to create or reuse
+    pub cluster_name: String,
+    /// Service name for the cluster (required when mode is "create")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    /// Cluster specification (required when mode is "create")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_spec: Option<ClusterSpec>,
+    /// Team for the cluster (defaults to filter's team if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+}
+
+impl ClusterCreationConfig {
+    /// Validate the cluster creation config
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cluster_name.trim().is_empty() {
+            return Err("cluster_name is required".to_string());
+        }
+
+        if self.mode == ClusterMode::Create {
+            if self.cluster_spec.is_none() {
+                return Err("cluster_spec is required when mode is 'create'".to_string());
+            }
+            if self.service_name.is_none()
+                || self.service_name.as_ref().is_some_and(|s| s.trim().is_empty())
+            {
+                return Err("service_name is required when mode is 'create'".to_string());
+            }
+        }
+
+        Ok(())
+    }
+}
 
 /// Query parameters for listing filters
 #[derive(Debug, Deserialize, ToSchema)]
@@ -25,6 +88,12 @@ pub struct CreateFilterRequest {
     pub description: Option<String>,
     pub config: FilterConfig,
     pub team: String,
+    /// Optional cluster configuration for filters that require backend clusters
+    /// (OAuth2, JWT Auth, ExtAuthz). When mode is "create", a new cluster will
+    /// be created before the filter. When mode is "reuse", an existing cluster
+    /// will be validated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_config: Option<ClusterCreationConfig>,
 }
 
 /// Request body for updating a filter
@@ -120,4 +189,167 @@ pub struct RouteFiltersResponse {
 pub struct ListenerFiltersResponse {
     pub listener_id: String,
     pub filters: Vec<FilterResponse>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xds::EndpointSpec;
+
+    fn create_valid_cluster_spec() -> ClusterSpec {
+        ClusterSpec {
+            endpoints: vec![EndpointSpec::String("auth.example.com:443".to_string())],
+            use_tls: Some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_cluster_mode_default_is_reuse() {
+        assert_eq!(ClusterMode::default(), ClusterMode::Reuse);
+    }
+
+    #[test]
+    fn test_cluster_creation_config_reuse_mode_valid() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Reuse,
+            cluster_name: "existing-cluster".to_string(),
+            service_name: None,
+            cluster_spec: None,
+            team: None,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cluster_creation_config_create_mode_valid() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Create,
+            cluster_name: "new-oauth-cluster".to_string(),
+            service_name: Some("oauth-provider".to_string()),
+            cluster_spec: Some(create_valid_cluster_spec()),
+            team: Some("test-team".to_string()),
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cluster_creation_config_empty_name_fails() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Reuse,
+            cluster_name: "".to_string(),
+            service_name: None,
+            cluster_spec: None,
+            team: None,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cluster_name is required"));
+    }
+
+    #[test]
+    fn test_cluster_creation_config_whitespace_name_fails() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Reuse,
+            cluster_name: "   ".to_string(),
+            service_name: None,
+            cluster_spec: None,
+            team: None,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cluster_name is required"));
+    }
+
+    #[test]
+    fn test_cluster_creation_config_create_mode_missing_spec_fails() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Create,
+            cluster_name: "new-cluster".to_string(),
+            service_name: Some("my-service".to_string()),
+            cluster_spec: None, // Missing spec
+            team: None,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cluster_spec is required"));
+    }
+
+    #[test]
+    fn test_cluster_creation_config_create_mode_missing_service_name_fails() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Create,
+            cluster_name: "new-cluster".to_string(),
+            service_name: None, // Missing service name
+            cluster_spec: Some(create_valid_cluster_spec()),
+            team: None,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("service_name is required"));
+    }
+
+    #[test]
+    fn test_cluster_creation_config_create_mode_empty_service_name_fails() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Create,
+            cluster_name: "new-cluster".to_string(),
+            service_name: Some("  ".to_string()), // Empty/whitespace service name
+            cluster_spec: Some(create_valid_cluster_spec()),
+            team: None,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("service_name is required"));
+    }
+
+    #[test]
+    fn test_cluster_creation_config_reuse_mode_ignores_spec() {
+        // In reuse mode, cluster_spec should be ignored even if provided
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Reuse,
+            cluster_name: "existing-cluster".to_string(),
+            service_name: None,
+            cluster_spec: Some(create_valid_cluster_spec()), // Provided but ignored
+            team: None,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cluster_mode_serialization() {
+        let create_mode = ClusterMode::Create;
+        let reuse_mode = ClusterMode::Reuse;
+
+        assert_eq!(serde_json::to_string(&create_mode).unwrap(), "\"create\"");
+        assert_eq!(serde_json::to_string(&reuse_mode).unwrap(), "\"reuse\"");
+    }
+
+    #[test]
+    fn test_cluster_mode_deserialization() {
+        let create_mode: ClusterMode = serde_json::from_str("\"create\"").unwrap();
+        let reuse_mode: ClusterMode = serde_json::from_str("\"reuse\"").unwrap();
+
+        assert_eq!(create_mode, ClusterMode::Create);
+        assert_eq!(reuse_mode, ClusterMode::Reuse);
+    }
+
+    #[test]
+    fn test_cluster_creation_config_json_roundtrip() {
+        let config = ClusterCreationConfig {
+            mode: ClusterMode::Create,
+            cluster_name: "oauth-cluster".to_string(),
+            service_name: Some("oauth-provider".to_string()),
+            cluster_spec: Some(create_valid_cluster_spec()),
+            team: Some("my-team".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: ClusterCreationConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.mode, config.mode);
+        assert_eq!(deserialized.cluster_name, config.cluster_name);
+        assert_eq!(deserialized.service_name, config.service_name);
+        assert_eq!(deserialized.team, config.team);
+    }
 }

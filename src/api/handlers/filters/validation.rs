@@ -19,6 +19,18 @@ pub fn require_filter_repository(state: &ApiState) -> Result<FilterRepository, A
         .ok_or_else(|| ApiError::internal("Filter repository not configured"))
 }
 
+/// Filter types that require backend clusters
+const CLUSTER_REQUIRING_FILTER_TYPES: &[crate::domain::FilterType] = &[
+    crate::domain::FilterType::OAuth2,
+    crate::domain::FilterType::JwtAuth,
+    crate::domain::FilterType::ExtAuthz,
+];
+
+/// Check if a filter type requires a backend cluster
+pub fn filter_type_requires_cluster(filter_type: &crate::domain::FilterType) -> bool {
+    CLUSTER_REQUIRING_FILTER_TYPES.contains(filter_type)
+}
+
 /// Validate create filter request
 pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(), ApiError> {
     // Validate name is not empty
@@ -42,6 +54,20 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
             "Filter type '{}' is not yet supported. Available types: header_mutation, jwt_auth, local_rate_limit, custom_response",
             payload.filter_type
         )));
+    }
+
+    // Validate cluster_config if provided
+    if let Some(ref cluster_config) = payload.cluster_config {
+        // Validate cluster config
+        cluster_config.validate().map_err(ApiError::validation)?;
+
+        // Warn if cluster_config is provided for a filter type that doesn't need it
+        if !filter_type_requires_cluster(&payload.filter_type) {
+            tracing::warn!(
+                filter_type = ?payload.filter_type,
+                "cluster_config provided for filter type that doesn't require a cluster"
+            );
+        }
     }
 
     // Validate filter type matches config

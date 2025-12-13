@@ -13,8 +13,8 @@ pub use filter_types::{
     FilterTypeFormSection, FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse,
 };
 pub use types::{
-    AttachFilterRequest, CreateFilterRequest, FilterResponse, ListFiltersQuery,
-    ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
+    AttachFilterRequest, ClusterCreationConfig, ClusterMode, CreateFilterRequest, FilterResponse,
+    ListFiltersQuery, ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
 };
 
 use axum::{
@@ -131,6 +131,7 @@ pub async fn list_filters_handler(
     responses(
         (status = 201, description = "Filter created", body = FilterResponse),
         (status = 400, description = "Validation error"),
+        (status = 409, description = "Cluster already exists (when creating)"),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "filters"
@@ -144,6 +145,7 @@ pub async fn create_filter_handler(
     info!(
         filter_type = ?payload.filter_type,
         config = ?payload.config,
+        cluster_config = ?payload.cluster_config,
         "Creating filter - received payload"
     );
     validate_create_filter_request(&payload)?;
@@ -154,12 +156,13 @@ pub async fn create_filter_handler(
     let service = FilterService::new(state.xds_state.clone());
 
     let created = service
-        .create_filter(
+        .create_filter_with_cluster(
             payload.name.clone(),
             payload.filter_type,
             payload.description.clone(),
             payload.config.clone(),
             payload.team.clone(),
+            payload.cluster_config.clone(),
         )
         .await
         .map_err(ApiError::from)?;
@@ -167,6 +170,7 @@ pub async fn create_filter_handler(
     info!(
         filter_id = %created.id,
         filter_name = %created.name,
+        cluster_created = ?payload.cluster_config.as_ref().map(|cc| cc.mode == ClusterMode::Create),
         "Filter created via API"
     );
 

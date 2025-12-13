@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    api::handlers::filters::{ClusterCreationConfig, ClusterMode},
     domain::{
         AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId, RouteConfigId, RouteId,
         VirtualHostId,
@@ -17,10 +18,10 @@ use crate::{
         add_http_filter_before_router, listener_has_http_filter, remove_http_filter_from_listener,
     },
     storage::{
-        CreateFilterRequest, CreateRouteAutoFilterRequest, CreateRouteConfigAutoFilterRequest,
-        CreateVirtualHostAutoFilterRequest, FilterData, FilterRepository,
-        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository, RouteRepository,
-        UpdateFilterRequest, VirtualHostRepository,
+        ClusterRepository, CreateClusterRequest, CreateFilterRequest, CreateRouteAutoFilterRequest,
+        CreateRouteConfigAutoFilterRequest, CreateVirtualHostAutoFilterRequest, FilterData,
+        FilterRepository, ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
+        RouteRepository, UpdateFilterRequest, VirtualHostRepository,
     },
     xds::{listener::ListenerConfig, XdsState},
 };
@@ -1385,5 +1386,128 @@ impl FilterService {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::internal("Route filter repository not configured"))
+    }
+
+    /// Get the cluster repository
+    fn cluster_repository(&self) -> Result<ClusterRepository, Error> {
+        self.xds_state
+            .cluster_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Cluster repository not configured"))
+    }
+
+    /// Handle cluster creation or validation based on ClusterCreationConfig
+    ///
+    /// When mode is "create", creates a new cluster with the provided spec.
+    /// When mode is "reuse", validates that the cluster exists.
+    ///
+    /// Returns the cluster name on success.
+    pub async fn handle_cluster_config(
+        &self,
+        cluster_config: &ClusterCreationConfig,
+        filter_team: &str,
+    ) -> Result<String, Error> {
+        let cluster_repo = self.cluster_repository()?;
+        let cluster_name = cluster_config.cluster_name.clone();
+
+        match cluster_config.mode {
+            ClusterMode::Create => {
+                // Validate that cluster doesn't already exist
+                if cluster_repo.exists_by_name(&cluster_name).await? {
+                    return Err(Error::conflict(
+                        format!("Cluster '{}' already exists. Use mode 'reuse' to reference an existing cluster.", cluster_name),
+                        "cluster",
+                    ));
+                }
+
+                // Get the cluster spec (already validated in request validation)
+                let cluster_spec = cluster_config.cluster_spec.as_ref().ok_or_else(|| {
+                    Error::validation("cluster_spec is required when mode is 'create'")
+                })?;
+
+                let service_name = cluster_config.service_name.as_ref().ok_or_else(|| {
+                    Error::validation("service_name is required when mode is 'create'")
+                })?;
+
+                // Determine team for the cluster
+                let team = cluster_config.team.as_ref().unwrap_or(&filter_team.to_string()).clone();
+
+                // Serialize cluster spec
+                let configuration = cluster_spec.to_value()?;
+
+                // Create the cluster
+                let create_request = CreateClusterRequest {
+                    name: cluster_name.clone(),
+                    service_name: service_name.clone(),
+                    configuration,
+                    team: Some(team.clone()),
+                    import_id: None,
+                };
+
+                let mut db_span = create_operation_span("db.cluster.insert", SpanKind::Client);
+                db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+                db_span.set_attribute(KeyValue::new("db.table", "clusters"));
+                let created = cluster_repo.create(create_request).await?;
+                drop(db_span);
+
+                info!(
+                    cluster_id = %created.id,
+                    cluster_name = %created.name,
+                    team = %team,
+                    "Cluster created for filter"
+                );
+
+                // Refresh cluster xDS cache
+                self.xds_state.refresh_clusters_from_repository().await.map_err(|err| {
+                    error!(error = %err, "Failed to refresh cluster xDS caches");
+                    err
+                })?;
+
+                Ok(cluster_name)
+            }
+            ClusterMode::Reuse => {
+                // Validate that cluster exists
+                if !cluster_repo.exists_by_name(&cluster_name).await? {
+                    return Err(Error::not_found(
+                        "cluster",
+                        format!(
+                            "'{}' not found. Create it first or use mode 'create'.",
+                            cluster_name
+                        ),
+                    ));
+                }
+
+                debug!(
+                    cluster_name = %cluster_name,
+                    "Reusing existing cluster for filter"
+                );
+
+                Ok(cluster_name)
+            }
+        }
+    }
+
+    /// Create a filter with optional cluster creation
+    ///
+    /// This is a convenience method that handles cluster creation before filter creation.
+    /// If cluster_config is provided with mode "create", the cluster is created first.
+    /// If mode is "reuse", the cluster existence is validated.
+    pub async fn create_filter_with_cluster(
+        &self,
+        name: String,
+        filter_type: FilterType,
+        description: Option<String>,
+        config: FilterConfig,
+        team: String,
+        cluster_config: Option<ClusterCreationConfig>,
+    ) -> Result<FilterData, Error> {
+        // Handle cluster creation/validation if config provided
+        if let Some(ref cc) = cluster_config {
+            self.handle_cluster_config(cc, &team).await?;
+        }
+
+        // Create the filter
+        self.create_filter(name, filter_type, description, config, team).await
     }
 }
