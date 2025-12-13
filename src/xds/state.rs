@@ -607,7 +607,7 @@ impl XdsState {
             };
 
             // Parse backend type
-            let Some(backend_type) = SecretBackendType::from_str(backend_str) else {
+            let Some(backend_type) = backend_str.parse::<SecretBackendType>().ok() else {
                 tracing::warn!(
                     secret_name = %secret.name,
                     backend = %backend_str,

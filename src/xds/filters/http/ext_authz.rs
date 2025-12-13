@@ -175,6 +175,7 @@ impl ExtAuthzConfig {
     }
 
     /// Convert to Envoy Any protobuf
+    #[allow(deprecated)] // allowed_headers is deprecated in envoy_types but still functional
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
         self.validate()?;
 

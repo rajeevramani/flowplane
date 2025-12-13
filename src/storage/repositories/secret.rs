@@ -20,6 +20,7 @@ struct SecretRow {
     pub secret_type: String,
     pub description: Option<String>,
     pub configuration_encrypted: Vec<u8>,
+    #[allow(dead_code)] // Retrieved from DB but not currently used in code
     pub encryption_key_id: String,
     pub nonce: Vec<u8>,
     pub version: i64,
@@ -436,7 +437,7 @@ impl SecretRepository {
             })?
         };
 
-        let secret_type = SecretType::from_str(&row.secret_type).ok_or_else(|| {
+        let secret_type = row.secret_type.parse::<SecretType>().map_err(|_| {
             FlowplaneError::internal(format!("Unknown secret type: {}", row.secret_type))
         })?;
 
@@ -563,7 +564,7 @@ mod tests {
             SecretType::SessionTicketKeys,
         ] {
             let s = st.as_str();
-            let parsed = SecretType::from_str(s).unwrap();
+            let parsed: SecretType = s.parse().unwrap();
             assert_eq!(st, parsed);
         }
     }

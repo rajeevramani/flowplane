@@ -7,6 +7,7 @@ use crate::errors::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use utoipa::ToSchema;
 
 /// Type of secret backend
@@ -33,15 +34,18 @@ impl SecretBackendType {
             Self::Database => "database",
         }
     }
+}
 
-    /// Parse from database string
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for SecretBackendType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "vault" => Some(Self::Vault),
-            "aws_secrets_manager" => Some(Self::AwsSecretsManager),
-            "gcp_secret_manager" => Some(Self::GcpSecretManager),
-            "database" => Some(Self::Database),
-            _ => None,
+            "vault" => Ok(Self::Vault),
+            "aws_secrets_manager" => Ok(Self::AwsSecretsManager),
+            "gcp_secret_manager" => Ok(Self::GcpSecretManager),
+            "database" => Ok(Self::Database),
+            _ => Err(format!("Unknown secret backend type: {}", s)),
         }
     }
 }
@@ -95,7 +99,7 @@ mod tests {
             SecretBackendType::Database,
         ] {
             let s = bt.as_str();
-            let parsed = SecretBackendType::from_str(s).unwrap();
+            let parsed: SecretBackendType = s.parse().unwrap();
             assert_eq!(bt, parsed);
         }
     }

@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use utoipa::ToSchema;
 
 /// Secret type enumeration matching Envoy's SDS specification
@@ -38,15 +39,18 @@ impl SecretType {
             Self::SessionTicketKeys => "session_ticket_keys",
         }
     }
+}
 
-    /// Parse from database string
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for SecretType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "generic_secret" => Some(Self::GenericSecret),
-            "tls_certificate" => Some(Self::TlsCertificate),
-            "certificate_validation_context" => Some(Self::CertificateValidationContext),
-            "session_ticket_keys" => Some(Self::SessionTicketKeys),
-            _ => None,
+            "generic_secret" => Ok(Self::GenericSecret),
+            "tls_certificate" => Ok(Self::TlsCertificate),
+            "certificate_validation_context" => Ok(Self::CertificateValidationContext),
+            "session_ticket_keys" => Ok(Self::SessionTicketKeys),
+            _ => Err(format!("Unknown secret type: {}", s)),
         }
     }
 }
@@ -259,7 +263,7 @@ mod tests {
             SecretType::SessionTicketKeys,
         ] {
             let s = secret_type.as_str();
-            let parsed = SecretType::from_str(s).unwrap();
+            let parsed: SecretType = s.parse().unwrap();
             assert_eq!(secret_type, parsed);
         }
     }

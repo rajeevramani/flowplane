@@ -134,7 +134,7 @@ impl SecretBackend for DatabaseSecretBackend {
         })?;
 
         // Verify type matches
-        let stored_type = SecretType::from_str(&row.secret_type).ok_or_else(|| {
+        let stored_type = row.secret_type.parse::<SecretType>().map_err(|_| {
             FlowplaneError::config(format!("Unknown secret type: {}", row.secret_type))
         })?;
 

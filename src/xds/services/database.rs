@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     storage::{ClusterRepository, ListenerRepository, RouteConfigRepository, SecretRepository},
@@ -502,7 +502,7 @@ impl DatabaseAggregatedDiscoveryService {
             };
 
             // Parse backend type
-            let Some(backend_type) = SecretBackendType::from_str(backend_str) else {
+            let Some(backend_type) = backend_str.parse::<SecretBackendType>().ok() else {
                 warn!(
                     secret_name = %secret.name,
                     backend = %backend_str,

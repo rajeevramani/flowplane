@@ -128,9 +128,8 @@ async fn main() -> Result<()> {
 
     // Initialize secret backend registry for external secrets (Vault, AWS, GCP)
     if let Some(encryption) = state_struct.encryption_service.clone() {
-        let cache_ttl = std::env::var("FLOWPLANE_SECRET_CACHE_TTL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let cache_ttl =
+            std::env::var("FLOWPLANE_SECRET_CACHE_TTL_SECS").ok().and_then(|s| s.parse().ok());
 
         match SecretBackendRegistry::from_env(pool.clone(), Some(encryption), cache_ttl).await {
             Ok(registry) => {
