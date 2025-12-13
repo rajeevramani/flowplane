@@ -38,6 +38,7 @@ config_schema:
         cluster:
           type: string
           description: Cluster name for the token endpoint
+          x-field-type: cluster_selector
         timeout_ms:
           type: integer
           description: Timeout in milliseconds

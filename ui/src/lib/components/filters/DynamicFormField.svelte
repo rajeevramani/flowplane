@@ -2,6 +2,7 @@
 	import { Plus, Trash2 } from 'lucide-svelte';
 	import type { FormField } from '$lib/utils/json-schema-form';
 	import { getFieldDefaultValue } from '$lib/utils/json-schema-form';
+	import ClusterSelectorField from './ClusterSelectorField.svelte';
 
 	interface Props {
 		field: FormField;
@@ -12,6 +13,13 @@
 	}
 
 	let { field, value, onChange, errors = [], depth = 0 }: Props = $props();
+
+	// Check if this field is a cluster selector (via x-field-type in schema)
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const isClusterSelector = $derived(
+		(field.originalSchema as Record<string, unknown>)?.['x-field-type'] === 'cluster_selector' ||
+		(field.name === 'cluster' && field.type === 'string')
+	);
 
 	// For array fields, track items
 	let arrayItems = $derived(Array.isArray(value) ? (value as unknown[]) : []);
@@ -91,7 +99,16 @@
 	{/if}
 
 	<!-- Field Input -->
-	{#if field.type === 'string'}
+	{#if isClusterSelector}
+		<ClusterSelectorField
+			value={String(value ?? '')}
+			onChange={(v) => onChange(v)}
+			label={undefined}
+			description={undefined}
+			required={field.required}
+			errors={errors}
+		/>
+	{:else if field.type === 'string'}
 		{#if field.format === 'textarea' || (field.originalSchema.maxLength && field.originalSchema.maxLength > 200)}
 			<textarea
 				value={String(value ?? '')}

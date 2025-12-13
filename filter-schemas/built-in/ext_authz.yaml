@@ -60,6 +60,7 @@ config_schema:
               type: string
             cluster:
               type: string
+              x-field-type: cluster_selector
             timeout_ms:
               type: integer
               default: 200

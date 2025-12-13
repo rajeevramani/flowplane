@@ -69,6 +69,7 @@ config_schema:
                     type: string
                     title: Cluster Name
                     description: The cluster to use for fetching the JWKS
+                    x-field-type: cluster_selector
                   timeout_seconds:
                     type: integer
                     title: Timeout (seconds)
