@@ -1209,3 +1209,95 @@ export interface SetAppStatusRequest {
 	enabled: boolean;
 	config?: Record<string, unknown>;
 }
+
+// ============================================================================
+// Secret Management Types
+// ============================================================================
+
+/** Secret type enumeration matching backend */
+export type SecretType = 'generic_secret' | 'tls_certificate' | 'certificate_validation_context' | 'session_ticket_keys';
+
+/** Secret backend for external references */
+export type SecretBackend = 'vault' | 'aws_secrets_manager' | 'gcp_secret_manager';
+
+/** Secret response (metadata only, no secret values) */
+export interface SecretResponse {
+	/** Unique identifier */
+	id: string;
+	/** Name of the secret */
+	name: string;
+	/** Type of the secret */
+	secret_type: SecretType;
+	/** Optional description */
+	description: string | null;
+	/** Version number (incremented on updates) */
+	version: number;
+	/** Source of the secret (ui, api, import) */
+	source: string;
+	/** Team that owns this secret */
+	team: string;
+	/** Creation timestamp (ISO 8601) */
+	created_at: string;
+	/** Last update timestamp (ISO 8601) */
+	updated_at: string;
+	/** Expiration timestamp (if set) */
+	expires_at: string | null;
+	/** Backend type for reference-based secrets */
+	backend?: SecretBackend;
+	/** Backend-specific reference (Vault path, AWS ARN, etc.) */
+	reference?: string;
+	/** Optional version specifier for the external secret */
+	reference_version?: string;
+}
+
+/** Request to create a new secret (direct storage) */
+export interface CreateSecretRequest {
+	/** Name of the secret (must be unique within the team) */
+	name: string;
+	/** Type of the secret */
+	secret_type: SecretType;
+	/** Optional description */
+	description?: string;
+	/** Secret configuration (varies by type) */
+	configuration: Record<string, unknown>;
+	/** Optional expiration time (ISO 8601) */
+	expires_at?: string;
+}
+
+/** Request to create a reference-based secret (external backend) */
+export interface CreateSecretReferenceRequest {
+	/** Name of the secret (must be unique within the team) */
+	name: string;
+	/** Type of the secret */
+	secret_type: SecretType;
+	/** Optional description */
+	description?: string;
+	/** Backend type: "vault", "aws_secrets_manager", "gcp_secret_manager" */
+	backend: SecretBackend;
+	/** Backend-specific reference (Vault path, AWS ARN, GCP resource name) */
+	reference: string;
+	/** Optional version specifier for the external secret */
+	reference_version?: string;
+	/** Optional expiration time (ISO 8601) */
+	expires_at?: string;
+}
+
+/** Request to update an existing secret */
+export interface UpdateSecretRequest {
+	/** Optional description update */
+	description?: string;
+	/** New secret configuration (replaces existing) */
+	configuration?: Record<string, unknown>;
+	/** Optional expiration time update */
+	expires_at?: string | null;
+}
+
+/** Query parameters for listing secrets */
+export interface ListSecretsQuery {
+	/** Maximum number of secrets to return */
+	limit?: number;
+	/** Offset for pagination */
+	offset?: number;
+	/** Filter by secret type */
+	secret_type?: SecretType;
+}

@@ -11,6 +11,7 @@
 		listeners: number;
 		imports: number;
 		filters: number;
+		secrets?: number;
 	}
 
 	interface Props {

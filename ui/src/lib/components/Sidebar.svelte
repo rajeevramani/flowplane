@@ -14,7 +14,8 @@
 		ChevronDown,
 		List,
 		Link,
-		BarChart3
+		BarChart3,
+		Lock
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -24,6 +25,7 @@
 		listeners: number;
 		imports: number;
 		filters: number;
+		secrets?: number;
 	}
 
 	interface Props {
@@ -42,6 +44,7 @@
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
+		{ id: 'secrets', label: 'Secrets', href: '/secrets', icon: Lock },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
 	];
 
@@ -95,6 +98,8 @@
 				return resourceCounts.filters;
 			case 'imports':
 				return resourceCounts.imports;
+			case 'secrets':
+				return resourceCounts.secrets;
 			default:
 				return undefined;
 		}

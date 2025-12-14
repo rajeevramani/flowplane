@@ -68,7 +68,12 @@ import type {
 	ClustersStatsResponse,
 	ClusterStatsResponse,
 	AppStatusResponse,
-	SetAppStatusRequest
+	SetAppStatusRequest,
+	SecretResponse,
+	CreateSecretRequest,
+	CreateSecretReferenceRequest,
+	UpdateSecretRequest,
+	ListSecretsQuery
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -858,6 +863,71 @@ class ApiClient {
 		return this.put<AppStatusResponse>(
 			`/api/v1/admin/apps/${encodeURIComponent(appId)}`,
 			request
+		);
+	}
+
+	// ============================================================================
+	// Secret Management API
+	// ============================================================================
+
+	/**
+	 * List all secrets for a team.
+	 */
+	async listSecrets(team: string, query?: ListSecretsQuery): Promise<SecretResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+		if (query?.secret_type) params.append('secret_type', query.secret_type);
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/secrets${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<SecretResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific secret by ID.
+	 */
+	async getSecret(team: string, secretId: string): Promise<SecretResponse> {
+		return this.get<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`
+		);
+	}
+
+	/**
+	 * Create a new secret with direct storage.
+	 */
+	async createSecret(team: string, request: CreateSecretRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets`,
+			request
+		);
+	}
+
+	/**
+	 * Create a new secret with external reference.
+	 */
+	async createSecretReference(team: string, request: CreateSecretReferenceRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/reference`,
+			request
+		);
+	}
+
+	/**
+	 * Update an existing secret.
+	 */
+	async updateSecret(team: string, secretId: string, request: UpdateSecretRequest): Promise<SecretResponse> {
+		return this.put<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`,
+			request
+		);
+	}
+
+	/**
+	 * Delete a secret.
+	 */
+	async deleteSecret(team: string, secretId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`
 		);
 	}
 }

@@ -13,13 +13,14 @@
 		listeners: number;
 		filters: number;
 		imports: number;
+		secrets: number;
 	}
 
 	let isLoading = $state(true);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
-	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0 });
+	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0, secrets: 0 });
 	let statsEnabled = $state(false);
 
 	let { children } = $props();
@@ -56,7 +57,7 @@
 
 	async function loadResourceCounts() {
 		try {
-			const [routes, clusters, listeners, filters, imports] = await Promise.all([
+			const [routes, clusters, listeners, filters, imports, secrets] = await Promise.all([
 				apiClient.listRouteConfigs(),
 				apiClient.listClusters(),
 				apiClient.listListeners(),
@@ -65,7 +66,10 @@
 					? apiClient.listAllImports()
 					: currentTeam
 						? apiClient.listImports(currentTeam)
-						: Promise.resolve([])
+						: Promise.resolve([]),
+				currentTeam
+					? apiClient.listSecrets(currentTeam)
+					: Promise.resolve([])
 			]);
 
 			resourceCounts = {
@@ -73,7 +77,8 @@
 				clusters: clusters.length,
 				listeners: listeners.length,
 				filters: filters.length,
-				imports: imports.length
+				imports: imports.length,
+				secrets: secrets.length
 			};
 		} catch (error) {
 			console.error('Failed to load resource counts:', error);
