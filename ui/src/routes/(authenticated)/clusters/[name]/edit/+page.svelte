@@ -32,6 +32,7 @@
 		outlierDetection: OutlierDetectionRequest | null;
 		connectTimeout?: number;
 		dnsLookupFamily?: string;
+		useTls?: boolean;
 	}
 
 	let currentTeam = $state<string>('');
@@ -228,6 +229,9 @@
 		// Parse connect timeout
 		const connectTimeout = parseTimeoutSeconds(config.connectTimeout as string | undefined);
 
+		// Parse useTls
+		const useTls = (config.useTls ?? config.use_tls ?? false) as boolean;
+
 		return {
 			name: cluster.name,
 			team: cluster.team,
@@ -242,7 +246,8 @@
 			circuitBreakers,
 			outlierDetection,
 			connectTimeout,
-			dnsLookupFamily: config.dnsLookupFamily as string | undefined
+			dnsLookupFamily: config.dnsLookupFamily as string | undefined,
+			useTls
 		};
 	}
 
@@ -282,6 +287,10 @@
 
 		if (form.dnsLookupFamily) {
 			payload.dnsLookupFamily = form.dnsLookupFamily;
+		}
+
+		if (form.useTls !== undefined) {
+			payload.useTls = form.useTls;
 		}
 
 		return JSON.stringify(payload, null, 2);
@@ -638,6 +647,22 @@
 									</p>
 								</div>
 							</div>
+
+					<div class="pt-2">
+						<label class="flex items-center gap-3 cursor-pointer">
+							<input
+								type="checkbox"
+								bind:checked={formState.useTls}
+								class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+							/>
+							<div>
+								<span class="text-sm font-medium text-gray-700">Use TLS</span>
+								<p class="text-xs text-gray-500">
+									Enable TLS/HTTPS for connections to upstream endpoints
+								</p>
+							</div>
+						</label>
+					</div>
 						</div>
 					{/if}
 				</div>
