@@ -65,6 +65,8 @@ config_schema:
             name:
               type: string
               description: Name of the SDS secret for the OAuth2 token
+              x-field-type: secret_selector
+              x-secret-type: generic_secret
         cookie_domain:
           type: string
           description: Domain for OAuth cookies

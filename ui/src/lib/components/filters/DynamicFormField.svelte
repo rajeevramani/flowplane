@@ -3,6 +3,8 @@
 	import type { FormField } from '$lib/utils/json-schema-form';
 	import { getFieldDefaultValue } from '$lib/utils/json-schema-form';
 	import ClusterSelectorField from './ClusterSelectorField.svelte';
+	import SecretSelectorField from './SecretSelectorField.svelte';
+	import type { SecretType } from '$lib/api/types';
 
 	interface Props {
 		field: FormField;
@@ -19,6 +21,16 @@
 	const isClusterSelector = $derived(
 		(field.originalSchema as Record<string, unknown>)?.['x-field-type'] === 'cluster_selector' ||
 		(field.name === 'cluster' && field.type === 'string')
+	);
+
+	// Check if this field is a secret selector (via x-field-type in schema)
+	const isSecretSelector = $derived(
+		(field.originalSchema as Record<string, unknown>)?.['x-field-type'] === 'secret_selector'
+	);
+
+	// Get the secret type filter if specified (via x-secret-type in schema)
+	const secretType = $derived(
+		(field.originalSchema as Record<string, unknown>)?.['x-secret-type'] as SecretType | undefined
 	);
 
 	// For array fields, track items
@@ -141,6 +153,14 @@
 			onChange={(v) => onChange(v)}
 			label={undefined}
 			description={undefined}
+			required={field.required}
+			errors={errors}
+		/>
+	{:else if isSecretSelector}
+		<SecretSelectorField
+			value={String(value ?? '')}
+			onChange={(v) => onChange(v)}
+			{secretType}
 			required={field.required}
 			errors={errors}
 		/>
