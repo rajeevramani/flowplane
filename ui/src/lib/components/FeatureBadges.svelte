@@ -67,7 +67,7 @@
 		{#each enabledBadges as badge}
 			<span
 				title={badge.title}
-				class="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-semibold rounded {badge.bgColor} {badge.textColor}"
+				class="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-semibold rounded whitespace-nowrap {badge.bgColor} {badge.textColor}"
 			>
 				{badge.label}
 			</span>

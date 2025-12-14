@@ -32,7 +32,7 @@
 	};
 
 	const baseClasses =
-		"font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors";
+		"font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors whitespace-nowrap";
 	let disabledClasses = $derived(
 		disabled ? "opacity-50 cursor-not-allowed" : "",
 	);
@@ -46,5 +46,7 @@
 		size
 	]} {disabledClasses}"
 >
-	{@render children()}
+	<span class="inline-flex items-center">
+		{@render children()}
+	</span>
 </button>

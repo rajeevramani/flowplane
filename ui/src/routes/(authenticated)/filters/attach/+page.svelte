@@ -366,7 +366,7 @@
 	);
 </script>
 
-<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Page Header -->
 	<div class="mb-6 flex items-center justify-between">
 		<div class="flex items-center gap-4">

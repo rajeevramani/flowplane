@@ -25,7 +25,7 @@
 </script>
 
 <span
-	class="inline-flex items-center rounded-full font-medium {variantClasses[variant]} {sizeClasses[size]}"
+	class="inline-flex items-center rounded-full font-medium whitespace-nowrap {variantClasses[variant]} {sizeClasses[size]}"
 >
 	{@render children()}
 </span>
