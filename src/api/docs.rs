@@ -109,7 +109,14 @@ use crate::xds::{
         crate::api::handlers::hierarchy::list_route_rules_handler,
         crate::api::handlers::hierarchy::list_route_rule_filters_handler,
         crate::api::handlers::hierarchy::attach_filter_to_route_rule_handler,
-        crate::api::handlers::hierarchy::detach_filter_from_route_rule_handler
+        crate::api::handlers::hierarchy::detach_filter_from_route_rule_handler,
+        // Secrets endpoints
+        crate::api::handlers::secrets::create_secret_handler,
+        crate::api::handlers::secrets::create_secret_reference_handler,
+        crate::api::handlers::secrets::list_secrets_handler,
+        crate::api::handlers::secrets::get_secret_handler,
+        crate::api::handlers::secrets::update_secret_handler,
+        crate::api::handlers::secrets::delete_secret_handler
     ),
     components(
         schemas(
@@ -217,7 +224,14 @@ use crate::xds::{
             crate::api::handlers::hierarchy::ListRouteRulesResponse,
             crate::api::handlers::hierarchy::RouteRuleResponse,
             crate::api::handlers::hierarchy::RouteRuleFiltersResponse,
-            crate::api::handlers::hierarchy::FilterResponse
+            crate::api::handlers::hierarchy::FilterResponse,
+            // Secrets schemas
+            crate::api::handlers::secrets::CreateSecretRequest,
+            crate::api::handlers::secrets::CreateSecretReferenceRequest,
+            crate::api::handlers::secrets::UpdateSecretRequest,
+            crate::api::handlers::secrets::SecretResponse,
+            crate::api::handlers::secrets::ListSecretsQuery,
+            crate::domain::SecretType
         )
     ),
     tags(
@@ -236,7 +250,8 @@ use crate::xds::{
         (name = "reports", description = "Platform visibility and reporting endpoints"),
         (name = "learning-sessions", description = "API schema learning and traffic observation"),
         (name = "aggregated-schemas", description = "Learned API schemas and catalog management"),
-        (name = "hierarchy", description = "Hierarchical filter attachment to virtual hosts and routes")
+        (name = "hierarchy", description = "Hierarchical filter attachment to virtual hosts and routes"),
+        (name = "secrets", description = "Secret management for TLS certificates, OAuth tokens, and API keys")
     ),
     security(
         ("bearerAuth" = [])
@@ -442,6 +457,20 @@ mod tests {
             paths.contains_key("/api/v1/reports/route-flows"),
             "Missing GET /api/v1/reports/route-flows"
         );
+
+        // Secrets endpoints (6)
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/secrets"),
+            "Missing GET/POST /api/v1/teams/{{team}}/secrets"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/secrets/reference"),
+            "Missing POST /api/v1/teams/{{team}}/secrets/reference"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/secrets/{secret_id}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/secrets/{{secret_id}}"
+        );
     }
 
     #[test]
@@ -641,6 +670,17 @@ mod tests {
             "Missing OpenApiExportResponse schema"
         );
         assert!(schemas.contains_key("OpenApiInfo"), "Missing OpenApiInfo schema");
+
+        // Secrets schemas
+        assert!(schemas.contains_key("CreateSecretRequest"), "Missing CreateSecretRequest schema");
+        assert!(
+            schemas.contains_key("CreateSecretReferenceRequest"),
+            "Missing CreateSecretReferenceRequest schema"
+        );
+        assert!(schemas.contains_key("UpdateSecretRequest"), "Missing UpdateSecretRequest schema");
+        assert!(schemas.contains_key("SecretResponse"), "Missing SecretResponse schema");
+        assert!(schemas.contains_key("ListSecretsQuery"), "Missing ListSecretsQuery schema");
+        assert!(schemas.contains_key("SecretType"), "Missing SecretType schema");
     }
 
     #[test]
@@ -665,6 +705,7 @@ mod tests {
         assert!(tag_names.contains(&"reports"), "Missing 'reports' tag");
         assert!(tag_names.contains(&"learning-sessions"), "Missing 'learning-sessions' tag");
         assert!(tag_names.contains(&"aggregated-schemas"), "Missing 'aggregated-schemas' tag");
+        assert!(tag_names.contains(&"secrets"), "Missing 'secrets' tag");
     }
 
     #[test]
