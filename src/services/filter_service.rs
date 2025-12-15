@@ -243,6 +243,12 @@ impl FilterService {
                     (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
                     (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
                     (FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => {}
+                    (FilterType::Mcp, FilterConfig::Mcp(_)) => {}
+                    (FilterType::Cors, FilterConfig::Cors(_)) => {}
+                    (FilterType::Compressor, FilterConfig::Compressor(_)) => {}
+                    (FilterType::ExtAuthz, FilterConfig::ExtAuthz(_)) => {}
+                    (FilterType::Rbac, FilterConfig::Rbac(_)) => {}
+                    (FilterType::OAuth2, FilterConfig::OAuth2(_)) => {}
                     _ => {
                         return Err(Error::validation("Cannot change filter type, config mismatch"))
                     }

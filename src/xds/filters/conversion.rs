@@ -242,12 +242,9 @@ pub fn create_empty_listener_filter(
             Some(HttpFilterKind::CustomResponse(CustomResponseConfig::default()))
         }
         FilterType::Mcp => Some(HttpFilterKind::Mcp(McpFilterConfig::default())),
-        FilterType::Cors => {
-            use crate::xds::filters::http::cors::{CorsConfig, CorsPolicyConfig};
-            Some(HttpFilterKind::Cors(CorsConfig { policy: CorsPolicyConfig::default() }))
-        }
-        // These filters require valid configuration
-        FilterType::JwtAuth
+        // These filters require valid configuration and cannot be empty placeholders
+        FilterType::Cors
+        | FilterType::JwtAuth
         | FilterType::LocalRateLimit
         | FilterType::RateLimit
         | FilterType::ExtAuthz
