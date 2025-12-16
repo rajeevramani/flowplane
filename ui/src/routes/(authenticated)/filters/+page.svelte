@@ -2,8 +2,8 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Plus, Edit, Trash2, Filter as FilterIcon, Settings, Clock, Link } from 'lucide-svelte';
-	import type { FilterResponse } from '$lib/api/types';
+	import { Plus, Edit, Trash2, Filter as FilterIcon, Settings, Clock, Server, Sliders } from 'lucide-svelte';
+	import type { FilterResponse, FilterStatusResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -16,6 +16,7 @@
 
 	// Data
 	let filters = $state<FilterResponse[]>([]);
+	let filterStatuses = $state<Map<string, FilterStatusResponse>>(new Map());
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -38,6 +39,21 @@
 		try {
 			const filtersData = await apiClient.listFilters();
 			filters = filtersData;
+
+			// Load status for each filter (installations + configurations)
+			const statusMap = new Map<string, FilterStatusResponse>();
+			await Promise.all(
+				filtersData.map(async (filter) => {
+					try {
+						const status = await apiClient.getFilterStatus(filter.id);
+						statusMap.set(filter.id, status);
+					} catch (e) {
+						// Ignore errors for individual status fetches
+						console.warn(`Failed to load status for filter ${filter.id}:`, e);
+					}
+				})
+			);
+			filterStatuses = statusMap;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load filters';
 			console.error('Failed to load filters:', e);
@@ -47,10 +63,24 @@
 	}
 
 	// Calculate stats
-	let stats = $derived({
-		totalFilters: filters.filter(f => f.team === currentTeam).length,
-		headerMutationFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'header_mutation').length,
-		rateLimitFilters: filters.filter(f => f.team === currentTeam && f.filterType === 'local_rate_limit').length
+	let stats = $derived(() => {
+		const teamFilters = filters.filter(f => f.team === currentTeam);
+		let installedCount = 0;
+		let configuredCount = 0;
+
+		teamFilters.forEach(f => {
+			const status = filterStatuses.get(f.id);
+			if (status) {
+				if (status.installations.length > 0) installedCount++;
+				if (status.configurations.length > 0) configuredCount++;
+			}
+		});
+
+		return {
+			totalFilters: teamFilters.length,
+			installedFilters: installedCount,
+			configuredFilters: configuredCount
+		};
 	});
 
 	// Filter filters by team and search
@@ -130,7 +160,7 @@
 			<div class="flex items-center justify-between">
 				<div>
 					<p class="text-sm font-medium text-gray-600">Total Filters</p>
-					<p class="text-2xl font-bold text-gray-900">{stats.totalFilters}</p>
+					<p class="text-2xl font-bold text-gray-900">{stats().totalFilters}</p>
 				</div>
 				<div class="p-3 bg-blue-100 rounded-lg">
 					<FilterIcon class="h-6 w-6 text-blue-600" />
@@ -141,11 +171,11 @@
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-sm font-medium text-gray-600">Header Mutation</p>
-					<p class="text-2xl font-bold text-gray-900">{stats.headerMutationFilters}</p>
+					<p class="text-sm font-medium text-gray-600">Installed on Listeners</p>
+					<p class="text-2xl font-bold text-gray-900">{stats().installedFilters}</p>
 				</div>
 				<div class="p-3 bg-green-100 rounded-lg">
-					<Settings class="h-6 w-6 text-green-600" />
+					<Server class="h-6 w-6 text-green-600" />
 				</div>
 			</div>
 		</div>
@@ -153,11 +183,11 @@
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-sm font-medium text-gray-600">Rate Limit</p>
-					<p class="text-2xl font-bold text-gray-900">{stats.rateLimitFilters}</p>
+					<p class="text-sm font-medium text-gray-600">Configured for Routes</p>
+					<p class="text-2xl font-bold text-gray-900">{stats().configuredFilters}</p>
 				</div>
 				<div class="p-3 bg-orange-100 rounded-lg">
-					<Clock class="h-6 w-6 text-orange-600" />
+					<Sliders class="h-6 w-6 text-orange-600" />
 				</div>
 			</div>
 		</div>
@@ -225,16 +255,13 @@
 							Type
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-							Description
+							Installed On
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-							Attachments
+							Configured For
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Team
-						</th>
-						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-							Created
 						</th>
 						<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Actions
@@ -243,12 +270,13 @@
 				</thead>
 				<tbody class="bg-white divide-y divide-gray-200">
 					{#each filteredFilters as filter}
+						{@const status = filterStatuses.get(filter.id)}
 						<tr class="hover:bg-gray-50 transition-colors">
 							<!-- Name -->
 							<td class="px-6 py-4">
 								<div class="flex flex-col">
 									<span class="text-sm font-medium text-gray-900">{filter.name}</span>
-									<span class="text-xs text-gray-500 font-mono">{filter.id}</span>
+									<span class="text-xs text-gray-500">{filter.description || '-'}</span>
 								</div>
 							</td>
 
@@ -257,22 +285,48 @@
 								<Badge variant="blue">{formatFilterType(filter.filterType)}</Badge>
 							</td>
 
-							<!-- Description -->
+							<!-- Installed On (Listeners) -->
 							<td class="px-6 py-4">
-								<span class="text-sm text-gray-600">
-									{filter.description || '-'}
-								</span>
+								{#if status && status.installations.length > 0}
+									<div class="flex flex-col gap-1">
+										<span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-green-100 text-green-700">
+											<Server class="h-3 w-3 mr-1" />
+											{status.installations.length} {status.installations.length === 1 ? 'listener' : 'listeners'}
+										</span>
+									</div>
+								{:else}
+									<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-500">
+										Not installed
+									</span>
+								{/if}
 							</td>
 
-							<!-- Attachments -->
+							<!-- Configured For (Routes) -->
 							<td class="px-6 py-4">
-								{#if filter.attachmentCount && filter.attachmentCount > 0}
-									<span class="px-2 py-0.5 text-xs rounded bg-indigo-100 text-indigo-700">
-										{filter.attachmentCount} {filter.attachmentCount === 1 ? 'resource' : 'resources'}
-									</span>
+								{#if status && status.configurations.length > 0}
+									{@const routeConfigs = status.configurations.filter(c => c.scopeType === 'route-config').length}
+									{@const vhosts = status.configurations.filter(c => c.scopeType === 'virtual-host').length}
+									{@const routes = status.configurations.filter(c => c.scopeType === 'route').length}
+									<div class="flex flex-col gap-1">
+										{#if routeConfigs > 0}
+											<span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-blue-100 text-blue-700">
+												{routeConfigs} route-config{routeConfigs !== 1 ? 's' : ''}
+											</span>
+										{/if}
+										{#if vhosts > 0}
+											<span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-purple-100 text-purple-700">
+												{vhosts} vhost{vhosts !== 1 ? 's' : ''}
+											</span>
+										{/if}
+										{#if routes > 0}
+											<span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-700">
+												{routes} route{routes !== 1 ? 's' : ''}
+											</span>
+										{/if}
+									</div>
 								{:else}
-									<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">
-										Not attached
+									<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-500">
+										Not configured
 									</span>
 								{/if}
 							</td>
@@ -282,20 +336,22 @@
 								<Badge variant="indigo">{filter.team}</Badge>
 							</td>
 
-							<!-- Created -->
-							<td class="px-6 py-4">
-								<span class="text-sm text-gray-600">{formatDate(filter.createdAt)}</span>
-							</td>
-
 							<!-- Actions -->
 							<td class="px-6 py-4 text-right">
-								<div class="flex justify-end gap-2">
+								<div class="flex justify-end gap-1">
 									<button
-										onclick={() => goto(`/filters/attach?filterId=${encodeURIComponent(filter.id)}`)}
-										class="p-2 text-purple-600 hover:bg-purple-50 rounded-md transition-colors"
-										title="Attach filter to resources"
+										onclick={() => goto(`/filters/${encodeURIComponent(filter.id)}/install`)}
+										class="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
+										title="Install filter on listeners"
 									>
-										<Link class="h-4 w-4" />
+										<Server class="h-4 w-4" />
+									</button>
+									<button
+										onclick={() => goto(`/filters/${encodeURIComponent(filter.id)}/configure`)}
+										class="p-2 text-orange-600 hover:bg-orange-50 rounded-md transition-colors"
+										title="Configure filter for routes"
+									>
+										<Sliders class="h-4 w-4" />
 									</button>
 									<button
 										onclick={() => handleEdit(filter.id)}

@@ -59,8 +59,8 @@ pub struct FilterTypeMetadata {
     pub description: &'static str,
 }
 
-/// Static attachment point arrays for filter metadata
-const ROUTE_ONLY: &[AttachmentPoint] = &[AttachmentPoint::Route];
+/// Static attachment point arrays for filter metadata.
+/// All HTTP filters require listener installation (HCM chain) and support route configuration.
 const ROUTE_AND_LISTENER: &[AttachmentPoint] = &[AttachmentPoint::Route, AttachmentPoint::Listener];
 
 /// Returns metadata for a given filter type.
@@ -74,7 +74,7 @@ fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
             http_filter_name: "envoy.filters.http.header_mutation",
             type_url: "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation",
             per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutationPerRoute"),
-            attachment_points: ROUTE_ONLY,
+            attachment_points: ROUTE_AND_LISTENER,
             requires_listener_config: false,
             per_route_behavior: PerRouteBehavior::FullConfig,
             is_implemented: true,
@@ -96,7 +96,7 @@ fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
             http_filter_name: "envoy.filters.http.cors",
             type_url: "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors",
             per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy"),
-            attachment_points: ROUTE_ONLY,
+            attachment_points: ROUTE_AND_LISTENER,
             requires_listener_config: false,
             per_route_behavior: PerRouteBehavior::FullConfig,
             is_implemented: true,
@@ -533,19 +533,22 @@ mod tests {
     }
 
     #[test]
-    fn test_header_mutation_only_attaches_to_routes() {
+    fn test_header_mutation_attaches_to_routes_and_listeners() {
         let ft = FilterType::HeaderMutation;
         assert!(ft.can_attach_to(AttachmentPoint::Route));
-        assert!(!ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
         assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
-        assert_eq!(ft.allowed_attachment_points(), vec![AttachmentPoint::Route]);
+        assert_eq!(
+            ft.allowed_attachment_points(),
+            vec![AttachmentPoint::Route, AttachmentPoint::Listener]
+        );
     }
 
     #[test]
-    fn test_cors_only_attaches_to_routes() {
+    fn test_cors_attaches_to_routes_and_listeners() {
         let ft = FilterType::Cors;
         assert!(ft.can_attach_to(AttachmentPoint::Route));
-        assert!(!ft.can_attach_to(AttachmentPoint::Listener));
+        assert!(ft.can_attach_to(AttachmentPoint::Listener));
         assert!(!ft.can_attach_to(AttachmentPoint::Cluster));
     }
 
@@ -587,7 +590,10 @@ mod tests {
 
     #[test]
     fn test_allowed_attachment_points_display() {
-        assert_eq!(FilterType::HeaderMutation.allowed_attachment_points_display(), "route only");
+        assert_eq!(
+            FilterType::HeaderMutation.allowed_attachment_points_display(),
+            "route, listener"
+        );
         assert_eq!(FilterType::JwtAuth.allowed_attachment_points_display(), "route, listener");
     }
 
@@ -924,7 +930,10 @@ mod tests {
             "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation"
         );
         assert!(metadata.per_route_type_url.is_some());
-        assert_eq!(metadata.attachment_points, &[AttachmentPoint::Route]);
+        assert_eq!(
+            metadata.attachment_points,
+            &[AttachmentPoint::Route, AttachmentPoint::Listener]
+        );
         assert!(!metadata.requires_listener_config);
         assert_eq!(metadata.per_route_behavior, PerRouteBehavior::FullConfig);
         assert!(metadata.is_implemented);

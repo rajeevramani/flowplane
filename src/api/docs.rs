@@ -116,7 +116,21 @@ use crate::xds::{
         crate::api::handlers::secrets::list_secrets_handler,
         crate::api::handlers::secrets::get_secret_handler,
         crate::api::handlers::secrets::update_secret_handler,
-        crate::api::handlers::secrets::delete_secret_handler
+        crate::api::handlers::secrets::delete_secret_handler,
+        // Filter CRUD endpoints
+        crate::api::handlers::filters::list_filters_handler,
+        crate::api::handlers::filters::create_filter_handler,
+        crate::api::handlers::filters::get_filter_handler,
+        crate::api::handlers::filters::update_filter_handler,
+        crate::api::handlers::filters::delete_filter_handler,
+        // Filter Install/Configure endpoints
+        crate::api::handlers::filters::install_filter_handler,
+        crate::api::handlers::filters::uninstall_filter_handler,
+        crate::api::handlers::filters::list_filter_installations_handler,
+        crate::api::handlers::filters::configure_filter_handler,
+        crate::api::handlers::filters::remove_filter_configuration_handler,
+        crate::api::handlers::filters::list_filter_configurations_handler,
+        crate::api::handlers::filters::get_filter_status_handler
     ),
     components(
         schemas(
@@ -231,7 +245,25 @@ use crate::xds::{
             crate::api::handlers::secrets::UpdateSecretRequest,
             crate::api::handlers::secrets::SecretResponse,
             crate::api::handlers::secrets::ListSecretsQuery,
-            crate::domain::SecretType
+            crate::domain::SecretType,
+            // Filter CRUD schemas
+            crate::api::handlers::filters::CreateFilterRequest,
+            crate::api::handlers::filters::UpdateFilterRequest,
+            crate::api::handlers::filters::FilterResponse,
+            crate::api::handlers::filters::ListFiltersQuery,
+            crate::api::handlers::filters::ClusterCreationConfig,
+            crate::api::handlers::filters::ClusterMode,
+            // Filter Install/Configure schemas
+            crate::api::handlers::filters::InstallFilterRequest,
+            crate::api::handlers::filters::InstallFilterResponse,
+            crate::api::handlers::filters::FilterInstallationsResponse,
+            crate::api::handlers::filters::FilterInstallationItem,
+            crate::api::handlers::filters::ConfigureFilterRequest,
+            crate::api::handlers::filters::ConfigureFilterResponse,
+            crate::api::handlers::filters::FilterConfigurationsResponse,
+            crate::api::handlers::filters::FilterConfigurationItem,
+            crate::api::handlers::filters::FilterStatusResponse,
+            crate::api::handlers::filters::ScopeType
         )
     ),
     tags(
@@ -251,7 +283,11 @@ use crate::xds::{
         (name = "learning-sessions", description = "API schema learning and traffic observation"),
         (name = "aggregated-schemas", description = "Learned API schemas and catalog management"),
         (name = "hierarchy", description = "Hierarchical filter attachment to virtual hosts and routes"),
-        (name = "secrets", description = "Secret management for TLS certificates, OAuth tokens, and API keys")
+        (name = "secrets", description = "Secret management for TLS certificates, OAuth tokens, and API keys"),
+        (name = "filters", description = "Filter CRUD operations for creating, reading, updating, and deleting filters"),
+        (name = "filter-installations", description = "Filter installation on listeners (Install/Configure redesign)"),
+        (name = "filter-configurations", description = "Filter configuration for routes, virtual hosts, and route configs"),
+        (name = "filter-status", description = "Combined filter status showing installations and configurations")
     ),
     security(
         ("bearerAuth" = [])

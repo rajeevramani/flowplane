@@ -39,7 +39,10 @@ pub use cluster_endpoint::{
     ClusterEndpointData, ClusterEndpointRepository, CreateEndpointRequest, UpdateEndpointRequest,
 };
 pub use cluster_references::{ClusterReferenceData, ClusterReferencesRepository};
-pub use filter::{CreateFilterRequest, FilterData, FilterRepository, UpdateFilterRequest};
+pub use filter::{
+    CreateFilterRequest, FilterConfiguration, FilterData, FilterInstallation, FilterRepository,
+    FilterScopeType, UpdateFilterRequest,
+};
 pub use import_metadata::{
     CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
 };

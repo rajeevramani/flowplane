@@ -19,6 +19,7 @@ struct RouteFilterRow {
     pub filter_id: String,
     pub filter_order: i32,
     pub created_at: DateTime<Utc>,
+    pub settings: Option<String>,
 }
 
 /// Route filter attachment data.
@@ -28,6 +29,9 @@ pub struct RouteFilterData {
     pub filter_id: FilterId,
     pub filter_order: i32,
     pub created_at: DateTime<Utc>,
+    /// Per-scope settings (behavior, config overrides, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
 }
 
 impl From<RouteFilterRow> for RouteFilterData {
@@ -37,6 +41,7 @@ impl From<RouteFilterRow> for RouteFilterData {
             filter_id: FilterId::from_string(row.filter_id),
             filter_order: row.filter_order,
             created_at: row.created_at,
+            settings: row.settings.and_then(|s| serde_json::from_str(&s).ok()),
         }
     }
 }
@@ -54,23 +59,26 @@ impl RouteFilterRepository {
     }
 
     /// Attach a filter to a route.
-    #[instrument(skip(self), fields(route_id = %route_id, filter_id = %filter_id, order = order), name = "db_attach_filter_to_route")]
+    #[instrument(skip(self, settings), fields(route_id = %route_id, filter_id = %filter_id, order = order), name = "db_attach_filter_to_route")]
     pub async fn attach(
         &self,
         route_id: &RouteId,
         filter_id: &FilterId,
         order: i32,
+        settings: Option<serde_json::Value>,
     ) -> Result<RouteFilterData> {
         let now = Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
 
         sqlx::query(
-            "INSERT INTO route_filters (route_id, filter_id, filter_order, created_at) \
-             VALUES ($1, $2, $3, $4)"
+            "INSERT INTO route_filters (route_id, filter_id, filter_order, created_at, settings) \
+             VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(route_id.as_str())
         .bind(filter_id.as_str())
         .bind(order)
         .bind(now)
+        .bind(&settings_json)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -128,6 +136,7 @@ impl RouteFilterRepository {
             filter_id: filter_id.clone(),
             filter_order: order,
             created_at: now,
+            settings,
         })
     }
 
@@ -169,7 +178,7 @@ impl RouteFilterRepository {
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_list_route_filters")]
     pub async fn list_by_route(&self, route_id: &RouteId) -> Result<Vec<RouteFilterData>> {
         let rows = sqlx::query_as::<Sqlite, RouteFilterRow>(
-            "SELECT route_id, filter_id, filter_order, created_at \
+            "SELECT route_id, filter_id, filter_order, created_at, settings \
              FROM route_filters WHERE route_id = $1 ORDER BY filter_order ASC",
         )
         .bind(route_id.as_str())

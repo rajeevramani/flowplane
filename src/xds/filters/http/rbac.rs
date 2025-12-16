@@ -80,10 +80,13 @@ pub enum PermissionRule {
     /// Match requests with specific metadata
     Metadata { filter: String, path: Vec<String> },
     /// AND of multiple permissions
+    #[schema(no_recursion)]
     AndRules { rules: Vec<PermissionRule> },
     /// OR of multiple permissions
+    #[schema(no_recursion)]
     OrRules { rules: Vec<PermissionRule> },
     /// NOT of a permission
+    #[schema(no_recursion)]
     NotRule { rule: Box<PermissionRule> },
 }
 
@@ -211,10 +214,13 @@ pub enum PrincipalRule {
         prefix_match: Option<String>,
     },
     /// AND of multiple principals
+    #[schema(no_recursion)]
     AndIds { ids: Vec<PrincipalRule> },
     /// OR of multiple principals
+    #[schema(no_recursion)]
     OrIds { ids: Vec<PrincipalRule> },
     /// NOT of a principal
+    #[schema(no_recursion)]
     NotId { id: Box<PrincipalRule> },
 }
 

@@ -268,7 +268,7 @@ pub async fn attach_filter_to_virtual_host_handler(
 
     let service = FilterService::new(state.xds_state.clone());
     service
-        .attach_filter_to_virtual_host(&virtual_host.id, &filter_id, payload.order)
+        .attach_filter_to_virtual_host(&virtual_host.id, &filter_id, payload.order, None)
         .await
         .map_err(ApiError::from)?;
 
@@ -463,7 +463,7 @@ pub async fn attach_filter_to_route_rule_handler(
 
     let service = FilterService::new(state.xds_state.clone());
     service
-        .attach_filter_to_route(&route.id, &filter_id, payload.order)
+        .attach_filter_to_route(&route.id, &filter_id, payload.order, None)
         .await
         .map_err(ApiError::from)?;
 

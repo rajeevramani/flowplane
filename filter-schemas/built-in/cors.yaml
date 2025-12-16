@@ -11,6 +11,7 @@ envoy:
 capabilities:
   attachment_points:
     - route
+    - listener
   requires_listener_config: false
   per_route_behavior: full_config
 

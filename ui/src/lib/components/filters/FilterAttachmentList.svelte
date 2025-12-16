@@ -8,9 +8,10 @@
 		onDetach: (filterId: string) => void;
 		isLoading?: boolean;
 		emptyMessage?: string;
+		actionLabel?: string; // "Uninstall" for listeners, "Remove" for route configurations
 	}
 
-	let { filters, onDetach, isLoading = false, emptyMessage = 'No filters attached' }: Props =
+	let { filters, onDetach, isLoading = false, emptyMessage = 'No filters configured', actionLabel = 'Remove' }: Props =
 		$props();
 
 	function getFilterTypeLabel(filterType: string): string {
@@ -89,7 +90,7 @@
 				<button
 					onclick={() => onDetach(filter.id)}
 					class="p-1.5 text-red-600 hover:bg-red-50 rounded-md transition-colors"
-					title="Detach filter"
+					title="{actionLabel} filter"
 				>
 					<Trash2 class="h-4 w-4" />
 				</button>

@@ -18,6 +18,13 @@
 //!
 //! For dynamic filters, the configuration is converted to a `google.protobuf.Struct`
 //! wrapped as `TypedConfig`, which Envoy can interpret at runtime.
+//!
+//! ## Per-Scope Settings
+//!
+//! Filters can have per-scope settings that control behavior at specific scopes:
+//! - `use_base`: Use the filter's base configuration (default)
+//! - `disable`: Disable the filter for this scope
+//! - `override`: Use custom configuration for this scope
 
 use crate::domain::filter_schema::FilterSchemaRegistry;
 use crate::domain::FilterConfig;
@@ -29,8 +36,30 @@ use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
 use crate::xds::filters::http::HttpScopedConfig;
 use crate::xds::filters::{Base64Bytes, TypedConfig};
 use crate::Result;
+use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+
+/// Per-scope settings for filter behavior.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerScopeSettings {
+    /// Behavior type: "use_base", "disable", or "override"
+    pub behavior: String,
+    /// Override configuration (for behavior = "override")
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+    /// Requirement name for JWT-style filters (for behavior = "override" with reference_only)
+    #[serde(default, rename = "requirementName")]
+    #[allow(dead_code)] // Will be used when JWT per-route settings are fully implemented
+    pub requirement_name: Option<String>,
+}
+
+/// Filter data paired with per-scope settings.
+#[derive(Debug, Clone)]
+pub struct FilterWithSettings {
+    pub filter: FilterData,
+    pub settings: Option<PerScopeSettings>,
+}
 
 /// Context for hierarchical filter injection.
 pub struct HierarchicalFilterContext<'a> {
@@ -88,8 +117,9 @@ pub async fn inject_route_config_filters(
         // Process each filter and add to typed_per_filter_config
         for filter_data in filters {
             // Try to convert using static or dynamic approach
+            // Note: This simple injection doesn't support per-scope settings (pass None)
             let (filter_name, scoped_config) =
-                match convert_filter_to_scoped_config(&filter_data, &converter) {
+                match convert_filter_to_scoped_config(&filter_data, &None, &converter) {
                     Some(result) => result,
                     None => {
                         debug!(
@@ -187,13 +217,17 @@ pub async fn inject_route_filters_hierarchical(
                 ))
             })?;
 
-        // 1. Get RouteConfig-level filters
-        let route_config_filters =
+        // 1. Get RouteConfig-level filters (these don't have per-scope settings - they ARE the base)
+        let route_config_filters_raw =
             ctx.filter_repo.list_route_config_filters(&route_config.id).await?;
+        let route_config_filters: Vec<FilterWithSettings> = route_config_filters_raw
+            .into_iter()
+            .map(|filter| FilterWithSettings { filter, settings: None })
+            .collect();
 
-        // 2. Get VirtualHosts for this route config and their filters
+        // 2. Get VirtualHosts for this route config and their filters (with settings)
         let virtual_hosts = ctx.vhost_repo.list_by_route_config(&route_config.id).await?;
-        let mut vhost_filter_map: HashMap<String, Vec<FilterData>> = HashMap::new();
+        let mut vhost_filter_map: HashMap<String, Vec<FilterWithSettings>> = HashMap::new();
 
         for vhost in &virtual_hosts {
             let vh_filter_attachments =
@@ -202,7 +236,11 @@ pub async fn inject_route_filters_hierarchical(
 
             for attachment in vh_filter_attachments {
                 if let Ok(filter) = ctx.filter_repo.get_by_id(&attachment.filter_id).await {
-                    vh_filters.push(filter);
+                    // Parse settings from attachment
+                    let settings = attachment
+                        .settings
+                        .and_then(|s| serde_json::from_value::<PerScopeSettings>(s).ok());
+                    vh_filters.push(FilterWithSettings { filter, settings });
                 }
             }
 
@@ -211,8 +249,9 @@ pub async fn inject_route_filters_hierarchical(
             }
         }
 
-        // 3. Get Routes and their filters
-        let mut route_filter_map: HashMap<(String, String), Vec<FilterData>> = HashMap::new();
+        // 3. Get Routes and their filters (with settings)
+        let mut route_filter_map: HashMap<(String, String), Vec<FilterWithSettings>> =
+            HashMap::new();
 
         for vhost in &virtual_hosts {
             let routes = ctx.route_repo.list_by_virtual_host(&vhost.id).await?;
@@ -224,7 +263,11 @@ pub async fn inject_route_filters_hierarchical(
 
                 for attachment in route_filter_attachments {
                     if let Ok(filter) = ctx.filter_repo.get_by_id(&attachment.filter_id).await {
-                        route_filters.push(filter);
+                        // Parse settings from attachment
+                        let settings = attachment
+                            .settings
+                            .and_then(|s| serde_json::from_value::<PerScopeSettings>(s).ok());
+                        route_filters.push(FilterWithSettings { filter, settings });
                     }
                 }
 
@@ -268,11 +311,16 @@ pub async fn inject_route_filters_hierarchical(
 /// Apply hierarchical filter injection to a route configuration.
 ///
 /// Returns true if any modifications were made.
+///
+/// Per-scope settings are applied as follows:
+/// - `behavior: "use_base"` or no settings: Use base filter config
+/// - `behavior: "disable"`: Skip this filter for this scope
+/// - `behavior: "override"`: Use the settings.config instead of base config
 fn inject_hierarchical(
     config: &mut serde_json::Value,
-    route_filters: &[FilterData],
-    vhost_filter_map: &HashMap<String, Vec<FilterData>>,
-    rule_filter_map: &HashMap<(String, String), Vec<FilterData>>,
+    route_filters: &[FilterWithSettings],
+    vhost_filter_map: &HashMap<String, Vec<FilterWithSettings>>,
+    rule_filter_map: &HashMap<(String, String), Vec<FilterWithSettings>>,
     converter: &DynamicFilterConverter,
 ) -> Result<bool> {
     let mut modified = false;
@@ -301,34 +349,52 @@ fn inject_hierarchical(
 
                             // Determine effective filters with hierarchy
                             // More specific overrides less specific (by filter type)
-                            let mut effective_filters: HashMap<String, FilterData> = HashMap::new();
+                            let mut effective_filters: HashMap<String, FilterWithSettings> =
+                                HashMap::new();
 
-                            // Layer 1: Route-level (least specific)
-                            for filter in route_filters {
+                            // Layer 1: RouteConfig-level (least specific, base config)
+                            for fws in route_filters {
                                 effective_filters
-                                    .insert(filter.filter_type.clone(), filter.clone());
+                                    .insert(fws.filter.filter_type.clone(), fws.clone());
                             }
 
-                            // Layer 2: VHost-level (overrides route-level)
+                            // Layer 2: VHost-level (overrides route-config level)
                             if let Some(vh_f) = vh_filters {
-                                for filter in vh_f {
+                                for fws in vh_f {
                                     effective_filters
-                                        .insert(filter.filter_type.clone(), filter.clone());
+                                        .insert(fws.filter.filter_type.clone(), fws.clone());
                                 }
                             }
 
                             // Layer 3: Rule-level (most specific, overrides all)
                             if let Some(rule_f) = rule_filters {
-                                for filter in rule_f {
+                                for fws in rule_f {
                                     effective_filters
-                                        .insert(filter.filter_type.clone(), filter.clone());
+                                        .insert(fws.filter.filter_type.clone(), fws.clone());
                                 }
                             }
 
                             // Apply effective filters to route
-                            for filter_data in effective_filters.values() {
+                            for fws in effective_filters.values() {
+                                // Check if filter is disabled at this scope
+                                if let Some(ref settings) = fws.settings {
+                                    if settings.behavior == "disable" {
+                                        debug!(
+                                            filter_name = %fws.filter.name,
+                                            filter_type = %fws.filter.filter_type,
+                                            route = %rule_name,
+                                            "Filter disabled at this scope, skipping"
+                                        );
+                                        continue;
+                                    }
+                                }
+
                                 if let Some((filter_name, scoped_config)) =
-                                    convert_filter_to_scoped_config(filter_data, converter)
+                                    convert_filter_to_scoped_config(
+                                        &fws.filter,
+                                        &fws.settings,
+                                        converter,
+                                    )
                                 {
                                     let tpfc = route_entry.as_object_mut().and_then(|obj| {
                                         obj.entry("typed_per_filter_config")
@@ -356,6 +422,40 @@ fn inject_hierarchical(
     Ok(modified)
 }
 
+/// Determine the effective configuration to use for a filter.
+///
+/// If per-scope settings specify an override, use the override config.
+/// Otherwise, use the base filter configuration.
+fn determine_effective_config(
+    filter_data: &FilterData,
+    settings: &Option<PerScopeSettings>,
+) -> String {
+    // Check if we have override settings with a config
+    if let Some(ref s) = settings {
+        if s.behavior == "override" {
+            if let Some(ref override_config) = s.config {
+                // Build the full config structure expected by the converter
+                // The converter expects: { "type": "filter_type", "config": {...} }
+                let full_config = serde_json::json!({
+                    "type": filter_data.filter_type,
+                    "config": override_config
+                });
+
+                info!(
+                    filter_name = %filter_data.name,
+                    filter_type = %filter_data.filter_type,
+                    "Using per-scope override configuration"
+                );
+
+                return full_config.to_string();
+            }
+        }
+    }
+
+    // Default: use base configuration
+    filter_data.configuration.clone()
+}
+
 /// Convert a FilterData to its scoped config representation.
 ///
 /// This function uses a hybrid approach:
@@ -364,12 +464,21 @@ fn inject_hierarchical(
 ///
 /// For dynamic filters, the configuration is wrapped as `HttpScopedConfig::Typed`
 /// with the protobuf bytes base64-encoded.
+///
+/// # Per-scope settings
+///
+/// If settings are provided with `behavior: "override"` and a `config` field,
+/// the override config is used instead of the base filter configuration.
 fn convert_filter_to_scoped_config(
     filter_data: &FilterData,
+    settings: &Option<PerScopeSettings>,
     converter: &DynamicFilterConverter,
 ) -> Option<(String, HttpScopedConfig)> {
+    // Determine which config to use: override or base
+    let effective_config = determine_effective_config(filter_data, settings);
+
     // Try static conversion first (for known filter types)
-    if let Ok(filter_config) = serde_json::from_str::<FilterConfig>(&filter_data.configuration) {
+    if let Ok(filter_config) = serde_json::from_str::<FilterConfig>(&effective_config) {
         match filter_config.to_per_route_config() {
             Ok(Some((name, config))) => return Some((name, config)),
             Ok(None) => {
@@ -394,7 +503,7 @@ fn convert_filter_to_scoped_config(
     }
 
     // Fall back to dynamic conversion for unknown/custom filter types
-    let config_json: serde_json::Value = match serde_json::from_str(&filter_data.configuration) {
+    let config_json: serde_json::Value = match serde_json::from_str(&effective_config) {
         Ok(json) => json,
         Err(e) => {
             warn!(

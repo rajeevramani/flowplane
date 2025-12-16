@@ -585,14 +585,14 @@ mod tests {
     }
 
     #[test]
-    fn test_process_filters_skips_header_mutation() {
+    fn test_process_filters_header_mutation() {
         let registry = FilterSchemaRegistry::with_builtin_schemas();
 
-        // Header mutation is route-only, so it should be skipped for listener injection
+        // Header mutation can be installed on listeners (empty config) and configured per-route
         let config_json = serde_json::json!({
             "type": "header_mutation",
             "config": {
-                "request_headers_to_add": [],
+                "request_headers_to_add": [{"key": "X-Test", "value": "test"}],
                 "request_headers_to_remove": [],
                 "response_headers_to_add": [],
                 "response_headers_to_remove": []
@@ -609,8 +609,9 @@ mod tests {
             process_filters(&[filter_data], "test-listener", &registry).unwrap();
 
         assert!(!jwt_merger.has_providers());
-        // Header mutation is route-only, should be skipped
-        assert!(other_filters.is_empty());
+        // Header mutation should be processed for listener injection
+        assert_eq!(other_filters.len(), 1);
+        assert_eq!(other_filters[0].name, "envoy.filters.http.header_mutation");
     }
 
     #[test]

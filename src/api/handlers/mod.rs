@@ -37,11 +37,13 @@ pub use clusters::{
     update_cluster_handler,
 };
 pub use filters::{
-    attach_filter_handler, attach_filter_to_listener_handler, create_filter_handler,
-    delete_filter_handler, detach_filter_from_listener_handler, detach_filter_handler,
-    get_filter_handler, get_filter_type_handler, list_filter_types_handler, list_filters_handler,
-    list_listener_filters_handler, list_route_filters_handler, reload_filter_schemas_handler,
-    update_filter_handler,
+    attach_filter_handler, attach_filter_to_listener_handler, configure_filter_handler,
+    create_filter_handler, delete_filter_handler, detach_filter_from_listener_handler,
+    detach_filter_handler, get_filter_handler, get_filter_status_handler, get_filter_type_handler,
+    install_filter_handler, list_filter_configurations_handler, list_filter_installations_handler,
+    list_filter_types_handler, list_filters_handler, list_listener_filters_handler,
+    list_route_filters_handler, reload_filter_schemas_handler, remove_filter_configuration_handler,
+    uninstall_filter_handler, update_filter_handler,
 };
 pub use health::health_handler;
 pub use learning_sessions::{

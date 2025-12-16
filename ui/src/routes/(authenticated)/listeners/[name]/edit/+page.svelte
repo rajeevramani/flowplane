@@ -117,29 +117,29 @@
 		}
 	}
 
-	async function handleAttachFilter(filterId: string, order?: number) {
+	async function handleInstallFilter(filterId: string, order?: number) {
 		if (!listenerName) return;
 
 		try {
-			await apiClient.attachFilterToListener(listenerName, { filterId, order });
-			// Reload filters to show the newly attached filter
+			await apiClient.installFilter(filterId, { listenerName, order });
+			// Reload filters to show the newly installed filter
 			await loadFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to attach filter';
-			console.error('Failed to attach filter:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to install filter';
+			console.error('Failed to install filter:', e);
 		}
 	}
 
-	async function handleDetachFilter(filterId: string) {
+	async function handleUninstallFilter(filterId: string) {
 		if (!listenerName) return;
 
 		try {
-			await apiClient.detachFilterFromListener(listenerName, filterId);
+			await apiClient.uninstallFilter(filterId, listenerName);
 			// Reload filters to update the list
 			await loadFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to detach filter';
-			console.error('Failed to detach filter:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to uninstall filter';
+			console.error('Failed to uninstall filter:', e);
 		}
 	}
 
@@ -550,7 +550,7 @@
 					{/if}
 				</div>
 
-				<!-- Attached Filters (Collapsible) -->
+				<!-- Installed Filters (Collapsible) -->
 				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
 					<button
 						onclick={() => (filtersExpanded = !filtersExpanded)}
@@ -559,9 +559,9 @@
 						<div class="flex items-center gap-3">
 							<Filter class="w-5 h-5 text-gray-500" />
 							<div class="text-left">
-								<h2 class="text-lg font-semibold text-gray-900">Attached Filters</h2>
+								<h2 class="text-lg font-semibold text-gray-900">Installed Filters</h2>
 								<p class="text-sm text-gray-600">
-									Manage filter resources attached to this listener
+									Manage filters installed on this listener's HCM chain
 								</p>
 							</div>
 							{#if attachedFilters.length > 0}
@@ -586,7 +586,7 @@
 
 							<div class="flex items-center justify-between mb-4">
 								<p class="text-sm text-gray-600">
-									Only listener-compatible filter types (JWT Auth, Rate Limit, External Auth) can be attached.
+									Only listener-compatible filter types (JWT Auth, Rate Limit, External Auth) can be installed.
 								</p>
 								<Button
 									onclick={() => (showFilterModal = true)}
@@ -594,19 +594,20 @@
 									disabled={isLoadingFilters}
 								>
 									<Plus class="h-4 w-4 mr-1" />
-									Attach Filter
+									Install Filter
 								</Button>
 							</div>
 
 							<FilterAttachmentList
 								filters={attachedFilters}
-								onDetach={handleDetachFilter}
+								onDetach={handleUninstallFilter}
 								isLoading={isLoadingFilters}
-								emptyMessage="No filters attached to this listener"
+								emptyMessage="No filters installed on this listener"
+								actionLabel="Uninstall"
 							/>
 
 							<div class="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
-								<strong>Note:</strong> These are filter resources attached at the listener level.
+								<strong>Note:</strong> Installed filters run in the listener's HCM filter chain for all traffic.
 								For inline HTTP filter configuration (like header mutation in the filter chain), use the Filter Chains section above.
 							</div>
 						</div>
@@ -637,7 +638,7 @@
 		filters={availableFilters}
 		attachmentPoint="listener"
 		alreadyAttachedIds={attachedFilterIds}
-		onSelect={handleAttachFilter}
+		onSelect={handleInstallFilter}
 		onClose={() => (showFilterModal = false)}
 		isLoading={isLoadingFilters}
 	/>

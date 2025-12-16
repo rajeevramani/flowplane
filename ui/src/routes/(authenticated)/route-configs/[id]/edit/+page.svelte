@@ -663,7 +663,7 @@
 					</div>
 				</div>
 
-				<!-- Attached Filters (Config-level - Collapsible) -->
+				<!-- Configured Filters (Config-level - Collapsible) -->
 				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
 					<button
 						onclick={() => (filtersExpanded = !filtersExpanded)}
@@ -672,9 +672,9 @@
 						<div class="flex items-center gap-3">
 							<Filter class="w-5 h-5 text-gray-500" />
 							<div class="text-left">
-								<h2 class="text-lg font-semibold text-gray-900">Attached Filters</h2>
+								<h2 class="text-lg font-semibold text-gray-900">Configured Filters</h2>
 								<p class="text-sm text-gray-600">
-									Manage filters applied to all routes in this configuration
+									Manage filters configured for all routes in this configuration
 								</p>
 							</div>
 							{#if attachedFilters.length > 0}
@@ -707,7 +707,7 @@
 									disabled={isLoadingFilters}
 								>
 									<Plus class="h-4 w-4 mr-1" />
-									Attach Filter
+									Configure Filter
 								</Button>
 							</div>
 
@@ -715,11 +715,11 @@
 								filters={attachedFilters}
 								onDetach={handleDetachConfigFilter}
 								isLoading={isLoadingFilters}
-								emptyMessage="No filters attached to this route configuration"
+								emptyMessage="No filters configured for this route configuration"
 							/>
 
 							<div class="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
-								<strong>Note:</strong> Attached filters are applied to all routes in this configuration.
+								<strong>Note:</strong> Configured filters set per-route behavior for all routes in this configuration.
 								For virtual-host-specific or route-specific filters, use the filter sections within each virtual host or route.
 							</div>
 						</div>

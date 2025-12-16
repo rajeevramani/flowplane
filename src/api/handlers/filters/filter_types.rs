@@ -322,7 +322,7 @@ mod tests {
             description: "Add, modify, or remove HTTP headers".to_string(),
             version: "1.0".to_string(),
             envoy_filter_name: "envoy.filters.http.header_mutation".to_string(),
-            attachment_points: vec![AttachmentPoint::Route],
+            attachment_points: vec![AttachmentPoint::Route, AttachmentPoint::Listener],
             requires_listener_config: false,
             per_route_behavior: "full_config".to_string(),
             is_implemented: true,

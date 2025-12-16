@@ -191,6 +191,188 @@ pub struct ListenerFiltersResponse {
     pub filters: Vec<FilterResponse>,
 }
 
+// ============================================================================
+// Install/Configure Types (Filter Install/Configure Redesign)
+// ============================================================================
+
+// Re-export repository types for API use
+pub use crate::storage::{FilterConfiguration, FilterInstallation, FilterScopeType};
+
+/// Scope type for filter configuration (API type with utoipa support)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScopeType {
+    /// Apply to entire route configuration
+    RouteConfig,
+    /// Apply to specific virtual host
+    VirtualHost,
+    /// Apply to specific route
+    Route,
+}
+
+impl std::fmt::Display for ScopeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeType::RouteConfig => write!(f, "route-config"),
+            ScopeType::VirtualHost => write!(f, "virtual-host"),
+            ScopeType::Route => write!(f, "route"),
+        }
+    }
+}
+
+impl std::str::FromStr for ScopeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "route-config" => Ok(ScopeType::RouteConfig),
+            "virtual-host" => Ok(ScopeType::VirtualHost),
+            "route" => Ok(ScopeType::Route),
+            _ => Err(format!("Invalid scope type: {}", s)),
+        }
+    }
+}
+
+impl From<FilterScopeType> for ScopeType {
+    fn from(t: FilterScopeType) -> Self {
+        match t {
+            FilterScopeType::RouteConfig => ScopeType::RouteConfig,
+            FilterScopeType::VirtualHost => ScopeType::VirtualHost,
+            FilterScopeType::Route => ScopeType::Route,
+        }
+    }
+}
+
+impl From<ScopeType> for FilterScopeType {
+    fn from(t: ScopeType) -> Self {
+        match t {
+            ScopeType::RouteConfig => FilterScopeType::RouteConfig,
+            ScopeType::VirtualHost => FilterScopeType::VirtualHost,
+            ScopeType::Route => FilterScopeType::Route,
+        }
+    }
+}
+
+/// Request body for installing a filter on a listener
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallFilterRequest {
+    /// Name of the listener to install the filter on
+    pub listener_name: String,
+    /// Optional execution order (lower numbers execute first)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
+}
+
+/// Response for installing a filter
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallFilterResponse {
+    pub filter_id: String,
+    pub listener_id: String,
+    pub listener_name: String,
+    pub order: i64,
+}
+
+/// Single installation item in list response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterInstallationItem {
+    pub listener_id: String,
+    pub listener_name: String,
+    pub listener_address: String,
+    pub order: i64,
+}
+
+impl From<FilterInstallation> for FilterInstallationItem {
+    fn from(f: FilterInstallation) -> Self {
+        FilterInstallationItem {
+            listener_id: f.listener_id,
+            listener_name: f.listener_name,
+            listener_address: f.listener_address,
+            order: f.order,
+        }
+    }
+}
+
+/// Response for listing filter installations
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterInstallationsResponse {
+    pub filter_id: String,
+    pub filter_name: String,
+    pub installations: Vec<FilterInstallationItem>,
+}
+
+/// Request body for configuring filter scope
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigureFilterRequest {
+    /// Type of scope: "route-config", "virtual-host", or "route"
+    pub scope_type: ScopeType,
+    /// ID or name of the scope resource
+    pub scope_id: String,
+    /// Optional per-route/vhost settings (e.g., disabled: true, or override config)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
+/// Response for configuring a filter
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigureFilterResponse {
+    pub filter_id: String,
+    pub scope_type: ScopeType,
+    pub scope_id: String,
+    pub scope_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
+/// Single configuration item in list response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterConfigurationItem {
+    pub scope_type: ScopeType,
+    pub scope_id: String,
+    pub scope_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
+impl From<FilterConfiguration> for FilterConfigurationItem {
+    fn from(f: FilterConfiguration) -> Self {
+        FilterConfigurationItem {
+            scope_type: f.scope_type.into(),
+            scope_id: f.scope_id,
+            scope_name: f.scope_name,
+            settings: f.settings,
+        }
+    }
+}
+
+/// Response for listing filter configurations
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterConfigurationsResponse {
+    pub filter_id: String,
+    pub filter_name: String,
+    pub configurations: Vec<FilterConfigurationItem>,
+}
+
+/// Combined status response showing all installations and configurations
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterStatusResponse {
+    pub filter_id: String,
+    pub filter_name: String,
+    pub filter_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub installations: Vec<FilterInstallationItem>,
+    pub configurations: Vec<FilterConfigurationItem>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

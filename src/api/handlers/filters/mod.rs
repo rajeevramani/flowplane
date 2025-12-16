@@ -13,8 +13,12 @@ pub use filter_types::{
     FilterTypeFormSection, FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse,
 };
 pub use types::{
-    AttachFilterRequest, ClusterCreationConfig, ClusterMode, CreateFilterRequest, FilterResponse,
-    ListFiltersQuery, ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
+    AttachFilterRequest, ClusterCreationConfig, ClusterMode, ConfigureFilterRequest,
+    ConfigureFilterResponse, CreateFilterRequest, FilterConfigurationItem,
+    FilterConfigurationsResponse, FilterInstallationItem, FilterInstallationsResponse,
+    FilterResponse, FilterStatusResponse, InstallFilterRequest, InstallFilterResponse,
+    ListFiltersQuery, ListenerFiltersResponse, RouteFiltersResponse, ScopeType,
+    UpdateFilterRequest,
 };
 
 use axum::{
@@ -352,7 +356,7 @@ pub async fn attach_filter_handler(
     let service = FilterService::new(state.xds_state.clone());
 
     service
-        .attach_filter_to_route_config(&route_config_id, &filter_id, payload.order)
+        .attach_filter_to_route_config(&route_config_id, &filter_id, payload.order, None)
         .await
         .map_err(ApiError::from)?;
 
@@ -568,6 +572,522 @@ pub async fn list_listener_filters_handler(
     // Return the listener name (public identifier) in the response, not the internal UUID
     let response =
         ListenerFiltersResponse { listener_id: listener_name, filters: filter_responses? };
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// Filter Installation Handlers (Filter Install/Configure Redesign)
+// ============================================================================
+
+use crate::storage::VirtualHostData;
+
+/// Resolve a virtual host by route config name and vhost name
+async fn resolve_virtual_host_data(
+    state: &ApiState,
+    route_config_name: &str,
+    vhost_name: &str,
+) -> Result<VirtualHostData, ApiError> {
+    let route_config_id = resolve_route_config_id(state, route_config_name).await?;
+
+    let vh_repository =
+        state.xds_state.virtual_host_repository.as_ref().ok_or_else(|| {
+            ApiError::service_unavailable("Virtual host repository not available")
+        })?;
+
+    vh_repository
+        .get_by_route_config_and_name(&route_config_id, vhost_name)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// Resolve a route by route config name, vhost name, and route name
+async fn resolve_route_id(
+    state: &ApiState,
+    route_config_name: &str,
+    vhost_name: &str,
+    route_name: &str,
+) -> Result<crate::domain::RouteId, ApiError> {
+    let virtual_host = resolve_virtual_host_data(state, route_config_name, vhost_name).await?;
+
+    let route_repository = state
+        .xds_state
+        .route_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Route repository not available"))?;
+
+    let route = route_repository
+        .get_by_vh_and_name(&virtual_host.id, route_name)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(route.id)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/filters/{filter_id}/installations",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+    ),
+    request_body = InstallFilterRequest,
+    responses(
+        (status = 201, description = "Filter installed on listener", body = InstallFilterResponse),
+        (status = 400, description = "Validation error - filter type incompatible with listener"),
+        (status = 404, description = "Filter or listener not found"),
+        (status = 409, description = "Filter already installed on this listener"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-installations"
+)]
+#[instrument(skip(state, context, payload), fields(filter_id = %filter_id, listener_name = %payload.listener_name, user_id = ?context.user_id))]
+pub async fn install_filter_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(filter_id): Path<String>,
+    Json(payload): Json<InstallFilterRequest>,
+) -> Result<(StatusCode, Json<InstallFilterResponse>), ApiError> {
+    require_resource_access(&context, "filters", "write", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Resolve listener name to ID
+    let listener_id = resolve_listener_id(&state, &payload.listener_name).await?;
+
+    // Get listener details for response
+    let listener_repository = state
+        .xds_state
+        .listener_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Listener repository not available"))?;
+    let listener = listener_repository.get_by_id(&listener_id).await.map_err(ApiError::from)?;
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    // Install the filter on the listener (reuses existing attach_filter_to_listener)
+    service
+        .attach_filter_to_listener(&listener_id, &filter_id, payload.order)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Determine the actual order (if not specified, get the max+1)
+    let order = payload.order.unwrap_or(1);
+
+    info!(
+        filter_id = %filter.id,
+        filter_name = %filter.name,
+        listener_id = %listener_id,
+        listener_name = %listener.name,
+        order = order,
+        "Filter installed on listener via API"
+    );
+
+    let response = InstallFilterResponse {
+        filter_id: filter.id.to_string(),
+        listener_id: listener_id.to_string(),
+        listener_name: listener.name,
+        order,
+    };
+
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/filters/{filter_id}/installations/{listener_id}",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+        ("listener_id" = String, Path, description = "Listener ID or name"),
+    ),
+    responses(
+        (status = 204, description = "Filter uninstalled from listener"),
+        (status = 404, description = "Filter, listener, or installation not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-installations"
+)]
+#[instrument(skip(state, context), fields(filter_id = %filter_id, listener_id = %listener_id, user_id = ?context.user_id))]
+pub async fn uninstall_filter_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((filter_id, listener_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_resource_access(&context, "filters", "write", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let _filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Resolve listener name to ID
+    let listener_id = resolve_listener_id(&state, &listener_id).await?;
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    // Uninstall the filter from the listener (reuses existing detach_filter_from_listener)
+    service.detach_filter_from_listener(&listener_id, &filter_id).await.map_err(ApiError::from)?;
+
+    info!(
+        filter_id = %filter_id,
+        listener_id = %listener_id,
+        "Filter uninstalled from listener via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/filters/{filter_id}/installations",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+    ),
+    responses(
+        (status = 200, description = "List of listener installations", body = FilterInstallationsResponse),
+        (status = 404, description = "Filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-installations"
+)]
+#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+pub async fn list_filter_installations_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(filter_id): Path<String>,
+) -> Result<Json<FilterInstallationsResponse>, ApiError> {
+    require_resource_access(&context, "filters", "read", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Get all listeners this filter is installed on
+    let installations =
+        repository.list_filter_installations(&filter_id).await.map_err(ApiError::from)?;
+    let installations: Vec<types::FilterInstallationItem> =
+        installations.into_iter().map(|i| i.into()).collect();
+
+    let response = FilterInstallationsResponse {
+        filter_id: filter.id.to_string(),
+        filter_name: filter.name,
+        installations,
+    };
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// Filter Configuration Handlers (Filter Install/Configure Redesign)
+// ============================================================================
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/filters/{filter_id}/configurations",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+    ),
+    request_body = ConfigureFilterRequest,
+    responses(
+        (status = 201, description = "Filter configured for scope", body = ConfigureFilterResponse),
+        (status = 400, description = "Validation error - filter not installed on relevant listeners"),
+        (status = 404, description = "Filter or scope not found"),
+        (status = 409, description = "Filter already configured for this scope"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-configurations"
+)]
+#[instrument(skip(state, context, payload), fields(filter_id = %filter_id, scope_type = %payload.scope_type, scope_id = %payload.scope_id, user_id = ?context.user_id))]
+pub async fn configure_filter_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(filter_id): Path<String>,
+    Json(payload): Json<ConfigureFilterRequest>,
+) -> Result<(StatusCode, Json<ConfigureFilterResponse>), ApiError> {
+    require_resource_access(&context, "filters", "write", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let filter = verify_filter_access(filter, &team_scopes).await?;
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    // Configure based on scope type
+    let scope_name = match payload.scope_type {
+        ScopeType::RouteConfig => {
+            let route_config_id = resolve_route_config_id(&state, &payload.scope_id).await?;
+            service
+                .attach_filter_to_route_config(
+                    &route_config_id,
+                    &filter_id,
+                    None,
+                    payload.settings.clone(),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            payload.scope_id.clone()
+        }
+        ScopeType::VirtualHost => {
+            // Path format: "route-config-name/vhost-name"
+            let parts: Vec<&str> = payload.scope_id.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                return Err(ApiError::validation(
+                    "Virtual host scope_id must be in format 'route-config-name/vhost-name'",
+                ));
+            }
+            let virtual_host = resolve_virtual_host_data(&state, parts[0], parts[1]).await?;
+
+            service
+                .attach_filter_to_virtual_host(
+                    &virtual_host.id,
+                    &filter_id,
+                    None,
+                    payload.settings.clone(),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            parts[1].to_string()
+        }
+        ScopeType::Route => {
+            // Path format: "route-config-name/vhost-name/route-name"
+            let parts: Vec<&str> = payload.scope_id.splitn(3, '/').collect();
+            if parts.len() != 3 {
+                return Err(ApiError::validation(
+                    "Route scope_id must be in format 'route-config-name/vhost-name/route-name'",
+                ));
+            }
+            let route_id = resolve_route_id(&state, parts[0], parts[1], parts[2]).await?;
+
+            service
+                .attach_filter_to_route(&route_id, &filter_id, None, payload.settings.clone())
+                .await
+                .map_err(ApiError::from)?;
+            parts[2].to_string()
+        }
+    };
+
+    info!(
+        filter_id = %filter.id,
+        filter_name = %filter.name,
+        scope_type = %payload.scope_type,
+        scope_id = %payload.scope_id,
+        "Filter configured for scope via API"
+    );
+
+    let response = ConfigureFilterResponse {
+        filter_id: filter.id.to_string(),
+        scope_type: payload.scope_type,
+        scope_id: payload.scope_id,
+        scope_name,
+        settings: payload.settings,
+    };
+
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+        ("scope_type" = String, Path, description = "Scope type: route-config, virtual-host, or route"),
+        ("scope_id" = String, Path, description = "Scope ID (URL-encoded if contains slashes)"),
+    ),
+    responses(
+        (status = 204, description = "Filter configuration removed"),
+        (status = 404, description = "Filter, scope, or configuration not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-configurations"
+)]
+#[instrument(skip(state, context), fields(filter_id = %filter_id, scope_type = %scope_type, scope_id = %scope_id, user_id = ?context.user_id))]
+pub async fn remove_filter_configuration_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((filter_id, scope_type, scope_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_resource_access(&context, "filters", "write", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let _filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Parse scope type
+    let scope_type: ScopeType = scope_type.parse().map_err(|e: String| ApiError::validation(&e))?;
+
+    let service = FilterService::new(state.xds_state.clone());
+
+    // Remove configuration based on scope type
+    match scope_type {
+        ScopeType::RouteConfig => {
+            let route_config_id = resolve_route_config_id(&state, &scope_id).await?;
+            service
+                .detach_filter_from_route_config(&route_config_id, &filter_id)
+                .await
+                .map_err(ApiError::from)?;
+        }
+        ScopeType::VirtualHost => {
+            let parts: Vec<&str> = scope_id.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                return Err(ApiError::validation(
+                    "Virtual host scope_id must be in format 'route-config-name/vhost-name'",
+                ));
+            }
+            let virtual_host = resolve_virtual_host_data(&state, parts[0], parts[1]).await?;
+
+            service
+                .detach_filter_from_virtual_host(&virtual_host.id, &filter_id)
+                .await
+                .map_err(ApiError::from)?;
+        }
+        ScopeType::Route => {
+            let parts: Vec<&str> = scope_id.splitn(3, '/').collect();
+            if parts.len() != 3 {
+                return Err(ApiError::validation(
+                    "Route scope_id must be in format 'route-config-name/vhost-name/route-name'",
+                ));
+            }
+            let route_id = resolve_route_id(&state, parts[0], parts[1], parts[2]).await?;
+
+            service
+                .detach_filter_from_route(&route_id, &filter_id)
+                .await
+                .map_err(ApiError::from)?;
+        }
+    }
+
+    info!(
+        filter_id = %filter_id,
+        scope_type = %scope_type,
+        scope_id = %scope_id,
+        "Filter configuration removed via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/filters/{filter_id}/configurations",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+    ),
+    responses(
+        (status = 200, description = "List of filter configurations", body = FilterConfigurationsResponse),
+        (status = 404, description = "Filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-configurations"
+)]
+#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+pub async fn list_filter_configurations_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(filter_id): Path<String>,
+) -> Result<Json<FilterConfigurationsResponse>, ApiError> {
+    require_resource_access(&context, "filters", "read", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Get all configurations for this filter
+    let configurations =
+        repository.list_filter_configurations(&filter_id).await.map_err(ApiError::from)?;
+    let configurations: Vec<types::FilterConfigurationItem> =
+        configurations.into_iter().map(|c| c.into()).collect();
+
+    let response = FilterConfigurationsResponse {
+        filter_id: filter.id.to_string(),
+        filter_name: filter.name,
+        configurations,
+    };
+
+    Ok(Json(response))
+}
+
+// ============================================================================
+// Filter Status Handler (Combined view)
+// ============================================================================
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/filters/{filter_id}/status",
+    params(
+        ("filter_id" = String, Path, description = "Filter ID or name"),
+    ),
+    responses(
+        (status = 200, description = "Filter status with installations and configurations", body = FilterStatusResponse),
+        (status = 404, description = "Filter not found"),
+        (status = 503, description = "Repository unavailable"),
+    ),
+    tag = "filter-status"
+)]
+#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+pub async fn get_filter_status_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(filter_id): Path<String>,
+) -> Result<Json<FilterStatusResponse>, ApiError> {
+    require_resource_access(&context, "filters", "read", None)?;
+
+    let team_scopes =
+        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let repository = require_filter_repository(&state)?;
+
+    // Get the filter and verify access
+    let filter_id = FilterId::from_string(filter_id);
+    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
+    let filter = verify_filter_access(filter, &team_scopes).await?;
+
+    // Get installations and configurations
+    let installations =
+        repository.list_filter_installations(&filter_id).await.map_err(ApiError::from)?;
+    let installations: Vec<types::FilterInstallationItem> =
+        installations.into_iter().map(|i| i.into()).collect();
+    let configurations =
+        repository.list_filter_configurations(&filter_id).await.map_err(ApiError::from)?;
+    let configurations: Vec<types::FilterConfigurationItem> =
+        configurations.into_iter().map(|c| c.into()).collect();
+
+    let response = FilterStatusResponse {
+        filter_id: filter.id.to_string(),
+        filter_name: filter.name,
+        filter_type: filter.filter_type,
+        description: filter.description,
+        installations,
+        configurations,
+    };
 
     Ok(Json(response))
 }

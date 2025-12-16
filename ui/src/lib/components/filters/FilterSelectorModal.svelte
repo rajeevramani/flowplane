@@ -41,21 +41,29 @@
 		}
 	});
 
+	// Determine if this is a listener context (install) or route context (configure)
+	let isListenerContext = $derived(attachmentPoint === 'listener');
+	let actionVerb = $derived(isListenerContext ? 'Install' : 'Configure');
+
 	// Get modal title based on hierarchy context
 	function getModalTitle(): string {
+		if (isListenerContext) {
+			return 'Install Filter on Listener';
+		}
+
 		if (!hierarchyContext) {
-			return 'Attach Filter';
+			return `${actionVerb} Filter`;
 		}
 
 		switch (hierarchyContext.level) {
 			case 'route_config':
-				return `Attach Filter to Configuration`;
+				return `Configure Filter for Configuration`;
 			case 'virtual_host':
-				return `Attach Filter to Virtual Host: ${hierarchyContext.virtualHostName}`;
+				return `Configure Filter for Virtual Host: ${hierarchyContext.virtualHostName}`;
 			case 'route':
-				return `Attach Filter to Route: ${hierarchyContext.routeName}`;
+				return `Configure Filter for Route: ${hierarchyContext.routeName}`;
 			default:
-				return 'Attach Filter';
+				return `${actionVerb} Filter`;
 		}
 	}
 
@@ -281,11 +289,11 @@
 							</div>
 						{/if}
 
-						<!-- Already attached filters -->
+						<!-- Already installed/configured filters -->
 						{#if alreadyAttached.length > 0}
 							<div class="mb-4">
 								<h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-									Already Attached ({alreadyAttached.length})
+									Already {isListenerContext ? 'Installed' : 'Configured'} ({alreadyAttached.length})
 								</h3>
 								<div class="space-y-2">
 									{#each alreadyAttached as filter}
@@ -299,7 +307,7 @@
 												>
 													{getFilterTypeLabel(filter.filterType)}
 												</span>
-												<span class="text-xs text-gray-400">(attached)</span>
+												<span class="text-xs text-gray-400">({isListenerContext ? 'installed' : 'configured'})</span>
 											</div>
 										</div>
 									{/each}
@@ -335,9 +343,9 @@
 													<div class="flex items-center gap-1 mt-1">
 														<AlertCircle class="h-3 w-3 text-amber-500" />
 														<span class="text-xs text-amber-600">
-															{attachmentPoint === 'route'
-																? 'Cannot attach to routes'
-																: 'Cannot attach to listeners'}
+															{isListenerContext
+																? 'Cannot install on listeners'
+																: 'Cannot configure for routes'}
 														</span>
 													</div>
 												</div>
@@ -375,7 +383,7 @@
 			<div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200">
 				<Button onclick={onClose} variant="secondary">Cancel</Button>
 				<Button onclick={handleAttach} variant="primary" disabled={!selectedFilterId}>
-					Attach Filter
+					{actionVerb} Filter
 				</Button>
 			</div>
 		</div>

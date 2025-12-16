@@ -204,8 +204,10 @@ pub enum JwtRequirementConfig {
     /// Require a provider and override audiences
     ProviderWithAudiences { provider_name: String, audiences: Vec<String> },
     /// Logical OR of nested requirements
+    #[schema(no_recursion)]
     RequiresAny { requirements: Vec<JwtRequirementConfig> },
     /// Logical AND of nested requirements
+    #[schema(no_recursion)]
     RequiresAll { requirements: Vec<JwtRequirementConfig> },
     /// Allow requests with missing JWTs but reject invalid ones
     AllowMissing,

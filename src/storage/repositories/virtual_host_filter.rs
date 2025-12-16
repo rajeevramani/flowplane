@@ -18,6 +18,7 @@ struct VirtualHostFilterRow {
     pub filter_id: String,
     pub filter_order: i32,
     pub created_at: DateTime<Utc>,
+    pub settings: Option<String>,
 }
 
 /// Virtual host filter attachment data.
@@ -27,6 +28,9 @@ pub struct VirtualHostFilterData {
     pub filter_id: FilterId,
     pub filter_order: i32,
     pub created_at: DateTime<Utc>,
+    /// Per-scope settings (behavior, config overrides, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
 }
 
 impl From<VirtualHostFilterRow> for VirtualHostFilterData {
@@ -36,6 +40,7 @@ impl From<VirtualHostFilterRow> for VirtualHostFilterData {
             filter_id: FilterId::from_string(row.filter_id),
             filter_order: row.filter_order,
             created_at: row.created_at,
+            settings: row.settings.and_then(|s| serde_json::from_str(&s).ok()),
         }
     }
 }
@@ -53,23 +58,26 @@ impl VirtualHostFilterRepository {
     }
 
     /// Attach a filter to a virtual host.
-    #[instrument(skip(self), fields(vh_id = %virtual_host_id, filter_id = %filter_id, order = order), name = "db_attach_filter_to_vh")]
+    #[instrument(skip(self, settings), fields(vh_id = %virtual_host_id, filter_id = %filter_id, order = order), name = "db_attach_filter_to_vh")]
     pub async fn attach(
         &self,
         virtual_host_id: &VirtualHostId,
         filter_id: &FilterId,
         order: i32,
+        settings: Option<serde_json::Value>,
     ) -> Result<VirtualHostFilterData> {
         let now = Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
 
         sqlx::query(
-            "INSERT INTO virtual_host_filters (virtual_host_id, filter_id, filter_order, created_at) \
-             VALUES ($1, $2, $3, $4)"
+            "INSERT INTO virtual_host_filters (virtual_host_id, filter_id, filter_order, created_at, settings) \
+             VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(virtual_host_id.as_str())
         .bind(filter_id.as_str())
         .bind(order)
         .bind(now)
+        .bind(&settings_json)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -92,6 +100,7 @@ impl VirtualHostFilterRepository {
             filter_id: filter_id.clone(),
             filter_order: order,
             created_at: now,
+            settings,
         })
     }
 
@@ -140,7 +149,7 @@ impl VirtualHostFilterRepository {
         virtual_host_id: &VirtualHostId,
     ) -> Result<Vec<VirtualHostFilterData>> {
         let rows = sqlx::query_as::<Sqlite, VirtualHostFilterRow>(
-            "SELECT virtual_host_id, filter_id, filter_order, created_at \
+            "SELECT virtual_host_id, filter_id, filter_order, created_at, settings \
              FROM virtual_host_filters WHERE virtual_host_id = $1 ORDER BY filter_order ASC"
         )
         .bind(virtual_host_id.as_str())

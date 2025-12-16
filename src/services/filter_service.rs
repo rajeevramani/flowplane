@@ -4,7 +4,7 @@
 //! separated from HTTP concerns.
 
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::{
     api::handlers::filters::{ClusterCreationConfig, ClusterMode},
@@ -14,16 +14,11 @@ use crate::{
     },
     errors::Error,
     observability::http_tracing::create_operation_span,
-    services::listener_filter_chain::{
-        add_http_filter_before_router, listener_has_http_filter, remove_http_filter_from_listener,
-    },
     storage::{
-        ClusterRepository, CreateClusterRequest, CreateFilterRequest, CreateRouteAutoFilterRequest,
-        CreateRouteConfigAutoFilterRequest, CreateVirtualHostAutoFilterRequest, FilterData,
-        FilterRepository, ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
-        RouteRepository, UpdateFilterRequest, VirtualHostRepository,
+        ClusterRepository, CreateClusterRequest, CreateFilterRequest, FilterData, FilterRepository,
+        UpdateFilterRequest,
     },
-    xds::{listener::ListenerConfig, XdsState},
+    xds::XdsState,
 };
 use opentelemetry::{
     trace::{Span, SpanKind},
@@ -48,51 +43,6 @@ impl FilterService {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::internal("Filter repository not configured"))
-    }
-
-    /// Get the route config repository
-    fn route_config_repository(&self) -> Result<RouteConfigRepository, Error> {
-        self.xds_state
-            .route_config_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Route config repository not configured"))
-    }
-
-    /// Get the listener repository
-    fn listener_repository(&self) -> Result<ListenerRepository, Error> {
-        self.xds_state
-            .listener_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Listener repository not configured"))
-    }
-
-    /// Get the listener auto-filter repository
-    fn auto_filter_repository(&self) -> Result<ListenerAutoFilterRepository, Error> {
-        self.xds_state
-            .listener_auto_filter_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Listener auto-filter repository not configured"))
-    }
-
-    /// Get the virtual host repository
-    fn virtual_host_repository(&self) -> Result<VirtualHostRepository, Error> {
-        self.xds_state
-            .virtual_host_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Virtual host repository not configured"))
-    }
-
-    /// Get the route repository (for route rules within virtual hosts)
-    fn route_repository(&self) -> Result<RouteRepository, Error> {
-        self.xds_state
-            .route_repository
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::internal("Route repository not configured"))
     }
 
     /// Create a new filter
@@ -346,15 +296,16 @@ impl FilterService {
         .await
     }
 
-    /// Attach a filter to a route config
+    /// Configure a filter for a route config scope
     ///
     /// Validates that the filter type supports route-level attachment before proceeding.
-    /// Also automatically adds the required HTTP filter to connected listeners.
+    /// Note: User must explicitly install the filter on listeners before configuring scope.
     pub async fn attach_filter_to_route_config(
         &self,
         route_config_id: &RouteConfigId,
         filter_id: &FilterId,
         order: Option<i64>,
+        settings: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -397,18 +348,15 @@ impl FilterService {
                 create_operation_span("db.route_config_filters.insert", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
             db_span.set_attribute(KeyValue::new("db.table", "route_config_filters"));
-            repository.attach_to_route_config(route_config_id, filter_id, order).await?;
+            repository.attach_to_route_config(route_config_id, filter_id, order, settings).await?;
             drop(db_span);
 
             info!(
                 route_config_id = %route_config_id,
                 filter_id = %filter_id,
                 order = %order,
-                "Filter attached to route config"
+                "Filter configured for route config scope"
             );
-
-            // Auto-add HTTP filter to connected listeners
-            self.ensure_listener_http_filters(route_config_id, filter_id, filter_type).await?;
 
             let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
@@ -422,10 +370,7 @@ impl FilterService {
         .await
     }
 
-    /// Detach a filter from a route config
-    ///
-    /// Also automatically removes the HTTP filter from connected listeners
-    /// if no other route configs need it.
+    /// Remove a filter configuration from a route config scope
     pub async fn detach_filter_from_route_config(
         &self,
         route_config_id: &RouteConfigId,
@@ -445,13 +390,6 @@ impl FilterService {
         async move {
             let repository = self.repository()?;
 
-            // Get filter type before detaching (needed for cleanup)
-            let filter = repository.get_by_id(filter_id).await?;
-            let filter_type: FilterType =
-                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
-                    Error::internal(format!("Failed to parse filter type: {}", err))
-                })?;
-
             let mut db_span =
                 create_operation_span("db.route_config_filters.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
@@ -462,11 +400,8 @@ impl FilterService {
             info!(
                 route_config_id = %route_config_id,
                 filter_id = %filter_id,
-                "Filter detached from route config"
+                "Filter configuration removed from route config scope"
             );
-
-            // Auto-remove HTTP filter from listeners if no longer needed
-            self.cleanup_listener_http_filters(route_config_id, filter_id, filter_type).await?;
 
             let mut xds_span = create_operation_span("xds.refresh_routes", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("route_config.id", route_config_id.to_string()));
@@ -660,493 +595,19 @@ impl FilterService {
     }
 
     // =========================================================================
-    // Automatic Listener Filter Chain Management
+    // Virtual Host and Route Rule Filter Configuration (Hierarchical Filters)
     // =========================================================================
 
-    /// Ensure listeners referencing this route config have the required HTTP filter
+    /// Configure a filter for a virtual host scope
     ///
-    /// When a filter is attached to a route config, the corresponding HTTP filter must
-    /// exist in the listener's filter chain for `typed_per_filter_config` to work.
-    ///
-    /// For JWT auth filters, we auto-attach the filter to the listener via
-    /// `listener_filters` table since JWT requires full config (providers, requirement_map).
-    async fn ensure_listener_http_filters(
-        &self,
-        route_config_id: &RouteConfigId,
-        filter_id: &FilterId,
-        filter_type: FilterType,
-    ) -> Result<(), Error> {
-        let route_config_repo = self.route_config_repository()?;
-        let listener_repo = self.listener_repository()?;
-        let auto_filter_repo = self.auto_filter_repository()?;
-        let filter_repo = self.repository()?;
-
-        // Get route config to find its name (used as route_config_name in listeners)
-        let route_config = route_config_repo.get_by_id(route_config_id).await?;
-
-        // Find listeners using this route config's name as route_config_name
-        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
-
-        if listeners.is_empty() {
-            debug!(
-                route_config_id = %route_config_id,
-                route_config_name = %route_config.name,
-                "No listeners found referencing this route config"
-            );
-            return Ok(());
-        }
-
-        let http_filter_name = filter_type.http_filter_name();
-
-        // For filters that require full configuration (JWT, LocalRateLimit, RateLimit, ExtAuthz),
-        // auto-attach to listener via listener_filters table.
-        // These filters cannot work as empty placeholders - they need their
-        // full config (providers/requirement_map for JWT, token bucket for rate limit).
-        let requires_listener_attachment = filter_type.requires_listener_config();
-
-        for listener in listeners {
-            if requires_listener_attachment {
-                // Check if filter already attached to listener
-                let existing_listener_filters =
-                    filter_repo.list_listener_filters(&listener.id).await?;
-                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
-
-                if !already_attached {
-                    // Auto-attach filter to listener using next available order
-                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
-                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
-
-                    info!(
-                        listener_id = %listener.id,
-                        filter_id = %filter_id,
-                        filter_type = %filter_type,
-                        order = %order,
-                        "Auto-attached filter to listener for route-config-level requirement"
-                    );
-                }
-            }
-
-            // For simple filters (HeaderMutation, Cors), add placeholder to listener config.
-            // For complex filters (JWT, LocalRateLimit), this will skip (returns None)
-            // and rely on inject_listener_filters to inject the full config.
-            self.add_http_filter_to_listener(
-                &listener.id,
-                http_filter_name,
-                filter_id,
-                route_config_id,
-                &listener_repo,
-                &auto_filter_repo,
-            )
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Add HTTP filter to a listener's filter chain if not already present
-    async fn add_http_filter_to_listener(
-        &self,
-        listener_id: &ListenerId,
-        http_filter_name: &str,
-        filter_id: &FilterId,
-        route_config_id: &RouteConfigId,
-        listener_repo: &ListenerRepository,
-        auto_filter_repo: &ListenerAutoFilterRepository,
-    ) -> Result<(), Error> {
-        // Check if already tracked (idempotent)
-        if auto_filter_repo
-            .exists_for_route_config(listener_id, http_filter_name, filter_id, route_config_id)
-            .await?
-        {
-            debug!(
-                listener_id = %listener_id,
-                http_filter_name = %http_filter_name,
-                "Auto-filter tracking record already exists"
-            );
-            return Ok(());
-        }
-
-        // Load listener config
-        let listener = listener_repo.get_by_id(listener_id).await?;
-        let mut config: ListenerConfig =
-            serde_json::from_str(&listener.configuration).map_err(|err| {
-                Error::internal(format!("Failed to parse listener configuration: {}", err))
-            })?;
-
-        // Check if filter already in chain (manual or auto-added for other route)
-        if !listener_has_http_filter(&config, http_filter_name) {
-            // Add filter before router
-            if add_http_filter_before_router(&mut config, http_filter_name) {
-                // Save updated config
-                let new_config = serde_json::to_string(&config).map_err(|err| {
-                    Error::internal(format!("Failed to serialize listener configuration: {}", err))
-                })?;
-                listener_repo.update_configuration(listener_id, &new_config).await?;
-
-                info!(
-                    listener_id = %listener_id,
-                    http_filter_name = %http_filter_name,
-                    "Auto-added HTTP filter to listener"
-                );
-            }
-        } else {
-            debug!(
-                listener_id = %listener_id,
-                http_filter_name = %http_filter_name,
-                "HTTP filter already exists in listener"
-            );
-        }
-
-        // Track auto-added filter (even if filter already existed - for reference counting)
-        auto_filter_repo
-            .create_for_route_config(CreateRouteConfigAutoFilterRequest {
-                listener_id: listener_id.clone(),
-                http_filter_name: http_filter_name.to_string(),
-                source_filter_id: filter_id.clone(),
-                route_config_id: route_config_id.clone(),
-            })
-            .await?;
-
-        Ok(())
-    }
-
-    /// Remove HTTP filter from listeners if no other route configs need it
-    async fn cleanup_listener_http_filters(
-        &self,
-        route_config_id: &RouteConfigId,
-        filter_id: &FilterId,
-        filter_type: FilterType,
-    ) -> Result<(), Error> {
-        let listener_repo = self.listener_repository()?;
-        let auto_filter_repo = self.auto_filter_repository()?;
-
-        let http_filter_name = filter_type.http_filter_name();
-
-        // Get affected listeners (from tracking table)
-        // Filter to only route config level attachments for this specific filter
-        let all_route_config_records =
-            auto_filter_repo.get_by_route_config(route_config_id).await?;
-        let affected: Vec<_> = all_route_config_records
-            .into_iter()
-            .filter(|r| {
-                r.source_filter_id == *filter_id
-                    && r.attachment_level == crate::domain::AttachmentLevel::RouteConfig
-            })
-            .collect();
-
-        if affected.is_empty() {
-            debug!(
-                filter_id = %filter_id,
-                route_config_id = %route_config_id,
-                "No auto-filter tracking records found for cleanup"
-            );
-            return Ok(());
-        }
-
-        // Remove tracking records for this source
-        auto_filter_repo.delete_for_route_config(filter_id, route_config_id).await?;
-
-        // For each affected listener, check if filter still needed
-        for record in affected {
-            let count = auto_filter_repo
-                .count_by_listener_and_http_filter(&record.listener_id, http_filter_name)
-                .await?;
-
-            if count == 0 {
-                // No other routes need this filter - remove from listener
-                self.remove_http_filter_from_listener_config(
-                    &record.listener_id,
-                    http_filter_name,
-                    &listener_repo,
-                )
-                .await?;
-            } else {
-                debug!(
-                    listener_id = %record.listener_id,
-                    http_filter_name = %http_filter_name,
-                    remaining_references = count,
-                    "HTTP filter still needed by other routes"
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Remove HTTP filter from a listener's configuration
-    async fn remove_http_filter_from_listener_config(
-        &self,
-        listener_id: &ListenerId,
-        http_filter_name: &str,
-        listener_repo: &ListenerRepository,
-    ) -> Result<(), Error> {
-        // Load listener config
-        let listener = listener_repo.get_by_id(listener_id).await?;
-        let mut config: ListenerConfig =
-            serde_json::from_str(&listener.configuration).map_err(|err| {
-                Error::internal(format!("Failed to parse listener configuration: {}", err))
-            })?;
-
-        // Remove filter
-        if remove_http_filter_from_listener(&mut config, http_filter_name) {
-            // Save updated config
-            let new_config = serde_json::to_string(&config).map_err(|err| {
-                Error::internal(format!("Failed to serialize listener configuration: {}", err))
-            })?;
-            listener_repo.update_configuration(listener_id, &new_config).await?;
-
-            info!(
-                listener_id = %listener_id,
-                http_filter_name = %http_filter_name,
-                "Auto-removed HTTP filter from listener"
-            );
-        } else {
-            warn!(
-                listener_id = %listener_id,
-                http_filter_name = %http_filter_name,
-                "HTTP filter not found in listener during cleanup"
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Ensure listeners referencing this virtual host's route config have the required HTTP filter
-    ///
-    /// When a filter is attached to a virtual host, the corresponding HTTP filter must
-    /// exist in the listener's filter chain for `typed_per_filter_config` to work.
-    async fn ensure_listener_http_filters_for_vh(
-        &self,
-        virtual_host_id: &VirtualHostId,
-        filter_id: &FilterId,
-        filter_type: FilterType,
-    ) -> Result<(), Error> {
-        let vh_repo = self.virtual_host_repository()?;
-        let route_config_repo = self.route_config_repository()?;
-        let listener_repo = self.listener_repository()?;
-        let auto_filter_repo = self.auto_filter_repository()?;
-        let filter_repo = self.repository()?;
-
-        // Get the virtual host to find its route config
-        let virtual_host = vh_repo.get_by_id(virtual_host_id).await?;
-        let route_config_id = &virtual_host.route_config_id;
-
-        // Get route config to find its name
-        let route_config = route_config_repo.get_by_id(route_config_id).await?;
-
-        // Find listeners using this route config
-        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
-
-        if listeners.is_empty() {
-            debug!(
-                virtual_host_id = %virtual_host_id,
-                route_config_name = %route_config.name,
-                "No listeners found referencing this route config"
-            );
-            return Ok(());
-        }
-
-        let http_filter_name = filter_type.http_filter_name();
-        let requires_listener_attachment = filter_type.requires_listener_config();
-
-        for listener in listeners {
-            if requires_listener_attachment {
-                // Check if filter already attached to listener
-                let existing_listener_filters =
-                    filter_repo.list_listener_filters(&listener.id).await?;
-                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
-
-                if !already_attached {
-                    // Auto-attach filter to listener using next available order
-                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
-                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
-
-                    info!(
-                        listener_id = %listener.id,
-                        filter_id = %filter_id,
-                        filter_type = %filter_type,
-                        order = %order,
-                        "Auto-attached filter to listener for VH-level requirement"
-                    );
-                }
-            }
-
-            // Add HTTP filter to listener if needed and track auto-addition
-            // Check if already tracked (idempotent)
-            if auto_filter_repo
-                .exists_for_virtual_host(&listener.id, http_filter_name, filter_id, virtual_host_id)
-                .await?
-            {
-                debug!(
-                    listener_id = %listener.id,
-                    http_filter_name = %http_filter_name,
-                    "VH auto-filter tracking record already exists"
-                );
-                continue;
-            }
-
-            // Load listener config and add filter if not present
-            let mut config: ListenerConfig = serde_json::from_str(&listener.configuration)
-                .map_err(|err| {
-                    Error::internal(format!("Failed to parse listener configuration: {}", err))
-                })?;
-
-            if !listener_has_http_filter(&config, http_filter_name)
-                && add_http_filter_before_router(&mut config, http_filter_name)
-            {
-                let new_config = serde_json::to_string(&config).map_err(|err| {
-                    Error::internal(format!("Failed to serialize listener configuration: {}", err))
-                })?;
-                listener_repo.update_configuration(&listener.id, &new_config).await?;
-
-                info!(
-                    listener_id = %listener.id,
-                    http_filter_name = %http_filter_name,
-                    "Auto-added HTTP filter to listener for VH attachment"
-                );
-            }
-
-            // Track auto-added filter for VH level
-            auto_filter_repo
-                .create_for_virtual_host(CreateVirtualHostAutoFilterRequest {
-                    listener_id: listener.id.clone(),
-                    http_filter_name: http_filter_name.to_string(),
-                    source_filter_id: filter_id.clone(),
-                    route_config_id: route_config_id.clone(),
-                    source_virtual_host_id: virtual_host_id.clone(),
-                })
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Ensure listeners referencing this route's route config have the required HTTP filter
-    ///
-    /// When a filter is attached to a route, the corresponding HTTP filter must
-    /// exist in the listener's filter chain for `typed_per_filter_config` to work.
-    async fn ensure_listener_http_filters_for_route(
-        &self,
-        route_id: &RouteId,
-        filter_id: &FilterId,
-        filter_type: FilterType,
-    ) -> Result<(), Error> {
-        let route_repo = self.route_repository()?;
-        let vh_repo = self.virtual_host_repository()?;
-        let route_config_repo = self.route_config_repository()?;
-        let listener_repo = self.listener_repository()?;
-        let auto_filter_repo = self.auto_filter_repository()?;
-        let filter_repo = self.repository()?;
-
-        // Get the route to find its virtual host
-        let route = route_repo.get_by_id(route_id).await?;
-
-        // Get the virtual host to find its route config
-        let virtual_host = vh_repo.get_by_id(&route.virtual_host_id).await?;
-        let route_config_id = &virtual_host.route_config_id;
-
-        // Get route config to find its name
-        let route_config = route_config_repo.get_by_id(route_config_id).await?;
-
-        // Find listeners using this route config
-        let listeners = listener_repo.find_by_route_config_name(&route_config.name, &[]).await?;
-
-        if listeners.is_empty() {
-            debug!(
-                route_id = %route_id,
-                route_config_name = %route_config.name,
-                "No listeners found referencing this route config"
-            );
-            return Ok(());
-        }
-
-        let http_filter_name = filter_type.http_filter_name();
-        let requires_listener_attachment = filter_type.requires_listener_config();
-
-        for listener in listeners {
-            if requires_listener_attachment {
-                // Check if filter already attached to listener
-                let existing_listener_filters =
-                    filter_repo.list_listener_filters(&listener.id).await?;
-                let already_attached = existing_listener_filters.iter().any(|f| f.id == *filter_id);
-
-                if !already_attached {
-                    // Auto-attach filter to listener using next available order
-                    let order = filter_repo.get_next_listener_filter_order(&listener.id).await?;
-                    filter_repo.attach_to_listener(&listener.id, filter_id, order).await?;
-
-                    info!(
-                        listener_id = %listener.id,
-                        filter_id = %filter_id,
-                        filter_type = %filter_type,
-                        order = %order,
-                        "Auto-attached filter to listener for route-level requirement"
-                    );
-                }
-            }
-
-            // Add HTTP filter to listener if needed and track auto-addition
-            // Check if already tracked (idempotent)
-            if auto_filter_repo
-                .exists_for_route(&listener.id, http_filter_name, filter_id, route_id)
-                .await?
-            {
-                debug!(
-                    listener_id = %listener.id,
-                    http_filter_name = %http_filter_name,
-                    "Route auto-filter tracking record already exists"
-                );
-                continue;
-            }
-
-            // Load listener config and add filter if not present
-            let mut config: ListenerConfig = serde_json::from_str(&listener.configuration)
-                .map_err(|err| {
-                    Error::internal(format!("Failed to parse listener configuration: {}", err))
-                })?;
-
-            if !listener_has_http_filter(&config, http_filter_name)
-                && add_http_filter_before_router(&mut config, http_filter_name)
-            {
-                let new_config = serde_json::to_string(&config).map_err(|err| {
-                    Error::internal(format!("Failed to serialize listener configuration: {}", err))
-                })?;
-                listener_repo.update_configuration(&listener.id, &new_config).await?;
-
-                info!(
-                    listener_id = %listener.id,
-                    http_filter_name = %http_filter_name,
-                    "Auto-added HTTP filter to listener for route attachment"
-                );
-            }
-
-            // Track auto-added filter for route level
-            auto_filter_repo
-                .create_for_route(CreateRouteAutoFilterRequest {
-                    listener_id: listener.id.clone(),
-                    http_filter_name: http_filter_name.to_string(),
-                    source_filter_id: filter_id.clone(),
-                    route_config_id: route_config_id.clone(),
-                    source_route_id: route_id.clone(),
-                })
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    // =========================================================================
-    // Virtual Host and Route Rule Filter Attachment (Hierarchical Filters)
-    // =========================================================================
-
-    /// Attach a filter to a virtual host
-    ///
-    /// Filters attached at the virtual host level apply to all route rules within that host.
+    /// Filters configured at the virtual host level apply to all route rules within that host.
+    /// Note: User must explicitly install the filter on listeners before configuring scope.
     pub async fn attach_filter_to_virtual_host(
         &self,
         virtual_host_id: &VirtualHostId,
         filter_id: &FilterId,
         order: Option<i32>,
+        settings: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -1184,18 +645,14 @@ impl FilterService {
                 None => vh_filter_repo.get_next_order(virtual_host_id).await?,
             };
 
-            vh_filter_repo.attach(virtual_host_id, filter_id, order).await?;
+            vh_filter_repo.attach(virtual_host_id, filter_id, order, settings).await?;
 
             info!(
                 virtual_host_id = %virtual_host_id,
                 filter_id = %filter_id,
                 order = %order,
-                "Filter attached to virtual host"
+                "Filter configured for virtual host scope"
             );
-
-            // Auto-add HTTP filter to connected listeners
-            self.ensure_listener_http_filters_for_vh(virtual_host_id, filter_id, filter_type)
-                .await?;
 
             self.refresh_xds().await?;
 
@@ -1258,15 +715,17 @@ impl FilterService {
         Ok(filters)
     }
 
-    /// Attach a filter to a route
+    /// Configure a filter for a route scope
     ///
-    /// Filters attached at the route level apply only to that specific route,
-    /// overriding filters attached at the virtual host or route config level.
+    /// Filters configured at the route level apply only to that specific route,
+    /// overriding filters configured at the virtual host or route config level.
+    /// Note: User must explicitly install the filter on listeners before configuring scope.
     pub async fn attach_filter_to_route(
         &self,
         route_id: &RouteId,
         filter_id: &FilterId,
         order: Option<i32>,
+        settings: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -1304,17 +763,14 @@ impl FilterService {
                 None => route_filter_repo.get_next_order(route_id).await?,
             };
 
-            route_filter_repo.attach(route_id, filter_id, order).await?;
+            route_filter_repo.attach(route_id, filter_id, order, settings).await?;
 
             info!(
                 route_id = %route_id,
                 filter_id = %filter_id,
                 order = %order,
-                "Filter attached to route"
+                "Filter configured for route scope"
             );
-
-            // Auto-add HTTP filter to connected listeners
-            self.ensure_listener_http_filters_for_route(route_id, filter_id, filter_type).await?;
 
             self.refresh_xds().await?;
 

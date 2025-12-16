@@ -5,6 +5,53 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
 use tracing::instrument;
 
+// ============================================================================
+// Installation/Configuration Types (for Install/Configure Redesign)
+// ============================================================================
+
+/// Scope type for filter configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FilterScopeType {
+    /// Apply to entire route configuration
+    RouteConfig,
+    /// Apply to specific virtual host
+    VirtualHost,
+    /// Apply to specific route
+    Route,
+}
+
+impl std::fmt::Display for FilterScopeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterScopeType::RouteConfig => write!(f, "route-config"),
+            FilterScopeType::VirtualHost => write!(f, "virtual-host"),
+            FilterScopeType::Route => write!(f, "route"),
+        }
+    }
+}
+
+/// Single installation item showing where a filter is installed
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterInstallation {
+    pub listener_id: String,
+    pub listener_name: String,
+    pub listener_address: String,
+    pub order: i64,
+}
+
+/// Single configuration item showing where a filter is configured
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterConfiguration {
+    pub scope_type: FilterScopeType,
+    pub scope_id: String,
+    pub scope_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct FilterRow {
     pub id: String,
@@ -430,22 +477,25 @@ impl FilterRepository {
 
     // Route Config filter attachment methods (for RouteConfiguration-level filters)
 
-    #[instrument(skip(self), fields(route_config_id = %route_config_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_route_config")]
+    #[instrument(skip(self, settings), fields(route_config_id = %route_config_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_route_config")]
     pub async fn attach_to_route_config(
         &self,
         route_config_id: &RouteConfigId,
         filter_id: &FilterId,
         order: i64,
+        settings: Option<serde_json::Value>,
     ) -> Result<()> {
         let now = chrono::Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
 
         sqlx::query(
-            "INSERT INTO route_config_filters (route_config_id, filter_id, filter_order, created_at) VALUES ($1, $2, $3, $4)"
+            "INSERT INTO route_config_filters (route_config_id, filter_id, filter_order, created_at, settings) VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(route_config_id.as_str())
         .bind(filter_id.as_str())
         .bind(order)
         .bind(now)
+        .bind(&settings_json)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -908,5 +958,184 @@ impl FilterRepository {
         }
 
         Ok(results)
+    }
+
+    // ============================================================================
+    // Filter Installation/Configuration Methods (Install/Configure Redesign)
+    // ============================================================================
+
+    /// List all listeners a filter is installed on with metadata.
+    ///
+    /// Returns installation details including listener name, address, and order.
+    #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_list_filter_installations")]
+    pub async fn list_filter_installations(
+        &self,
+        filter_id: &FilterId,
+    ) -> Result<Vec<FilterInstallation>> {
+        #[derive(FromRow)]
+        struct InstallationRow {
+            listener_id: String,
+            listener_name: String,
+            listener_address: String,
+            filter_order: i64,
+        }
+
+        let rows = sqlx::query_as::<Sqlite, InstallationRow>(
+            "SELECT l.id as listener_id, l.name as listener_name, l.address as listener_address, lf.filter_order \
+             FROM listener_filters lf \
+             INNER JOIN listeners l ON lf.listener_id = l.id \
+             WHERE lf.filter_id = $1 \
+             ORDER BY l.name ASC"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list filter installations");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list installations for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| FilterInstallation {
+                listener_id: row.listener_id,
+                listener_name: row.listener_name,
+                listener_address: row.listener_address,
+                order: row.filter_order,
+            })
+            .collect())
+    }
+
+    /// List all configurations (scopes) for a filter.
+    ///
+    /// Returns configurations from route_config_filters, virtual_host_filters, and route_filters.
+    #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_list_filter_configurations")]
+    pub async fn list_filter_configurations(
+        &self,
+        filter_id: &FilterId,
+    ) -> Result<Vec<FilterConfiguration>> {
+        let mut configurations = Vec::new();
+
+        // Get route config configurations
+        #[derive(FromRow)]
+        struct RouteConfigRow {
+            #[allow(dead_code)]
+            route_config_id: String,
+            route_config_name: String,
+            settings: Option<String>,
+        }
+
+        let route_config_rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
+            "SELECT rc.id as route_config_id, rc.name as route_config_name, rcf.settings \
+             FROM route_config_filters rcf \
+             INNER JOIN route_configs rc ON rcf.route_config_id = rc.id \
+             WHERE rcf.filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list route config configurations");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list route config configurations for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        for row in route_config_rows {
+            configurations.push(FilterConfiguration {
+                scope_type: FilterScopeType::RouteConfig,
+                scope_id: row.route_config_name.clone(),
+                scope_name: row.route_config_name,
+                settings: row.settings.and_then(|s| serde_json::from_str(&s).ok()),
+            });
+        }
+
+        // Get virtual host configurations
+        // Join through virtual_hosts to get the route config and virtual host name
+        #[derive(FromRow)]
+        struct VirtualHostRow {
+            #[allow(dead_code)]
+            route_config_id: String,
+            route_config_name: String,
+            virtual_host_name: String,
+            settings: Option<String>,
+        }
+
+        let vhost_rows = sqlx::query_as::<Sqlite, VirtualHostRow>(
+            "SELECT vh.route_config_id, rc.name as route_config_name, vh.name as virtual_host_name, vhf.settings \
+             FROM virtual_host_filters vhf \
+             INNER JOIN virtual_hosts vh ON vhf.virtual_host_id = vh.id \
+             INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
+             WHERE vhf.filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list virtual host configurations");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list virtual host configurations for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        for row in vhost_rows {
+            configurations.push(FilterConfiguration {
+                scope_type: FilterScopeType::VirtualHost,
+                scope_id: format!("{}/{}", row.route_config_name, row.virtual_host_name),
+                scope_name: row.virtual_host_name,
+                settings: row.settings.and_then(|s| serde_json::from_str(&s).ok()),
+            });
+        }
+
+        // Get route configurations
+        // Join through routes and virtual_hosts to get the full hierarchy
+        #[derive(FromRow)]
+        struct RouteRow {
+            #[allow(dead_code)]
+            route_config_id: String,
+            route_config_name: String,
+            virtual_host_name: String,
+            route_name: String,
+            settings: Option<String>,
+        }
+
+        let route_rows = sqlx::query_as::<Sqlite, RouteRow>(
+            "SELECT vh.route_config_id, rc.name as route_config_name, \
+                    vh.name as virtual_host_name, r.name as route_name, rf.settings \
+             FROM route_filters rf \
+             INNER JOIN routes r ON rf.route_id = r.id \
+             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
+             INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
+             WHERE rf.filter_id = $1"
+        )
+        .bind(filter_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to list route configurations");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list route configurations for filter: {}", filter_id.as_str()),
+            }
+        })?;
+
+        for row in route_rows {
+            configurations.push(FilterConfiguration {
+                scope_type: FilterScopeType::Route,
+                scope_id: format!(
+                    "{}/{}/{}",
+                    row.route_config_name, row.virtual_host_name, row.route_name
+                ),
+                scope_name: row.route_name,
+                settings: row.settings.and_then(|s| serde_json::from_str(&s).ok()),
+            });
+        }
+
+        Ok(configurations)
     }
 }

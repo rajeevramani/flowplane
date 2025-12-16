@@ -1301,3 +1301,98 @@ export interface ListSecretsQuery {
 	/** Filter by secret type */
 	secret_type?: SecretType;
 }
+
+// ============================================================================
+// Filter Install/Configure Types (Filter Install/Configure Redesign)
+// ============================================================================
+
+/** Scope type for filter configuration */
+export type ScopeType = 'route-config' | 'virtual-host' | 'route';
+
+/** Request to install a filter on a listener */
+export interface InstallFilterRequest {
+	/** Listener name */
+	listenerName: string;
+	/** Optional execution order */
+	order?: number;
+}
+
+/** Response after installing a filter */
+export interface InstallFilterResponse {
+	filterId: string;
+	listenerId: string;
+	listenerName: string;
+	order: number;
+}
+
+/** Single installation item in list response */
+export interface FilterInstallationItem {
+	listenerId: string;
+	listenerName: string;
+	listenerAddress: string;
+	order: number;
+}
+
+/** Response for listing filter installations */
+export interface FilterInstallationsResponse {
+	filterId: string;
+	filterName: string;
+	installations: FilterInstallationItem[];
+}
+
+/** Behavior for per-route filter settings */
+export type FilterConfigBehavior = 'use_base' | 'disable' | 'override';
+
+/** Per-route settings structure */
+export interface PerRouteSettings {
+	/** How the filter should behave at this scope */
+	behavior: FilterConfigBehavior;
+	/** Override config - only used when behavior is 'override' */
+	config?: Record<string, unknown>;
+	/** For JWT: requirement name reference (reference_only behavior) */
+	requirementName?: string;
+}
+
+/** Request to configure a filter scope */
+export interface ConfigureFilterRequest {
+	/** Type of scope: "route-config", "virtual-host", or "route" */
+	scopeType: ScopeType;
+	/** ID or name of the scope resource */
+	scopeId: string;
+	/** Optional per-route/vhost settings */
+	settings?: PerRouteSettings;
+}
+
+/** Response after configuring a filter */
+export interface ConfigureFilterResponse {
+	filterId: string;
+	scopeType: ScopeType;
+	scopeId: string;
+	scopeName: string;
+	settings?: Record<string, unknown>;
+}
+
+/** Single configuration item in list response */
+export interface FilterConfigurationItem {
+	scopeType: ScopeType;
+	scopeId: string;
+	scopeName: string;
+	settings?: Record<string, unknown>;
+}
+
+/** Response for listing filter configurations */
+export interface FilterConfigurationsResponse {
+	filterId: string;
+	filterName: string;
+	configurations: FilterConfigurationItem[];
+}
+
+/** Combined filter status with installations and configurations */
+export interface FilterStatusResponse {
+	filterId: string;
+	filterName: string;
+	filterType: string;
+	description: string | null;
+	installations: FilterInstallationItem[];
+	configurations: FilterConfigurationItem[];
+}
