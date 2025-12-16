@@ -7,13 +7,16 @@ use crate::xds::filters::{any_from_message, invalid_config};
 use envoy_types::pb::envoy::config::core::v3::{
     config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource, HttpUri,
 };
+use envoy_types::pb::envoy::config::route::v3::{
+    header_matcher::HeaderMatchSpecifier, HeaderMatcher as HeaderMatcherProto,
+};
 use envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::{
     o_auth2_config::AuthType, o_auth2_credentials::CookieNames,
     o_auth2_credentials::TokenFormation, OAuth2, OAuth2Config as OAuth2ConfigProto,
     OAuth2Credentials,
 };
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig;
-use envoy_types::pb::envoy::r#type::matcher::v3::PathMatcher;
+use envoy_types::pb::envoy::r#type::matcher::v3::{PathMatcher, RegexMatcher, StringMatcher};
 use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -34,6 +37,103 @@ fn build_sds_secret_config(name: &str) -> SdsSecretConfig {
 /// Type URLs for OAuth2 filter configuration
 pub const OAUTH2_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2";
+
+/// Pass-through matcher for bypassing OAuth2 on specific paths
+///
+/// Since Envoy's OAuth2 filter does NOT support per-route configuration via
+/// `typed_per_filter_config`, this is the **only way** to bypass OAuth2 for
+/// specific routes.
+///
+/// The matcher works by checking the `:path` pseudo-header. If any matcher
+/// matches, the request bypasses OAuth2 authentication entirely.
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "pass_through_matcher": [
+///     { "path_exact": "/healthz" },
+///     { "path_prefix": "/api/public/" },
+///     { "path_regex": "^/static/.*" }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct PassThroughMatcher {
+    /// Match exact path (e.g., "/healthz")
+    #[serde(default)]
+    pub path_exact: Option<String>,
+    /// Match path prefix (e.g., "/api/public/")
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// Match path with regex (e.g., "^/static/.*")
+    #[serde(default)]
+    pub path_regex: Option<String>,
+    /// Match any header by name and value
+    #[serde(default)]
+    pub header_name: Option<String>,
+    /// Header value to match (exact match)
+    #[serde(default)]
+    pub header_value: Option<String>,
+}
+
+impl PassThroughMatcher {
+    /// Convert to Envoy HeaderMatcher proto
+    pub fn to_proto(&self) -> Result<HeaderMatcherProto, crate::Error> {
+        // Path matchers use the special `:path` pseudo-header
+        if let Some(exact) = &self.path_exact {
+            return Ok(HeaderMatcherProto {
+                name: ":path".to_string(),
+                header_match_specifier: Some(HeaderMatchSpecifier::ExactMatch(exact.clone())),
+                invert_match: false,
+                treat_missing_header_as_empty: false,
+            });
+        }
+
+        if let Some(prefix) = &self.path_prefix {
+            return Ok(HeaderMatcherProto {
+                name: ":path".to_string(),
+                header_match_specifier: Some(HeaderMatchSpecifier::StringMatch(StringMatcher {
+                    match_pattern: Some(
+                        envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Prefix(
+                            prefix.clone(),
+                        ),
+                    ),
+                    ignore_case: false,
+                })),
+                invert_match: false,
+                treat_missing_header_as_empty: false,
+            });
+        }
+
+        if let Some(regex) = &self.path_regex {
+            return Ok(HeaderMatcherProto {
+                name: ":path".to_string(),
+                header_match_specifier: Some(HeaderMatchSpecifier::SafeRegexMatch(RegexMatcher {
+                    regex: regex.clone(),
+                    engine_type: None,
+                })),
+                invert_match: false,
+                treat_missing_header_as_empty: false,
+            });
+        }
+
+        // Custom header matcher
+        if let (Some(name), Some(value)) = (&self.header_name, &self.header_value) {
+            return Ok(HeaderMatcherProto {
+                name: name.clone(),
+                header_match_specifier: Some(HeaderMatchSpecifier::ExactMatch(value.clone())),
+                invert_match: false,
+                treat_missing_header_as_empty: false,
+            });
+        }
+
+        Err(invalid_config(
+            "PassThroughMatcher must specify path_exact, path_prefix, path_regex, or header_name+header_value",
+        ))
+    }
+}
 
 /// OAuth2 authentication type
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, Default)]
@@ -154,6 +254,23 @@ pub struct OAuth2Config {
     /// Stat prefix for metrics
     #[serde(default)]
     pub stat_prefix: Option<String>,
+    /// Paths/headers to bypass OAuth2 authentication
+    ///
+    /// Since Envoy's OAuth2 filter does NOT support per-route configuration,
+    /// this is the **only way** to make specific routes public without OAuth2.
+    ///
+    /// # Example
+    ///
+    /// ```json
+    /// {
+    ///   "pass_through_matcher": [
+    ///     { "path_exact": "/healthz" },
+    ///     { "path_prefix": "/api/public/" }
+    ///   ]
+    /// }
+    /// ```
+    #[serde(default)]
+    pub pass_through_matcher: Vec<PassThroughMatcher>,
 }
 
 fn default_redirect_path() -> String {
@@ -282,7 +399,11 @@ impl OAuth2Config {
                     nanos: 0,
                 }
             }),
-            pass_through_matcher: Vec::new(),
+            pass_through_matcher: self
+                .pass_through_matcher
+                .iter()
+                .filter_map(|m| m.to_proto().ok())
+                .collect(),
             resources: Vec::new(),
             default_refresh_token_expires_in: None,
             deny_redirect_matcher: Vec::new(),
@@ -305,9 +426,20 @@ impl OAuth2Config {
 }
 
 /// Per-route OAuth2 configuration
+///
+/// **IMPORTANT**: Envoy's OAuth2 filter does NOT support `typed_per_filter_config`.
+/// This struct exists for API compatibility but attempting to use it will result in
+/// Envoy rejecting the configuration with:
+/// "The filter envoy.filters.http.oauth2 doesn't support virtual host or route specific configurations"
+///
+/// OAuth2 filter applies to ALL routes when installed on a listener.
+/// There is no way to disable it per-route.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default)]
 pub struct OAuth2PerRouteConfig {
     /// Disable OAuth2 for this route
+    ///
+    /// Note: This field has no effect because Envoy's OAuth2 filter
+    /// does not support per-route configuration.
     #[serde(default)]
     pub disabled: bool,
 }
@@ -356,6 +488,7 @@ mod tests {
             use_refresh_token: false,
             default_expires_in_seconds: None,
             stat_prefix: None,
+            pass_through_matcher: Vec::new(),
         };
 
         assert!(config.validate().is_err());
@@ -386,6 +519,7 @@ mod tests {
             use_refresh_token: true,
             default_expires_in_seconds: Some(3600),
             stat_prefix: Some("oauth2".to_string()),
+            pass_through_matcher: Vec::new(),
         };
 
         assert!(config.validate().is_ok());
@@ -397,6 +531,86 @@ mod tests {
     fn test_per_route_disabled() {
         let config = OAuth2PerRouteConfig { disabled: true };
         let any = config.to_any().expect("to_any");
+        assert_eq!(any.type_url, OAUTH2_TYPE_URL);
+    }
+
+    #[test]
+    fn test_pass_through_matcher_path_exact() {
+        let matcher = PassThroughMatcher {
+            path_exact: Some("/healthz".to_string()),
+            path_prefix: None,
+            path_regex: None,
+            header_name: None,
+            header_value: None,
+        };
+        let proto = matcher.to_proto().expect("to_proto should succeed");
+        assert_eq!(proto.name, ":path");
+        assert!(matches!(
+            proto.header_match_specifier,
+            Some(HeaderMatchSpecifier::ExactMatch(ref s)) if s == "/healthz"
+        ));
+    }
+
+    #[test]
+    fn test_pass_through_matcher_path_prefix() {
+        let matcher = PassThroughMatcher {
+            path_exact: None,
+            path_prefix: Some("/api/public/".to_string()),
+            path_regex: None,
+            header_name: None,
+            header_value: None,
+        };
+        let proto = matcher.to_proto().expect("to_proto should succeed");
+        assert_eq!(proto.name, ":path");
+        // Prefix match uses StringMatch
+        assert!(matches!(proto.header_match_specifier, Some(HeaderMatchSpecifier::StringMatch(_))));
+    }
+
+    #[test]
+    fn test_pass_through_matcher_in_config() {
+        let config = OAuth2Config {
+            token_endpoint: TokenEndpointConfig {
+                uri: "https://auth.example.com/oauth/token".to_string(),
+                cluster: "auth-cluster".to_string(),
+                timeout_ms: 5000,
+            },
+            authorization_endpoint: "https://auth.example.com/oauth/authorize".to_string(),
+            credentials: OAuth2CredentialsConfig {
+                client_id: "my-client-id".to_string(),
+                token_secret: Some(TokenSecretConfig { name: "oauth-secret".to_string() }),
+                cookie_domain: None,
+                cookie_names: None,
+            },
+            redirect_uri: "https://app.example.com/oauth2/callback".to_string(),
+            redirect_path: "/oauth2/callback".to_string(),
+            signout_path: None,
+            auth_scopes: vec!["openid".to_string()],
+            auth_type: OAuth2AuthType::default(),
+            forward_bearer_token: true,
+            preserve_authorization_header: false,
+            use_refresh_token: false,
+            default_expires_in_seconds: None,
+            stat_prefix: None,
+            pass_through_matcher: vec![
+                PassThroughMatcher {
+                    path_exact: Some("/healthz".to_string()),
+                    path_prefix: None,
+                    path_regex: None,
+                    header_name: None,
+                    header_value: None,
+                },
+                PassThroughMatcher {
+                    path_exact: None,
+                    path_prefix: Some("/api/public/".to_string()),
+                    path_regex: None,
+                    header_name: None,
+                    header_value: None,
+                },
+            ],
+        };
+
+        assert!(config.validate().is_ok());
+        let any = config.to_any().expect("to_any should succeed");
         assert_eq!(any.type_url, OAUTH2_TYPE_URL);
     }
 }

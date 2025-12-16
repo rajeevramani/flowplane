@@ -6,14 +6,16 @@ version: "1.0"
 envoy:
   http_filter_name: envoy.filters.http.oauth2
   type_url: type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2
-  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2
+  # Note: OAuth2 does NOT support typed_per_filter_config
+  # per_route_type_url is intentionally omitted
 
 capabilities:
   attachment_points:
-    - route
     - listener
   requires_listener_config: true
-  per_route_behavior: disable_only
+  # OAuth2 does NOT support per-route configuration in Envoy
+  # Use pass_through_matcher instead to bypass OAuth2 for specific paths
+  per_route_behavior: not_supported
 
 is_implemented: true
 
@@ -129,14 +131,39 @@ config_schema:
     stat_prefix:
       type: string
       description: Stat prefix for metrics
+    pass_through_matcher:
+      type: array
+      description: |
+        Paths or headers to bypass OAuth2 authentication.
+        Since Envoy's OAuth2 filter does NOT support per-route configuration,
+        this is the ONLY way to make specific routes public without OAuth2.
+      items:
+        type: object
+        properties:
+          path_exact:
+            type: string
+            description: Exact path to bypass OAuth2 (e.g., "/healthz")
+          path_prefix:
+            type: string
+            description: Path prefix to bypass OAuth2 (e.g., "/api/public/")
+          path_regex:
+            type: string
+            description: Regex pattern to bypass OAuth2 (e.g., "^/static/.*")
+          header_name:
+            type: string
+            description: Header name for custom bypass matching
+          header_value:
+            type: string
+            description: Header value to match (used with header_name)
+      x-ui-hint: |
+        Add paths that should bypass OAuth2 authentication.
+        Common examples: /healthz, /api/public/, /static/
 
-per_route_config_schema:
-  type: object
-  properties:
-    disabled:
-      type: boolean
-      description: Disable OAuth2 for this route
-      default: false
+# Note: per_route_config_schema is intentionally omitted because
+# Envoy's OAuth2 filter does NOT support typed_per_filter_config.
+# Envoy error: "The filter envoy.filters.http.oauth2 doesn't support
+# virtual host or route specific configurations"
+# Use pass_through_matcher instead.
 
 ui_hints:
   form_layout: sections
@@ -167,6 +194,13 @@ ui_hints:
         - use_refresh_token
         - default_expires_in_seconds
       collapsible: true
+    - name: Public Paths (Bypass OAuth2)
+      fields:
+        - pass_through_matcher
+      description: |
+        Configure paths that should bypass OAuth2 authentication.
+        This is the only way to make routes public since OAuth2 does not support per-route configuration.
+      collapsible: false
     - name: Advanced
       fields:
         - credentials.cookie_domain

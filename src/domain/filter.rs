@@ -161,10 +161,12 @@ fn filter_registry(filter_type: FilterType) -> FilterTypeMetadata {
             filter_type: FilterType::OAuth2,
             http_filter_name: "envoy.filters.http.oauth2",
             type_url: "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2",
-            per_route_type_url: Some("type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2"),
-            attachment_points: ROUTE_AND_LISTENER,
+            // OAuth2 does NOT support typed_per_filter_config at all
+            // Envoy error: "The filter envoy.filters.http.oauth2 doesn't support virtual host or route specific configurations"
+            per_route_type_url: None,
+            attachment_points: &[AttachmentPoint::Listener],
             requires_listener_config: true,
-            per_route_behavior: PerRouteBehavior::DisableOnly,
+            per_route_behavior: PerRouteBehavior::NotSupported,
             is_implemented: true,
             description: "OAuth2 authentication filter",
         },

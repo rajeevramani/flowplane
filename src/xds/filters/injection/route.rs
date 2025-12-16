@@ -27,12 +27,15 @@
 //! - `override`: Use custom configuration for this scope
 
 use crate::domain::filter_schema::FilterSchemaRegistry;
-use crate::domain::FilterConfig;
+use crate::domain::{FilterConfig, FilterType, PerRouteBehavior};
 use crate::storage::{
     FilterData, FilterRepository, RouteConfigData, RouteFilterRepository, RouteRepository,
     VirtualHostFilterRepository, VirtualHostRepository,
 };
 use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
+use crate::xds::filters::http::compressor::CompressorPerRouteConfig;
+use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
+use crate::xds::filters::http::mcp::McpPerRouteConfig;
 use crate::xds::filters::http::HttpScopedConfig;
 use crate::xds::filters::{Base64Bytes, TypedConfig};
 use crate::Result;
@@ -376,26 +379,36 @@ fn inject_hierarchical(
 
                             // Apply effective filters to route
                             for fws in effective_filters.values() {
-                                // Check if filter is disabled at this scope
-                                if let Some(ref settings) = fws.settings {
-                                    if settings.behavior == "disable" {
-                                        debug!(
-                                            filter_name = %fws.filter.name,
-                                            filter_type = %fws.filter.filter_type,
-                                            route = %rule_name,
-                                            "Filter disabled at this scope, skipping"
-                                        );
-                                        continue;
-                                    }
-                                }
+                                // Determine the scoped config to inject
+                                let scoped_result: Option<(String, HttpScopedConfig)> =
+                                    if let Some(ref settings) = fws.settings {
+                                        if settings.behavior == "disable" {
+                                            // Generate a disable config instead of skipping
+                                            debug!(
+                                                filter_name = %fws.filter.name,
+                                                filter_type = %fws.filter.filter_type,
+                                                route = %rule_name,
+                                                "Generating disable config for filter at this scope"
+                                            );
+                                            generate_disable_scoped_config(&fws.filter)
+                                        } else {
+                                            // Use normal conversion (use_base or override)
+                                            convert_filter_to_scoped_config(
+                                                &fws.filter,
+                                                &fws.settings,
+                                                converter,
+                                            )
+                                        }
+                                    } else {
+                                        // No settings, use base config
+                                        convert_filter_to_scoped_config(
+                                            &fws.filter,
+                                            &fws.settings,
+                                            converter,
+                                        )
+                                    };
 
-                                if let Some((filter_name, scoped_config)) =
-                                    convert_filter_to_scoped_config(
-                                        &fws.filter,
-                                        &fws.settings,
-                                        converter,
-                                    )
-                                {
+                                if let Some((filter_name, scoped_config)) = scoped_result {
                                     let tpfc = route_entry.as_object_mut().and_then(|obj| {
                                         obj.entry("typed_per_filter_config")
                                             .or_insert_with(|| serde_json::json!({}))
@@ -454,6 +467,81 @@ fn determine_effective_config(
 
     // Default: use base configuration
     filter_data.configuration.clone()
+}
+
+/// Generate a disable scoped config for a filter.
+///
+/// This function creates a per-route configuration that disables the filter
+/// for filters that support the DisableOnly or FullConfig per-route behavior.
+///
+/// # Arguments
+///
+/// * `filter_data` - The filter to generate disable config for
+///
+/// # Returns
+///
+/// - `Some((filter_name, HttpScopedConfig))` - The disable config to inject
+/// - `None` - If this filter type doesn't support per-route disable
+fn generate_disable_scoped_config(filter_data: &FilterData) -> Option<(String, HttpScopedConfig)> {
+    // Parse the filter type
+    let filter_type: FilterType =
+        match serde_json::from_str(&format!("\"{}\"", filter_data.filter_type)) {
+            Ok(ft) => ft,
+            Err(e) => {
+                warn!(
+                    filter_type = %filter_data.filter_type,
+                    error = %e,
+                    "Failed to parse filter type for disable config"
+                );
+                return None;
+            }
+        };
+
+    let metadata = filter_type.metadata();
+    let per_route_behavior = metadata.per_route_behavior;
+
+    // Only generate disable config for filters that support per-route config
+    if matches!(per_route_behavior, PerRouteBehavior::NotSupported) {
+        debug!(
+            filter_name = %filter_data.name,
+            filter_type = %filter_data.filter_type,
+            "Filter doesn't support per-route config, cannot generate disable config"
+        );
+        return None;
+    }
+
+    let filter_name = metadata.http_filter_name.to_string();
+
+    // Generate the appropriate disable config based on filter type
+    // Note: OAuth2 does NOT support typed_per_filter_config at all
+    let scoped_config = match filter_type {
+        FilterType::JwtAuth => {
+            HttpScopedConfig::JwtAuthn(JwtPerRouteConfig::Disabled { disabled: true })
+        }
+        FilterType::Compressor => {
+            HttpScopedConfig::Compressor(CompressorPerRouteConfig { disabled: true })
+        }
+        FilterType::Mcp => HttpScopedConfig::Mcp(McpPerRouteConfig { disabled: true }),
+        // For other filters, we can't generate a simple disable config
+        // They would need override config or don't support disable
+        _ => {
+            debug!(
+                filter_name = %filter_data.name,
+                filter_type = %filter_data.filter_type,
+                "Filter type doesn't have a simple disable config mechanism"
+            );
+            return None;
+        }
+    };
+
+    info!(
+        filter_name = %filter_data.name,
+        filter_type = %filter_data.filter_type,
+        envoy_filter_name = %filter_name,
+        "Generated disable scoped config for filter"
+    );
+
+    Some((filter_name, scoped_config))
 }
 
 /// Convert a FilterData to its scoped config representation.

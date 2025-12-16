@@ -332,6 +332,9 @@ impl HttpScopedConfig {
             return Ok(HttpScopedConfig::Mcp(cfg));
         }
 
+        // Note: OAuth2 does NOT support typed_per_filter_config at all
+        // Envoy error: "The filter envoy.filters.http.oauth2 doesn't support virtual host or route specific configurations"
+
         Ok(HttpScopedConfig::Typed(TypedConfig {
             type_url: any.type_url.clone(),
             value: Base64Bytes(any.value.clone()),
