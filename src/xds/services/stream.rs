@@ -327,12 +327,41 @@ where
                                         name = "xds.nack",
                                         type_url = %discovery_request.type_url,
                                         nonce = %discovery_request.response_nonce,
+                                        version_rejected = %last_snapshot.as_ref().map(|s| s.version.as_ref()).unwrap_or("unknown"),
                                         error.type = "envoy_rejection",
                                         error.code = error_detail.code,
                                         error.message = %error_detail.message,
                                         node_id = ?node_id,
                                         stream = %label_for_task,
                                         "Envoy rejected previous xDS response"
+                                    );
+
+                                    // Check if config has changed since the NACKed version was sent
+                                    // If unchanged, don't retry with the same bad config - wait for a fix
+                                    let config_unchanged = last_snapshot
+                                        .as_ref()
+                                        .map(|snapshot| snapshot.version.as_ref() == current_version)
+                                        .unwrap_or(false);
+
+                                    if config_unchanged {
+                                        debug!(
+                                            type_url = %discovery_request.type_url,
+                                            version = %current_version,
+                                            node_id = ?node_id,
+                                            stream = %label_for_task,
+                                            "Config unchanged since NACK, skipping retry until config is fixed"
+                                        );
+                                        return;
+                                    }
+
+                                    // Config has changed - proceed to send the new (hopefully fixed) version
+                                    info!(
+                                        type_url = %discovery_request.type_url,
+                                        old_version = %last_snapshot.as_ref().map(|s| s.version.as_ref()).unwrap_or("unknown"),
+                                        new_version = %current_version,
+                                        node_id = ?node_id,
+                                        stream = %label_for_task,
+                                        "Config updated since NACK, sending new version"
                                     );
                                 }
 
