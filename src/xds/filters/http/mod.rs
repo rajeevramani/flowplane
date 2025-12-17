@@ -37,11 +37,13 @@ use crate::xds::filters::http::local_rate_limit::LocalRateLimitConfig;
 use crate::xds::filters::http::mcp::{McpFilterConfig, McpPerRouteConfig, MCP_PER_ROUTE_TYPE_URL};
 use crate::xds::filters::http::rate_limit::{RateLimitConfig, RateLimitPerRouteConfig};
 use crate::xds::filters::http::rate_limit_quota::{RateLimitQuotaConfig, RateLimitQuotaOverrideConfig};
+use crate::xds::filters::http::rbac::{RbacPerRouteConfig, RBAC_PER_ROUTE_TYPE_URL};
 use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes, TypedConfig};
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router as RouterFilter;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use envoy_types::pb::envoy::extensions::filters::http::compressor::v3::CompressorPerRoute as CompressorPerRouteProto;
+use envoy_types::pb::envoy::extensions::filters::http::rbac::v3::RbacPerRoute as RbacPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3::LocalRateLimit as LocalRateLimitProto;
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig as JwtPerRouteProto;
 use envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy as FilterCorsPolicyProto;
@@ -217,6 +219,8 @@ pub enum HttpScopedConfig {
     Mcp(McpPerRouteConfig),
     /// JWT auth per-route overrides
     JwtAuthn(JwtPerRouteConfig),
+    /// RBAC per-route overrides
+    Rbac(RbacPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
 }
@@ -238,6 +242,7 @@ impl HttpScopedConfig {
             Self::RateLimitQuota(cfg) => cfg.to_any(),
             Self::CustomResponse(cfg) => cfg.to_any(),
             Self::Mcp(cfg) => cfg.to_any(),
+            Self::Rbac(cfg) => cfg.to_any(),
         }
     }
 
@@ -330,6 +335,14 @@ impl HttpScopedConfig {
             })?;
             let cfg = McpPerRouteConfig::from_mcp_proto(&proto)?;
             return Ok(HttpScopedConfig::Mcp(cfg));
+        }
+
+        if any.type_url == RBAC_PER_ROUTE_TYPE_URL {
+            let proto = RbacPerRouteProto::decode(any.value.as_slice()).map_err(|err| {
+                crate::Error::config(format!("Failed to decode RBAC per-route config: {}", err))
+            })?;
+            let cfg = RbacPerRouteConfig::from_proto(&proto)?;
+            return Ok(HttpScopedConfig::Rbac(cfg));
         }
 
         // Note: OAuth2 does NOT support typed_per_filter_config at all

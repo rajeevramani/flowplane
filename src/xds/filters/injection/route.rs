@@ -36,6 +36,7 @@ use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
 use crate::xds::filters::http::compressor::CompressorPerRouteConfig;
 use crate::xds::filters::http::jwt_auth::JwtPerRouteConfig;
 use crate::xds::filters::http::mcp::McpPerRouteConfig;
+use crate::xds::filters::http::rbac::RbacPerRouteConfig;
 use crate::xds::filters::http::HttpScopedConfig;
 use crate::xds::filters::{Base64Bytes, TypedConfig};
 use crate::Result;
@@ -522,6 +523,9 @@ fn generate_disable_scoped_config(filter_data: &FilterData) -> Option<(String, H
             HttpScopedConfig::Compressor(CompressorPerRouteConfig { disabled: true })
         }
         FilterType::Mcp => HttpScopedConfig::Mcp(McpPerRouteConfig { disabled: true }),
+        FilterType::Rbac => {
+            HttpScopedConfig::Rbac(RbacPerRouteConfig::Disabled { disabled: true })
+        }
         // For other filters, we can't generate a simple disable config
         // They would need override config or don't support disable
         _ => {
