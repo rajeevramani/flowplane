@@ -8,19 +8,14 @@ use crate::storage::FilterData;
 use crate::xds::ClusterSpec;
 
 /// Mode for cluster handling when creating filters
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClusterMode {
     /// Create a new cluster with the provided configuration
     Create,
     /// Reuse an existing cluster by name
+    #[default]
     Reuse,
-}
-
-impl Default for ClusterMode {
-    fn default() -> Self {
-        Self::Reuse
-    }
 }
 
 /// Configuration for cluster creation or reuse when creating a filter

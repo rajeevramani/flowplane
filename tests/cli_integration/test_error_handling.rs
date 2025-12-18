@@ -58,8 +58,7 @@ async fn test_timeout_handling() {
 
     // This might succeed if the server is very fast, or fail with timeout
     // We just verify the CLI handles the timeout parameter correctly
-    if result.is_err() {
-        let error = result.unwrap_err();
+    if let Err(error) = result {
         assert!(
             error.contains("timeout") || error.contains("time") || error.contains("duration"),
             "Timeout error should mention timing: {}",

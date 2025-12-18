@@ -143,7 +143,7 @@ pub struct ListenerStats {
 }
 
 /// Health status of an Envoy instance or cluster
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EnvoyHealthStatus {
     /// All hosts healthy, no issues
@@ -153,13 +153,8 @@ pub enum EnvoyHealthStatus {
     /// Majority hosts unhealthy or critical issues
     Unhealthy,
     /// Status unknown (e.g., cannot reach admin port)
+    #[default]
     Unknown,
-}
-
-impl Default for EnvoyHealthStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl EnvoyHealthStatus {
