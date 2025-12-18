@@ -6,7 +6,7 @@ use tracing::info;
 
 use flowplane::config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig, XdsResourceConfig};
 use flowplane::openapi::defaults::ensure_default_gateway_resources;
-use flowplane::storage::create_pool;
+use flowplane::storage::{create_pool, run_migrations};
 use flowplane::xds::{start_database_xds_server_with_state, XdsState};
 
 #[derive(Debug)]
@@ -29,10 +29,11 @@ impl ControlPlaneHandle {
     ) -> anyhow::Result<Self> {
         // Configure database from provided sqlite path
         let db_url = format!("sqlite://{}", db_path.display());
-        std::env::set_var("DATABASE_URL", &db_url);
+        std::env::set_var("FLOWPLANE_DATABASE_URL", &db_url);
 
-        // Create DB pool and shared state
+        // Create DB pool and run migrations
         let pool = create_pool(&DatabaseConfig::from_env()).await?;
+        run_migrations(&pool).await?;
 
         let simple_config = SimpleXdsConfig {
             bind_address: xds_addr.ip().to_string(),
@@ -79,9 +80,10 @@ impl ControlPlaneHandle {
         xds_tls: Option<flowplane::config::XdsTlsConfig>,
     ) -> anyhow::Result<Self> {
         let db_url = format!("sqlite://{}", db_path.display());
-        std::env::set_var("DATABASE_URL", &db_url);
+        std::env::set_var("FLOWPLANE_DATABASE_URL", &db_url);
 
         let pool = create_pool(&DatabaseConfig::from_env()).await?;
+        run_migrations(&pool).await?;
 
         let simple_config = SimpleXdsConfig {
             bind_address: xds_addr.ip().to_string(),
