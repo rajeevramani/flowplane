@@ -28,7 +28,24 @@ pub struct SimpleXdsConfig {
     pub port: u16,
     pub resources: XdsResourceConfig,
     pub tls: Option<XdsTlsConfig>,
+    pub envoy_admin: EnvoyAdminConfig,
 }
+
+/// Configuration for Envoy admin interface in bootstrap config.
+/// Note: The `port` field serves as the base port for auto-allocation.
+/// Each team gets a unique port starting from this base value.
+#[derive(Debug, Clone)]
+pub struct EnvoyAdminConfig {
+    /// Admin interface bind address
+    pub bind_address: String,
+    /// Base port for Envoy admin interface (teams are auto-allocated ports starting from this)
+    pub port: u16,
+    /// Access log path for admin interface
+    pub access_log_path: String,
+}
+
+/// Default base port for Envoy admin interface allocation
+pub const DEFAULT_ENVOY_ADMIN_BASE_PORT: u16 = 9901;
 
 /// TLS configuration for the xDS server
 #[derive(Debug, Clone)]
@@ -71,6 +88,16 @@ impl Default for XdsResourceConfig {
     }
 }
 
+impl Default for EnvoyAdminConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: "127.0.0.1".to_string(),
+            port: 9901,
+            access_log_path: "/dev/null".to_string(),
+        }
+    }
+}
+
 impl Default for SimpleXdsConfig {
     fn default() -> Self {
         Self {
@@ -78,6 +105,7 @@ impl Default for SimpleXdsConfig {
             port: 18000,
             resources: XdsResourceConfig::default(),
             tls: None,
+            envoy_admin: EnvoyAdminConfig::default(),
         }
     }
 }
@@ -153,6 +181,26 @@ impl Config {
         let api_bind_address =
             std::env::var("FLOWPLANE_API_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
 
+        // Envoy admin interface configuration (used in bootstrap config generation)
+        let envoy_admin_bind_address = std::env::var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS")
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+        let envoy_admin_port_str =
+            std::env::var("FLOWPLANE_ENVOY_ADMIN_PORT").unwrap_or_else(|_| "9901".to_string());
+        let envoy_admin_port: u16 = envoy_admin_port_str.parse().map_err(|e| {
+            crate::Error::config(format!(
+                "Invalid Envoy admin port '{}': {}",
+                envoy_admin_port_str, e
+            ))
+        })?;
+
+        if envoy_admin_port == 0 {
+            return Err(crate::Error::config("Envoy admin port cannot be 0".to_string()));
+        }
+
+        let envoy_admin_access_log_path = std::env::var("FLOWPLANE_ENVOY_ADMIN_ACCESS_LOG_PATH")
+            .unwrap_or_else(|_| "/dev/null".to_string());
+
         Ok(Self {
             xds: SimpleXdsConfig {
                 bind_address: xds_bind_address,
@@ -166,6 +214,11 @@ impl Config {
                     listener_port,
                 },
                 tls: load_xds_tls_config_from_env()?,
+                envoy_admin: EnvoyAdminConfig {
+                    bind_address: envoy_admin_bind_address,
+                    port: envoy_admin_port,
+                    access_log_path: envoy_admin_access_log_path,
+                },
             },
             api: ApiServerConfig {
                 bind_address: api_bind_address,
@@ -388,5 +441,81 @@ mod tests {
         env::remove_var("FLOWPLANE_API_TLS_CERT_PATH");
         env::remove_var("FLOWPLANE_API_TLS_KEY_PATH");
         env::remove_var("FLOWPLANE_API_TLS_CHAIN_PATH");
+    }
+
+    #[test]
+    fn test_envoy_admin_config_defaults() {
+        let config = EnvoyAdminConfig::default();
+        assert_eq!(config.bind_address, "127.0.0.1");
+        assert_eq!(config.port, 9901);
+        assert_eq!(config.access_log_path, "/dev/null");
+    }
+
+    #[test]
+    fn test_envoy_admin_config_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        // Save original values
+        let original_bind = env::var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS").ok();
+        let original_port = env::var("FLOWPLANE_ENVOY_ADMIN_PORT").ok();
+        let original_log = env::var("FLOWPLANE_ENVOY_ADMIN_ACCESS_LOG_PATH").ok();
+
+        // Set custom values
+        env::set_var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS", "0.0.0.0");
+        env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", "9902");
+        env::set_var("FLOWPLANE_ENVOY_ADMIN_ACCESS_LOG_PATH", "/var/log/envoy_admin.log");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.xds.envoy_admin.bind_address, "0.0.0.0");
+        assert_eq!(config.xds.envoy_admin.port, 9902);
+        assert_eq!(config.xds.envoy_admin.access_log_path, "/var/log/envoy_admin.log");
+
+        // Restore original environment
+        match original_bind {
+            Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS", v),
+            None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS"),
+        }
+        match original_port {
+            Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", v),
+            None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_PORT"),
+        }
+        match original_log {
+            Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_ACCESS_LOG_PATH", v),
+            None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_ACCESS_LOG_PATH"),
+        }
+    }
+
+    #[test]
+    fn test_envoy_admin_config_invalid_port() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let original_port = env::var("FLOWPLANE_ENVOY_ADMIN_PORT").ok();
+
+        env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", "not_a_number");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+
+        match original_port {
+            Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", v),
+            None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_PORT"),
+        }
+    }
+
+    #[test]
+    fn test_envoy_admin_config_zero_port() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let original_port = env::var("FLOWPLANE_ENVOY_ADMIN_PORT").ok();
+
+        env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", "0");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+
+        match original_port {
+            Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", v),
+            None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_PORT"),
+        }
     }
 }

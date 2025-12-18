@@ -8,6 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Internal database row structure for listeners.
 ///
@@ -186,6 +187,7 @@ impl ListenerRepository {
     ///
     /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
     /// - [`FlowplaneError::Database`] if insertion fails (e.g., duplicate name)
+    #[instrument(skip(self, request), fields(listener_name = %request.name, team = ?request.team), name = "db_create_listener")]
     pub async fn create(&self, request: CreateListenerRequest) -> Result<ListenerData> {
         let id = ListenerId::new();
         let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
@@ -240,6 +242,7 @@ impl ListenerRepository {
     ///
     /// - [`FlowplaneError::NotFound`] if no listener exists with the given ID
     /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE id = $1"
@@ -263,6 +266,7 @@ impl ListenerRepository {
         }
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
@@ -287,6 +291,7 @@ impl ListenerRepository {
         }
     }
 
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_listeners")]
     pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<ListenerData>> {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
@@ -352,6 +357,7 @@ impl ListenerRepository {
     /// # Errors
     ///
     /// - [`FlowplaneError::Database`] if query execution fails
+    #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_listeners_by_teams")]
     pub async fn list_by_teams(
         &self,
         teams: &[String],
@@ -411,6 +417,7 @@ impl ListenerRepository {
     }
 
     /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
+    #[instrument(skip(self), fields(import_id = %import_id), name = "db_count_listeners_by_import")]
     pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
         sqlx::query_scalar::<Sqlite, i64>(
             "SELECT COUNT(*) FROM listeners WHERE import_id = $1",
@@ -427,6 +434,7 @@ impl ListenerRepository {
         })
     }
 
+    #[instrument(skip(self, request), fields(listener_id = %id), name = "db_update_listener")]
     pub async fn update(
         &self,
         id: &ListenerId,
@@ -490,6 +498,7 @@ impl ListenerRepository {
         self.get_by_id(id).await
     }
 
+    #[instrument(skip(self), fields(listener_id = %id), name = "db_delete_listener")]
     pub async fn delete(&self, id: &ListenerId) -> Result<()> {
         let listener = self.get_by_id(id).await?;
 
@@ -517,6 +526,7 @@ impl ListenerRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_delete_listener_by_name")]
     pub async fn delete_by_name(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM listeners WHERE name = $1")
             .bind(name)
@@ -533,6 +543,7 @@ impl ListenerRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(listener_name = %name), name = "db_exists_listener_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
             .bind(name)
@@ -549,6 +560,7 @@ impl ListenerRepository {
         Ok(count > 0)
     }
 
+    #[instrument(skip(self), name = "db_count_listeners")]
     pub async fn count(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners")
             .fetch_one(&self.pool)
@@ -567,4 +579,127 @@ impl ListenerRepository {
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }
+
+    /// Find all listeners that reference a specific route config name.
+    ///
+    /// This is used by the auto-filter management system to find which listeners
+    /// are connected to a route via the HCM's `route_config_name`.
+    ///
+    /// # Arguments
+    ///
+    /// * `route_config_name` - The name of the route configuration to find
+    /// * `teams` - Optional team filter. If empty, searches all listeners.
+    ///
+    /// # Returns
+    ///
+    /// A vector of listeners whose HTTP connection manager references the given route.
+    #[instrument(skip(self), fields(route_config_name = %route_config_name), name = "db_find_listeners_by_route_config_name")]
+    pub async fn find_by_route_config_name(
+        &self,
+        route_config_name: &str,
+        teams: &[&str],
+    ) -> Result<Vec<ListenerData>> {
+        // Get all listeners (optionally filtered by team)
+        let listeners = if teams.is_empty() {
+            self.list(Some(1000), Some(0)).await?
+        } else {
+            let team_strings: Vec<String> = teams.iter().map(|s| s.to_string()).collect();
+            self.list_by_teams(&team_strings, true, Some(1000), Some(0)).await?
+        };
+
+        // Filter listeners that reference this route_config_name in their configuration
+        let matching_listeners: Vec<ListenerData> = listeners
+            .into_iter()
+            .filter(|listener| {
+                listener_references_route(&listener.configuration, route_config_name)
+            })
+            .collect();
+
+        tracing::debug!(
+            route_config_name = %route_config_name,
+            matching_count = matching_listeners.len(),
+            "Found listeners referencing route config"
+        );
+
+        Ok(matching_listeners)
+    }
+
+    /// Update only the configuration field of a listener.
+    ///
+    /// This is used by the auto-filter management system to add/remove HTTP filters
+    /// from the listener's filter chain.
+    #[instrument(skip(self, configuration), fields(listener_id = %id), name = "db_update_listener_configuration")]
+    pub async fn update_configuration(
+        &self,
+        id: &ListenerId,
+        configuration: &str,
+    ) -> Result<ListenerData> {
+        let current = self.get_by_id(id).await?;
+        let now = chrono::Utc::now();
+        let new_version = current.version + 1;
+
+        let result = sqlx::query(
+            "UPDATE listeners SET configuration = $1, version = $2, updated_at = $3 WHERE id = $4"
+        )
+        .bind(configuration)
+        .bind(new_version)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %id, "Failed to update listener configuration");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to update configuration for listener '{}'", id),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Listener with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(listener_id = %id, new_version = new_version, "Updated listener configuration");
+
+        self.get_by_id(id).await
+    }
+}
+
+/// Check if a listener configuration references a specific route config name.
+///
+/// Parses the listener configuration JSON and looks for HCM filters with
+/// `route_config_name` matching the target.
+fn listener_references_route(configuration: &str, target_route_name: &str) -> bool {
+    // Parse the configuration JSON
+    let config: serde_json::Value = match serde_json::from_str(configuration) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Look for filter_chains -> filters -> filter_type.HttpConnectionManager.route_config_name
+    if let Some(filter_chains) = config.get("filter_chains").and_then(|v| v.as_array()) {
+        for chain in filter_chains {
+            if let Some(filters) = chain.get("filters").and_then(|v| v.as_array()) {
+                for filter in filters {
+                    if let Some(filter_type) = filter.get("filter_type") {
+                        // Check for HttpConnectionManager variant
+                        if let Some(hcm) = filter_type.get("HttpConnectionManager") {
+                            if let Some(route_name) =
+                                hcm.get("route_config_name").and_then(|v| v.as_str())
+                            {
+                                if route_name == target_route_name {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }

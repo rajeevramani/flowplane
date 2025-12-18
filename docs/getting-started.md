@@ -1,77 +1,130 @@
 # Getting Started
 
-This walkthrough takes you from an empty database to a working Envoy listener that enforces global and per-route rate limits. All API calls use `curl`, and the examples assume the control plane is running on `http://127.0.0.1:8080` (see the [README](../README.md) for the launch command).
+This guide walks you through setting up Flowplane and creating your first resources.
 
-## Authentication
+## Prerequisites
 
-All API endpoints require bearer authentication. On first startup with an empty database, Flowplane automatically generates a **setup token** displayed in a prominent banner. You must exchange this setup token for an admin token via the bootstrap endpoint.
+- Rust (edition 2021) with cargo
+- Node.js 18+ (for UI)
+- SQLite (included) or PostgreSQL
+- protoc (Protocol Buffers compiler)
 
-### Step 1: Extract Setup Token from Logs
+Optional:
+- Docker and Docker Compose
+- Envoy proxy (for testing xDS)
+
+## Installation
+
+### Option 1: Build from Source
 
 ```bash
-# Start the control plane
-DATABASE_URL=sqlite://./data/flowplane.db \
-FLOWPLANE_API_BIND_ADDRESS=0.0.0.0 \
-cargo run --bin flowplane
+git clone https://github.com/yourusername/flowplane.git
+cd flowplane
 
-# View logs and find the setup token
-# You'll see output like:
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                  🚀 FLOWPLANE CONTROL PLANE - FIRST TIME SETUP               ║
-# ╠══════════════════════════════════════════════════════════════════════════════╣
-# ║                                                                              ║
-# ║  A setup token has been automatically generated for initial bootstrap.      ║
-# ║                                                                              ║
-# ║  Setup Token:                                                                ║
-# ║  fp_setup_a1b2c3d4-e5f6-7890-abcd-ef1234567890.x8K9mP2nQ5rS7tU9vW1xY3zA4... ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
+# Build release binary
+cargo build --release
 
-# Export the setup token
-export SETUP_TOKEN="fp_setup_YOUR_TOKEN_HERE"
+# Binary is at target/release/flowplane
 ```
 
-### Step 2: Exchange Setup Token for Admin Token
+### Option 2: Docker Compose
 
 ```bash
-# Bootstrap initialization
+# Clone repository
+git clone https://github.com/yourusername/flowplane.git
+cd flowplane
+
+# Start with Docker Compose
+docker-compose up -d
+
+# Services start at:
+# - API: http://localhost:8080
+# - xDS: localhost:50051 (per docker-compose.yml)
+```
+
+## First Run
+
+### 1. Start the Control Plane
+
+```bash
+# Create data directory for SQLite
+mkdir -p data
+
+# Run with default settings
+cargo run --release
+```
+
+The server starts with:
+- **API Server**: http://127.0.0.1:8080
+- **xDS Server**: 0.0.0.0:18000 (gRPC)
+- **Metrics**: http://0.0.0.0:9090/metrics
+
+### 2. Bootstrap Authentication
+
+On first startup with an empty database, Flowplane generates a setup token displayed in the logs:
+
+```
+============================================================
+FLOWPLANE SETUP TOKEN
+============================================================
+A setup token has been generated for initial bootstrap.
+
+Setup Token: fp_setup_xxxxx-xxxxx-xxxxx.yyyyyyyyyyyy
+
+Use this token to create your first admin token.
+============================================================
+```
+
+Exchange the setup token for an admin token:
+
+```bash
+# Set your setup token
+export SETUP_TOKEN="fp_setup_YOUR_TOKEN_HERE"
+
+# Initialize bootstrap
 curl -X POST http://127.0.0.1:8080/api/v1/bootstrap/initialize \
   -H "Content-Type: application/json" \
-  -d "{
-    \"setupToken\": \"$SETUP_TOKEN\",
-    \"adminTokenName\": \"my-admin-token\",
-    \"adminTokenDescription\": \"Initial admin token for getting started\"
-  }"
+  -d '{
+    "setupToken": "'$SETUP_TOKEN'",
+    "adminTokenName": "admin-token",
+    "adminTokenDescription": "Initial admin token"
+  }'
 
-# Response includes the admin token - save it immediately:
+# Response:
 # {
 #   "adminToken": "fp_pat_...",
 #   "message": "Bootstrap completed successfully"
 # }
 
-# Export the admin token for use in examples below
+# Save the admin token
 export FLOWPLANE_TOKEN="fp_pat_..."
 ```
 
-**Important:** The setup token is automatically revoked after successful bootstrap. Store your admin token securely - it will not be displayed again.
+The setup token is revoked after successful bootstrap. Store your admin token securely.
 
-See [authentication.md](authentication.md) for creating scoped tokens, managing access, and the CLI-based authentication workflow using `flowplane auth bootstrap`.
-
-> **New:** Already have an OpenAPI 3.0 spec? Call `POST /api/v1/api-definitions/from-openapi?team=<team>` with your JSON or YAML document to generate clusters, routes, and a listener automatically. You can still follow the manual steps below to fine-tune or extend the generated resources.
->
-> Imports join the shared listener `default-gateway-listener` on port `10000`, so multiple teams can onboard specs without thinking about ports. Provide query parameters like `listener`, `port`, `bind_address`, or `protocol` when calling the import endpoint if you prefer a dedicated listener for a gateway.
-
-## 1. Explore the API Reference
-Open `http://127.0.0.1:8080/swagger-ui` in your browser. The Swagger UI lists every endpoint, schema, and example. You can execute requests directly from the UI or copy the `curl` commands shown below.
-
-## 2. Register a Cluster
-Clusters describe upstream backends. This example creates a TLS-enabled cluster that forwards to `httpbin.org`:
+### 3. Verify API Access
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
+# Check health
+curl http://127.0.0.1:8080/health
+
+# List clusters (should be empty)
+curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  http://127.0.0.1:8080/api/v1/clusters
+```
+
+## Creating Resources
+
+### Create a Cluster
+
+Clusters define upstream backends:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/clusters \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Content-Type: application/json" \
   -d '{
-    "name": "demo-cluster",
+    "name": "httpbin-cluster",
     "serviceName": "httpbin",
     "endpoints": [
       { "host": "httpbin.org", "port": 443 }
@@ -82,17 +135,14 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/clusters \
   }'
 ```
 
-*Response*: `201 Created` with the stored cluster definition. Use `GET /api/v1/clusters/demo-cluster` to verify later.
+### Create a Route Configuration
 
-## 3. Publish a Route Configuration
-Routes map request prefixes to clusters. Here we forward everything under `/` to `demo-cluster` and apply a per-route Local Rate Limit (20 requests/second, returning HTTP 429 when exhausted).
-
-> **Snake case fields** – Filter-specific blocks (like Local Rate Limit) use snake_case (`stat_prefix`, `token_bucket`). The REST layer handles the conversion to Envoy protos for you.
+Route configs map requests to clusters:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+curl -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Content-Type: application/json" \
   -d '{
     "name": "demo-routes",
     "virtualHosts": [
@@ -107,19 +157,8 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
             },
             "action": {
               "type": "forward",
-              "cluster": "demo-cluster",
+              "cluster": "httpbin-cluster",
               "timeoutSeconds": 10
-            },
-            "typedPerFilterConfig": {
-              "envoy.filters.http.local_ratelimit": {
-                "stat_prefix": "per_route",
-                "token_bucket": {
-                  "max_tokens": 20,
-                  "tokens_per_fill": 20,
-                  "fill_interval_ms": 1000
-                },
-                "status_code": 429
-              }
             }
           }
         ]
@@ -128,17 +167,14 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
   }'
 ```
 
-## 4. Create a Listener with Global Filters
-Listeners bind ports and assemble filter chains. This example:
+### Create a Listener
 
-1. Adds a listener-wide Local Rate Limit (100 requests/second).
-2. Enables Envoy's router filter (appended automatically if omitted, but included here for clarity).
-3. Points the HTTP connection manager at `demo-routes`.
+Listeners bind to ports and reference route configs:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
+curl -X POST http://127.0.0.1:8080/api/v1/listeners \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Content-Type: application/json" \
   -d '{
     "name": "demo-listener",
     "address": "0.0.0.0",
@@ -154,22 +190,8 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
             "routeConfigName": "demo-routes",
             "httpFilters": [
               {
-                "name": "envoy.filters.http.local_ratelimit",
-                "filter": {
-                  "type": "local_rate_limit",
-                  "stat_prefix": "listener_global",
-                  "token_bucket": {
-                    "max_tokens": 100,
-                    "tokens_per_fill": 100,
-                    "fill_interval_ms": 1000
-                  }
-                }
-              },
-              {
                 "name": "envoy.filters.http.router",
-                "filter": {
-                  "type": "router"
-                }
+                "filter": { "type": "router" }
               }
             ]
           }
@@ -179,80 +201,96 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
   }'
 ```
 
-> **Want JWT authentication?** See [docs/filters.md](filters.md#jwt-authentication) for the provider and requirement fields. You can add the `jwt_authn` filter into the same `httpFilters` list before the router entry.
+## Connecting Envoy
 
-## 5. Point Envoy at the Control Plane
-Configure an Envoy bootstrap with ADS pointing at `127.0.0.1:50051` (the `FLOWPLANE_XDS_PORT` value). If you enabled TLS/mTLS on the control plane, mount the relevant certificates inside the Envoy runtime and reference them below. For plaintext setups, drop the `transport_socket` block.
-
-Mutual TLS example:
-
-```yaml
-ads_config:
-  api_type: GRPC
-  transport_api_version: V3
-  grpc_services:
-    - envoy_grpc:
-        cluster_name: xds_cluster
-static_resources:
-  clusters:
-    - name: xds_cluster
-      connect_timeout: 1s
-      type: STRICT_DNS
-      http2_protocol_options: {}
-      load_assignment:
-        cluster_name: xds_cluster
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: 127.0.0.1
-                      port_value: 50051
-      transport_socket:
-        name: envoy.transport_sockets.tls
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          sni: flowplane-control-plane
-          common_tls_context:
-            tls_certificates:
-              - certificate_chain:
-                  filename: /etc/envoy/certs/xds-client.pem
-                private_key:
-                  filename: /etc/envoy/certs/xds-client.key
-            validation_context:
-              trusted_ca:
-                filename: /etc/envoy/certs/xds-ca.pem
-              match_subject_alt_names:
-                - exact: flowplane-control-plane
-```
-
-(Replace the certificate filenames and subject alternative names with the values used when issuing your certificates. For one-way TLS, omit the `tls_certificates` block and keep only the trusted CA.)
-
-(See Envoy’s documentation for a full bootstrap; this example focuses on the XDS connection.)
-
-## 6. Verify Traffic
-With Envoy running and Flowplane serving resources, send a request through the listener:
+### Generate Bootstrap Configuration
 
 ```bash
+# Get bootstrap config for your team
+curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  http://127.0.0.1:8080/api/v1/teams/default/bootstrap > envoy-bootstrap.yaml
+```
+
+### Start Envoy
+
+```bash
+# Using func-e
+func-e run -c envoy-bootstrap.yaml
+
+# Or using envoy directly
+envoy -c envoy-bootstrap.yaml
+```
+
+### Verify Traffic
+
+```bash
+# Send request through Envoy (port 10000)
 curl -i http://127.0.0.1:10000/status/200
 ```
 
-Repeated requests will eventually trigger either the listener-wide or per-route rate limit and return `429 Too Many Requests` with headers indicating the rate limit action.
+## Using the Web UI
+
+### Start the UI
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Access the dashboard at http://localhost:5173
+
+### UI Features
+
+- **Dashboard** - Overview of resources and quick actions
+- **Clusters** - Manage upstream backends with health checks, circuit breakers
+- **Listeners** - Configure ports and TLS
+- **Route Configs** - Define routing rules and virtual hosts
+- **Filters** - Install and configure HTTP filters
+- **Secrets** - Manage TLS certificates and credentials
+- **Tokens** - Create and rotate API tokens
+- **Stats** - Real-time Envoy metrics (when enabled)
+
+## OpenAPI Import
+
+Import an OpenAPI specification to auto-generate resources:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=default" \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @your-openapi-spec.json
+```
+
+This creates clusters, routes, and optionally a listener from your API spec.
+
+## Environment Configuration
+
+Create a `.env` file for custom settings:
+
+```bash
+# Copy example
+cp .env.example .env
+
+# Edit as needed
+# Key variables:
+# FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db
+# FLOWPLANE_API_PORT=8080
+# FLOWPLANE_XDS_PORT=18000
+```
+
+See the [README](../README.md) for the full list of environment variables.
 
 ## Next Steps
 
-### Interactive Testing
-- **Try the .http-examples**: Visit [../.http-examples/README.md](../.http-examples/README.md) for VSCode REST Client integration. Click "Send Request" on pre-configured examples for clusters, routes, listeners, and API definitions—no manual curl copying needed.
+- [API Reference](api.md) - Complete API documentation
+- [Authentication](authentication.md) - Token management and RBAC
+- [HTTP Filters](filters.md) - Configure rate limiting, JWT, OAuth2, CORS
+- [Architecture](architecture.md) - System design overview
+- [Operations](operations.md) - Deployment and monitoring
 
-### Explore Advanced Features
-- Explore cluster variations (TLS, health checks, circuit breakers) in the [cluster cookbook](cluster-cookbook.md).
-- Try advanced routing patterns (weighted splits, redirects, scoped filters) in the [routing cookbook](routing-cookbook.md).
-- Configure listener features (JWT auth, global rate limits, TLS termination) in the [listener cookbook](listener-cookbook.md).
-- Assemble end-to-end gateway scenarios with the [API gateway recipes](gateway-recipes.md).
-- Dive into filter details in [filters.md](filters.md) and explore scoped overrides.
+### Cookbooks
 
-### Operational Tools
-- Use `GET /api/v1/*` endpoints to inspect stored resources, and `DELETE` to remove them.
-- Run `scripts/smoke-listener.sh` for an automated sanity check.
-
-Once comfortable with the basics, dive into the [architecture overview](architecture.md) and start planning contributions.
+- [Cluster Cookbook](cluster-cookbook.md) - Health checks, circuit breakers, TLS
+- [Routing Cookbook](routing-cookbook.md) - Weighted routes, redirects, rewrites
+- [Listener Cookbook](listener-cookbook.md) - TLS termination, filter chains

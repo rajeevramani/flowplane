@@ -1,5 +1,61 @@
 use crate::errors::{FlowplaneError, Result};
 
+/// Outlier detection configuration validation
+pub fn validate_outlier_detection_config(
+    consecutive_5xx: Option<u32>,
+    interval_seconds: Option<u64>,
+    base_ejection_time_seconds: Option<u64>,
+    max_ejection_percent: Option<u32>,
+    min_hosts: Option<u32>,
+) -> Result<()> {
+    if let Some(cons_5xx) = consecutive_5xx {
+        if cons_5xx == 0 || cons_5xx > 1000 {
+            return Err(FlowplaneError::validation_field(
+                "Consecutive 5xx errors must be between 1 and 1000",
+                "consecutive_5xx",
+            ));
+        }
+    }
+
+    if let Some(interval) = interval_seconds {
+        if interval == 0 || interval > 300 {
+            return Err(FlowplaneError::validation_field(
+                "Outlier detection interval must be between 1 and 300 seconds",
+                "interval_seconds",
+            ));
+        }
+    }
+
+    if let Some(base_time) = base_ejection_time_seconds {
+        if base_time == 0 || base_time > 3600 {
+            return Err(FlowplaneError::validation_field(
+                "Base ejection time must be between 1 and 3600 seconds",
+                "base_ejection_time_seconds",
+            ));
+        }
+    }
+
+    if let Some(max_pct) = max_ejection_percent {
+        if max_pct == 0 || max_pct > 100 {
+            return Err(FlowplaneError::validation_field(
+                "Max ejection percent must be between 1 and 100",
+                "max_ejection_percent",
+            ));
+        }
+    }
+
+    if let Some(hosts) = min_hosts {
+        if hosts == 0 || hosts > 100 {
+            return Err(FlowplaneError::validation_field(
+                "Min hosts must be between 1 and 100",
+                "min_hosts",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Circuit breaker configuration validation
 pub fn validate_circuit_breaker_config(
     max_connections: Option<u32>,
@@ -61,9 +117,7 @@ pub fn validate_endpoint_weights(weights: &[Option<u32>]) -> Result<()> {
                     ));
                 }
                 if *weight > 1000 {
-                    return Err(FlowplaneError::validation(
-                        "Endpoint weight must be 1000 or less",
-                    ));
+                    return Err(FlowplaneError::validation("Endpoint weight must be 1000 or less"));
                 }
                 total_weight = total_weight.saturating_add(*weight);
                 has_weighted = true;
@@ -81,9 +135,7 @@ pub fn validate_endpoint_weights(weights: &[Option<u32>]) -> Result<()> {
     }
 
     if has_weighted && total_weight > 10000 {
-        return Err(FlowplaneError::validation(
-            "Total endpoint weights exceed maximum of 10000",
-        ));
+        return Err(FlowplaneError::validation("Total endpoint weights exceed maximum of 10000"));
     }
 
     Ok(())
@@ -98,9 +150,7 @@ pub fn validate_health_check_config(
     path: &Option<String>,
 ) -> Result<()> {
     if timeout_seconds >= interval_seconds {
-        return Err(FlowplaneError::validation(
-            "Health check timeout must be less than interval",
-        ));
+        return Err(FlowplaneError::validation("Health check timeout must be less than interval"));
     }
 
     if timeout_seconds == 0 || timeout_seconds > 60 {
@@ -167,10 +217,7 @@ pub fn validate_cluster_naming_rules(name: &str, existing_names: &[String]) -> R
         }
     }
 
-    if existing_names
-        .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(name))
-    {
+    if existing_names.iter().any(|existing| existing.eq_ignore_ascii_case(name)) {
         return Err(FlowplaneError::validation_field(
             "Cluster name conflicts with existing cluster (case-insensitive)",
             "name",
@@ -217,5 +264,34 @@ mod tests {
         assert!(validate_cluster_naming_rules("new-cluster", &existing).is_ok());
         assert!(validate_cluster_naming_rules("envoy.test", &existing).is_err());
         assert!(validate_cluster_naming_rules("Existing-Cluster", &existing).is_err());
+    }
+
+    #[test]
+    fn outlier_detection_config_validation() {
+        // Valid config
+        assert!(validate_outlier_detection_config(Some(5), Some(10), Some(30), Some(50), Some(3))
+            .is_ok());
+        // All None is valid (uses defaults)
+        assert!(validate_outlier_detection_config(None, None, None, None, None).is_ok());
+
+        // Invalid consecutive_5xx
+        assert!(validate_outlier_detection_config(Some(0), None, None, None, None).is_err());
+        assert!(validate_outlier_detection_config(Some(1001), None, None, None, None).is_err());
+
+        // Invalid interval_seconds
+        assert!(validate_outlier_detection_config(None, Some(0), None, None, None).is_err());
+        assert!(validate_outlier_detection_config(None, Some(301), None, None, None).is_err());
+
+        // Invalid base_ejection_time_seconds
+        assert!(validate_outlier_detection_config(None, None, Some(0), None, None).is_err());
+        assert!(validate_outlier_detection_config(None, None, Some(3601), None, None).is_err());
+
+        // Invalid max_ejection_percent
+        assert!(validate_outlier_detection_config(None, None, None, Some(0), None).is_err());
+        assert!(validate_outlier_detection_config(None, None, None, Some(101), None).is_err());
+
+        // Invalid min_hosts
+        assert!(validate_outlier_detection_config(None, None, None, None, Some(0)).is_err());
+        assert!(validate_outlier_detection_config(None, None, None, None, Some(101)).is_err());
     }
 }

@@ -55,6 +55,13 @@ pub struct ClusterSpec {
     #[serde(default, alias = "outlier_detection")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outlier_detection: Option<OutlierDetectionSpec>,
+
+    /// Protocol type for upstream connections.
+    /// Set to "HTTP2" or "GRPC" for gRPC/HTTP2 upstreams (e.g., OTEL collectors).
+    /// Defaults to HTTP/1.1 if not specified.
+    #[serde(default, alias = "protocol_type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_type: Option<String>,
 }
 
 impl ClusterSpec {
@@ -245,6 +252,8 @@ pub struct OutlierDetectionSpec {
     pub base_ejection_time_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_ejection_percent: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_hosts: Option<u32>,
 }
 
 impl std::fmt::Display for HealthCheckSpec {

@@ -3,15 +3,16 @@ use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus, UpdatePersona
 use flowplane::domain::TokenId;
 use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
-use sqlx::sqlite::SqlitePoolOptions;
 use uuid::Uuid;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[allow(clippy::duplicate_mod)]
+#[path = "../../common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
+
+async fn setup_test_db() -> (TestDatabase, DbPool) {
+    let test_db = TestDatabase::new_without_migrations("auth_repository").await;
+    let pool = test_db.pool().clone();
 
     sqlx::query(
         r#"
@@ -57,7 +58,7 @@ async fn setup_pool() -> DbPool {
     .await
     .unwrap();
 
-    pool
+    (test_db, pool)
 }
 
 fn sample_token(id: &str) -> NewPersonalAccessToken {
@@ -82,7 +83,7 @@ fn sample_token(id: &str) -> NewPersonalAccessToken {
 
 #[tokio::test]
 async fn create_and_get_token_round_trip() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = SqlxTokenRepository::new(pool.clone());
 
     let token = sample_token(&Uuid::new_v4().to_string());
@@ -100,7 +101,7 @@ async fn create_and_get_token_round_trip() {
 
 #[tokio::test]
 async fn update_metadata_replaces_scopes() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     let token_id = TokenId::from_string(Uuid::new_v4().to_string());
     repo.create_token(sample_token(token_id.as_str())).await.unwrap();
@@ -125,7 +126,7 @@ async fn update_metadata_replaces_scopes() {
 
 #[tokio::test]
 async fn rotate_and_auth_lookup() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     let token_id = TokenId::from_string(Uuid::new_v4().to_string());
     repo.create_token(sample_token(token_id.as_str())).await.unwrap();
@@ -140,7 +141,7 @@ async fn rotate_and_auth_lookup() {
 
 #[tokio::test]
 async fn list_and_count_tokens() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = SqlxTokenRepository::new(pool.clone());
 
     for _ in 0..3 {

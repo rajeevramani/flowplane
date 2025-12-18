@@ -12,15 +12,18 @@ async fn contract_patch_tokens_updates_metadata() {
 
     let created = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "update-token".into(),
-            description: Some("before".into()),
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "update-token".into(),
+                description: Some("before".into()),
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

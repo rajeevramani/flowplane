@@ -129,10 +129,17 @@ protected route (see `src/api/routes.rs`). Flowplane supports three types of sco
 |----------|-----------|-------|
 | `tokens` | `/api/v1/tokens*` | Token management operations |
 | `clusters` | `/api/v1/clusters*` | Envoy cluster configurations |
-| `routes` | `/api/v1/routes*` | Envoy route configurations |
+| `routes` | `/api/v1/route-configs*` | Envoy route configurations |
 | `listeners` | `/api/v1/listeners*` | Envoy listener configurations |
+| `filters` | `/api/v1/filters*` | HTTP filter definitions |
 | `api-definitions` | `/api/v1/api-definitions*` | API definition (Platform API) resources |
+| `openapi-import` | `/api/v1/openapi/*` | OpenAPI import operations |
+| `learning-sessions` | `/api/v1/learning-sessions*` | Traffic learning sessions |
+| `aggregated-schemas` | `/api/v1/aggregated-schemas*` | Learned API schemas |
 | `reports` | `/api/v1/reports/*` | Reporting and analytics endpoints |
+| `proxy-certificates` | `/api/v1/teams/{team}/proxy-certificates*` | mTLS proxy certificates |
+| `mtls` | `/api/v1/mtls/*` | mTLS status and configuration |
+| `generate-envoy-config` | Bootstrap configuration | Envoy bootstrap generation |
 
 #### Authorization Hierarchy
 
@@ -149,13 +156,13 @@ Resources created by team-scoped tokens are automatically tagged with the team n
 ```bash
 # Team-scoped token can only see its own resources
 curl -H "Authorization: Bearer fp_pat_...<team:platform:routes:read>" \
-  http://127.0.0.1:8080/api/v1/routes
-# Returns only routes with team='platform'
+  http://127.0.0.1:8080/api/v1/route-configs
+# Returns only route configs with team='platform'
 
 # Admin token sees all resources
 curl -H "Authorization: Bearer fp_pat_...<admin:all>" \
-  http://127.0.0.1:8080/api/v1/routes
-# Returns all routes regardless of team
+  http://127.0.0.1:8080/api/v1/route-configs
+# Returns all route configs regardless of team
 ```
 
 Tokens may carry any subset of scopes. Flowplane persists them in `token_scopes` and caches them in

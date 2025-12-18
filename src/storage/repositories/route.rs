@@ -1,489 +1,340 @@
-//! Route repository for managing route configurations
+//! Route Repository
 //!
-//! This module provides CRUD operations for route resources, handling storage,
-//! retrieval, and lifecycle management of route configuration data.
+//! This module provides CRUD operations for routes extracted from virtual hosts.
+//! Routes are synchronized when route configs are created/updated.
 
-use crate::domain::RouteId;
+use crate::domain::{RouteId, RouteMatchType, VirtualHostId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
 use tracing::instrument;
 
 /// Internal database row structure for routes.
-///
-/// Maps directly to the database schema. Separate from [`RouteData`]
-/// to handle type conversions.
 #[derive(Debug, Clone, FromRow)]
 struct RouteRow {
     pub id: String,
+    pub virtual_host_id: String,
     pub name: String,
-    pub path_prefix: String,
-    pub cluster_name: String,
-    pub configuration: String,
-    pub version: i64,
-    pub source: String,
-    pub team: Option<String>,
-    pub import_id: Option<String>,
-    pub route_order: Option<i64>,
-    pub headers: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub path_pattern: String,
+    pub match_type: String,
+    pub rule_order: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-/// Route configuration data returned from the repository.
-///
-/// Represents a route that matches incoming requests to backend clusters.
-/// Routes define path-based matching and cluster selection for request forwarding.
-///
-/// # Fields
-///
-/// - `id`: Unique identifier
-/// - `name`: Human-readable name
-/// - `path_prefix`: Path prefix for request matching (e.g., "/api/v1")
-/// - `cluster_name`: Target cluster to forward matched requests
-/// - `configuration`: JSON-encoded route configuration (filters, retry policy, etc.)
-/// - `version`: Version number for optimistic locking
-/// - `source`: API source ("native", "gateway", "platform")
-/// - `team`: Optional team identifier
-/// - `import_id`: Optional import metadata ID (for OpenAPI imports)
-/// - `route_order`: Order for deterministic Envoy route matching
-/// - `headers`: Optional JSON-encoded header matching rules
+/// Route data returned from the repository.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteData {
     pub id: RouteId,
+    pub virtual_host_id: VirtualHostId,
     pub name: String,
-    pub path_prefix: String,
-    pub cluster_name: String,
-    pub configuration: String,
-    pub version: i64,
-    pub source: String,
-    pub team: Option<String>,
-    pub import_id: Option<String>,
-    pub route_order: Option<i64>,
-    pub headers: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub path_pattern: String,
+    pub match_type: RouteMatchType,
+    pub rule_order: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-impl From<RouteRow> for RouteData {
-    fn from(row: RouteRow) -> Self {
-        Self {
+impl TryFrom<RouteRow> for RouteData {
+    type Error = FlowplaneError;
+
+    fn try_from(row: RouteRow) -> Result<Self> {
+        let match_type: RouteMatchType = row.match_type.parse().map_err(|e: String| {
+            FlowplaneError::internal(format!("Failed to parse match type: {}", e))
+        })?;
+
+        Ok(Self {
             id: RouteId::from_string(row.id),
+            virtual_host_id: VirtualHostId::from_string(row.virtual_host_id),
             name: row.name,
-            path_prefix: row.path_prefix,
-            cluster_name: row.cluster_name,
-            configuration: row.configuration,
-            version: row.version,
-            source: row.source,
-            team: row.team,
-            import_id: row.import_id,
-            route_order: row.route_order,
-            headers: row.headers,
+            path_pattern: row.path_pattern,
+            match_type,
+            rule_order: row.rule_order,
             created_at: row.created_at,
             updated_at: row.updated_at,
-        }
+        })
     }
 }
 
-/// Create route request
+/// Request to create a new route.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRouteRequest {
+    pub virtual_host_id: VirtualHostId,
     pub name: String,
-    pub path_prefix: String,
-    pub cluster_name: String,
-    pub configuration: serde_json::Value,
-    pub team: Option<String>,
-    pub import_id: Option<String>,
-    pub route_order: Option<i64>,
-    pub headers: Option<serde_json::Value>,
+    pub path_pattern: String,
+    pub match_type: RouteMatchType,
+    pub rule_order: i32,
 }
 
-/// Update route request
+/// Request to update a route.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateRouteRequest {
-    pub path_prefix: Option<String>,
-    pub cluster_name: Option<String>,
-    pub configuration: Option<serde_json::Value>,
-    pub team: Option<Option<String>>,
+    pub path_pattern: Option<String>,
+    pub match_type: Option<RouteMatchType>,
+    pub rule_order: Option<i32>,
 }
 
-/// Repository for route configuration persistence.
-///
-/// Provides CRUD operations for route resources with team-based access control.
-/// Routes define how incoming requests are matched and forwarded to backend clusters.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use flowplane::storage::repositories::{RouteRepository, CreateRouteRequest};
-/// use serde_json::json;
-///
-/// let repo = RouteRepository::new(pool);
-///
-/// // Create a route
-/// let route = repo.create(CreateRouteRequest {
-///     name: "api-route".to_string(),
-///     path_prefix: "/api/v1".to_string(),
-///     cluster_name: "backend-cluster".to_string(),
-///     configuration: json!({"retry_policy": {"num_retries": 3}}),
-///     team: Some("team-alpha".to_string()),
-/// }).await?;
-/// ```
+/// Repository for route operations.
 #[derive(Debug, Clone)]
 pub struct RouteRepository {
     pool: DbPool,
 }
 
 impl RouteRepository {
-    /// Creates a new route repository with the given database pool.
+    /// Creates a new repository with the given database pool.
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
-    /// Creates a new route in the database.
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - Route creation parameters
-    ///
-    /// # Returns
-    ///
-    /// The created [`RouteData`] with generated ID and timestamps.
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Validation`] if configuration JSON is invalid
-    /// - [`FlowplaneError::Database`] if insertion fails
-    #[instrument(skip(self, request), fields(route_name = %request.name), name = "db_create_route")]
+    /// Create a new route.
+    #[instrument(skip(self, request), fields(vh_id = %request.virtual_host_id, name = %request.name), name = "db_create_route")]
     pub async fn create(&self, request: CreateRouteRequest) -> Result<RouteData> {
         let id = RouteId::new();
-        let configuration_json = serde_json::to_string(&request.configuration).map_err(|e| {
-            FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
-        })?;
-        let headers_json = request
-            .headers
-            .as_ref()
-            .map(|h| {
-                serde_json::to_string(h)
-                    .map_err(|e| FlowplaneError::validation(format!("Invalid headers JSON: {}", e)))
-            })
-            .transpose()?;
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
-        let result = sqlx::query(
-            "INSERT INTO routes (id, name, path_prefix, cluster_name, configuration, version, team, import_id, route_order, headers, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, $10, $11)"
+        sqlx::query(
+            "INSERT INTO routes (id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
         )
-        .bind(&id)
+        .bind(id.as_str())
+        .bind(request.virtual_host_id.as_str())
         .bind(&request.name)
-        .bind(&request.path_prefix)
-        .bind(&request.cluster_name)
-        .bind(&configuration_json)
-        .bind(&request.team)
-        .bind(&request.import_id)
-        .bind(request.route_order)
-        .bind(&headers_json)
+        .bind(&request.path_pattern)
+        .bind(request.match_type.as_str())
+        .bind(request.rule_order)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, route_name = %request.name, "Failed to create route");
+            tracing::error!(error = %e, vh_id = %request.virtual_host_id, name = %request.name, "Failed to create route");
             FlowplaneError::Database {
                 source: e,
-                context: format!("Failed to create route '{}'", request.name),
+                context: format!("Failed to create route '{}' for virtual host '{}'", request.name, request.virtual_host_id),
             }
         })?;
 
-        if result.rows_affected() == 0 {
-            return Err(FlowplaneError::validation("Failed to create route"));
-        }
+        tracing::info!(
+            id = %id,
+            vh_id = %request.virtual_host_id,
+            name = %request.name,
+            "Created route"
+        );
 
-        tracing::info!(route_id = %id, route_name = %request.name, "Created new route");
-
-        self.get_by_id(&id).await
+        Ok(RouteData {
+            id,
+            virtual_host_id: request.virtual_host_id,
+            name: request.name,
+            path_pattern: request.path_pattern,
+            match_type: request.match_type,
+            rule_order: request.rule_order,
+            created_at: now,
+            updated_at: now,
+        })
     }
 
+    /// Get a route by ID.
+    #[instrument(skip(self), fields(id = %id), name = "db_get_route_by_id")]
     pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE id = $1"
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+             FROM routes WHERE id = $1"
         )
-        .bind(id)
-        .fetch_optional(&self.pool)
+        .bind(id.as_str())
+        .fetch_one(&self.pool)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, route_id = %id, "Failed to get route by ID");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to get route with ID '{}'", id),
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => FlowplaneError::not_found("Route", id.as_str()),
+            _ => {
+                tracing::error!(error = %e, id = %id, "Failed to get route by ID");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to get route by ID: {}", id),
+                }
             }
         })?;
 
-        match row {
-            Some(row) => Ok(RouteData::from(row)),
-            None => Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id))),
-        }
+        RouteData::try_from(row)
     }
 
-    pub async fn get_by_name(&self, name: &str) -> Result<RouteData> {
+    /// Get a route by virtual host ID and name.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id, name = %name), name = "db_get_route_by_name")]
+    pub async fn get_by_vh_and_name(
+        &self,
+        virtual_host_id: &VirtualHostId,
+        name: &str,
+    ) -> Result<RouteData> {
         let row = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+             FROM routes WHERE virtual_host_id = $1 AND name = $2"
         )
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, route_name = %name, "Failed to get route by name");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to get route with name '{}'", name),
-            }
-        })?;
-
-        match row {
-            Some(row) => Ok(RouteData::from(row)),
-            None => {
-                Err(FlowplaneError::not_found_msg(format!("Route with name '{}' not found", name)))
-            }
-        }
-    }
-
-    pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
-            "SELECT COUNT(*) FROM routes WHERE name = $1",
-        )
+        .bind(virtual_host_id.as_str())
         .bind(name)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, route_name = %name, "Failed to check route existence");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to check existence of route '{}'", name),
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => {
+                FlowplaneError::not_found("Route", format!("{}:{}", virtual_host_id, name))
+            }
+            _ => {
+                tracing::error!(error = %e, vh_id = %virtual_host_id, name = %name, "Failed to get route by name");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to get route '{}' for virtual host '{}'", name, virtual_host_id),
+                }
             }
         })?;
 
-        Ok(count > 0)
+        RouteData::try_from(row)
     }
 
-    #[instrument(skip(self), name = "db_list_routes")]
-    pub async fn list(&self, limit: Option<i32>, offset: Option<i32>) -> Result<Vec<RouteData>> {
-        let limit = limit.unwrap_or(100).min(1000);
-        let offset = offset.unwrap_or(0);
-
-        let rows = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM routes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to list routes");
-            FlowplaneError::Database {
-                source: e,
-                context: "Failed to list routes".to_string(),
-            }
-        })?;
-
-        Ok(rows.into_iter().map(RouteData::from).collect())
-    }
-
-    /// Lists routes filtered by team names for multi-tenancy support.
-    ///
-    /// Critical for team-based access control. Returns routes for specified
-    /// teams and optionally includes team-agnostic routes (where team is NULL).
-    ///
-    /// # Arguments
-    ///
-    /// * `teams` - Team identifiers to filter by. Empty list returns all routes.
-    /// * `include_default` - If true, also include routes with team=NULL (default routes)
-    /// * `limit` - Maximum results (default: 100, max: 1000)
-    /// * `offset` - Pagination offset
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Database`] if query execution fails
-    pub async fn list_by_teams(
+    /// List all routes for a virtual host.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_list_routes_by_vh")]
+    pub async fn list_by_virtual_host(
         &self,
-        teams: &[String],
-        _include_default: bool, // Deprecated: always includes default resources
-        limit: Option<i32>,
-        offset: Option<i32>,
+        virtual_host_id: &VirtualHostId,
     ) -> Result<Vec<RouteData>> {
-        // If no teams specified, return all routes (admin:all or resource-level scope)
-        if teams.is_empty() {
-            return self.list(limit, offset).await;
-        }
-
-        let limit = limit.unwrap_or(100).min(1000);
-        let offset = offset.unwrap_or(0);
-
-        // Build the query with IN clause for team filtering
-        let placeholders = teams
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("${}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Always include NULL team routes (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
-
-        let query_str = format!(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM routes \
-             {} \
-             ORDER BY created_at DESC \
-             LIMIT ${} OFFSET ${}",
-            where_clause,
-            teams.len() + 1,
-            teams.len() + 2
-        );
-
-        let mut query = sqlx::query_as::<Sqlite, RouteRow>(&query_str);
-
-        // Bind team names
-        for team in teams {
-            query = query.bind(team);
-        }
-
-        // Bind limit and offset
-        query = query.bind(limit).bind(offset);
-
-        let rows = query.fetch_all(&self.pool).await.map_err(|e| {
-            tracing::error!(error = %e, teams = ?teams, "Failed to list routes by teams");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to list routes for teams: {:?}", teams),
-            }
-        })?;
-
-        Ok(rows.into_iter().map(RouteData::from).collect())
-    }
-
-    /// Lists routes filtered by import_id for OpenAPI import tracking.
-    ///
-    /// Returns all routes associated with a specific OpenAPI import,
-    /// used for import details and cascade delete operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `import_id` - Import metadata ID to filter by
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Database`] if query execution fails
-    #[instrument(skip(self), name = "db_list_routes_by_import")]
-    pub async fn list_by_import(&self, import_id: &str) -> Result<Vec<RouteData>> {
         let rows = sqlx::query_as::<Sqlite, RouteRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM routes \
-             WHERE import_id = $1 \
-             ORDER BY route_order ASC, created_at ASC"
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+             FROM routes WHERE virtual_host_id = $1 ORDER BY rule_order ASC"
         )
-        .bind(import_id)
+        .bind(virtual_host_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, import_id = %import_id, "Failed to list routes by import_id");
+            tracing::error!(error = %e, vh_id = %virtual_host_id, "Failed to list routes");
             FlowplaneError::Database {
                 source: e,
-                context: format!("Failed to list routes for import_id: {}", import_id),
+                context: format!("Failed to list routes for virtual host '{}'", virtual_host_id),
             }
         })?;
 
-        Ok(rows.into_iter().map(RouteData::from).collect())
+        rows.into_iter().map(RouteData::try_from).collect()
     }
 
+    /// Count routes for a virtual host.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_count_routes_by_vh")]
+    pub async fn count_by_virtual_host(&self, virtual_host_id: &VirtualHostId) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM routes WHERE virtual_host_id = $1")
+                .bind(virtual_host_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, vh_id = %virtual_host_id, "Failed to count routes");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: format!(
+                            "Failed to count routes for virtual host '{}'",
+                            virtual_host_id
+                        ),
+                    }
+                })?;
+        Ok(count)
+    }
+
+    /// Update a route.
+    #[instrument(skip(self, request), fields(id = %id), name = "db_update_route")]
     pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {
         let current = self.get_by_id(id).await?;
+        let now = Utc::now();
 
-        let new_path_prefix = request.path_prefix.unwrap_or(current.path_prefix);
-        let new_cluster_name = request.cluster_name.unwrap_or(current.cluster_name);
-        let new_configuration = if let Some(config) = request.configuration {
-            serde_json::to_string(&config).map_err(|e| {
-                FlowplaneError::validation(format!("Invalid route configuration JSON: {}", e))
-            })?
-        } else {
-            current.configuration
-        };
-        let new_team = request.team.unwrap_or(current.team);
-
-        let now = chrono::Utc::now();
-        let new_version = current.version + 1;
+        let new_path_pattern = request.path_pattern.unwrap_or(current.path_pattern);
+        let new_match_type = request.match_type.unwrap_or(current.match_type);
+        let new_rule_order = request.rule_order.unwrap_or(current.rule_order);
 
         let result = sqlx::query(
-            "UPDATE routes SET path_prefix = $1, cluster_name = $2, configuration = $3, version = $4, team = $5, updated_at = $6 WHERE id = $7"
+            "UPDATE routes SET path_pattern = $1, match_type = $2, rule_order = $3, updated_at = $4 WHERE id = $5"
         )
-        .bind(&new_path_prefix)
-        .bind(&new_cluster_name)
-        .bind(&new_configuration)
-        .bind(new_version)
-        .bind(&new_team)
+        .bind(&new_path_pattern)
+        .bind(new_match_type.as_str())
+        .bind(new_rule_order)
         .bind(now)
-        .bind(id)
+        .bind(id.as_str())
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, route_id = %id, "Failed to update route");
+            tracing::error!(error = %e, id = %id, "Failed to update route");
             FlowplaneError::Database {
                 source: e,
-                context: format!("Failed to update route with ID '{}'", id),
+                context: format!("Failed to update route '{}'", id),
             }
         })?;
 
-        if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
+        if result.rows_affected() != 1 {
+            return Err(FlowplaneError::not_found("Route", id.as_str()));
         }
-
-        tracing::info!(route_id = %id, route_name = %current.name, new_version = new_version, "Updated route");
 
         self.get_by_id(id).await
     }
 
+    /// Delete a route by ID.
+    #[instrument(skip(self), fields(id = %id), name = "db_delete_route")]
     pub async fn delete(&self, id: &RouteId) -> Result<()> {
-        let route = self.get_by_id(id).await?;
-
         let result = sqlx::query("DELETE FROM routes WHERE id = $1")
-            .bind(id)
+            .bind(id.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, route_id = %id, "Failed to delete route");
+                tracing::error!(error = %e, id = %id, "Failed to delete route");
                 FlowplaneError::Database {
                     source: e,
-                    context: format!("Failed to delete route with ID '{}'", id),
+                    context: format!("Failed to delete route '{}'", id),
                 }
             })?;
 
-        if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found_msg(format!("Route with ID '{}' not found", id)));
+        if result.rows_affected() != 1 {
+            return Err(FlowplaneError::not_found("Route", id.as_str()));
         }
 
-        tracing::info!(route_id = %id, route_name = %route.name, "Deleted route");
-
+        tracing::info!(id = %id, "Deleted route");
         Ok(())
     }
 
-    pub async fn delete_by_name(&self, name: &str) -> Result<()> {
-        sqlx::query("DELETE FROM routes WHERE name = $1")
-            .bind(name)
+    /// Delete all routes for a virtual host.
+    /// Used during sync to clear old data before re-populating.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_delete_routes_by_vh")]
+    pub async fn delete_by_virtual_host(&self, virtual_host_id: &VirtualHostId) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM routes WHERE virtual_host_id = $1")
+            .bind(virtual_host_id.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, route_name = %name, "Failed to delete route by name");
+                tracing::error!(error = %e, vh_id = %virtual_host_id, "Failed to delete routes by virtual host");
                 FlowplaneError::Database {
                     source: e,
-                    context: format!("Failed to delete route '{}'", name),
+                    context: format!("Failed to delete routes for virtual host '{}'", virtual_host_id),
                 }
             })?;
 
-        Ok(())
+        let deleted = result.rows_affected();
+        if deleted > 0 {
+            tracing::info!(vh_id = %virtual_host_id, deleted = deleted, "Deleted routes");
+        }
+
+        Ok(deleted)
     }
 
-    pub fn pool(&self) -> &DbPool {
-        &self.pool
+    /// Check if a route exists by virtual host and name.
+    #[instrument(skip(self), fields(vh_id = %virtual_host_id, name = %name), name = "db_exists_route")]
+    pub async fn exists(&self, virtual_host_id: &VirtualHostId, name: &str) -> Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM routes WHERE virtual_host_id = $1 AND name = $2"
+        )
+        .bind(virtual_host_id.as_str())
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, vh_id = %virtual_host_id, name = %name, "Failed to check route existence");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to check route existence for virtual host '{}'", virtual_host_id),
+            }
+        })?;
+
+        Ok(count > 0)
     }
 }

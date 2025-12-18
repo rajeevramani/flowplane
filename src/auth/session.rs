@@ -281,6 +281,8 @@ impl SessionService {
     /// * `user_id` - The user ID
     /// * `user_email` - The user's email address
     /// * `scopes` - The scopes to grant to the session
+    /// * `client_ip` - Optional client IP for audit logging
+    /// * `user_agent` - Optional user agent for audit logging
     ///
     /// # Returns
     ///
@@ -289,12 +291,14 @@ impl SessionService {
     /// # Errors
     ///
     /// - If database operations fail
-    #[instrument(skip(self, user_email, scopes), fields(user_id = %user_id, correlation_id = field::Empty))]
+    #[instrument(skip(self, user_email, scopes, client_ip, user_agent), fields(user_id = %user_id, correlation_id = field::Empty))]
     pub async fn create_session_from_user(
         &self,
         user_id: &crate::domain::UserId,
         user_email: &str,
         scopes: Vec<String>,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
     ) -> Result<SessionResponse> {
         tracing::Span::current().record("correlation_id", field::display(&uuid::Uuid::new_v4()));
 
@@ -338,8 +342,8 @@ impl SessionService {
             .store_csrf_token(&TokenId::from_string(session_id.clone()), &csrf_token)
             .await?;
 
-        // Record audit event
-        self.record_event(
+        // Record audit event with user context
+        let event = AuditEvent::token(
             "auth.session.created_from_login",
             Some(&session_id),
             Some(&format!("session-{}", user_id)),
@@ -350,7 +354,8 @@ impl SessionService {
                 "expires_at": expires_at,
             }),
         )
-        .await?;
+        .with_user_context(Some(user_id.to_string()), client_ip, user_agent);
+        self.audit_repository.record_auth_event(event).await?;
 
         metrics::record_token_created(1).await;
 
@@ -577,15 +582,7 @@ impl SessionService {
         token_name: Option<&str>,
         metadata: serde_json::Value,
     ) -> Result<()> {
-        let event = AuditEvent {
-            action: event_type.to_string(),
-            resource_id: token_id.map(|s| s.to_string()),
-            resource_name: token_name.map(|s| s.to_string()),
-            metadata,
-            user_id: None,
-            client_ip: None,
-            user_agent: None,
-        };
+        let event = AuditEvent::token(event_type, token_id, token_name, metadata);
 
         self.audit_repository.record_auth_event(event).await
     }

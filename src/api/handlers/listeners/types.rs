@@ -106,10 +106,25 @@ pub struct ListenerAccessLogInput {
     pub format: Option<String>,
 }
 
+/// Tracing configuration input for REST API
+///
+/// Supports multiple providers:
+/// - OpenTelemetry: Use `type: "open_telemetry"` with `service_name` and `grpc_cluster` or `http_cluster`
+/// - Zipkin: Use `type: "zipkin"` with `collector_cluster` and `collector_endpoint`
+/// - Generic: Use `type: "generic"` with `name` and `config` for custom providers
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerTracingInput {
-    pub provider: String,
+    /// The tracing provider configuration (OpenTelemetry, Zipkin, or Generic)
     #[schema(value_type = Object)]
-    pub config: Value,
+    pub provider: Value,
+    /// Random sampling percentage (0.0 - 100.0), optional
+    #[serde(default)]
+    pub random_sampling_percentage: Option<f64>,
+    /// Whether to spawn an upstream span for each upstream request
+    #[serde(default)]
+    pub spawn_upstream_span: Option<bool>,
+    /// Custom tags to add to all spans
+    #[serde(default)]
+    pub custom_tags: Option<std::collections::HashMap<String, String>>,
 }

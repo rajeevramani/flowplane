@@ -118,7 +118,7 @@
 <div class="min-h-screen bg-gray-50">
 	<!-- Navigation -->
 	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+		<div class="w-full px-4 sm:px-6 lg:px-8">
 			<div class="flex justify-between h-16 items-center">
 				<div class="flex items-center gap-4">
 					<a
@@ -147,7 +147,7 @@
 		</div>
 	</nav>
 
-	<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+	<main class="w-full px-4 sm:px-6 lg:px-8 py-8">
 		<!-- Error Message -->
 		{#if error}
 			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
@@ -229,6 +229,11 @@
 								<th
 									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 								>
+									Admin Port
+								</th>
+								<th
+									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+								>
 									Created
 								</th>
 								<th
@@ -260,6 +265,9 @@
 										>
 											{team.status.charAt(0).toUpperCase() + team.status.slice(1)}
 										</span>
+									</td>
+									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 font-mono">
+										{team.envoyAdminPort ?? '-'}
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 										{formatDate(team.createdAt)}

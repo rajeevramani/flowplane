@@ -8,6 +8,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -235,6 +236,7 @@ async fn verify_schema_access(
     ),
     tag = "aggregated-schemas"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, path = ?query.path, http_method = ?query.http_method))]
 pub async fn list_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -297,6 +299,7 @@ pub async fn list_aggregated_schemas_handler(
     ),
     tag = "aggregated-schemas"
 )]
+#[instrument(skip(state), fields(schema_id = %id, user_id = ?context.user_id))]
 pub async fn get_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -352,6 +355,7 @@ pub async fn get_aggregated_schema_handler(
     ),
     tag = "aggregated-schemas"
 )]
+#[instrument(skip(state), fields(schema_id = %id, compare_version = %query.with_version, user_id = ?context.user_id))]
 pub async fn compare_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -442,6 +446,7 @@ pub async fn compare_aggregated_schemas_handler(
     ),
     tag = "aggregated-schemas"
 )]
+#[instrument(skip(state), fields(schema_id = %id, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
 pub async fn export_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

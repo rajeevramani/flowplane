@@ -88,6 +88,7 @@ pub enum RouteActionConfig {
         timeout: Option<u64>, // seconds
         prefix_rewrite: Option<String>,
         path_template_rewrite: Option<String>,
+        retry_policy: Option<RetryPolicyConfig>,
     },
     WeightedClusters {
         clusters: Vec<WeightedClusterConfig>,
@@ -107,6 +108,22 @@ pub struct WeightedClusterConfig {
     pub weight: u32,
     #[serde(default)]
     pub typed_per_filter_config: HashMap<String, HttpScopedConfig>,
+}
+
+/// REST API representation of retry policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicyConfig {
+    /// Maximum number of retries
+    pub num_retries: Option<u32>,
+    /// Retry conditions (e.g., "5xx", "reset", "connect-failure")
+    #[serde(default)]
+    pub retry_on: Vec<String>,
+    /// Timeout per retry attempt in seconds
+    pub per_try_timeout_seconds: Option<u64>,
+    /// Base backoff interval in milliseconds
+    pub base_interval_ms: Option<u64>,
+    /// Maximum backoff interval in milliseconds
+    pub max_interval_ms: Option<u64>,
 }
 
 impl RouteConfig {
@@ -267,7 +284,13 @@ impl RouteActionConfig {
         &self,
     ) -> Result<envoy_types::pb::envoy::config::route::v3::route::Action, crate::Error> {
         let action = match self {
-            RouteActionConfig::Cluster { name, timeout, prefix_rewrite, path_template_rewrite } => {
+            RouteActionConfig::Cluster {
+                name,
+                timeout,
+                prefix_rewrite,
+                path_template_rewrite,
+                retry_policy,
+            } => {
                 #[allow(deprecated)]
                 let mut route_action = RouteAction {
                     cluster_specifier: Some(ClusterSpecifier::Cluster(name.clone())),
@@ -297,6 +320,45 @@ impl RouteActionConfig {
                     };
 
                     route_action.path_rewrite_policy = Some(typed_config);
+                }
+
+                // Add retry policy if configured
+                if let Some(retry) = retry_policy {
+                    route_action.retry_policy =
+                        Some(envoy_types::pb::envoy::config::route::v3::RetryPolicy {
+                            num_retries: retry.num_retries.map(|n| {
+                                envoy_types::pb::google::protobuf::UInt32Value { value: n }
+                            }),
+                            retry_on: retry.retry_on.join(","),
+                            per_try_timeout: retry.per_try_timeout_seconds.map(|s| {
+                                envoy_types::pb::google::protobuf::Duration {
+                                    seconds: s as i64,
+                                    nanos: 0,
+                                }
+                            }),
+                            retry_back_off: Some(
+                                envoy_types::pb::envoy::config::route::v3::retry_policy::RetryBackOff {
+                                    base_interval: Some(
+                                        envoy_types::pb::google::protobuf::Duration {
+                                            seconds: 0,
+                                            nanos: (retry.base_interval_ms.unwrap_or(100)
+                                                * 1_000_000)
+                                                as i32,
+                                        },
+                                    ),
+                                    max_interval: Some(
+                                        envoy_types::pb::google::protobuf::Duration {
+                                            seconds: (retry.max_interval_ms.unwrap_or(1000) / 1000)
+                                                as i64,
+                                            nanos: ((retry.max_interval_ms.unwrap_or(1000) % 1000)
+                                                * 1_000_000)
+                                                as i32,
+                                        },
+                                    ),
+                                },
+                            ),
+                            ..Default::default()
+                        });
                 }
 
                 envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)
@@ -454,6 +516,7 @@ mod tests {
                         timeout: Some(30),
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],
@@ -499,6 +562,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],
@@ -606,6 +670,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::from([(
                         "envoy.filters.http.local_ratelimit".into(),
@@ -769,5 +834,133 @@ mod tests {
             envoy_match.headers.is_empty(),
             "Expected empty header list when no headers specified"
         );
+    }
+
+    #[test]
+    fn test_retry_policy_conversion() {
+        let config = RouteConfig {
+            name: "retry-test".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("retried-route".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/api".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "api-cluster".to_string(),
+                        timeout: Some(30),
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                        retry_policy: Some(RetryPolicyConfig {
+                            num_retries: Some(3),
+                            retry_on: vec![
+                                "5xx".to_string(),
+                                "reset".to_string(),
+                                "connect-failure".to_string(),
+                            ],
+                            per_try_timeout_seconds: Some(10),
+                            base_interval_ms: Some(100),
+                            max_interval_ms: Some(1000),
+                        }),
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        let route_config =
+            config.to_envoy_route_configuration().expect("Failed to convert route config");
+
+        let vhost = &route_config.virtual_hosts[0];
+        let route = &vhost.routes[0];
+
+        // Extract the route action
+        if let Some(envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)) =
+            &route.action
+        {
+            // Verify retry policy is set
+            assert!(route_action.retry_policy.is_some(), "Retry policy should be set");
+
+            let retry_policy = route_action.retry_policy.as_ref().unwrap();
+
+            // Verify num_retries
+            assert_eq!(
+                retry_policy.num_retries.as_ref().map(|n| n.value),
+                Some(3),
+                "num_retries should be 3"
+            );
+
+            // Verify retry_on conditions
+            assert_eq!(
+                retry_policy.retry_on, "5xx,reset,connect-failure",
+                "retry_on should contain all conditions"
+            );
+
+            // Verify per_try_timeout
+            assert!(retry_policy.per_try_timeout.is_some(), "per_try_timeout should be set");
+            let timeout = retry_policy.per_try_timeout.as_ref().unwrap();
+            assert_eq!(timeout.seconds, 10, "per_try_timeout should be 10 seconds");
+
+            // Verify retry_back_off
+            assert!(retry_policy.retry_back_off.is_some(), "retry_back_off should be set");
+            let backoff = retry_policy.retry_back_off.as_ref().unwrap();
+
+            assert!(backoff.base_interval.is_some(), "base_interval should be set");
+            let base = backoff.base_interval.as_ref().unwrap();
+            assert_eq!(base.nanos, 100_000_000, "base_interval should be 100ms");
+
+            assert!(backoff.max_interval.is_some(), "max_interval should be set");
+            let max = backoff.max_interval.as_ref().unwrap();
+            assert_eq!(max.seconds, 1, "max_interval should be 1 second");
+        } else {
+            panic!("Expected Route action");
+        }
+    }
+
+    #[test]
+    fn test_retry_policy_none() {
+        let config = RouteConfig {
+            name: "no-retry-test".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("no-retry-route".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/api".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "api-cluster".to_string(),
+                        timeout: Some(30),
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                        retry_policy: None,
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        let route_config =
+            config.to_envoy_route_configuration().expect("Failed to convert route config");
+
+        let vhost = &route_config.virtual_hosts[0];
+        let route = &vhost.routes[0];
+
+        if let Some(envoy_types::pb::envoy::config::route::v3::route::Action::Route(route_action)) =
+            &route.action
+        {
+            assert!(route_action.retry_policy.is_none(), "Retry policy should not be set");
+        } else {
+            panic!("Expected Route action");
+        }
     }
 }

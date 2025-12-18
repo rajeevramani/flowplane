@@ -1,0 +1,224 @@
+name: ext_authz
+display_name: External Authorization
+description: External authorization service for delegating access control decisions
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.ext_authz
+  type_url: type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  required:
+    - service
+  properties:
+    service:
+      type: object
+      description: Authorization service configuration (gRPC or HTTP)
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - grpc
+            - http
+          description: Service type
+        # gRPC service fields
+        target_uri:
+          type: string
+          description: gRPC target cluster name (required for gRPC type)
+          x-field-type: cluster_selector
+        timeout_ms:
+          type: integer
+          description: Timeout in milliseconds
+          minimum: 1
+          default: 200
+        initial_metadata:
+          type: array
+          description: Initial metadata for gRPC requests
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+        # HTTP service fields
+        server_uri:
+          type: object
+          description: HTTP server URI configuration (required for HTTP type)
+          properties:
+            uri:
+              type: string
+              description: Full URI for the authorization service
+            cluster:
+              type: string
+              description: Cluster name for the upstream
+              x-field-type: cluster_selector
+            timeout_ms:
+              type: integer
+              description: Timeout in milliseconds
+              default: 200
+        path_prefix:
+          type: string
+          description: Path prefix prepended to original request path for HTTP authorization requests
+        headers_to_add:
+          type: array
+          description: Headers to add to authorization requests
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+        authorization_request:
+          type: object
+          description: Configuration for the authorization request sent to the authz service
+          properties:
+            allowed_headers:
+              type: array
+              description: Headers from the original request to include in the authz request
+              items:
+                type: string
+            headers_to_add:
+              type: array
+              description: Additional headers to add to the authz request
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: string
+        authorization_response:
+          type: object
+          description: Configuration for handling the authorization response
+          properties:
+            allowed_upstream_headers:
+              type: array
+              description: Headers from authz response to add to the upstream request
+              items:
+                type: string
+            allowed_client_headers:
+              type: array
+              description: Headers from authz response to add to client response on denial
+              items:
+                type: string
+            allowed_client_headers_on_success:
+              type: array
+              description: Headers from authz response to add to client response on success
+              items:
+                type: string
+    failure_mode_allow:
+      type: boolean
+      description: Allow request if authz service fails or is unavailable
+      default: false
+    with_request_body:
+      type: object
+      description: Request body handling configuration
+      properties:
+        max_request_bytes:
+          type: integer
+          description: Maximum bytes to buffer from request body
+          minimum: 0
+        allow_partial_message:
+          type: boolean
+          description: Allow sending partial body if max bytes exceeded
+          default: false
+        pack_as_bytes:
+          type: boolean
+          description: Pack the body as raw bytes instead of UTF-8 string
+          default: false
+    clear_route_cache:
+      type: boolean
+      description: Clear route cache on successful authz (allows authz to modify routing)
+      default: false
+    status_on_error:
+      type: integer
+      description: HTTP status code to return when authz service errors
+      minimum: 100
+      maximum: 599
+    stat_prefix:
+      type: string
+      description: Prefix for statistics emitted by this filter
+    include_peer_certificate:
+      type: boolean
+      description: Include client certificate in authz request metadata
+      default: false
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable ext_authz for this route
+      default: false
+    context_extensions:
+      type: object
+      description: Custom context extensions passed to authz service
+      additionalProperties:
+        type: string
+    disable_request_body_buffering:
+      type: boolean
+      description: Disable request body buffering for this route
+      default: false
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Service Configuration
+      description: Configure the authorization service endpoint
+      fields:
+        - service.type
+        - service.target_uri
+        - service.timeout_ms
+        - service.initial_metadata
+        - service.server_uri.uri
+        - service.server_uri.cluster
+        - service.server_uri.timeout_ms
+        - service.path_prefix
+    - name: Request Configuration
+      description: Configure what gets sent to the authz service
+      fields:
+        - service.authorization_request.allowed_headers
+        - service.authorization_request.headers_to_add
+        - service.headers_to_add
+      collapsible: true
+    - name: Response Configuration
+      description: Configure how authz response headers are handled
+      fields:
+        - service.authorization_response.allowed_upstream_headers
+        - service.authorization_response.allowed_client_headers
+        - service.authorization_response.allowed_client_headers_on_success
+      collapsible: true
+    - name: Failure Handling
+      description: Configure behavior when authz fails
+      fields:
+        - failure_mode_allow
+        - status_on_error
+        - clear_route_cache
+      collapsible: true
+    - name: Request Body
+      description: Configure request body buffering for authz
+      fields:
+        - with_request_body.max_request_bytes
+        - with_request_body.allow_partial_message
+        - with_request_body.pack_as_bytes
+      collapsible: true
+    - name: Advanced
+      fields:
+        - stat_prefix
+        - include_peer_certificate
+      collapsible: true

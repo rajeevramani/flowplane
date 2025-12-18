@@ -124,8 +124,8 @@ domain_id!(
 );
 
 domain_id!(
-    /// Unique identifier for a route configuration
-    RouteId
+    /// Unique identifier for a route configuration (Envoy RouteConfiguration)
+    RouteConfigId
 );
 
 domain_id!(
@@ -149,8 +149,38 @@ domain_id!(
 );
 
 domain_id!(
+    /// Unique identifier for a filter resource
+    FilterId
+);
+
+domain_id!(
     /// Unique identifier for a scope definition
     ScopeId
+);
+
+domain_id!(
+    /// Unique identifier for a virtual host within a route configuration
+    VirtualHostId
+);
+
+domain_id!(
+    /// Unique identifier for a route within a virtual host (Envoy Route)
+    RouteId
+);
+
+domain_id!(
+    /// Unique identifier for a cluster endpoint
+    EndpointId
+);
+
+domain_id!(
+    /// Unique identifier for a proxy certificate
+    ProxyCertificateId
+);
+
+domain_id!(
+    /// Unique identifier for a secret resource (SDS)
+    SecretId
 );
 
 #[cfg(test)]
@@ -165,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn route_id_from_string() {
+    fn route_config_id_from_string() {
         let uuid_str = Uuid::new_v4().to_string();
-        let id = RouteId::from_string(uuid_str.clone());
+        let id = RouteConfigId::from_string(uuid_str.clone());
         assert_eq!(id.as_str(), uuid_str);
     }
 
@@ -199,10 +229,10 @@ mod tests {
     }
 
     #[test]
-    fn route_id_equality() {
-        let id1 = RouteId::from_string("test-id".to_string());
-        let id2 = RouteId::from_string("test-id".to_string());
-        let id3 = RouteId::from_string("different-id".to_string());
+    fn route_config_id_equality() {
+        let id1 = RouteConfigId::from_string("test-id".to_string());
+        let id2 = RouteConfigId::from_string("test-id".to_string());
+        let id3 = RouteConfigId::from_string("different-id".to_string());
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
@@ -240,18 +270,18 @@ mod tests {
     fn compile_time_type_safety() {
         // This test verifies that IDs of different types cannot be mixed
         let cluster_id = ClusterId::new();
-        let route_id = RouteId::new();
+        let route_config_id = RouteConfigId::new();
 
         // These should be different types
         fn takes_cluster_id(_id: ClusterId) {}
-        fn takes_route_id(_id: RouteId) {}
+        fn takes_route_config_id(_id: RouteConfigId) {}
 
         takes_cluster_id(cluster_id);
-        takes_route_id(route_id);
+        takes_route_config_id(route_config_id);
 
         // The following would fail at compile time (uncomment to verify):
-        // takes_cluster_id(route_id); // ERROR: mismatched types
-        // takes_route_id(cluster_id); // ERROR: mismatched types
+        // takes_cluster_id(route_config_id); // ERROR: mismatched types
+        // takes_route_config_id(cluster_id); // ERROR: mismatched types
     }
 
     #[test]

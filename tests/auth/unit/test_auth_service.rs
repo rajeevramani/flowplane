@@ -108,26 +108,26 @@ fn sample_request() -> CreateTokenRequest {
 #[tokio::test]
 async fn authenticate_valid_token() {
     let (token_service, auth_service) = setup_services().await;
-    let secret = token_service.create_token(sample_request()).await.unwrap();
+    let secret = token_service.create_token(sample_request(), None).await.unwrap();
 
     let auth_header = format!("Bearer {}", secret.token);
-    let context = auth_service.authenticate(&auth_header).await.unwrap();
+    let context = auth_service.authenticate(&auth_header, None, None).await.unwrap();
     assert!(context.has_scope("clusters:read"));
 }
 
 #[tokio::test]
 async fn authenticate_rejects_invalid_secret() {
     let (token_service, auth_service) = setup_services().await;
-    let secret = token_service.create_token(sample_request()).await.unwrap();
+    let secret = token_service.create_token(sample_request(), None).await.unwrap();
 
     let bad_header = format!("Bearer fp_pat_{}.WRONG", secret.id);
-    let err = auth_service.authenticate(&bad_header).await.unwrap_err();
+    let err = auth_service.authenticate(&bad_header, None, None).await.unwrap_err();
     assert!(matches!(err, AuthError::TokenNotFound));
 }
 
 #[tokio::test]
 async fn authenticate_requires_prefix() {
     let (_, auth_service) = setup_services().await;
-    let err = auth_service.authenticate("not-a-token").await.unwrap_err();
+    let err = auth_service.authenticate("not-a-token", None, None).await.unwrap_err();
     assert!(matches!(err, AuthError::MalformedBearer | AuthError::MissingBearer));
 }

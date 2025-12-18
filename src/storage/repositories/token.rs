@@ -12,6 +12,7 @@ use crate::storage::DbPool;
 use async_trait::async_trait;
 use sqlx::FromRow;
 use std::str::FromStr;
+use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, FromRow)]
@@ -143,6 +144,7 @@ impl SqlxTokenRepository {
         })
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_scopes_for_token")]
     async fn scopes_for_token(&self, id: &TokenId) -> Result<Vec<String>> {
         let rows: Vec<TokenScopeRow> =
             sqlx::query_as("SELECT scope FROM token_scopes WHERE token_id = $1 ORDER BY scope")
@@ -160,6 +162,7 @@ impl SqlxTokenRepository {
 
 #[async_trait]
 impl TokenRepository for SqlxTokenRepository {
+    #[instrument(skip(self, token), fields(token_name = %token.name, token_id = %token.id), name = "db_create_token")]
     async fn create_token(&self, token: NewPersonalAccessToken) -> Result<PersonalAccessToken> {
         let mut tx = self.pool.begin().await.map_err(|err| FlowplaneError::Database {
             source: err,
@@ -214,6 +217,7 @@ impl TokenRepository for SqlxTokenRepository {
         self.get_token(&token.id).await
     }
 
+    #[instrument(skip(self), fields(limit = limit, offset = offset, created_by = ?created_by), name = "db_list_tokens")]
     async fn list_tokens(
         &self,
         limit: i64,
@@ -323,6 +327,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(tokens)
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_get_token")]
     async fn get_token(&self, id: &TokenId) -> Result<PersonalAccessToken> {
         let row: PersonalAccessTokenRow = sqlx::query_as(
             "SELECT id, name, description, token_hash, status, expires_at, last_used_at, created_by, created_at, updated_at, user_id, user_email FROM personal_access_tokens WHERE id = $1"
@@ -340,6 +345,7 @@ impl TokenRepository for SqlxTokenRepository {
         self.to_model(row, scopes)
     }
 
+    #[instrument(skip(self, update), fields(token_id = %id), name = "db_update_token_metadata")]
     async fn update_metadata(
         &self,
         id: &TokenId,
@@ -423,6 +429,7 @@ impl TokenRepository for SqlxTokenRepository {
         self.get_token(id).await
     }
 
+    #[instrument(skip(self, hashed_secret), fields(token_id = %id), name = "db_rotate_token_secret")]
     async fn rotate_secret(&self, id: &TokenId, hashed_secret: String) -> Result<()> {
         sqlx::query(
             "UPDATE personal_access_tokens SET token_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
@@ -438,6 +445,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_update_token_last_used")]
     async fn update_last_used(
         &self,
         id: &TokenId,
@@ -457,6 +465,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_find_active_token_for_auth")]
     async fn find_active_for_auth(
         &self,
         id: &TokenId,
@@ -483,6 +492,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(Some((model, hashed)))
     }
 
+    #[instrument(skip(self), name = "db_count_tokens")]
     async fn count_tokens(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
             .fetch_one(&self.pool)
@@ -494,6 +504,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self), name = "db_count_active_tokens")]
     async fn count_active_tokens(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM personal_access_tokens WHERE status = 'active' AND is_setup_token = FALSE",
@@ -507,6 +518,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_get_setup_token_for_validation")]
     async fn get_setup_token_for_validation(&self, id: &str) -> Result<SetupTokenValidationData> {
         #[derive(Debug, Clone, FromRow)]
         struct SetupTokenRow {
@@ -548,6 +560,7 @@ impl TokenRepository for SqlxTokenRepository {
         })
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_increment_setup_token_usage")]
     async fn increment_setup_token_usage(&self, id: &str) -> Result<()> {
         let result = sqlx::query(
             "UPDATE personal_access_tokens
@@ -570,6 +583,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_record_failed_setup_token_attempt")]
     async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()> {
         // Increment failed_attempts and lock token if failed_attempts >= 5
         // Lock for 15 minutes
@@ -598,6 +612,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token_id = %id), name = "db_revoke_setup_token")]
     async fn revoke_setup_token(&self, id: &str) -> Result<()> {
         let result = sqlx::query(
             "UPDATE personal_access_tokens
@@ -620,6 +635,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self, csrf_token), fields(token_id = %token_id), name = "db_store_csrf_token")]
     async fn store_csrf_token(&self, token_id: &TokenId, csrf_token: &str) -> Result<()> {
         let result = sqlx::query(
             "UPDATE personal_access_tokens
@@ -643,6 +659,7 @@ impl TokenRepository for SqlxTokenRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token_id = %token_id), name = "db_get_csrf_token")]
     async fn get_csrf_token(&self, token_id: &TokenId) -> Result<Option<String>> {
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT csrf_token FROM personal_access_tokens WHERE id = $1")

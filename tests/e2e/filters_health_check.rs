@@ -93,7 +93,8 @@ async fn filters_health_check_endpoint() {
 
     // Create route config with health check path
     let route_name = format!("{}-routes", namer.test_id());
-    let route_uri: hyper::http::Uri = format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
+    let route_uri: hyper::http::Uri =
+        format!("http://{}/api/v1/route-configs", api_addr).parse().unwrap();
     let route_body = serde_json::json!({
         "team": "e2e",
         "name": route_name,

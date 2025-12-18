@@ -32,7 +32,7 @@ cargo clippy -- -D warnings
 Use it after major changes to ensure ADS propagation still works end-to-end.
 
 ## Manual Validation Tips
-* Inspect generated resources via `GET /api/v1/listeners` or `GET /api/v1/routes` to confirm filter entries.
+* Inspect generated resources via `GET /api/v1/listeners` or `GET /api/v1/route-configs` to confirm filter entries.
 * Enable Envoy admin interface (`/config_dump`) to verify filters, JWKS metadata, and scoped overrides.
 * When working with JWT auth, start with a static JWKS (`local_jwks.inlineString`) before layering remote fetch, async fetch, and retry policies.
 

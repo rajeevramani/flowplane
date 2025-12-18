@@ -132,17 +132,8 @@ impl From<FlowplaneError> for ApiError {
             }
             FlowplaneError::Conflict { message, .. } => ApiError::Conflict(message),
             FlowplaneError::Auth { message, .. } => ApiError::Unauthorized(message),
-            FlowplaneError::Database { source, context } => {
-                if let Some(db_err) = source.as_database_error() {
-                    if let Some(code) = db_err.code() {
-                        if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT")
-                        {
-                            return ApiError::Conflict(context);
-                        }
-                    }
-                }
-                ApiError::Internal(context)
-            }
+            FlowplaneError::ConstraintViolation { message, .. } => ApiError::Conflict(message),
+            FlowplaneError::Database { context, .. } => ApiError::Internal(context),
             FlowplaneError::Config { message, .. }
             | FlowplaneError::Transport(message)
             | FlowplaneError::Internal { message, .. } => ApiError::Internal(message),
@@ -210,5 +201,19 @@ impl ApiError {
     /// Use when authenticated user lacks required permissions.
     pub fn forbidden<S: Into<String>>(msg: S) -> Self {
         ApiError::Forbidden(msg.into())
+    }
+
+    /// Creates a bad request error (400).
+    ///
+    /// Use for validation errors and malformed input.
+    pub fn validation<S: Into<String>>(msg: S) -> Self {
+        ApiError::BadRequest(msg.into())
+    }
+
+    /// Creates an internal server error (500).
+    ///
+    /// Use for unexpected internal errors.
+    pub fn internal<S: Into<String>>(msg: S) -> Self {
+        ApiError::Internal(msg.into())
     }
 }

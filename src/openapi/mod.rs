@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 
 use crate::{
     errors::Error,
-    storage::{CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest},
+    storage::{CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRepositoryRequest},
     utils::VALID_NAME_REGEX,
     xds::{
         filters::http::HttpFilterConfigEntry,
@@ -42,7 +42,7 @@ pub struct GatewayOptions {
 #[derive(Debug, Clone)]
 pub struct GatewayPlan {
     pub cluster_requests: Vec<CreateClusterRequest>,
-    pub route_request: Option<CreateRouteRepositoryRequest>,
+    pub route_request: Option<CreateRouteConfigRepositoryRequest>,
     pub listener_request: Option<CreateListenerRequest>,
     pub default_virtual_host: Option<VirtualHostConfig>,
     pub summary: GatewaySummary,
@@ -161,6 +161,7 @@ pub fn build_gateway_plan(
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: Default::default(),
                 };
@@ -221,7 +222,7 @@ pub fn build_gateway_plan(
             .map_err(|err| GatewayError::InvalidSpec(err.to_string()))?;
         attach_gateway_tag(&mut route_config_value, &options.name);
 
-        let route_request = CreateRouteRepositoryRequest {
+        let route_request = CreateRouteConfigRepositoryRequest {
             name: route_name,
             path_prefix: "/".to_string(),
             cluster_name: default_cluster_name,
@@ -333,6 +334,7 @@ fn cluster_from_server(
         circuit_breakers: None,
         health_checks: Vec::new(),
         outlier_detection: None,
+        protocol_type: None,
     };
 
     let mut configuration =

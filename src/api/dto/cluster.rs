@@ -242,7 +242,7 @@ pub struct CircuitBreakerThresholdsDto {
     "intervalSeconds": 30,
     "baseEjectionTimeSeconds": 30,
     "maxEjectionPercent": 50,
-    "enforcingSuccessRate": 100
+    "minHosts": 3
 }))]
 pub struct OutlierDetectionDto {
     /// Number of consecutive 5xx errors before ejection.
@@ -253,6 +253,6 @@ pub struct OutlierDetectionDto {
     pub base_ejection_time_seconds: Option<u64>,
     /// Maximum percent of endpoints that can be ejected.
     pub max_ejection_percent: Option<u32>,
-    /// Percentage enforcement of success rate outlier detection.
-    pub enforcing_success_rate: Option<u32>,
+    /// Minimum number of hosts required before ejection is allowed.
+    pub min_hosts: Option<u32>,
 }

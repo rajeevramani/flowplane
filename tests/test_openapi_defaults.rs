@@ -2,26 +2,16 @@ use std::sync::Arc;
 
 use flowplane::config::SimpleXdsConfig;
 use flowplane::openapi::defaults::ensure_default_gateway_resources;
-use flowplane::storage::DbPool;
 use flowplane::xds::XdsState;
-use sqlx::sqlite::SqlitePoolOptions;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("create sqlite pool");
-
-    // Use actual migrations instead of manual schema to avoid drift
-    flowplane::storage::run_migrations(&pool).await.expect("run migrations");
-
-    pool
-}
+#[path = "common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
 #[tokio::test]
 async fn ensure_default_gateway_resources_creates_default_resources() {
-    let pool = setup_pool().await;
+    let test_db = TestDatabase::new("openapi_defaults").await;
+    let pool = test_db.pool().clone();
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
 
     ensure_default_gateway_resources(&state).await.expect("default resources");
@@ -36,11 +26,12 @@ async fn ensure_default_gateway_resources_creates_default_resources() {
             .unwrap();
     assert_eq!(cluster_count, 1, "Expected default gateway cluster to be created");
 
-    let route_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM routes WHERE name = 'default-gateway-routes'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let route_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM route_configs WHERE name = 'default-gateway-routes'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(route_count, 1, "Expected default gateway routes to be created");
 
     let listener_count: i64 = sqlx::query_scalar(

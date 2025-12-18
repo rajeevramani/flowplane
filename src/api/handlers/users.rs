@@ -11,6 +11,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -96,6 +97,7 @@ pub struct ListUsersResponse {
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state, payload), fields(email = %payload.email, user_id = ?context.user_id))]
 pub async fn create_user(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -116,6 +118,7 @@ pub async fn create_user(
             payload.name,
             payload.is_admin,
             Some(context.token_id.to_string()),
+            Some(&context),
         )
         .await
         .map_err(convert_error)?;
@@ -138,6 +141,7 @@ pub async fn create_user(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn get_user(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -175,6 +179,7 @@ pub async fn get_user(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = %query.limit, offset = %query.offset))]
 pub async fn list_users(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -213,6 +218,7 @@ pub async fn list_users(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state, payload), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn update_user(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -239,7 +245,7 @@ pub async fn update_user(
     // Update user
     let service = user_service_for_state(&state)?;
     let user = service
-        .update_user(&user_id, update, Some(context.token_id.to_string()))
+        .update_user(&user_id, update, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 
@@ -261,6 +267,7 @@ pub async fn update_user(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn delete_user(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -275,7 +282,7 @@ pub async fn delete_user(
     // Delete user
     let service = user_service_for_state(&state)?;
     service
-        .delete_user(&user_id, Some(context.token_id.to_string()))
+        .delete_user(&user_id, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 
@@ -300,6 +307,7 @@ pub async fn delete_user(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state, payload), fields(target_user_id = %id, team = %payload.team, user_id = ?context.user_id))]
 pub async fn add_team_membership(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -328,6 +336,7 @@ pub async fn add_team_membership(
             payload.team,
             payload.scopes,
             Some(context.token_id.to_string()),
+            Some(&context),
         )
         .await
         .map_err(convert_error)?;
@@ -351,6 +360,7 @@ pub async fn add_team_membership(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state), fields(target_user_id = %id, team = %team, user_id = ?context.user_id))]
 pub async fn remove_team_membership(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -365,7 +375,7 @@ pub async fn remove_team_membership(
     // Remove team membership
     let service = user_service_for_state(&state)?;
     service
-        .remove_team_membership(&user_id, &team, Some(context.token_id.to_string()))
+        .remove_team_membership(&user_id, &team, Some(context.token_id.to_string()), Some(&context))
         .await
         .map_err(convert_error)?;
 
@@ -387,6 +397,7 @@ pub async fn remove_team_membership(
     security(("bearer_auth" = ["admin:all"])),
     tag = "users"
 )]
+#[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn list_user_teams(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,

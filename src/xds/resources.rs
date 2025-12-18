@@ -6,7 +6,7 @@ use crate::xds::{
 };
 use crate::{
     config::SimpleXdsConfig,
-    storage::{ClusterData, ListenerData, RouteData},
+    storage::{ClusterData, ListenerData, RouteConfigData},
     Error, Result,
 };
 use envoy_types::pb::envoy::config::cluster::v3::circuit_breakers::Thresholds as CircuitThresholds;
@@ -186,26 +186,27 @@ pub fn routes_from_config(config: &SimpleXdsConfig) -> Result<Vec<BuiltResource>
 
 /// Build route configuration resources from database entries
 pub fn routes_from_database_entries(
-    routes: Vec<RouteData>,
+    route_configs: Vec<RouteConfigData>,
     phase: &str,
 ) -> Result<Vec<BuiltResource>> {
-    let mut built = Vec::with_capacity(routes.len());
+    let mut built = Vec::with_capacity(route_configs.len());
     let mut total_bytes = 0;
 
-    for route_row in routes {
-        let mut value: Value = serde_json::from_str(&route_row.configuration).map_err(|err| {
-            Error::internal(format!(
-                "Failed to parse stored route configuration for '{}': {}",
-                route_row.name, err
-            ))
-        })?;
+    for route_config_row in route_configs {
+        let mut value: Value =
+            serde_json::from_str(&route_config_row.configuration).map_err(|err| {
+                Error::internal(format!(
+                    "Failed to parse stored route configuration for '{}': {}",
+                    route_config_row.name, err
+                ))
+            })?;
 
         strip_gateway_tags(&mut value);
 
         let route_config: RouteConfig = serde_json::from_value(value).map_err(|err| {
             Error::internal(format!(
                 "Failed to deserialize route configuration for '{}': {}",
-                route_row.name, err
+                route_config_row.name, err
             ))
         })?;
 
@@ -336,7 +337,12 @@ pub fn listeners_from_database_entries(
             ))
         })?;
 
-        let envoy_listener = config.to_envoy_listener()?;
+        let envoy_listener = config.to_envoy_listener().map_err(|e| {
+            Error::internal(format!(
+                "Failed to convert listener '{}' to Envoy format: {}",
+                entry.name, e
+            ))
+        })?;
         let encoded = envoy_listener.encode_to_vec();
 
         debug!(
@@ -569,6 +575,20 @@ fn cluster_from_spec(name: &str, spec: &ClusterSpec) -> Result<Cluster> {
         cluster.outlier_detection = Some(build_outlier_detection(outlier));
     }
 
+    // Add HTTP/2 protocol options for gRPC clusters
+    if let Some(protocol) = &spec.protocol_type {
+        let protocol_upper = protocol.to_uppercase();
+        if protocol_upper == "HTTP2" || protocol_upper == "GRPC" {
+            cluster.typed_extension_protocol_options =
+                create_http2_typed_extension_protocol_options()?;
+            debug!(
+                cluster = %name,
+                protocol = %protocol_upper,
+                "Configured HTTP/2 protocol options for cluster"
+            );
+        }
+    }
+
     Ok(cluster)
 }
 
@@ -776,6 +796,7 @@ fn build_outlier_detection(spec: &OutlierDetectionSpec) -> OutlierDetection {
         interval: optional_duration(spec.interval_seconds),
         base_ejection_time: optional_duration(spec.base_ejection_time_seconds),
         max_ejection_percent: uint32(spec.max_ejection_percent),
+        success_rate_minimum_hosts: uint32(spec.min_hosts),
         ..Default::default()
     }
 }
@@ -953,6 +974,91 @@ pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Resul
     let encoded = cluster.encode_to_vec();
     Ok(BuiltResource {
         name: "flowplane_access_log_service".to_string(),
+        resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
+    })
+}
+
+/// Create a cluster for JWT JWKS endpoint (e.g., Auth0, Okta, Keycloak)
+///
+/// This cluster enables Envoy to fetch JWKS keys from remote identity providers
+/// for JWT authentication. The cluster is auto-created when a JWT filter with
+/// remote JWKS source is attached to a listener.
+///
+/// # Arguments
+/// * `cluster_name` - The cluster name referenced in the JWT filter's http_uri.cluster
+/// * `jwks_uri` - The full JWKS URI (e.g., https://dev-xxx.us.auth0.com/.well-known/jwks.json)
+pub fn create_jwks_cluster(cluster_name: &str, jwks_uri: &str) -> Result<BuiltResource> {
+    let url = url::Url::parse(jwks_uri)
+        .map_err(|e| crate::Error::config(format!("Invalid JWKS URI '{}': {}", jwks_uri, e)))?;
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| crate::Error::config(format!("JWKS URI '{}' missing host", jwks_uri)))?;
+
+    let use_tls = url.scheme() == "https";
+    let port = url.port().unwrap_or(if use_tls { 443 } else { 80 });
+
+    // Build the cluster with LOGICAL_DNS for hostname resolution
+    let mut cluster = Cluster {
+        name: cluster_name.to_string(),
+        connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
+        // Use LOGICAL_DNS for hostname-based endpoints
+        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::LogicalDns as i32)),
+        // Prefer IPv4 for compatibility
+        dns_lookup_family: DnsLookupFamily::V4Preferred as i32,
+        load_assignment: Some(ClusterLoadAssignment {
+            cluster_name: cluster_name.to_string(),
+            endpoints: vec![LocalityLbEndpoints {
+                lb_endpoints: vec![LbEndpoint {
+                    host_identifier: Some(lb_endpoint::HostIdentifier::Endpoint(Endpoint {
+                        address: Some(Address {
+                            address: Some(
+                                envoy_types::pb::envoy::config::core::v3::address::Address::SocketAddress(
+                                    SocketAddress {
+                                        address: host.to_string(),
+                                        port_specifier: Some(socket_address::PortSpecifier::PortValue(
+                                            port.into(),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // Add TLS transport socket for HTTPS endpoints
+    if use_tls {
+        let tls_context = UpstreamTlsContext {
+            sni: host.to_string(),
+            common_tls_context: Some(CommonTlsContext::default()),
+            ..Default::default()
+        };
+
+        let tls_any = Any {
+            type_url:
+                "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+                    .to_string(),
+            value: tls_context.encode_to_vec(),
+        };
+
+        cluster.transport_socket = Some(TransportSocket {
+            name: "envoy.transport_sockets.tls".to_string(),
+            config_type: Some(TransportSocketConfigType::TypedConfig(tls_any)),
+        });
+    }
+
+    let encoded = cluster.encode_to_vec();
+    Ok(BuiltResource {
+        name: cluster_name.to_string(),
         resource: Any { type_url: CLUSTER_TYPE_URL.to_string(), value: encoded },
     })
 }
@@ -1161,6 +1267,7 @@ mod tests {
                 interval_seconds: Some(5),
                 base_ejection_time_seconds: Some(30),
                 max_ejection_percent: Some(50),
+                min_hosts: Some(3),
             }),
             ..Default::default()
         };
@@ -1170,6 +1277,7 @@ mod tests {
         let outlier = cluster.outlier_detection.expect("outlier detection");
         assert_eq!(outlier.consecutive_5xx.unwrap().value, 7);
         assert_eq!(outlier.max_ejection_percent.unwrap().value, 50);
+        assert_eq!(outlier.success_rate_minimum_hosts.unwrap().value, 3);
     }
 
     #[test]

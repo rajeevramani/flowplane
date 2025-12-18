@@ -52,6 +52,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
@@ -61,6 +63,34 @@ use crate::xds::state::XdsState;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
+
+/// Extractor for gRPC metadata to extract W3C TraceContext headers
+struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+impl<'a> Extractor for MetadataExtractor<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .filter_map(|k| match k {
+                tonic::metadata::KeyRef::Ascii(key) => Some(key.as_str()),
+                tonic::metadata::KeyRef::Binary(_) => None,
+            })
+            .collect()
+    }
+}
+
+/// Extract OpenTelemetry trace context from gRPC metadata
+///
+/// This extracts W3C TraceContext headers (traceparent, tracestate) from
+/// the incoming gRPC request metadata to link xDS streams with upstream traces.
+pub fn extract_trace_context(metadata: &tonic::metadata::MetadataMap) -> opentelemetry::Context {
+    let propagator = TraceContextPropagator::new();
+    propagator.extract(&MetadataExtractor(metadata))
+}
 
 /// Tracks the last sent version and nonce for ACK/NACK detection
 #[derive(Clone, Debug)]
@@ -125,9 +155,35 @@ fn extract_team_from_node(
 /// A `ReceiverStream` that produces DiscoveryResponse messages to send to Envoy
 pub fn run_stream_loop<F>(
     state: Arc<XdsState>,
+    in_stream: tonic::Streaming<DiscoveryRequest>,
+    responder: F,
+    label: &str,
+    parent_context: Option<opentelemetry::Context>,
+) -> ReceiverStream<std::result::Result<DiscoveryResponse, Status>>
+where
+    F: Fn(
+            Arc<XdsState>,
+            DiscoveryRequest,
+        ) -> Pin<Box<dyn Future<Output = crate::Result<DiscoveryResponse>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    run_stream_loop_with_mtls(state, in_stream, responder, label, parent_context, None)
+}
+
+/// Run the shared SOTW ADS stream loop with mTLS team override.
+///
+/// When `mtls_team` is Some, it takes precedence over node metadata for team identity.
+/// This ensures the cryptographically verified team from the client certificate is used
+/// rather than trusting the self-reported node metadata.
+pub fn run_stream_loop_with_mtls<F>(
+    state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DiscoveryRequest>,
     responder: F,
     label: &str,
+    parent_context: Option<opentelemetry::Context>,
+    mtls_team: Option<String>,
 ) -> ReceiverStream<std::result::Result<DiscoveryResponse, Status>>
 where
     F: Fn(
@@ -147,14 +203,23 @@ where
     let subscribed_types = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
 
     // Track the team for this stream to decrement connection metric on stream close
-    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // If mTLS team is provided, it takes precedence over node metadata
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(mtls_team.clone()));
     let team_for_cleanup = team_for_stream.clone();
+    let mtls_team_set = mtls_team.is_some();
 
     // Track the node metadata from the initial connection to preserve team context in push updates
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
         Arc::new(Mutex::new(None));
 
+    // Store parent context for trace propagation - will be used to create child spans
+    let stream_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
     tokio::spawn(async move {
+        // Store the parent context for creating child spans
+        // Note: We can't use .attach() across awaits since ContextGuard is !Send
+        let _parent_context = stream_context;
+
         // Run the stream loop and ensure cleanup happens
         async {
             loop {
@@ -171,6 +236,7 @@ where
                             );
 
                             // Extract and track team from node metadata on first request
+                            // Note: If mTLS team was already set, we don't override it
                             let team_extracted = extract_team_from_node(&discovery_request.node);
                             {
                                 let mut team_guard = team_for_stream.lock().await;
@@ -180,6 +246,17 @@ where
                                     if let Some(ref team) = team_extracted {
                                         crate::observability::metrics::record_team_xds_connection(team, true).await;
                                         info!(stream = %label, team = %team, "New xDS stream established, incrementing connection gauge");
+                                    }
+                                } else if mtls_team_set && team_guard.is_some() {
+                                    // Log if node metadata team differs from mTLS team (potential misconfiguration)
+                                    if let Some(ref node_team) = team_extracted {
+                                        if team_guard.as_ref() != Some(node_team) {
+                                            tracing::warn!(
+                                                mtls_team = ?team_guard,
+                                                node_team = %node_team,
+                                                "Node metadata team differs from mTLS certificate team - using mTLS team"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -245,14 +322,46 @@ where
                                 }
 
                                 if let Some(error_detail) = discovery_request.error_detail.as_ref() {
-                                    warn!(
+                                    // Record NACK as an error event for trace visibility
+                                    error!(
+                                        name = "xds.nack",
                                         type_url = %discovery_request.type_url,
                                         nonce = %discovery_request.response_nonce,
-                                        error_code = error_detail.code,
-                                        error_message = %error_detail.message,
+                                        version_rejected = %last_snapshot.as_ref().map(|s| s.version.as_ref()).unwrap_or("unknown"),
+                                        error.type = "envoy_rejection",
+                                        error.code = error_detail.code,
+                                        error.message = %error_detail.message,
                                         node_id = ?node_id,
                                         stream = %label_for_task,
-                                        "[NACK] Envoy rejected previous response"
+                                        "Envoy rejected previous xDS response"
+                                    );
+
+                                    // Check if config has changed since the NACKed version was sent
+                                    // If unchanged, don't retry with the same bad config - wait for a fix
+                                    let config_unchanged = last_snapshot
+                                        .as_ref()
+                                        .map(|snapshot| snapshot.version.as_ref() == current_version)
+                                        .unwrap_or(false);
+
+                                    if config_unchanged {
+                                        debug!(
+                                            type_url = %discovery_request.type_url,
+                                            version = %current_version,
+                                            node_id = ?node_id,
+                                            stream = %label_for_task,
+                                            "Config unchanged since NACK, skipping retry until config is fixed"
+                                        );
+                                        return;
+                                    }
+
+                                    // Config has changed - proceed to send the new (hopefully fixed) version
+                                    info!(
+                                        type_url = %discovery_request.type_url,
+                                        old_version = %last_snapshot.as_ref().map(|s| s.version.as_ref()).unwrap_or("unknown"),
+                                        new_version = %current_version,
+                                        node_id = ?node_id,
+                                        stream = %label_for_task,
+                                        "Config updated since NACK, sending new version"
                                     );
                                 }
 
@@ -440,15 +549,40 @@ where
 /// * `in_stream` - Incoming stream of DeltaDiscoveryRequest messages from Envoy
 /// * `responder` - Async function that builds DeltaDiscoveryResponse for a given request
 /// * `label` - Human-readable label for logging (e.g., "Delta-ADS")
+/// * `parent_context` - Optional parent trace context for distributed tracing
 ///
 /// # Returns
 ///
 /// A `ReceiverStream` that produces DeltaDiscoveryResponse messages to send to Envoy
 pub fn run_delta_loop<F>(
     state: Arc<XdsState>,
+    in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
+    responder: F,
+    label: &str,
+    parent_context: Option<opentelemetry::Context>,
+) -> ReceiverStream<std::result::Result<DeltaDiscoveryResponse, Status>>
+where
+    F: Fn(
+            Arc<XdsState>,
+            DeltaDiscoveryRequest,
+        ) -> Pin<Box<dyn Future<Output = crate::Result<DeltaDiscoveryResponse>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    run_delta_loop_with_mtls(state, in_stream, responder, label, parent_context, None)
+}
+
+/// Run the shared Delta xDS ADS stream loop with mTLS team override.
+///
+/// When `mtls_team` is Some, it takes precedence over node metadata for team identity.
+pub fn run_delta_loop_with_mtls<F>(
+    state: Arc<XdsState>,
     mut in_stream: tonic::Streaming<DeltaDiscoveryRequest>,
     responder: F,
     label: &str,
+    parent_context: Option<opentelemetry::Context>,
+    mtls_team: Option<String>,
 ) -> ReceiverStream<std::result::Result<DeltaDiscoveryResponse, Status>>
 where
     F: Fn(
@@ -466,14 +600,23 @@ where
     let mut update_rx = state.subscribe_updates();
 
     // Track the team for this stream to decrement connection metric on stream close
-    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // If mTLS team is provided, it takes precedence over node metadata
+    let team_for_stream: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(mtls_team.clone()));
     let team_for_cleanup = team_for_stream.clone();
+    let mtls_team_set = mtls_team.is_some();
 
     // Track the node metadata from the initial connection to preserve team context in push updates
     let node_for_stream: Arc<Mutex<Option<envoy_types::pb::envoy::config::core::v3::Node>>> =
         Arc::new(Mutex::new(None));
 
+    // Store parent context for trace propagation - will be used to create child spans
+    let stream_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
     tokio::spawn(async move {
+        // Store the parent context for creating child spans
+        // Note: We can't use .attach() across awaits since ContextGuard is !Send
+        let _parent_context = stream_context;
+
         let mut pending_types: HashSet<String> = HashSet::new();
 
         async {
@@ -490,6 +633,7 @@ where
                                 );
 
                                 // Extract and track team from node metadata on first request
+                                // Note: If mTLS team was already set, we don't override it
                                 let team_extracted = extract_team_from_node(&delta_request.node);
                                 {
                                     let mut team_guard = team_for_stream.lock().await;
@@ -499,6 +643,17 @@ where
                                         if let Some(ref team) = team_extracted {
                                             crate::observability::metrics::record_team_xds_connection(team, true).await;
                                             info!(stream = %label, team = %team, "New Delta xDS stream established, incrementing connection gauge");
+                                        }
+                                    } else if mtls_team_set && team_guard.is_some() {
+                                        // Log if node metadata team differs from mTLS team (potential misconfiguration)
+                                        if let Some(ref node_team) = team_extracted {
+                                            if team_guard.as_ref() != Some(node_team) {
+                                                tracing::warn!(
+                                                    mtls_team = ?team_guard,
+                                                    node_team = %node_team,
+                                                    "Node metadata team differs from mTLS certificate team - using mTLS team"
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -516,15 +671,18 @@ where
 
                                 if is_ack_or_nack {
                                     if let Some(error_detail) = &delta_request.error_detail {
-                                        warn!(
-                                        nonce = %delta_request.response_nonce,
-                                        error_code = error_detail.code,
-                                        error_message = %error_detail.message,
-                                        type_url = %delta_request.type_url,
-                                        stream = %label,
-                                        "[NACK] Delta request rejected by Envoy"
-                                    );
-                                } else {
+                                        // Record delta NACK as an error event for trace visibility
+                                        error!(
+                                            name = "xds.delta_nack",
+                                            nonce = %delta_request.response_nonce,
+                                            error.type = "envoy_delta_rejection",
+                                            error.code = error_detail.code,
+                                            error.message = %error_detail.message,
+                                            type_url = %delta_request.type_url,
+                                            stream = %label,
+                                            "Envoy rejected previous delta xDS response"
+                                        );
+                                    } else {
                                     info!(
                                         nonce = %delta_request.response_nonce,
                                         type_url = %delta_request.type_url,

@@ -1,6 +1,5 @@
 //! Listener validation and conversion utilities
 
-use std::collections::HashMap;
 use std::convert::TryFrom;
 
 use serde_json::Value;
@@ -172,9 +171,24 @@ fn convert_access_log(input: &ListenerAccessLogInput) -> AccessLogConfig {
 }
 
 fn convert_tracing(input: &ListenerTracingInput) -> Result<TracingConfig, ApiError> {
+    use crate::xds::listener::TracingProvider;
+
+    // Parse the provider configuration from the JSON value
+    let provider: TracingProvider = serde_json::from_value(input.provider.clone()).map_err(|err| {
+        ApiError::from(Error::validation(format!(
+            "Invalid tracing provider configuration: {}. Expected one of: \
+             {{ \"type\": \"open_telemetry\", \"service_name\": \"...\", \"grpc_cluster\": \"...\" }}, \
+             {{ \"type\": \"zipkin\", \"collector_cluster\": \"...\", \"collector_endpoint\": \"...\" }}, \
+             {{ \"type\": \"generic\", \"name\": \"...\", \"config\": {{}} }}",
+            err
+        )))
+    })?;
+
     Ok(TracingConfig {
-        provider: input.provider.clone(),
-        config: convert_tracing_config(&input.config)?,
+        provider,
+        random_sampling_percentage: input.random_sampling_percentage,
+        spawn_upstream_span: input.spawn_upstream_span,
+        custom_tags: input.custom_tags.clone().unwrap_or_default(),
     })
 }
 
@@ -182,23 +196,6 @@ fn parse_route_config(value: &Value) -> Result<RouteConfig, ApiError> {
     serde_json::from_value(value.clone()).map_err(|err| {
         ApiError::from(Error::validation(format!("Invalid inline route configuration: {}", err)))
     })
-}
-
-fn convert_tracing_config(value: &Value) -> Result<HashMap<String, String>, ApiError> {
-    let map = value
-        .as_object()
-        .ok_or_else(|| ApiError::from(Error::validation("Tracing config must be a JSON object")))?;
-
-    let mut config = HashMap::new();
-    for (key, val) in map {
-        if let Some(str_value) = val.as_str() {
-            config.insert(key.clone(), str_value.to_string());
-        } else {
-            return Err(ApiError::from(Error::validation("Tracing config values must be strings")));
-        }
-    }
-
-    Ok(config)
 }
 
 /// Validate create listener request

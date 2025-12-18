@@ -8,6 +8,8 @@ use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
+use utoipa::ToSchema;
 
 /// Audit event descriptor for authentication activity logging.
 #[derive(Debug, Clone)]
@@ -80,7 +82,8 @@ impl AuditEvent {
 }
 
 /// Audit log entry returned from database queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
     pub id: i64,
     pub resource_type: String,
@@ -152,6 +155,7 @@ impl AuditLogRepository {
         Self { pool }
     }
 
+    #[instrument(skip(self, event), fields(resource_type = %resource_type, action = %event.action), name = "db_record_audit_event")]
     async fn record_event(&self, resource_type: &str, event: AuditEvent) -> Result<()> {
         let now = chrono::Utc::now();
         let metadata_json = serde_json::to_string(&event.metadata).map_err(|err| {
@@ -183,11 +187,13 @@ impl AuditLogRepository {
     }
 
     /// Record an authentication-related audit event.
+    #[instrument(skip(self, event), fields(action = %event.action), name = "db_record_auth_event")]
     pub async fn record_auth_event(&self, event: AuditEvent) -> Result<()> {
         self.record_event("auth.token", event).await
     }
 
     /// Record a Platform API lifecycle event.
+    #[instrument(skip(self, event), fields(action = %event.action), name = "db_record_platform_event")]
     pub async fn record_platform_event(&self, event: AuditEvent) -> Result<()> {
         self.record_event("platform.api", event).await
     }
@@ -200,6 +206,7 @@ impl AuditLogRepository {
     /// # Security
     ///
     /// Secret values are NEVER logged. Only secret keys and operation metadata are recorded.
+    #[instrument(skip(self, event), fields(action = %event.action), name = "db_record_secrets_event")]
     pub async fn record_secrets_event(&self, event: AuditEvent) -> Result<()> {
         self.record_event("secrets", event).await
     }
@@ -215,6 +222,7 @@ impl AuditLogRepository {
     /// # Returns
     ///
     /// A vector of [`AuditLogEntry`] matching the filters, ordered by created_at DESC.
+    #[instrument(skip(self, filters), fields(limit = ?limit, offset = ?offset), name = "db_query_audit_logs")]
     pub async fn query_logs(
         &self,
         filters: Option<AuditLogFilters>,
@@ -277,6 +285,7 @@ impl AuditLogRepository {
     /// Get the total count of audit log entries matching the filters.
     ///
     /// This is useful for pagination to know the total number of pages.
+    #[instrument(skip(self, filters), name = "db_count_audit_logs")]
     pub async fn count_logs(&self, filters: Option<AuditLogFilters>) -> Result<i64> {
         let mut query_builder =
             sqlx::QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as count FROM audit_log WHERE 1=1");

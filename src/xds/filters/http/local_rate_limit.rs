@@ -169,6 +169,18 @@ pub struct LocalRateLimitConfig {
 }
 
 impl LocalRateLimitConfig {
+    /// Create a default 100% fractional percent config for filter_enabled/filter_enforced.
+    /// This is needed because Envoy requires these fields to be set for the rate limit to work.
+    fn default_100_percent() -> RuntimeFractionalPercent {
+        RuntimeFractionalPercent {
+            runtime_key: String::new(),
+            default_value: Some(FractionalPercent {
+                numerator: 100,
+                denominator: fractional_percent::DenominatorType::Hundred as i32,
+            }),
+        }
+    }
+
     /// Convert into Envoy Any payload
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
         let mut proto =
@@ -184,13 +196,22 @@ impl LocalRateLimitConfig {
             });
         }
 
-        if let Some(enabled) = &self.filter_enabled {
-            proto.filter_enabled = Some(enabled.to_proto());
-        }
+        // IMPORTANT: filter_enabled and filter_enforced MUST be set for the rate limit to work.
+        // If not explicitly provided, default to 100% enabled/enforced.
+        // This is critical for per-route configs that override the listener config.
+        proto.filter_enabled = Some(
+            self.filter_enabled
+                .as_ref()
+                .map(|e| e.to_proto())
+                .unwrap_or_else(Self::default_100_percent),
+        );
 
-        if let Some(enforced) = &self.filter_enforced {
-            proto.filter_enforced = Some(enforced.to_proto());
-        }
+        proto.filter_enforced = Some(
+            self.filter_enforced
+                .as_ref()
+                .map(|e| e.to_proto())
+                .unwrap_or_else(Self::default_100_percent),
+        );
 
         if let Some(per_conn) = self.per_downstream_connection {
             proto.local_rate_limit_per_downstream_connection = per_conn;

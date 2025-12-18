@@ -20,6 +20,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
@@ -28,6 +29,7 @@ use crate::{
         authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
         models::AuthContext,
     },
+    domain::RouteConfigId,
     openapi::{build_gateway_plan, GatewayOptions},
     storage::{
         repositories::{
@@ -36,7 +38,7 @@ use crate::{
                 CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
             },
         },
-        CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest,
+        CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRepositoryRequest,
     },
     xds::XdsState,
 };
@@ -167,6 +169,7 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state, request), fields(team = %params.team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -345,6 +348,7 @@ pub async fn import_openapi_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state, query), fields(user_id = ?context.user_id))]
 pub async fn list_imports_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -412,6 +416,7 @@ pub async fn list_imports_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn get_import_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -443,11 +448,10 @@ pub async fn get_import_handler(
     }
 
     // Count routes and clusters
-    let route_repo = state
-        .xds_state
-        .route_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+    let route_config_repo =
+        state.xds_state.route_config_repository.as_ref().ok_or_else(|| {
+            ApiError::Internal("Route config repository not configured".to_string())
+        })?;
     let listener_repo = state
         .xds_state
         .listener_repository
@@ -455,7 +459,7 @@ pub async fn get_import_handler(
         .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
     let cluster_ref_repo = ClusterReferencesRepository::new(db_pool);
 
-    let routes = route_repo.list_by_import(&id).await.map_err(ApiError::from)?;
+    let routes = route_config_repo.list_by_import(&id).await.map_err(ApiError::from)?;
     let listener_count = listener_repo.count_by_import(&id).await.map_err(ApiError::from)?;
     let cluster_refs = cluster_ref_repo.get_by_import(&id).await.map_err(ApiError::from)?;
 
@@ -488,6 +492,7 @@ pub async fn get_import_handler(
     ),
     tag = "openapi-import"
 )]
+#[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn delete_import_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -581,19 +586,34 @@ async fn materialize_route(
     _db_pool: &crate::storage::DbPool,
     import_id: &str,
     team: &str,
-    mut route_request: CreateRouteRepositoryRequest,
+    mut route_request: CreateRouteConfigRepositoryRequest,
 ) -> std::result::Result<(), ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
 
     // Add import metadata
     route_request.import_id = Some(import_id.to_string());
     route_request.team = Some(team.to_string());
     route_request.route_order = Some(0);
 
-    route_repo.create(route_request).await.map_err(ApiError::from)?;
+    // Parse the configuration for hierarchy sync
+    let xds_config: crate::xds::route::RouteConfig =
+        serde_json::from_value(route_request.configuration.clone()).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse route configuration for sync: {}", e))
+        })?;
+
+    let created = route_config_repo.create(route_request).await.map_err(ApiError::from)?;
+
+    // Sync route hierarchy (extract virtual hosts and routes to database tables)
+    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(created.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
+            tracing::error!(error = %err, route_config_id = %created.id, "Failed to sync route hierarchy after OpenAPI import");
+            // Continue anyway - the route config was created, hierarchy sync is optional
+        }
+    }
 
     Ok(())
 }
@@ -606,10 +626,10 @@ async fn materialize_routes_from_virtual_host(
     virtual_host: crate::xds::route::VirtualHostConfig,
     listener_name: &str,
 ) -> std::result::Result<usize, ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
     let listener_repo = xds_state
         .listener_repository
         .as_ref()
@@ -645,13 +665,16 @@ async fn materialize_routes_from_virtual_host(
         })?;
 
     // Get the existing route config
-    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
-        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
-    })?;
+    let existing_route_config =
+        route_config_repo.get_by_name(&route_config_name).await.map_err(|e| {
+            ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+        })?;
 
     // Parse the existing route configuration
-    let existing_config: serde_json::Value = serde_json::from_str(&existing_route.configuration)
-        .map_err(|e| ApiError::Internal(format!("Failed to parse route configuration: {}", e)))?;
+    let existing_config: serde_json::Value =
+        serde_json::from_str(&existing_route_config.configuration).map_err(|e| {
+            ApiError::Internal(format!("Failed to parse route configuration: {}", e))
+        })?;
 
     let mut route_config: crate::xds::route::RouteConfig = serde_json::from_value(existing_config)
         .map_err(|e| ApiError::Internal(format!("Failed to deserialize route config: {}", e)))?;
@@ -676,20 +699,32 @@ async fn materialize_routes_from_virtual_host(
         .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
 
     // Update the route config in the database
-    let update_request = crate::storage::UpdateRouteRepositoryRequest {
+    let update_request = crate::storage::UpdateRouteConfigRepositoryRequest {
         path_prefix: None,
         cluster_name: None,
         configuration: Some(updated_configuration),
         team: None,
     };
 
-    route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+    route_config_repo
+        .update(&existing_route_config.id, update_request)
+        .await
+        .map_err(ApiError::from)?;
 
     tracing::info!(
         route_config_name = %route_config_name,
         virtual_hosts_count = route_config.virtual_hosts.len(),
         "Added virtual host to existing route config"
     );
+
+    // Sync route hierarchy (extract virtual hosts and routes to database tables)
+    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
+        let route_config_id = RouteConfigId::from_string(existing_route_config.id.to_string());
+        if let Err(err) = sync_service.sync(&route_config_id, &route_config).await {
+            tracing::error!(error = %err, route_config_id = %existing_route_config.id, "Failed to sync route hierarchy after adding virtual host");
+            // Continue anyway - the route config was updated, hierarchy sync is optional
+        }
+    }
 
     // Return 1 to indicate virtual host was added
     Ok(1)
@@ -721,10 +756,10 @@ async fn cleanup_virtual_host_from_route_config(
     spec_name: &str,
     listener_name: &str,
 ) -> std::result::Result<(), ApiError> {
-    let route_repo = xds_state
-        .route_repository
+    let route_config_repo = xds_state
+        .route_config_repository
         .as_ref()
-        .ok_or_else(|| ApiError::Internal("Route repository not configured".to_string()))?;
+        .ok_or_else(|| ApiError::Internal("Route config repository not configured".to_string()))?;
     let listener_repo = xds_state
         .listener_repository
         .as_ref()
@@ -765,13 +800,14 @@ async fn cleanup_virtual_host_from_route_config(
         })?;
 
     // Get the existing route config
-    let existing_route = route_repo.get_by_name(&route_config_name).await.map_err(|e| {
-        ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
-    })?;
+    let existing_route_config =
+        route_config_repo.get_by_name(&route_config_name).await.map_err(|e| {
+            ApiError::Internal(format!("Route config '{}' not found: {}", route_config_name, e))
+        })?;
 
     // Parse the existing route configuration
     let mut route_config: crate::xds::route::RouteConfig =
-        serde_json::from_str(&existing_route.configuration).map_err(|e| {
+        serde_json::from_str(&existing_route_config.configuration).map_err(|e| {
             ApiError::Internal(format!("Failed to parse route configuration: {}", e))
         })?;
 
@@ -785,14 +821,17 @@ async fn cleanup_virtual_host_from_route_config(
             .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))?;
 
         // Update the route config in the database
-        let update_request = crate::storage::UpdateRouteRepositoryRequest {
+        let update_request = crate::storage::UpdateRouteConfigRepositoryRequest {
             path_prefix: None,
             cluster_name: None,
             configuration: Some(updated_configuration),
             team: None,
         };
 
-        route_repo.update(&existing_route.id, update_request).await.map_err(ApiError::from)?;
+        route_config_repo
+            .update(&existing_route_config.id, update_request)
+            .await
+            .map_err(ApiError::from)?;
 
         tracing::info!(
             virtual_host_name = %virtual_host_name,

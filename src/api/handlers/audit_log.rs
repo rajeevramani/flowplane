@@ -8,6 +8,8 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -16,26 +18,35 @@ use crate::{
 };
 
 /// Query parameters for listing audit logs
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListAuditLogsQuery {
     /// Filter by resource type (e.g., "auth.token", "platform.api", "secrets")
+    #[param(required = false, example = "auth.token")]
     pub resource_type: Option<String>,
     /// Filter by action
+    #[param(required = false, example = "create")]
     pub action: Option<String>,
     /// Filter by user ID
+    #[param(required = false)]
     pub user_id: Option<String>,
     /// Filter by start date (ISO 8601 format)
+    #[param(required = false, example = "2024-01-01T00:00:00Z")]
     pub start_date: Option<String>,
     /// Filter by end date (ISO 8601 format)
+    #[param(required = false, example = "2024-12-31T23:59:59Z")]
     pub end_date: Option<String>,
     /// Maximum number of results (default: 50, max: 1000)
+    #[param(required = false, example = 50)]
     pub limit: Option<i32>,
     /// Pagination offset (default: 0)
+    #[param(required = false, example = 0)]
     pub offset: Option<i32>,
 }
 
 /// Response for listing audit logs
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ListAuditLogsResponse {
     pub entries: Vec<AuditLogEntry>,
     pub total: i64,
@@ -46,6 +57,21 @@ pub struct ListAuditLogsResponse {
 /// List audit logs with optional filtering and pagination
 ///
 /// **Admin only**: This endpoint requires admin:all scope
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit-logs",
+    params(ListAuditLogsQuery),
+    responses(
+        (status = 200, description = "Audit logs retrieved successfully", body = ListAuditLogsResponse),
+        (status = 400, description = "Invalid query parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden - admin access required"),
+        (status = 503, description = "Service unavailable")
+    ),
+    security(("bearerAuth" = ["admin:all"])),
+    tag = "audit"
+)]
+#[instrument(skip(state), fields(user_id = ?auth_context.user_id, resource_type = ?query.resource_type, action = ?query.action))]
 pub async fn list_audit_logs(
     State(state): State<ApiState>,
     Extension(auth_context): Extension<AuthContext>,

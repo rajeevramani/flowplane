@@ -1,0 +1,103 @@
+name: custom_response
+display_name: Custom Response
+description: Replace or modify responses based on status code matching rules
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.custom_response
+  type_url: type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  properties:
+    matchers:
+      type: array
+      title: Response Matchers
+      description: List of status code matching rules with custom responses
+      items:
+        type: object
+        title: Matcher Rule
+        required:
+          - status_code
+          - response
+        properties:
+          status_code:
+            type: object
+            title: Status Code Match
+            description: Condition to match upstream response status codes
+            properties:
+              type:
+                type: string
+                title: Match Type
+                description: How to match status codes
+                enum:
+                  - exact
+                  - range
+                  - list
+                default: exact
+              code:
+                type: integer
+                title: Status Code
+                description: Exact status code to match (for 'exact' type)
+                minimum: 100
+                maximum: 599
+              min:
+                type: integer
+                title: Min Code
+                description: Minimum status code in range (for 'range' type)
+                minimum: 100
+                maximum: 599
+              max:
+                type: integer
+                title: Max Code
+                description: Maximum status code in range (for 'range' type)
+                minimum: 100
+                maximum: 599
+              codes:
+                type: array
+                title: Status Codes
+                description: List of status codes to match (for 'list' type)
+                items:
+                  type: integer
+                  minimum: 100
+                  maximum: 599
+          response:
+            type: object
+            title: Custom Response
+            description: The response to send when matched
+            properties:
+              status_code:
+                type: integer
+                title: Response Status Code
+                description: Override the status code in the response
+                minimum: 100
+                maximum: 599
+              body:
+                type: string
+                title: Response Body
+                description: Custom response body content
+              headers:
+                type: object
+                title: Response Headers
+                description: Additional headers to include in the response
+                additionalProperties:
+                  type: string
+
+ui_hints:
+  form_layout: flat
+  sections:
+    - name: Matcher Rules
+      fields:
+        - matchers
+      collapsible: false
+      collapsed_by_default: false

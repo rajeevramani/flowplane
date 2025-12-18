@@ -5,7 +5,7 @@
 	import { page } from '$app/stores';
 	import type { TeamResponse, UpdateTeamRequest, UserResponse, TeamStatus } from '$lib/api/types';
 
-	let teamId = $derived($page.params.id);
+	let teamId = $derived($page.params.id ?? '');
 
 	let team = $state<TeamResponse | null>(null);
 	let users = $state<UserResponse[]>([]);
@@ -178,7 +178,7 @@
 <div class="min-h-screen bg-gray-50">
 	<!-- Navigation -->
 	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+		<div class="w-full px-4 sm:px-6 lg:px-8">
 			<div class="flex justify-between h-16 items-center">
 				<div class="flex items-center gap-4">
 					<a
@@ -271,6 +271,12 @@
 					<div>
 						<label class="block text-sm font-medium text-gray-700 mb-1">Team Owner</label>
 						<p class="text-gray-900">{team.ownerUserId || 'None'}</p>
+					</div>
+
+					<div>
+						<label class="block text-sm font-medium text-gray-700 mb-1">Envoy Admin Port</label>
+						<p class="text-gray-900 font-mono">{team.envoyAdminPort ?? 'Not allocated'}</p>
+						<p class="text-xs text-gray-500 mt-1">Auto-allocated for this team's Envoy instance</p>
 					</div>
 
 					<div class="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">

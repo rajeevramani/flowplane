@@ -79,7 +79,7 @@ async fn config_update_change_upstream() {
 
     // Update DEFAULT_GATEWAY_ROUTES to add our specific path → cluster rule
     let get_routes_uri: hyper::http::Uri =
-        format!("http://{}/api/v1/routes/default-gateway-routes", api_addr).parse().unwrap();
+        format!("http://{}/api/v1/route-configs/default-gateway-routes", api_addr).parse().unwrap();
     let res = client.get(get_routes_uri.clone()).await.unwrap();
     assert!(res.status().is_success());
     let body = res.into_body().collect().await.unwrap().to_bytes();

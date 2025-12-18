@@ -1,6 +1,6 @@
 # Routing Cookbook
 
-This guide expands on the basic route walkthrough in [getting-started](getting-started.md) and shows how to express the different route actions, matchers, and per-route filter overrides supported by Flowplane. Each example is a JSON payload you can POST to `/api/v1/routes`. Field names follow the conventions used throughout the API: camelCase for control-plane structures (e.g., `virtualHosts`, `typedPerFilterConfig`) and snake_case inside filter blocks (e.g., `token_bucket`).
+This guide expands on the basic route walkthrough in [getting-started](getting-started.md) and shows how to express the different route actions, matchers, and per-route filter overrides supported by Flowplane. Each example is a JSON payload you can POST to `/api/v1/route-configs`. Field names follow the conventions used throughout the API: camelCase for control-plane structures (e.g., `virtualHosts`, `typedPerFilterConfig`) and snake_case inside filter blocks (e.g., `token_bucket`).
 
 > Tip: Open the live API reference at `http://127.0.0.1:8080/swagger-ui` to inspect the schema and try these calls directly.
 
@@ -8,7 +8,7 @@ This guide expands on the basic route walkthrough in [getting-started](getting-s
 The simplest route matches a URL prefix and forwards traffic to a single cluster.
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+curl -sS -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H 'Authorization: Bearer $FLOWPLANE_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{

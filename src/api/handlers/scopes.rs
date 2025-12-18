@@ -6,6 +6,7 @@
 
 use axum::{http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::auth::scope_registry::{get_scope_registry, is_scope_registry_initialized};
@@ -37,6 +38,7 @@ pub struct ListScopesResponse {
         (status = 503, description = "Scope registry not initialized")
     )
 )]
+#[instrument]
 pub async fn list_scopes_handler() -> Result<Json<ListScopesResponse>, (StatusCode, String)> {
     if !is_scope_registry_initialized() {
         return Err((
@@ -73,6 +75,7 @@ pub async fn list_scopes_handler() -> Result<Json<ListScopesResponse>, (StatusCo
         ("bearer" = [])
     )
 )]
+#[instrument]
 pub async fn list_all_scopes_handler() -> Result<Json<ListScopesResponse>, (StatusCode, String)> {
     // Note: Authorization is handled by the auth middleware
     // This handler just returns all scopes

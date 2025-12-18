@@ -11,29 +11,35 @@ async fn contract_get_tokens_lists_tokens() {
 
     let _ = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "list-one".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["clusters:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "list-one".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["clusters:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
     let _ = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "list-two".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "list-two".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

@@ -7,6 +7,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Sqlite};
+use tracing::instrument;
 
 /// Route flow data combining information from routes, clusters, and listeners
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -48,6 +49,7 @@ impl ReportingRepository {
     ///
     /// # Returns
     /// Tuple of (route_flows, total_count)
+    #[instrument(skip(self), fields(teams = ?teams, limit = limit, offset = offset), name = "db_list_route_flows")]
     pub async fn list_route_flows(
         &self,
         teams: &[String],
@@ -70,7 +72,7 @@ impl ReportingRepository {
                     l.name as listener_name,
                     l.address as listener_address,
                     l.port as listener_port
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
                 WHERE l.name LIKE 'default%'
@@ -113,7 +115,7 @@ impl ReportingRepository {
                     l.name as listener_name,
                     l.address as listener_address,
                     l.port as listener_port
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 CROSS JOIN listeners l
                 WHERE (r.team IN ({}) OR r.team IS NULL)
@@ -159,13 +161,14 @@ impl ReportingRepository {
     }
 
     /// Count total route flows (for pagination)
+    #[instrument(skip(self), fields(teams = ?teams), name = "db_count_route_flows")]
     async fn count_route_flows(&self, teams: &[String]) -> Result<i64> {
         let count = if teams.is_empty() {
             // Admin query - count all routes
             sqlx::query_scalar::<Sqlite, i64>(
                 r#"
                 SELECT COUNT(DISTINCT r.name)
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 "#,
             )
@@ -190,7 +193,7 @@ impl ReportingRepository {
             let query_str = format!(
                 r#"
                 SELECT COUNT(DISTINCT r.name)
-                FROM routes r
+                FROM route_configs r
                 INNER JOIN clusters c ON r.cluster_name = c.name
                 WHERE r.team IN ({}) OR r.team IS NULL
                 "#,

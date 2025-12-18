@@ -14,13 +14,19 @@
 //! - **rotate_secret**: Generate and store a new secret value
 //! - **list_secrets**: List available secrets with metadata
 //!
+//! ## Pluggable Backend Architecture
+//!
+//! For SDS (Secret Discovery Service), we also support a pluggable backend system
+//! via the [`backends`] module. This allows Flowplane to store only REFERENCES
+//! to secrets (not encrypted values) and fetch them on-demand from external systems.
+//!
 //! # Supported Backends
 //!
 //! - **HashiCorp Vault**: Production-ready secrets backend with KV v2 engine
 //! - **Environment Variables**: Development fallback using `FLOWPLANE_SECRET_*` prefix
-//! - **AWS Secrets Manager**: (Placeholder for future implementation)
-//! - **Azure Key Vault**: (Placeholder for future implementation)
-//! - **Google Secret Manager**: (Placeholder for future implementation)
+//! - **AWS Secrets Manager**: (Optional feature)
+//! - **GCP Secret Manager**: (Optional feature)
+//! - **Database**: Legacy encrypted storage mode
 //!
 //! # Basic Example
 //!
@@ -98,6 +104,7 @@
 //! - Environment variable fallback is for development only
 
 pub mod audited;
+pub mod backends;
 pub mod cached;
 pub mod client;
 pub mod env;
@@ -112,4 +119,13 @@ pub use client::{SecretMetadata, SecretsClient};
 pub use env::EnvVarSecretsClient;
 pub use error::{Result, SecretsError};
 pub use fallback::FallbackSecretsClient;
-pub use vault::{VaultConfig, VaultSecretsClient};
+pub use vault::{
+    parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri, GeneratedCertificate, PkiConfig,
+    VaultConfig, VaultSecretsClient,
+};
+
+// Re-export backend types
+pub use backends::{
+    DatabaseSecretBackend, SecretBackend, SecretBackendRegistry, SecretBackendType, SecretCache,
+    VaultSecretBackend,
+};

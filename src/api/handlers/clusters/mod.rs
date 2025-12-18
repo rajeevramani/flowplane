@@ -17,6 +17,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+use tracing::instrument;
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -78,6 +79,7 @@ async fn verify_cluster_access(
     ),
     tag = "clusters"
 )]
+#[instrument(skip(state, payload), fields(team = %payload.team, cluster_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -126,6 +128,7 @@ pub async fn create_cluster_handler(
     ),
     tag = "clusters"
 )]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_clusters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -170,6 +173,7 @@ pub async fn list_clusters_handler(
     ),
     tag = "clusters"
 )]
+#[instrument(skip(state), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn get_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -205,6 +209,7 @@ pub async fn get_cluster_handler(
     ),
     tag = "clusters"
 )]
+#[instrument(skip(state, payload), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn update_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -255,6 +260,7 @@ pub async fn update_cluster_handler(
     ),
     tag = "clusters"
 )]
+#[instrument(skip(state), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn delete_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -341,7 +347,8 @@ mod tests {
         .expect("create table");
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
-        ApiState { xds_state: Arc::new(state) }
+        let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
+        ApiState { xds_state: Arc::new(state), filter_schema_registry: None, stats_cache }
     }
 
     fn sample_request() -> CreateClusterBody {
@@ -380,7 +387,9 @@ mod tests {
                 interval_seconds: Some(10),
                 base_ejection_time_seconds: Some(60),
                 max_ejection_percent: Some(50),
+                min_hosts: Some(3),
             }),
+            protocol_type: None,
         }
     }
 

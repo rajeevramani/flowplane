@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use utoipa::ToSchema;
 
 /// Top-level JWT authentication filter configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct JwtAuthenticationConfig {
     /// Ordered list of rules that map route matches to JWT requirements.
     #[serde(default)]
@@ -96,7 +96,7 @@ impl JwtAuthenticationConfig {
 }
 
 /// Per-route override for JWT authentication filter
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum JwtPerRouteConfig {
     /// Disable JWT authentication for this route scope
@@ -196,7 +196,7 @@ impl JwtRequirementRuleConfig {
 }
 
 /// Encapsulates supported requirement shapes
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JwtRequirementConfig {
     /// Require a single provider by name
@@ -204,8 +204,10 @@ pub enum JwtRequirementConfig {
     /// Require a provider and override audiences
     ProviderWithAudiences { provider_name: String, audiences: Vec<String> },
     /// Logical OR of nested requirements
+    #[schema(no_recursion)]
     RequiresAny { requirements: Vec<JwtRequirementConfig> },
     /// Logical AND of nested requirements
+    #[schema(no_recursion)]
     RequiresAll { requirements: Vec<JwtRequirementConfig> },
     /// Allow requests with missing JWTs but reject invalid ones
     AllowMissing,
@@ -274,7 +276,7 @@ impl JwtRequirementConfig {
 }
 
 /// Definition of per-provider behaviour
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, ToSchema)]
 pub struct JwtProviderConfig {
     /// Optional issuer to match the token against
     #[serde(default)]
@@ -466,7 +468,7 @@ impl JwtProviderConfig {
 }
 
 /// Normalized payload options
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwtNormalizePayloadConfig {
     /// Claims that should be split by space into arrays
     #[serde(default)]
@@ -482,7 +484,7 @@ impl JwtNormalizePayloadConfig {
 }
 
 /// Provider-level JWT cache configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwtCacheProviderConfig {
     #[serde(default)]
     pub jwt_cache_size: Option<u32>,
@@ -491,7 +493,7 @@ pub struct JwtCacheProviderConfig {
 }
 
 /// JWT header extraction hint
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwtHeaderConfig {
     pub name: String,
     #[serde(default)]
@@ -499,14 +501,14 @@ pub struct JwtHeaderConfig {
 }
 
 /// JWT claim to header projection
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwtClaimToHeaderConfig {
     pub header_name: String,
     pub claim_name: String,
 }
 
 /// JWKS source configuration options
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JwtJwksSourceConfig {
     Remote(RemoteJwksConfig),
@@ -520,7 +522,7 @@ impl Default for JwtJwksSourceConfig {
 }
 
 /// Remote JWKS configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct RemoteJwksConfig {
     pub http_uri: RemoteJwksHttpUriConfig,
     #[serde(default)]
@@ -568,7 +570,7 @@ impl RemoteJwksConfig {
 }
 
 /// Remote JWKS HTTP URI definition
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct RemoteJwksHttpUriConfig {
     pub uri: String,
     pub cluster: String,
@@ -605,7 +607,7 @@ impl RemoteJwksHttpUriConfig {
 }
 
 /// Remote JWKS async fetch configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwksAsyncFetchConfig {
     #[serde(default)]
     pub fast_listener: Option<bool>,
@@ -625,7 +627,7 @@ impl JwksAsyncFetchConfig {
 }
 
 /// Remote JWKS retry policy configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwksRetryPolicyConfig {
     #[serde(default)]
     pub num_retries: Option<u32>,
@@ -647,7 +649,7 @@ impl JwksRetryPolicyConfig {
 }
 
 /// Retry backoff configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct RetryBackoffConfig {
     #[serde(default)]
     pub base_interval_ms: Option<u64>,
@@ -671,7 +673,7 @@ impl RetryBackoffConfig {
 }
 
 /// Local JWKS configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, ToSchema)]
 pub struct LocalJwksConfig {
     #[serde(default)]
     pub filename: Option<String>,
@@ -724,7 +726,7 @@ impl LocalJwksConfig {
 }
 
 /// Filter state rule configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct JwtFilterStateRuleConfig {
     pub name: String,
     pub requires: HashMap<String, JwtRequirementConfig>,
@@ -755,7 +757,7 @@ impl JwtFilterStateRuleConfig {
 }
 
 /// Wrapper for StringMatcher configuration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StringMatcherConfig {
     Exact { value: String },

@@ -9,6 +9,7 @@ use axum::{
     Extension, Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -186,6 +187,7 @@ async fn verify_session_access(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state, payload), fields(route_pattern = %payload.route_pattern, user_id = ?context.user_id))]
 pub async fn create_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -236,7 +238,7 @@ pub async fn create_learning_session_handler(
     })?;
 
     // Automatically activate the session if learning session service is available
-    let activated = if let Some(learning_service) = &state.xds_state.learning_session_service {
+    let activated = if let Some(learning_service) = state.xds_state.get_learning_session_service() {
         match learning_service.activate_session(&created.id).await {
             Ok(session) => session,
             Err(e) => {
@@ -272,6 +274,7 @@ pub async fn create_learning_session_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, status = ?query.status))]
 pub async fn list_learning_sessions_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -331,6 +334,7 @@ pub async fn list_learning_sessions_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn get_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -385,6 +389,7 @@ pub async fn get_learning_session_handler(
     ),
     tag = "learning-sessions"
 )]
+#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn delete_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -422,7 +427,7 @@ pub async fn delete_learning_session_handler(
 
     // Use the learning session service to properly handle cancellation
     // This ensures Access Log Service is unregistered
-    if let Some(learning_service) = &state.xds_state.learning_session_service {
+    if let Some(learning_service) = state.xds_state.get_learning_session_service() {
         // If session is active, we need to unregister from Access Log Service
         // The fail_session method handles this
         learning_service.fail_session(&id, "Cancelled by user".to_string()).await.map_err(|e| {

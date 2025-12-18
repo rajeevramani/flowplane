@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             listener_port: 10001,
         },
         tls: None,
+        envoy_admin: Default::default(),
     };
 
     // Test 4: Start Database-Enabled XDS Server (with timeout)

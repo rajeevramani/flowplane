@@ -1,11 +1,12 @@
 //! Axum middleware for authentication and authorization.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Extension, State},
-    http::{header::AUTHORIZATION, Method, Request},
+    extract::{ConnectInfo, Extension, State},
+    http::{header::AUTHORIZATION, header::USER_AGENT, Method, Request},
     middleware::Next,
     response::Response,
 };
@@ -41,6 +42,25 @@ fn extract_csrf_from_header(request: &Request<Body>) -> Option<String> {
 /// Check if HTTP method requires CSRF validation
 fn is_state_changing_method(method: &Method) -> bool {
     matches!(method, &Method::POST | &Method::PUT | &Method::PATCH | &Method::DELETE)
+}
+
+/// Extract client IP from the request, preferring X-Forwarded-For header
+fn extract_client_ip(request: &Request<Body>) -> Option<String> {
+    // Try X-Forwarded-For header first (for proxied requests)
+    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+        if let Ok(value) = forwarded.to_str() {
+            // X-Forwarded-For can contain multiple IPs; the first is the original client
+            return value.split(',').next().map(|s| s.trim().to_string());
+        }
+    }
+
+    // Fall back to ConnectInfo if available
+    request.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip().to_string())
+}
+
+/// Extract User-Agent header from the request
+fn extract_user_agent(request: &Request<Body>) -> Option<String> {
+    request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
 }
 
 /// Middleware entry point that authenticates requests using the configured [`AuthService`] and [`SessionService`].
@@ -148,8 +168,10 @@ pub async fn authenticate(
                 )
             }
         } else {
-            // Regular PAT authentication
-            auth_service.authenticate(header).await
+            // Regular PAT authentication - extract client context first
+            let client_ip = extract_client_ip(&request);
+            let user_agent = extract_user_agent(&request);
+            auth_service.authenticate(header, client_ip, user_agent).await
         }
     } else if let Some(session_token) = extract_session_from_cookie(&jar) {
         // Authenticate using session cookie
@@ -230,6 +252,13 @@ pub async fn authenticate(
 
     match auth_context_result {
         Ok(context) => {
+            // Extract request context (client IP and user agent)
+            let client_ip = extract_client_ip(&request);
+            let user_agent = extract_user_agent(&request);
+
+            // Add request context to auth context
+            let context = context.with_request_context(client_ip, user_agent);
+
             tracing::Span::current().record("auth.token_id", field::display(&context.token_id));
             request.extensions_mut().insert(context);
             Ok(next.run(request).await)
@@ -285,13 +314,13 @@ pub async fn ensure_scopes(
 ///
 /// # How it works
 ///
-/// 1. Extracts the resource from the path (e.g., `/api/v1/routes` → "routes")
+/// 1. Extracts the resource from the path (e.g., `/api/v1/route-configs` → "routes")
 /// 2. Derives the action from the HTTP method (e.g., GET → "read", POST → "write")
 /// 3. Checks permissions using `require_resource_access`
 ///
 /// # Examples
 ///
-/// - GET /api/v1/routes → requires "routes:read"
+/// - GET /api/v1/route-configs → requires "routes:read"
 /// - POST /api/v1/clusters → requires "clusters:write"
 /// - DELETE /api/v1/listeners/foo → requires "listeners:delete"
 pub async fn ensure_dynamic_scopes(

@@ -6,21 +6,18 @@
 use flowplane::auth::team::CreateTeamRequest;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{
-    ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteRepositoryRequest,
-    DbPool, ListenerRepository, RouteRepository,
+    ClusterRepository, CreateClusterRequest, CreateListenerRequest,
+    CreateRouteConfigRepositoryRequest, DbPool, ListenerRepository, RouteConfigRepository,
 };
-use sqlx::sqlite::SqlitePoolOptions;
 
-/// Set up an in-memory SQLite database with migrations applied and create test teams
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[path = "../../common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
-    // Run migrations to create tables with team columns
-    sqlx::migrate!("./migrations").run(&pool).await.expect("migrations should apply");
+/// Set up a test database with migrations applied and create test teams
+async fn setup_test_db() -> (TestDatabase, DbPool) {
+    let test_db = TestDatabase::new("team_isolation").await;
+    let pool = test_db.pool().clone();
 
     // Create test teams to satisfy FK constraints
     let team_repo = SqlxTeamRepository::new(pool.clone());
@@ -36,12 +33,12 @@ async fn setup_pool() -> DbPool {
             .await;
     }
 
-    pool
+    (test_db, pool)
 }
 
 #[tokio::test]
 async fn cluster_repository_filters_by_team() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create clusters for different teams
@@ -118,8 +115,8 @@ async fn cluster_repository_filters_by_team() {
 
 #[tokio::test]
 async fn route_repository_filters_by_team() {
-    let pool = setup_pool().await;
-    let route_repo = RouteRepository::new(pool.clone());
+    let (_test_db, pool) = setup_test_db().await;
+    let route_repo = RouteConfigRepository::new(pool.clone());
     let cluster_repo = ClusterRepository::new(pool.clone());
 
     // Create clusters first (foreign key dependency)
@@ -166,7 +163,7 @@ async fn route_repository_filters_by_team() {
         .unwrap();
 
     // Create routes for different teams
-    let team_a_route = CreateRouteRepositoryRequest {
+    let team_a_route = CreateRouteConfigRepositoryRequest {
         name: "team-a-routes".to_string(),
         path_prefix: "/team-a".to_string(),
         cluster_name: "team-a-cluster".to_string(),
@@ -180,7 +177,7 @@ async fn route_repository_filters_by_team() {
         headers: None,
     };
 
-    let team_b_route = CreateRouteRepositoryRequest {
+    let team_b_route = CreateRouteConfigRepositoryRequest {
         name: "team-b-routes".to_string(),
         path_prefix: "/team-b".to_string(),
         cluster_name: "team-b-cluster".to_string(),
@@ -194,7 +191,7 @@ async fn route_repository_filters_by_team() {
         headers: None,
     };
 
-    let global_route = CreateRouteRepositoryRequest {
+    let global_route = CreateRouteConfigRepositoryRequest {
         name: "global-routes".to_string(),
         path_prefix: "/global".to_string(),
         cluster_name: "global-cluster".to_string(),
@@ -244,7 +241,7 @@ async fn route_repository_filters_by_team() {
 
 #[tokio::test]
 async fn listener_repository_filters_by_team() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = ListenerRepository::new(pool.clone());
 
     // Create listeners for different teams
@@ -329,7 +326,7 @@ async fn listener_repository_filters_by_team() {
 
 #[tokio::test]
 async fn team_filtering_respects_pagination() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create 5 clusters for team-a
@@ -360,7 +357,7 @@ async fn team_filtering_respects_pagination() {
 
 #[tokio::test]
 async fn team_filtering_handles_special_characters_in_team_names() {
-    let pool = setup_pool().await;
+    let (_test_db, pool) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create cluster with team name containing special characters

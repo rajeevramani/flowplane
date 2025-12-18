@@ -1,11 +1,21 @@
 <script lang="ts">
-	import type { ClusterResponse, EndpointRequest } from '$lib/api/types';
+	import type {
+		ClusterResponse,
+		EndpointRequest,
+		HealthCheckRequest,
+		CircuitBreakersRequest,
+		OutlierDetectionRequest
+	} from '$lib/api/types';
 	import EndpointList from './EndpointList.svelte';
+	import ClusterConfigEditor from './ClusterConfigEditor.svelte';
 
 	export interface NewClusterConfig {
 		name: string;
 		endpoints: EndpointRequest[];
 		lbPolicy: string;
+		healthChecks?: HealthCheckRequest[];
+		circuitBreakers?: CircuitBreakersRequest;
+		outlierDetection?: OutlierDetectionRequest;
 	}
 
 	export interface ClusterConfig {
@@ -21,6 +31,20 @@
 	}
 
 	let { clusters, config, onConfigChange }: Props = $props();
+
+	// State for advanced configuration section
+	let showAdvancedConfig = $state(false);
+
+	// Derived: check if any advanced config is set
+	let hasAdvancedConfig = $derived(
+		config.mode === 'new' &&
+		config.newClusterConfig &&
+		(
+			(config.newClusterConfig.healthChecks?.length ?? 0) > 0 ||
+			config.newClusterConfig.circuitBreakers !== undefined ||
+			config.newClusterConfig.outlierDetection !== undefined
+		)
+	);
 
 	// Initialize new cluster config if not present
 	$effect(() => {
@@ -93,6 +117,53 @@
 			}
 		});
 	}
+
+	function handleHealthChecksChange(healthChecks: HealthCheckRequest[]) {
+		onConfigChange({
+			...config,
+			newClusterConfig: {
+				...config.newClusterConfig!,
+				healthChecks: healthChecks.length > 0 ? healthChecks : undefined
+			}
+		});
+	}
+
+	function handleCircuitBreakersChange(circuitBreakers: CircuitBreakersRequest | null) {
+		onConfigChange({
+			...config,
+			newClusterConfig: {
+				...config.newClusterConfig!,
+				circuitBreakers: circuitBreakers ?? undefined
+			}
+		});
+	}
+
+	function handleOutlierDetectionChange(outlierDetection: OutlierDetectionRequest | null) {
+		onConfigChange({
+			...config,
+			newClusterConfig: {
+				...config.newClusterConfig!,
+				outlierDetection: outlierDetection ?? undefined
+			}
+		});
+	}
+
+	// Get primary host from cluster config for display
+	function getClusterDisplayInfo(cluster: ClusterResponse): string {
+		const endpoints = cluster.config?.endpoints;
+		if (!endpoints || !Array.isArray(endpoints) || endpoints.length === 0) {
+			return cluster.name;
+		}
+		const firstEndpoint = endpoints[0];
+		const host = firstEndpoint.host || firstEndpoint.address;
+		const port = firstEndpoint.port;
+		if (host) {
+			const hostDisplay = port ? `${host}:${port}` : host;
+			const moreCount = endpoints.length > 1 ? ` (+${endpoints.length - 1} more)` : '';
+			return `${cluster.name} → ${hostDisplay}${moreCount}`;
+		}
+		return cluster.name;
+	}
 </script>
 
 <div class="space-y-3">
@@ -120,7 +191,7 @@
 				>
 					<option value="">Select a cluster...</option>
 					{#each clusters as cluster}
-						<option value={cluster.name}>{cluster.name}</option>
+						<option value={cluster.name}>{getClusterDisplayInfo(cluster)}</option>
 					{/each}
 				</select>
 			{/if}
@@ -163,6 +234,49 @@
 				onEndpointsChange={handleEndpointsChange}
 				onLbPolicyChange={handleLbPolicyChange}
 			/>
+
+			<!-- Advanced Configuration (collapsible) -->
+			<div class="border-t border-gray-200 pt-3 mt-3">
+				<button
+					type="button"
+					onclick={() => showAdvancedConfig = !showAdvancedConfig}
+					class="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900 w-full"
+				>
+					<svg
+						class="h-4 w-4 transition-transform {showAdvancedConfig ? 'rotate-90' : ''}"
+						fill="none"
+						stroke="currentColor"
+						viewBox="0 0 24 24"
+					>
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M9 5l7 7-7 7"
+						/>
+					</svg>
+					Advanced Configuration
+					{#if hasAdvancedConfig}
+						<span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+							Configured
+						</span>
+					{/if}
+				</button>
+
+				{#if showAdvancedConfig}
+					<div class="mt-3 p-3 bg-white rounded-lg border border-gray-200">
+						<ClusterConfigEditor
+							healthChecks={config.newClusterConfig.healthChecks || []}
+							circuitBreakers={config.newClusterConfig.circuitBreakers || null}
+							outlierDetection={config.newClusterConfig.outlierDetection || null}
+							onHealthChecksChange={handleHealthChecksChange}
+							onCircuitBreakersChange={handleCircuitBreakersChange}
+							onOutlierDetectionChange={handleOutlierDetectionChange}
+							compact={true}
+						/>
+					</div>
+				{/if}
+			</div>
 		</div>
 	{/if}
 </div>

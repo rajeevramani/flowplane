@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::auth::hashing;
+use crate::auth::models::AuthContext;
 use crate::auth::user::{
     NewUser, NewUserTeamMembership, UpdateUser, User, UserStatus, UserTeamMembership,
 };
@@ -60,6 +61,7 @@ impl UserService {
         name: String,
         is_admin: bool,
         created_by: Option<String>,
+        auth_context: Option<&AuthContext>,
     ) -> Result<User> {
         // Normalize email
         let email = User::normalize_email(&email);
@@ -86,18 +88,23 @@ impl UserService {
         let user = self.user_repository.create_user(new_user).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.created",
-                Some(user.id.as_str()),
-                Some(&email),
-                serde_json::json!({
-                    "name": name,
-                    "is_admin": is_admin,
-                    "created_by": created_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.created",
+            Some(user.id.as_str()),
+            Some(&email),
+            serde_json::json!({
+                "name": name,
+                "is_admin": is_admin,
+                "created_by": created_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(user)
     }
@@ -131,6 +138,7 @@ impl UserService {
         id: &UserId,
         update: UpdateUser,
         updated_by: Option<String>,
+        auth_context: Option<&AuthContext>,
     ) -> Result<User> {
         // Verify user exists
         let existing = self
@@ -156,22 +164,27 @@ impl UserService {
         let updated_user = self.user_repository.update_user(id, update.clone()).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.updated",
-                Some(id.as_str()),
-                Some(&updated_user.email),
-                serde_json::json!({
-                    "changes": {
-                        "email": update.email,
-                        "name": update.name,
-                        "status": update.status.map(|s| s.to_string()),
-                        "is_admin": update.is_admin,
-                    },
-                    "updated_by": updated_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.updated",
+            Some(id.as_str()),
+            Some(&updated_user.email),
+            serde_json::json!({
+                "changes": {
+                    "email": update.email,
+                    "name": update.name,
+                    "status": update.status.map(|s| s.to_string()),
+                    "is_admin": update.is_admin,
+                },
+                "updated_by": updated_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(updated_user)
     }
@@ -184,6 +197,7 @@ impl UserService {
         id: &UserId,
         new_password: String,
         changed_by: Option<String>,
+        auth_context: Option<&AuthContext>,
     ) -> Result<()> {
         // Verify user exists
         let user = self
@@ -199,16 +213,21 @@ impl UserService {
         self.user_repository.update_password(id, password_hash).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.password_changed",
-                Some(id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "changed_by": changed_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.password_changed",
+            Some(id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "changed_by": changed_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(())
     }
@@ -222,6 +241,7 @@ impl UserService {
         id: &UserId,
         current_password: String,
         new_password: String,
+        auth_context: Option<&AuthContext>,
     ) -> Result<()> {
         use crate::errors::AuthErrorType;
 
@@ -256,17 +276,22 @@ impl UserService {
         self.user_repository.update_password(id, password_hash).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.password_changed",
-                Some(id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "changed_by": format!("user:{}", id.as_str()),
-                    "self_service": true,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.password_changed",
+            Some(id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "changed_by": format!("user:{}", id.as_str()),
+                "self_service": true,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(())
     }
@@ -274,7 +299,12 @@ impl UserService {
     /// Delete a user account.
     ///
     /// This will cascade delete all team memberships for the user.
-    pub async fn delete_user(&self, id: &UserId, deleted_by: Option<String>) -> Result<()> {
+    pub async fn delete_user(
+        &self,
+        id: &UserId,
+        deleted_by: Option<String>,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<()> {
         // Verify user exists
         let user = self
             .user_repository
@@ -286,17 +316,22 @@ impl UserService {
         self.user_repository.delete_user(id).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.deleted",
-                Some(id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "name": user.name,
-                    "deleted_by": deleted_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.deleted",
+            Some(id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "name": user.name,
+                "deleted_by": deleted_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(())
     }
@@ -308,6 +343,7 @@ impl UserService {
         team: String,
         scopes: Vec<String>,
         created_by: Option<String>,
+        auth_context: Option<&AuthContext>,
     ) -> Result<UserTeamMembership> {
         // Verify user exists
         let user = self
@@ -348,18 +384,23 @@ impl UserService {
         let membership = self.membership_repository.create_membership(new_membership).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.team_membership_added",
-                Some(user_id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "team": team,
-                    "scopes": scopes,
-                    "created_by": created_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.team_membership_added",
+            Some(user_id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "team": team,
+                "scopes": scopes,
+                "created_by": created_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(membership)
     }
@@ -370,6 +411,7 @@ impl UserService {
         user_id: &UserId,
         team: &str,
         removed_by: Option<String>,
+        auth_context: Option<&AuthContext>,
     ) -> Result<()> {
         // Verify user exists
         let user = self
@@ -388,17 +430,22 @@ impl UserService {
         self.membership_repository.delete_membership(&membership.id).await?;
 
         // Log audit event
-        self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "user.team_membership_removed",
-                Some(user_id.as_str()),
-                Some(&user.email),
-                serde_json::json!({
-                    "team": team,
-                    "removed_by": removed_by,
-                }),
-            ))
-            .await?;
+        let event = AuditEvent::token(
+            "user.team_membership_removed",
+            Some(user_id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "team": team,
+                "removed_by": removed_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
 
         Ok(())
     }
@@ -473,6 +520,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 Some("admin".to_string()),
+                None,
             )
             .await
             .expect("create user");
@@ -495,6 +543,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create first user");
@@ -506,6 +555,7 @@ mod tests {
                 "Password456".to_string(),
                 "Another User".to_string(),
                 false,
+                None,
                 None,
             )
             .await;
@@ -524,6 +574,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
             )
             .await
@@ -550,6 +601,7 @@ mod tests {
                     format!("User {}", i),
                     false,
                     None,
+                    None,
                 )
                 .await
                 .expect("create user");
@@ -570,6 +622,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -582,7 +635,7 @@ mod tests {
         };
 
         let updated = service
-            .update_user(&user.id, update, Some("admin".to_string()))
+            .update_user(&user.id, update, Some("admin".to_string()), None)
             .await
             .expect("update user");
 
@@ -602,11 +655,12 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
 
-        service.delete_user(&user.id, Some("admin".to_string())).await.expect("delete user");
+        service.delete_user(&user.id, Some("admin".to_string()), None).await.expect("delete user");
 
         let fetched = service.get_user(&user.id).await.expect("get user");
         assert!(fetched.is_none());
@@ -626,6 +680,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -636,6 +691,7 @@ mod tests {
                 "team-alpha".to_string(),
                 vec!["read".to_string(), "write".to_string()],
                 Some("admin".to_string()),
+                None,
             )
             .await
             .expect("add team membership");
@@ -659,17 +715,24 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
 
         service
-            .add_team_membership(&user.id, "team-alpha".to_string(), vec!["read".to_string()], None)
+            .add_team_membership(
+                &user.id,
+                "team-alpha".to_string(),
+                vec!["read".to_string()],
+                None,
+                None,
+            )
             .await
             .expect("add team membership");
 
         service
-            .remove_team_membership(&user.id, "team-alpha", Some("admin".to_string()))
+            .remove_team_membership(&user.id, "team-alpha", Some("admin".to_string()), None)
             .await
             .expect("remove team membership");
 
@@ -695,6 +758,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -702,7 +766,13 @@ mod tests {
         // Add multiple team memberships
         for team in ["team-alpha", "team-beta", "team-gamma"] {
             service
-                .add_team_membership(&user.id, team.to_string(), vec!["read".to_string()], None)
+                .add_team_membership(
+                    &user.id,
+                    team.to_string(),
+                    vec!["read".to_string()],
+                    None,
+                    None,
+                )
                 .await
                 .expect("add team membership");
         }
@@ -722,6 +792,7 @@ mod tests {
                 "Test User".to_string(),
                 false,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -732,6 +803,7 @@ mod tests {
                 &user.id,
                 "nonexistent-team".to_string(),
                 vec!["read".to_string()],
+                None,
                 None,
             )
             .await;

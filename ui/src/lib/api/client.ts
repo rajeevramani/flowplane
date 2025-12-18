@@ -23,6 +23,7 @@ import type {
 	RouteResponse,
 	ClusterResponse,
 	BootstrapConfigRequest,
+	BootstrapConfigRequestWithMtls,
 	ListTeamsResponse,
 	TeamResponse,
 	CreateTeamRequest,
@@ -43,7 +44,44 @@ import type {
 	UpdateRouteBody,
 	CreateListenerBody,
 	UpdateListenerBody,
-	ListScopesResponse
+	ListScopesResponse,
+	FilterResponse,
+	CreateFilterRequest,
+	UpdateFilterRequest,
+	AttachFilterRequest,
+	RouteFiltersResponse,
+	ListenerFiltersResponse,
+	VirtualHostSummary,
+	RouteSummary,
+	VirtualHostFiltersResponse,
+	RouteHierarchyFiltersResponse,
+	MtlsStatusResponse,
+	GenerateCertificateRequest,
+	GenerateCertificateResponse,
+	CertificateMetadata,
+	ListCertificatesResponse,
+	ListCertificatesQuery,
+	FilterTypesResponse,
+	FilterTypeInfo,
+	StatsEnabledResponse,
+	StatsOverviewResponse,
+	ClustersStatsResponse,
+	ClusterStatsResponse,
+	AppStatusResponse,
+	SetAppStatusRequest,
+	SecretResponse,
+	CreateSecretRequest,
+	CreateSecretReferenceRequest,
+	UpdateSecretRequest,
+	ListSecretsQuery,
+	// Filter Install/Configure types
+	InstallFilterRequest,
+	InstallFilterResponse,
+	FilterInstallationsResponse,
+	ConfigureFilterRequest,
+	ConfigureFilterResponse,
+	FilterConfigurationsResponse,
+	FilterStatusResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -339,9 +377,9 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/listeners/${name}`);
 	}
 
-	// Route methods
-	async listRoutes(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
-		let path = '/api/v1/routes';
+	// Route Config methods
+	async listRouteConfigs(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
+		let path = '/api/v1/route-configs';
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -350,16 +388,16 @@ class ApiClient {
 		return this.get<RouteResponse[]>(path);
 	}
 
-	async getRoute(name: string): Promise<RouteResponse> {
-		return this.get<RouteResponse>(`/api/v1/routes/${name}`);
+	async getRouteConfig(name: string): Promise<RouteResponse> {
+		return this.get<RouteResponse>(`/api/v1/route-configs/${name}`);
 	}
 
-	async deleteRoute(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/routes/${name}`);
+	async deleteRouteConfig(name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/route-configs/${name}`);
 	}
 
-	async updateRoute(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
-		return this.put<RouteResponse>(`/api/v1/routes/${name}`, body);
+	async updateRouteConfig(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/route-configs/${name}`, body);
 	}
 
 	// Cluster methods
@@ -385,8 +423,12 @@ class ApiClient {
 		return this.post<ClusterResponse>('/api/v1/clusters', body);
 	}
 
-	async createRoute(body: CreateRouteBody): Promise<RouteResponse> {
-		return this.post<RouteResponse>('/api/v1/routes', body);
+	async updateCluster(name: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.put<ClusterResponse>(`/api/v1/clusters/${name}`, body);
+	}
+
+	async createRouteConfig(body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>('/api/v1/route-configs', body);
 	}
 
 	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
@@ -398,9 +440,16 @@ class ApiClient {
 	}
 
 	// Bootstrap configuration methods
-	async getBootstrapConfig(request: BootstrapConfigRequest): Promise<string> {
+	async getBootstrapConfig(request: BootstrapConfigRequest | BootstrapConfigRequestWithMtls): Promise<string> {
 		const params = new URLSearchParams();
 		if (request.format) params.append('format', request.format);
+
+		// Handle mTLS options if present
+		const mtlsRequest = request as BootstrapConfigRequestWithMtls;
+		if (mtlsRequest.mtls !== undefined) params.append('mtls', mtlsRequest.mtls.toString());
+		if (mtlsRequest.certPath) params.append('cert_path', mtlsRequest.certPath);
+		if (mtlsRequest.keyPath) params.append('key_path', mtlsRequest.keyPath);
+		if (mtlsRequest.caPath) params.append('ca_path', mtlsRequest.caPath);
 
 		const path = `/api/v1/teams/${request.team}/bootstrap${params.toString() ? `?${params.toString()}` : ''}`;
 
@@ -515,6 +564,450 @@ class ApiClient {
 	// Admin scope methods
 	async listAllScopes(): Promise<ListScopesResponse> {
 		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
+	}
+
+	// Filter methods
+	async listFilters(params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
+		let path = '/api/v1/filters';
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+		if (searchParams.toString()) path += `?${searchParams.toString()}`;
+
+		return this.get<FilterResponse[]>(path);
+	}
+
+	async getFilter(id: string): Promise<FilterResponse> {
+		return this.get<FilterResponse>(`/api/v1/filters/${id}`);
+	}
+
+	async createFilter(body: CreateFilterRequest): Promise<FilterResponse> {
+		return this.post<FilterResponse>('/api/v1/filters', body);
+	}
+
+	async updateFilter(id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
+		return this.put<FilterResponse>(`/api/v1/filters/${id}`, body);
+	}
+
+	async deleteFilter(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/filters/${id}`);
+	}
+
+	// Route Config Filter attachment methods
+	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
+		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
+	}
+
+	async attachFilterToRouteConfig(routeConfigName: string, body: AttachFilterRequest): Promise<void> {
+		return this.post<void>(`/api/v1/route-configs/${routeConfigName}/filters`, body);
+	}
+
+	async detachFilterFromRouteConfig(routeConfigName: string, filterId: string): Promise<void> {
+		return this.delete<void>(`/api/v1/route-configs/${routeConfigName}/filters/${filterId}`);
+	}
+
+	// Listener-Filter attachment methods
+	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
+		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
+	}
+
+	async attachFilterToListener(listenerId: string, body: AttachFilterRequest): Promise<void> {
+		return this.post<void>(`/api/v1/listeners/${listenerId}/filters`, body);
+	}
+
+	async detachFilterFromListener(listenerId: string, filterId: string): Promise<void> {
+		return this.delete<void>(`/api/v1/listeners/${listenerId}/filters/${filterId}`);
+	}
+
+	// ============================================================================
+	// Route Hierarchy Methods (Virtual Hosts and Routes within RouteConfigs)
+	// ============================================================================
+
+	// List virtual hosts within a route config
+	async listVirtualHosts(routeConfigName: string): Promise<VirtualHostSummary[]> {
+		const response = await this.get<{ routeConfigName: string; virtualHosts: VirtualHostSummary[] }>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts`
+		);
+		return response.virtualHosts;
+	}
+
+	// List routes within a virtual host
+	async listRoutesInVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string
+	): Promise<RouteSummary[]> {
+		const response = await this.get<{
+			routeConfigName: string;
+			virtualHostName: string;
+			routes: RouteSummary[];
+		}>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`);
+		return response.routes;
+	}
+
+	// Virtual Host Filter Attachment
+	async listVirtualHostFilters(
+		routeConfigName: string,
+		virtualHostName: string
+	): Promise<VirtualHostFiltersResponse> {
+		return this.get<VirtualHostFiltersResponse>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`
+		);
+	}
+
+	async attachFilterToVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string,
+		body: AttachFilterRequest
+	): Promise<void> {
+		return this.post<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`,
+			body
+		);
+	}
+
+	async detachFilterFromVirtualHost(
+		routeConfigName: string,
+		virtualHostName: string,
+		filterId: string
+	): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters/${filterId}`
+		);
+	}
+
+	// Route (within Virtual Host) Filter Attachment
+	async listRouteHierarchyFilters(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string
+	): Promise<RouteHierarchyFiltersResponse> {
+		return this.get<RouteHierarchyFiltersResponse>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
+		);
+	}
+
+	async attachFilterToRoute(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string,
+		body: AttachFilterRequest
+	): Promise<void> {
+		return this.post<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`,
+			body
+		);
+	}
+
+	async detachFilterFromRoute(
+		routeConfigName: string,
+		virtualHostName: string,
+		routeName: string,
+		filterId: string
+	): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters/${filterId}`
+		);
+	}
+
+	// ============================================================================
+	// mTLS and Proxy Certificate Methods
+	// ============================================================================
+
+	/**
+	 * Get mTLS configuration status for the control plane.
+	 * This endpoint helps understand whether mTLS is enabled and properly configured.
+	 */
+	async getMtlsStatus(): Promise<MtlsStatusResponse> {
+		return this.get<MtlsStatusResponse>('/api/v1/mtls/status');
+	}
+
+	/**
+	 * Generate a new proxy certificate for mTLS authentication.
+	 * The private key is only returned once at generation time.
+	 */
+	async generateProxyCertificate(
+		team: string,
+		request: GenerateCertificateRequest
+	): Promise<GenerateCertificateResponse> {
+		return this.post<GenerateCertificateResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates`,
+			request
+		);
+	}
+
+	/**
+	 * List all proxy certificates for a team.
+	 * Returns certificate metadata without private keys.
+	 */
+	async listProxyCertificates(
+		team: string,
+		query?: ListCertificatesQuery
+	): Promise<ListCertificatesResponse> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<ListCertificatesResponse>(path);
+	}
+
+	/**
+	 * Get a specific proxy certificate by ID.
+	 * Returns certificate metadata without the private key.
+	 */
+	async getProxyCertificate(team: string, id: string): Promise<CertificateMetadata> {
+		return this.get<CertificateMetadata>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Revoke a proxy certificate.
+	 */
+	async revokeProxyCertificate(
+		team: string,
+		id: string,
+		reason: string
+	): Promise<CertificateMetadata> {
+		return this.post<CertificateMetadata>(
+			`/api/v1/teams/${encodeURIComponent(team)}/proxy-certificates/${encodeURIComponent(id)}/revoke`,
+			{ reason }
+		);
+	}
+
+	// ============================================================================
+	// Filter Types API (Dynamic Filter Framework)
+	// ============================================================================
+
+	/**
+	 * List all available filter types with their schemas.
+	 * Used for dynamic form generation and filter type selection.
+	 */
+	async listFilterTypes(): Promise<FilterTypesResponse> {
+		return this.get<FilterTypesResponse>('/api/v1/filter-types');
+	}
+
+	/**
+	 * Get information about a specific filter type.
+	 * Returns the full schema and UI hints for form generation.
+	 */
+	async getFilterType(filterType: string): Promise<FilterTypeInfo> {
+		return this.get<FilterTypeInfo>(`/api/v1/filter-types/${encodeURIComponent(filterType)}`);
+	}
+
+	/**
+	 * Reload filter schemas from the schema directory (admin only).
+	 * This allows hot-reloading of custom filter schemas.
+	 */
+	async reloadFilterSchemas(): Promise<void> {
+		return this.post<void>('/api/v1/admin/filter-schemas/reload', {});
+	}
+
+	// ============================================================================
+	// Stats Dashboard API
+	// ============================================================================
+
+	/**
+	 * Check if the stats dashboard is enabled.
+	 */
+	async isStatsEnabled(): Promise<StatsEnabledResponse> {
+		return this.get<StatsEnabledResponse>('/api/v1/stats/enabled');
+	}
+
+	/**
+	 * Get stats overview for a team.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getStatsOverview(team: string): Promise<StatsOverviewResponse> {
+		return this.get<StatsOverviewResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/overview`
+		);
+	}
+
+	/**
+	 * Get all cluster stats for a team.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getClusterStats(team: string): Promise<ClustersStatsResponse> {
+		return this.get<ClustersStatsResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/clusters`
+		);
+	}
+
+	/**
+	 * Get stats for a specific cluster.
+	 * Requires team:X:stats:read scope.
+	 */
+	async getClusterStatsById(team: string, clusterName: string): Promise<ClusterStatsResponse> {
+		return this.get<ClusterStatsResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/stats/clusters/${encodeURIComponent(clusterName)}`
+		);
+	}
+
+	// ============================================================================
+	// Admin App Management API
+	// ============================================================================
+
+	/**
+	 * List all instance apps (admin only).
+	 */
+	async listApps(): Promise<AppStatusResponse[]> {
+		return this.get<AppStatusResponse[]>('/api/v1/admin/apps');
+	}
+
+	/**
+	 * Get a specific app status (admin only).
+	 */
+	async getAppStatus(appId: string): Promise<AppStatusResponse> {
+		return this.get<AppStatusResponse>(
+			`/api/v1/admin/apps/${encodeURIComponent(appId)}`
+		);
+	}
+
+	/**
+	 * Enable or disable an app (admin only).
+	 */
+	async setAppStatus(appId: string, request: SetAppStatusRequest): Promise<AppStatusResponse> {
+		return this.put<AppStatusResponse>(
+			`/api/v1/admin/apps/${encodeURIComponent(appId)}`,
+			request
+		);
+	}
+
+	// ============================================================================
+	// Secret Management API
+	// ============================================================================
+
+	/**
+	 * List all secrets for a team.
+	 */
+	async listSecrets(team: string, query?: ListSecretsQuery): Promise<SecretResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+		if (query?.secret_type) params.append('secret_type', query.secret_type);
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/secrets${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<SecretResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific secret by ID.
+	 */
+	async getSecret(team: string, secretId: string): Promise<SecretResponse> {
+		return this.get<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`
+		);
+	}
+
+	/**
+	 * Create a new secret with direct storage.
+	 */
+	async createSecret(team: string, request: CreateSecretRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets`,
+			request
+		);
+	}
+
+	/**
+	 * Create a new secret with external reference.
+	 */
+	async createSecretReference(team: string, request: CreateSecretReferenceRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/reference`,
+			request
+		);
+	}
+
+	/**
+	 * Update an existing secret.
+	 */
+	async updateSecret(team: string, secretId: string, request: UpdateSecretRequest): Promise<SecretResponse> {
+		return this.put<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`,
+			request
+		);
+	}
+
+	/**
+	 * Delete a secret.
+	 */
+	async deleteSecret(team: string, secretId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`
+		);
+	}
+
+	// ============================================================================
+	// Filter Install/Configure API (Filter Install/Configure Redesign)
+	// ============================================================================
+
+	/**
+	 * Install a filter on a listener.
+	 * This adds the filter to the listener's HCM filter chain.
+	 */
+	async installFilter(filterId: string, request: InstallFilterRequest): Promise<InstallFilterResponse> {
+		return this.post<InstallFilterResponse>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`,
+			request
+		);
+	}
+
+	/**
+	 * Uninstall a filter from a listener.
+	 */
+	async uninstallFilter(filterId: string, listenerId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/installations/${encodeURIComponent(listenerId)}`
+		);
+	}
+
+	/**
+	 * List all listener installations for a filter.
+	 */
+	async listFilterInstallations(filterId: string): Promise<FilterInstallationsResponse> {
+		return this.get<FilterInstallationsResponse>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`
+		);
+	}
+
+	/**
+	 * Configure a filter for a scope (route-config, virtual-host, or route).
+	 * This sets per-route behavior for the filter.
+	 */
+	async configureFilter(filterId: string, request: ConfigureFilterRequest): Promise<ConfigureFilterResponse> {
+		return this.post<ConfigureFilterResponse>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`,
+			request
+		);
+	}
+
+	/**
+	 * Remove a filter configuration from a scope.
+	 */
+	async removeFilterConfiguration(filterId: string, scopeType: string, scopeId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`
+		);
+	}
+
+	/**
+	 * List all configurations for a filter.
+	 */
+	async listFilterConfigurations(filterId: string): Promise<FilterConfigurationsResponse> {
+		return this.get<FilterConfigurationsResponse>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`
+		);
+	}
+
+	/**
+	 * Get combined filter status with all installations and configurations.
+	 */
+	async getFilterStatus(filterId: string): Promise<FilterStatusResponse> {
+		return this.get<FilterStatusResponse>(
+			`/api/v1/filters/${encodeURIComponent(filterId)}/status`
+		);
 	}
 }
 

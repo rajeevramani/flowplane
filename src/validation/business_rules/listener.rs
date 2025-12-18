@@ -26,10 +26,7 @@ pub fn validate_listener_address_port(address: &str, port: u32) -> Result<()> {
     }
 
     if !is_valid_address_format(address) {
-        return Err(FlowplaneError::validation_field(
-            "Invalid address format",
-            "address",
-        ));
+        return Err(FlowplaneError::validation_field("Invalid address format", "address"));
     }
 
     Ok(())

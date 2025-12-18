@@ -157,6 +157,8 @@ impl ExtProcConfig {
             send_body_without_waiting_for_header_response: false,
             allowed_override_modes: Vec::new(),
             on_processing_response: None,
+            processing_request_modifier: None,
+            status_on_error: None,
         };
 
         Ok(any_from_message(EXT_PROC_TYPE_URL, &proto))

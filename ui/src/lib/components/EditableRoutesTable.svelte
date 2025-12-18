@@ -7,15 +7,47 @@
 	} from '$lib/api/types';
 	import Badge from './Badge.svelte';
 
+	export type RouteActionType = 'forward' | 'weighted' | 'redirect';
+
+	export interface WeightedCluster {
+		name: string;
+		weight: number;
+	}
+
+	export interface RetryBackoff {
+		baseIntervalMs?: number;
+		maxIntervalMs?: number;
+	}
+
+	export interface RetryPolicy {
+		maxRetries: number;
+		retryOn: string[];
+		perTryTimeoutSeconds?: number;
+		backoff?: RetryBackoff;
+	}
+
 	export interface RouteRule {
 		id: string;
 		method: string;
 		path: string;
 		pathType: PathMatchType;
-		cluster: string;
+		actionType: RouteActionType;
+		// Forward action fields
+		cluster?: string;
+		prefixRewrite?: string;
+		templateRewrite?: string;
+		timeoutSeconds?: number;
+		retryPolicy?: RetryPolicy;
+		// Weighted action fields
+		weightedClusters?: WeightedCluster[];
+		totalWeight?: number;
+		// Redirect action fields
+		hostRedirect?: string;
+		pathRedirect?: string;
+		responseCode?: number;
+		// Common matchers
 		headers?: HeaderMatchDefinition[];
 		queryParams?: QueryParameterMatchDefinition[];
-		timeoutSeconds?: number;
 	}
 
 	interface Props {
@@ -29,22 +61,22 @@
 
 	function getMethodVariant(
 		method: string
-	): 'primary' | 'success' | 'warning' | 'error' | 'default' {
+	): 'blue' | 'green' | 'yellow' | 'red' | 'gray' {
 		switch (method.toUpperCase()) {
 			case 'GET':
-				return 'success';
+				return 'green';
 			case 'POST':
-				return 'primary';
+				return 'blue';
 			case 'PUT':
-				return 'warning';
+				return 'yellow';
 			case 'PATCH':
-				return 'warning';
+				return 'yellow';
 			case 'DELETE':
-				return 'error';
+				return 'red';
 			case '*':
-				return 'default';
+				return 'gray';
 			default:
-				return 'default';
+				return 'gray';
 		}
 	}
 
@@ -54,6 +86,43 @@
 			return cluster.name;
 		}
 		return clusterName;
+	}
+
+	function getActionBadgeVariant(actionType: RouteActionType): 'blue' | 'yellow' | 'gray' {
+		switch (actionType) {
+			case 'forward':
+				return 'blue';
+			case 'weighted':
+				return 'yellow';
+			case 'redirect':
+				return 'gray';
+			default:
+				return 'gray';
+		}
+	}
+
+	function getTargetDisplay(route: RouteRule): string {
+		const actionType = route.actionType || 'forward';
+		switch (actionType) {
+			case 'forward':
+				const cluster = route.cluster ? getClusterDisplay(route.cluster) : '-';
+				const rewrite = route.prefixRewrite || route.templateRewrite;
+				return rewrite ? `${cluster} (rewrite: ${rewrite})` : cluster;
+			case 'weighted':
+				if (route.weightedClusters && route.weightedClusters.length > 0) {
+					const totalWeight = route.totalWeight || route.weightedClusters.reduce((sum, c) => sum + c.weight, 0);
+					return route.weightedClusters.map(c => `${c.name}: ${Math.round(c.weight / totalWeight * 100)}%`).join(', ');
+				}
+				return '-';
+			case 'redirect':
+				const parts = [];
+				if (route.hostRedirect) parts.push(route.hostRedirect);
+				if (route.pathRedirect) parts.push(route.pathRedirect);
+				const code = route.responseCode || 302;
+				return parts.length > 0 ? `${code} -> ${parts.join('')}` : `${code} redirect`;
+			default:
+				return route.cluster || '-';
+		}
 	}
 </script>
 
@@ -80,11 +149,15 @@
 					>
 					<th
 						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-						>Cluster</th
+						>Action</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Target</th
 					>
 					<th
 						class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"
-						>Actions</th
+						></th
 					>
 				</tr>
 			</thead>
@@ -108,7 +181,25 @@
 							<span class="text-sm text-gray-600">{route.pathType}</span>
 						</td>
 						<td class="px-4 py-3 whitespace-nowrap">
-							<span class="text-sm text-gray-900">{getClusterDisplay(route.cluster)}</span>
+							<div class="flex items-center gap-1.5">
+								<Badge variant={getActionBadgeVariant(route.actionType || 'forward')}>
+									{(route.actionType || 'forward').charAt(0).toUpperCase() + (route.actionType || 'forward').slice(1)}
+								</Badge>
+								{#if route.retryPolicy}
+									<span
+										class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700"
+										title="Retry: {route.retryPolicy.maxRetries}x on {route.retryPolicy.retryOn.join(', ')}"
+									>
+										<svg class="h-3 w-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+										</svg>
+										{route.retryPolicy.maxRetries}
+									</span>
+								{/if}
+							</div>
+						</td>
+						<td class="px-4 py-3">
+							<span class="text-sm text-gray-900 truncate max-w-xs block" title={getTargetDisplay(route)}>{getTargetDisplay(route)}</span>
 						</td>
 						<td class="px-4 py-3 whitespace-nowrap text-right">
 							<div class="flex items-center justify-end gap-1">

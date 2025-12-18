@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { RouteResponse } from '$lib/api/types';
 	import Badge from './Badge.svelte';
-	import RouteDetailRow, { type RouteDetail } from './RouteDetailRow.svelte';
+	import RouteDetailRow, { type RouteDetail, type RetryPolicy } from './RouteDetailRow.svelte';
 
 	interface Props {
 		routes: RouteResponse[];
@@ -73,13 +73,83 @@
 						path = pathMatch.value || pathMatch.template || '';
 					}
 
+					// Handle Rust enum serialization: action is { "Cluster": {...} } or { "WeightedClusters": {...} }
+					const clusterAction = r.action?.Cluster || r.action;
+					const weightedAction = r.action?.WeightedClusters;
+
+					// Extract cluster name (handle both 'name' and 'cluster' field names)
+					let cluster = '';
+					if (clusterAction?.name) {
+						cluster = clusterAction.name;
+					} else if (clusterAction?.cluster) {
+						cluster = clusterAction.cluster;
+					} else if (weightedAction?.clusters) {
+						cluster = weightedAction.clusters.map((c: { name: string }) => c.name).join(', ');
+					} else if (r.route?.cluster) {
+						cluster = r.route.cluster;
+					}
+
+					// Extract rewrite info (from Cluster variant or flat structure)
+					const prefixRewrite = clusterAction?.prefix_rewrite || clusterAction?.prefixRewrite || r.route?.prefixRewrite;
+					const templateRewrite = clusterAction?.path_template_rewrite || clusterAction?.templateRewrite || r.route?.regexRewrite?.substitution;
+
+					// Extract retry policy (from Cluster variant or flat structure)
+					const rawRetryPolicy = clusterAction?.retry_policy || clusterAction?.retryPolicy || r.route?.retryPolicy;
+					let retryPolicy: RouteDetail['retryPolicy'] | undefined;
+
+					if (rawRetryPolicy) {
+						// Handle retry_on as array (backend) or string (legacy)
+						const retryOn = rawRetryPolicy.retry_on || rawRetryPolicy.retryOn;
+						const retryOnStr = Array.isArray(retryOn) ? retryOn.join(', ') : retryOn;
+
+						// Handle perTryTimeout from multiple possible field names
+						let perTryTimeout: string | undefined;
+						if (rawRetryPolicy.per_try_timeout_seconds) {
+							perTryTimeout = `${rawRetryPolicy.per_try_timeout_seconds}s`;
+						} else if (rawRetryPolicy.perTryTimeoutSeconds) {
+							perTryTimeout = `${rawRetryPolicy.perTryTimeoutSeconds}s`;
+						} else if (rawRetryPolicy.perTryTimeout) {
+							perTryTimeout = rawRetryPolicy.perTryTimeout;
+						}
+
+						// Handle backoff from multiple possible structures
+						let retryBackOff: RetryPolicy['retryBackOff'] | undefined;
+						if (rawRetryPolicy.base_interval_ms || rawRetryPolicy.max_interval_ms) {
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.base_interval_ms ? `${rawRetryPolicy.base_interval_ms}ms` : undefined,
+								maxInterval: rawRetryPolicy.max_interval_ms ? `${rawRetryPolicy.max_interval_ms}ms` : undefined
+							};
+						} else if (rawRetryPolicy.backoff) {
+							// Handle camelCase backoff object from API
+							retryBackOff = {
+								baseInterval: rawRetryPolicy.backoff.baseIntervalMs ? `${rawRetryPolicy.backoff.baseIntervalMs}ms` : undefined,
+								maxInterval: rawRetryPolicy.backoff.maxIntervalMs ? `${rawRetryPolicy.backoff.maxIntervalMs}ms` : undefined
+							};
+						} else if (rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off) {
+							retryBackOff = rawRetryPolicy.retryBackOff || rawRetryPolicy.retry_back_off;
+						}
+
+						retryPolicy = {
+							numRetries: rawRetryPolicy.num_retries ?? rawRetryPolicy.numRetries ?? rawRetryPolicy.maxRetries,
+							retryOn: retryOnStr,
+							perTryTimeout,
+							retryBackOff
+						};
+					}
+
+					// Extract timeout (from Cluster variant or flat structure)
+					const timeout = clusterAction?.timeout ?? clusterAction?.timeoutSeconds ?? r.route?.timeout;
+
 					details.push({
 						name: r.name,
 						method,
 						path,
 						matchType,
-						cluster: r.action?.cluster || '',
-						timeout: r.action?.timeoutSeconds
+						cluster,
+						timeout,
+						prefixRewrite,
+						templateRewrite,
+						retryPolicy
 					});
 				}
 			}

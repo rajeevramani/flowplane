@@ -48,7 +48,7 @@ async fn dynamic_scope_derivation_post_requires_write() {
     // Create a token with only routes:write scope
     let token = app.issue_token("write-only", &["routes:write"]).await;
 
-    // POST /api/v1/routes should succeed (requires routes:write)
+    // POST /api/v1/route-configs should succeed (requires routes:write)
     let payload = json!({
         "name": "test-routes",
         "virtual_hosts": [{
@@ -61,8 +61,14 @@ async fn dynamic_scope_derivation_post_requires_write() {
             }]
         }]
     });
-    let response =
-        send_request(&app, Method::POST, "/api/v1/routes", Some(&token.token), Some(payload)).await;
+    let response = send_request(
+        &app,
+        Method::POST,
+        "/api/v1/route-configs",
+        Some(&token.token),
+        Some(payload),
+    )
+    .await;
     // Expect 201 CREATED or error due to missing cluster, but NOT 403 (scope check passes)
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -146,7 +152,7 @@ async fn dynamic_scope_derivation_admin_all_bypasses_checks() {
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 
     let response =
-        send_request(&app, Method::GET, "/api/v1/routes", Some(&token.token), None).await;
+        send_request(&app, Method::GET, "/api/v1/route-configs", Some(&token.token), None).await;
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 
     let response =
@@ -161,9 +167,9 @@ async fn dynamic_scope_derivation_wrong_resource_fails() {
     // Create a token with only clusters:read scope
     let token = app.issue_token("cluster-reader", &["clusters:read"]).await;
 
-    // GET /api/v1/routes should fail (requires routes:read, not clusters:read)
+    // GET /api/v1/route-configs should fail (requires routes:read, not clusters:read)
     let response =
-        send_request(&app, Method::GET, "/api/v1/routes", Some(&token.token), None).await;
+        send_request(&app, Method::GET, "/api/v1/route-configs", Some(&token.token), None).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     // GET /api/v1/listeners should fail (requires listeners:read, not clusters:read)

@@ -203,30 +203,30 @@ impl DatabaseConfig {
 
     /// Create DatabaseConfig from environment variables
     pub fn from_env() -> Self {
-        let url = std::env::var("DATABASE_URL")
+        let url = std::env::var("FLOWPLANE_DATABASE_URL")
             .unwrap_or_else(|_| "sqlite://./data/flowplane.db".to_string());
 
-        let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+        let max_connections = std::env::var("FLOWPLANE_DATABASE_MAX_CONNECTIONS")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(10);
 
-        let min_connections = std::env::var("DATABASE_MIN_CONNECTIONS")
+        let min_connections = std::env::var("FLOWPLANE_DATABASE_MIN_CONNECTIONS")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
 
-        let connect_timeout_seconds = std::env::var("DATABASE_CONNECT_TIMEOUT_SECONDS")
+        let connect_timeout_seconds = std::env::var("FLOWPLANE_DATABASE_CONNECT_TIMEOUT_SECONDS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(10);
 
-        let idle_timeout_seconds = std::env::var("DATABASE_IDLE_TIMEOUT_SECONDS")
+        let idle_timeout_seconds = std::env::var("FLOWPLANE_DATABASE_IDLE_TIMEOUT_SECONDS")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(600);
 
-        let auto_migrate = std::env::var("DATABASE_AUTO_MIGRATE")
+        let auto_migrate = std::env::var("FLOWPLANE_DATABASE_AUTO_MIGRATE")
             .map(|s| s.to_lowercase() == "true" || s == "1")
             .unwrap_or(true);
 

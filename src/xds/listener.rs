@@ -56,6 +56,7 @@ pub struct FilterConfig {
 
 /// REST API representation of filter types
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum FilterType {
     HttpConnectionManager {
         route_config_name: Option<String>,
@@ -90,8 +91,78 @@ pub struct AccessLogConfig {
 /// REST API representation of tracing configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracingConfig {
-    pub provider: String,
-    pub config: HashMap<String, String>,
+    /// The tracing provider type
+    pub provider: TracingProvider,
+    /// Random sampling percentage (0.0 - 100.0)
+    #[serde(default)]
+    pub random_sampling_percentage: Option<f64>,
+    /// Whether to spawn an upstream span for each upstream request
+    #[serde(default)]
+    pub spawn_upstream_span: Option<bool>,
+    /// Custom tags to add to all spans
+    #[serde(default)]
+    pub custom_tags: HashMap<String, String>,
+}
+
+/// Tracing provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TracingProvider {
+    /// OpenTelemetry tracer configuration
+    OpenTelemetry(OpenTelemetryTracingConfig),
+    /// Zipkin tracer configuration
+    Zipkin(ZipkinTracingConfig),
+    /// Generic provider with custom config (for backward compatibility)
+    Generic { name: String, config: HashMap<String, String> },
+}
+
+/// OpenTelemetry tracing provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenTelemetryTracingConfig {
+    /// Service name for traces
+    pub service_name: String,
+    /// gRPC cluster name for the OTLP collector (e.g., "otel_collector")
+    pub grpc_cluster: Option<String>,
+    /// HTTP cluster name for the OTLP collector (alternative to gRPC)
+    pub http_cluster: Option<String>,
+    /// HTTP path for the OTLP endpoint (default: "/v1/traces")
+    #[serde(default)]
+    pub http_path: Option<String>,
+    /// Maximum spans to cache when collector is unavailable
+    #[serde(default)]
+    pub max_cache_size: Option<u32>,
+}
+
+/// Zipkin tracing provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZipkinTracingConfig {
+    /// Cluster name for the Zipkin collector
+    pub collector_cluster: String,
+    /// Collector endpoint path (e.g., "/api/v2/spans")
+    pub collector_endpoint: String,
+    /// Whether to use 128-bit trace IDs
+    #[serde(default)]
+    pub trace_id_128bit: bool,
+    /// Whether client and server spans share context
+    #[serde(default)]
+    pub shared_span_context: Option<bool>,
+    /// Collector endpoint version
+    #[serde(default)]
+    pub collector_endpoint_version: ZipkinEndpointVersion,
+    /// Optional hostname for the collector
+    #[serde(default)]
+    pub collector_hostname: Option<String>,
+}
+
+/// Zipkin collector endpoint version
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZipkinEndpointVersion {
+    /// JSON over HTTP v2 (recommended)
+    #[default]
+    HttpJson,
+    /// Protobuf over HTTP v2
+    HttpProto,
 }
 
 impl ListenerConfig {
@@ -216,8 +287,17 @@ impl FilterConfig {
             }
         };
 
+        // Normalize filter name to canonical Envoy filter name based on filter type
+        // This ensures consistent naming regardless of how the filter was stored in the database
+        let canonical_name = match &self.filter_type {
+            FilterType::HttpConnectionManager { .. } => {
+                "envoy.filters.network.http_connection_manager".to_string()
+            }
+            FilterType::TcpProxy { .. } => "envoy.filters.network.tcp_proxy".to_string(),
+        };
+
         let filter = Filter {
-            name: self.name.clone(),
+            name: canonical_name,
             config_type: Some(
                 envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(
                     typed_config,
@@ -323,13 +403,162 @@ fn build_access_log(cfg: &AccessLogConfig) -> Result<AccessLog, crate::Error> {
 }
 
 fn build_tracing(cfg: &TracingConfig) -> Result<http_connection_manager::Tracing, crate::Error> {
-    if cfg.provider.trim().is_empty() {
+    let http_provider = build_tracing_provider(&cfg.provider)?;
+
+    let mut tracing =
+        http_connection_manager::Tracing { provider: Some(http_provider), ..Default::default() };
+
+    // Set random sampling if configured
+    if let Some(percentage) = cfg.random_sampling_percentage {
+        if !(0.0..=100.0).contains(&percentage) {
+            return Err(crate::Error::config(
+                "random_sampling_percentage must be between 0.0 and 100.0",
+            ));
+        }
+        tracing.random_sampling =
+            Some(envoy_types::pb::envoy::r#type::v3::Percent { value: percentage });
+    }
+
+    // Set spawn upstream span if configured
+    if let Some(spawn) = cfg.spawn_upstream_span {
+        tracing.spawn_upstream_span = Some(BoolValue { value: spawn });
+    }
+
+    // Add custom tags
+    for (key, value) in &cfg.custom_tags {
+        tracing.custom_tags.push(envoy_types::pb::envoy::r#type::tracing::v3::CustomTag {
+            tag: key.clone(),
+            r#type: Some(envoy_types::pb::envoy::r#type::tracing::v3::custom_tag::Type::Literal(
+                envoy_types::pb::envoy::r#type::tracing::v3::custom_tag::Literal {
+                    value: value.clone(),
+                },
+            )),
+        });
+    }
+
+    Ok(tracing)
+}
+
+fn build_tracing_provider(provider: &TracingProvider) -> Result<HttpTracing, crate::Error> {
+    match provider {
+        TracingProvider::OpenTelemetry(otel_cfg) => build_opentelemetry_provider(otel_cfg),
+        TracingProvider::Zipkin(zipkin_cfg) => build_zipkin_provider(zipkin_cfg),
+        TracingProvider::Generic { name, config } => build_generic_provider(name, config),
+    }
+}
+
+fn build_opentelemetry_provider(
+    cfg: &OpenTelemetryTracingConfig,
+) -> Result<HttpTracing, crate::Error> {
+    use envoy_types::pb::envoy::config::trace::v3::OpenTelemetryConfig;
+
+    // Build gRPC or HTTP service configuration
+    let grpc_service = cfg.grpc_cluster.as_ref().map(|cluster| {
+        envoy_types::pb::envoy::config::core::v3::GrpcService {
+            target_specifier: Some(
+                envoy_types::pb::envoy::config::core::v3::grpc_service::TargetSpecifier::EnvoyGrpc(
+                    envoy_types::pb::envoy::config::core::v3::grpc_service::EnvoyGrpc {
+                        cluster_name: cluster.clone(),
+                        authority: String::new(),
+                        retry_policy: None,
+                        max_receive_message_length: None,
+                        skip_envoy_headers: false,
+                    },
+                ),
+            ),
+            timeout: None,
+            initial_metadata: Vec::new(),
+            retry_policy: None,
+        }
+    });
+
+    let http_service = cfg.http_cluster.as_ref().map(|cluster| {
+        envoy_types::pb::envoy::config::core::v3::HttpService {
+            http_uri: Some(envoy_types::pb::envoy::config::core::v3::HttpUri {
+                uri: cfg.http_path.clone().unwrap_or_else(|| "/v1/traces".to_string()),
+                http_upstream_type: Some(
+                    envoy_types::pb::envoy::config::core::v3::http_uri::HttpUpstreamType::Cluster(
+                        cluster.clone(),
+                    ),
+                ),
+                timeout: Some(envoy_types::pb::google::protobuf::Duration { seconds: 5, nanos: 0 }),
+            }),
+            request_headers_to_add: Vec::new(),
+        }
+    });
+
+    // At least one of grpc or http must be configured
+    if grpc_service.is_none() && http_service.is_none() {
+        return Err(crate::Error::config(
+            "OpenTelemetry tracing requires either grpc_cluster or http_cluster",
+        ));
+    }
+
+    let otel_config = OpenTelemetryConfig {
+        service_name: cfg.service_name.clone(),
+        grpc_service,
+        http_service,
+        resource_detectors: Vec::new(),
+        sampler: None,
+        max_cache_size: cfg
+            .max_cache_size
+            .map(|v| envoy_types::pb::google::protobuf::UInt32Value { value: v }),
+    };
+
+    let typed_config = EnvoyAny {
+        type_url: "type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig".to_string(),
+        value: otel_config.encode_to_vec(),
+    };
+
+    Ok(HttpTracing {
+        name: "envoy.tracers.opentelemetry".to_string(),
+        config_type: Some(tracing::http::ConfigType::TypedConfig(typed_config)),
+    })
+}
+
+#[allow(deprecated)] // split_spans_for_request is deprecated but required in struct
+fn build_zipkin_provider(cfg: &ZipkinTracingConfig) -> Result<HttpTracing, crate::Error> {
+    use envoy_types::pb::envoy::config::trace::v3::zipkin_config::CollectorEndpointVersion;
+    use envoy_types::pb::envoy::config::trace::v3::ZipkinConfig;
+
+    let endpoint_version = match cfg.collector_endpoint_version {
+        ZipkinEndpointVersion::HttpJson => CollectorEndpointVersion::HttpJson,
+        ZipkinEndpointVersion::HttpProto => CollectorEndpointVersion::HttpProto,
+    };
+
+    let zipkin_config = ZipkinConfig {
+        collector_cluster: cfg.collector_cluster.clone(),
+        collector_endpoint: cfg.collector_endpoint.clone(),
+        trace_id_128bit: cfg.trace_id_128bit,
+        shared_span_context: cfg.shared_span_context.map(|v| BoolValue { value: v }),
+        collector_endpoint_version: endpoint_version as i32,
+        collector_hostname: cfg.collector_hostname.clone().unwrap_or_default(),
+        split_spans_for_request: false,
+        collector_service: None,
+        trace_context_option: 0,
+    };
+
+    let typed_config = EnvoyAny {
+        type_url: "type.googleapis.com/envoy.config.trace.v3.ZipkinConfig".to_string(),
+        value: zipkin_config.encode_to_vec(),
+    };
+
+    Ok(HttpTracing {
+        name: "envoy.tracers.zipkin".to_string(),
+        config_type: Some(tracing::http::ConfigType::TypedConfig(typed_config)),
+    })
+}
+
+fn build_generic_provider(
+    name: &str,
+    config: &HashMap<String, String>,
+) -> Result<HttpTracing, crate::Error> {
+    if name.trim().is_empty() {
         return Err(crate::Error::config("Tracing provider name cannot be empty"));
     }
 
     let provider_struct = ProstStruct {
-        fields: cfg
-            .config
+        fields: config
             .iter()
             .map(|(key, value)| {
                 (
@@ -349,12 +578,10 @@ fn build_tracing(cfg: &TracingConfig) -> Result<http_connection_manager::Tracing
         value: provider_struct.encode_to_vec(),
     };
 
-    let http_provider = HttpTracing {
-        name: cfg.provider.clone(),
+    Ok(HttpTracing {
+        name: name.to_string(),
         config_type: Some(tracing::http::ConfigType::TypedConfig(provider_any)),
-    };
-
-    Ok(http_connection_manager::Tracing { provider: Some(http_provider), ..Default::default() })
+    })
 }
 
 fn data_source_from_path(path: &str) -> DataSource {
@@ -495,6 +722,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],
@@ -598,6 +826,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],
@@ -661,5 +890,227 @@ mod tests {
         assert_eq!(hcm.http_filters.len(), 2);
         assert_eq!(hcm.http_filters[0].name, "envoy.filters.http.local_ratelimit");
         assert_eq!(hcm.http_filters[1].name, ROUTER_FILTER_NAME);
+    }
+
+    #[test]
+    fn test_opentelemetry_tracing_provider() {
+        use envoy_types::pb::envoy::config::trace::v3::OpenTelemetryConfig;
+
+        let tracing_config = TracingConfig {
+            provider: TracingProvider::OpenTelemetry(OpenTelemetryTracingConfig {
+                service_name: "test-service".to_string(),
+                grpc_cluster: Some("otel_collector".to_string()),
+                http_cluster: None,
+                http_path: None,
+                max_cache_size: Some(1024),
+            }),
+            random_sampling_percentage: Some(50.0),
+            spawn_upstream_span: Some(true),
+            custom_tags: HashMap::from([("env".to_string(), "test".to_string())]),
+        };
+
+        let tracing = build_tracing(&tracing_config).expect("build tracing");
+
+        // Verify provider
+        let provider = tracing.provider.as_ref().expect("provider missing");
+        assert_eq!(provider.name, "envoy.tracers.opentelemetry");
+
+        // Verify sampling
+        let sampling = tracing.random_sampling.as_ref().expect("sampling missing");
+        assert!((sampling.value - 50.0).abs() < 0.001);
+
+        // Verify spawn_upstream_span
+        let spawn = tracing.spawn_upstream_span.as_ref().expect("spawn missing");
+        assert!(spawn.value);
+
+        // Verify custom tags
+        assert_eq!(tracing.custom_tags.len(), 1);
+        assert_eq!(tracing.custom_tags[0].tag, "env");
+
+        // Decode and verify OpenTelemetry config
+        if let Some(tracing::http::ConfigType::TypedConfig(any)) = &provider.config_type {
+            let otel_config =
+                OpenTelemetryConfig::decode(any.value.as_slice()).expect("decode otel config");
+            assert_eq!(otel_config.service_name, "test-service");
+            assert!(otel_config.grpc_service.is_some());
+            assert!(otel_config.max_cache_size.is_some());
+        } else {
+            panic!("Expected typed config");
+        }
+    }
+
+    #[test]
+    fn test_zipkin_tracing_provider() {
+        use envoy_types::pb::envoy::config::trace::v3::ZipkinConfig;
+
+        let tracing_config = TracingConfig {
+            provider: TracingProvider::Zipkin(ZipkinTracingConfig {
+                collector_cluster: "zipkin_cluster".to_string(),
+                collector_endpoint: "/api/v2/spans".to_string(),
+                trace_id_128bit: true,
+                shared_span_context: Some(true),
+                collector_endpoint_version: ZipkinEndpointVersion::HttpJson,
+                collector_hostname: Some("zipkin.local".to_string()),
+            }),
+            random_sampling_percentage: None,
+            spawn_upstream_span: None,
+            custom_tags: HashMap::new(),
+        };
+
+        let tracing = build_tracing(&tracing_config).expect("build tracing");
+
+        let provider = tracing.provider.as_ref().expect("provider missing");
+        assert_eq!(provider.name, "envoy.tracers.zipkin");
+
+        // Decode and verify Zipkin config
+        if let Some(tracing::http::ConfigType::TypedConfig(any)) = &provider.config_type {
+            let zipkin_config =
+                ZipkinConfig::decode(any.value.as_slice()).expect("decode zipkin config");
+            assert_eq!(zipkin_config.collector_cluster, "zipkin_cluster");
+            assert_eq!(zipkin_config.collector_endpoint, "/api/v2/spans");
+            assert!(zipkin_config.trace_id_128bit);
+            assert_eq!(zipkin_config.collector_hostname, "zipkin.local");
+        } else {
+            panic!("Expected typed config");
+        }
+    }
+
+    #[test]
+    fn test_generic_tracing_provider() {
+        let tracing_config = TracingConfig {
+            provider: TracingProvider::Generic {
+                name: "custom.tracer".to_string(),
+                config: HashMap::from([
+                    ("key1".to_string(), "value1".to_string()),
+                    ("key2".to_string(), "value2".to_string()),
+                ]),
+            },
+            random_sampling_percentage: Some(100.0),
+            spawn_upstream_span: None,
+            custom_tags: HashMap::new(),
+        };
+
+        let tracing = build_tracing(&tracing_config).expect("build tracing");
+
+        let provider = tracing.provider.as_ref().expect("provider missing");
+        assert_eq!(provider.name, "custom.tracer");
+    }
+
+    #[test]
+    fn test_opentelemetry_requires_cluster() {
+        let tracing_config = TracingConfig {
+            provider: TracingProvider::OpenTelemetry(OpenTelemetryTracingConfig {
+                service_name: "test-service".to_string(),
+                grpc_cluster: None,
+                http_cluster: None,
+                http_path: None,
+                max_cache_size: None,
+            }),
+            random_sampling_percentage: None,
+            spawn_upstream_span: None,
+            custom_tags: HashMap::new(),
+        };
+
+        let result = build_tracing(&tracing_config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("grpc_cluster or http_cluster"));
+    }
+
+    #[test]
+    fn test_invalid_sampling_percentage() {
+        let tracing_config = TracingConfig {
+            provider: TracingProvider::Generic { name: "test".to_string(), config: HashMap::new() },
+            random_sampling_percentage: Some(150.0), // Invalid: > 100
+            spawn_upstream_span: None,
+            custom_tags: HashMap::new(),
+        };
+
+        let result = build_tracing(&tracing_config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("0.0 and 100.0"));
+    }
+
+    #[test]
+    fn test_listener_with_opentelemetry_tracing() {
+        let route_config = RouteConfig {
+            name: "traced-route".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "vh".to_string(),
+                domains: vec!["*".to_string()],
+                routes: vec![RouteRule {
+                    name: None,
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".into()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "backend".into(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                        retry_policy: None,
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        let listener = ListenerConfig {
+            name: "traced-listener".into(),
+            address: "0.0.0.0".into(),
+            port: 8080,
+            filter_chains: vec![FilterChainConfig {
+                name: None,
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".into(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: None,
+                        inline_route_config: Some(route_config),
+                        access_log: None,
+                        tracing: Some(TracingConfig {
+                            provider: TracingProvider::OpenTelemetry(OpenTelemetryTracingConfig {
+                                service_name: "my-service".to_string(),
+                                grpc_cluster: Some("otel_collector".to_string()),
+                                http_cluster: None,
+                                http_path: None,
+                                max_cache_size: None,
+                            }),
+                            random_sampling_percentage: Some(10.0),
+                            spawn_upstream_span: Some(true),
+                            custom_tags: HashMap::from([(
+                                "service.namespace".to_string(),
+                                "production".to_string(),
+                            )]),
+                        }),
+                        http_filters: Vec::new(),
+                    },
+                }],
+                tls_context: None,
+            }],
+        };
+
+        let envoy_listener = listener.to_envoy_listener().expect("listener conversion");
+
+        let filter = &envoy_listener.filter_chains[0].filters[0];
+        let config = filter.config_type.as_ref().expect("filter missing config type");
+        let any = match config {
+            envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(any) => {
+                any
+            }
+            other => panic!("unsupported config type in test: {:?}", other),
+        };
+
+        let hcm = ProtoHttpConnectionManager::decode(any.value.as_slice())
+            .expect("decode http connection manager");
+
+        // Verify tracing is configured
+        assert!(hcm.tracing.is_some());
+        let tracing = hcm.tracing.as_ref().unwrap();
+        assert!(tracing.provider.is_some());
+        assert!(tracing.random_sampling.is_some());
+        assert!(tracing.spawn_upstream_span.is_some());
+        assert!(!tracing.custom_tags.is_empty());
     }
 }

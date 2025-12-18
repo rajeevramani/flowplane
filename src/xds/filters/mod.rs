@@ -46,7 +46,10 @@
 //! let any = config.to_any()?;
 //! ```
 
+pub mod conversion;
+pub mod dynamic_conversion;
 pub mod http;
+pub mod injection;
 
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;

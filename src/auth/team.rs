@@ -79,6 +79,8 @@ pub struct Team {
     pub settings: Option<serde_json::Value>,
     /// Team status
     pub status: TeamStatus,
+    /// Auto-allocated Envoy admin interface port for this team's Envoy instance
+    pub envoy_admin_port: Option<u16>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -161,6 +163,7 @@ mod tests {
             owner_user_id: None,
             settings: None,
             status: TeamStatus::Active,
+            envoy_admin_port: Some(9901),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

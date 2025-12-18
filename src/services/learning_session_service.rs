@@ -3,7 +3,7 @@
 //! This module contains the state machine logic for learning session lifecycle management,
 //! including automatic completion and state transitions.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tracing::{error, info, instrument, warn};
 
 use crate::{
@@ -26,7 +26,7 @@ pub struct LearningSessionService {
     access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     ext_proc_service: Option<Arc<crate::xds::services::ext_proc_service::FlowplaneExtProcService>>,
     webhook_service: Option<Arc<WebhookService>>,
-    xds_state: Option<Arc<crate::xds::XdsState>>,
+    xds_state: Option<Weak<crate::xds::XdsState>>,
     schema_aggregator: Option<Arc<SchemaAggregator>>,
 }
 
@@ -79,7 +79,7 @@ impl LearningSessionService {
 
     /// Set the XDS state for dynamic listener configuration
     pub fn with_xds_state(mut self, state: Arc<crate::xds::XdsState>) -> Self {
-        self.xds_state = Some(state);
+        self.xds_state = Some(Arc::downgrade(&state));
         self
     }
 
@@ -168,17 +168,24 @@ impl LearningSessionService {
         }
 
         // Trigger LDS update to inject access log configuration
-        if let Some(xds_state) = &self.xds_state {
-            if let Err(e) = xds_state.refresh_listeners_from_repository().await {
-                error!(
-                    session_id = %session_id,
-                    error = %e,
-                    "Failed to refresh listeners after session activation"
-                );
+        if let Some(weak_state) = &self.xds_state {
+            if let Some(xds_state) = weak_state.upgrade() {
+                if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to refresh listeners after session activation"
+                    );
+                } else {
+                    info!(
+                        session_id = %session_id,
+                        "Triggered LDS update for access log configuration"
+                    );
+                }
             } else {
-                info!(
+                warn!(
                     session_id = %session_id,
-                    "Triggered LDS update for access log configuration"
+                    "XdsState dropped, cannot refresh listeners after session activation"
                 );
             }
         }
@@ -277,18 +284,20 @@ impl LearningSessionService {
         }
 
         // Trigger LDS update to remove access log configuration
-        if let Some(xds_state) = &self.xds_state {
-            if let Err(e) = xds_state.refresh_listeners_from_repository().await {
-                error!(
-                    session_id = %session_id,
-                    error = %e,
-                    "Failed to refresh listeners after session completion"
-                );
-            } else {
-                info!(
-                    session_id = %session_id,
-                    "Triggered LDS update to remove access log configuration"
-                );
+        if let Some(weak_state) = &self.xds_state {
+            if let Some(xds_state) = weak_state.upgrade() {
+                if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to refresh listeners after session completion"
+                    );
+                } else {
+                    info!(
+                        session_id = %session_id,
+                        "Triggered LDS update to remove access log configuration"
+                    );
+                }
             }
         }
 
@@ -415,6 +424,7 @@ impl LearningSessionService {
     /// Background worker that checks all active sessions for completion
     ///
     /// This should be called periodically (e.g., every 30 seconds)
+    #[instrument(skip(self), name = "bg_check_active_sessions")]
     pub async fn check_all_active_sessions(&self) -> Result<Vec<String>> {
         let active_sessions = self.repository.list_active().await?;
 
@@ -452,6 +462,7 @@ impl LearningSessionService {
     /// Sync all active sessions with the Access Log Service
     ///
     /// This is useful for recovery after restarts
+    #[instrument(skip(self), name = "bg_sync_sessions_with_als")]
     pub async fn sync_active_sessions_with_access_log_service(&self) -> Result<usize> {
         let Some(access_log_service) = &self.access_log_service else {
             warn!("Access Log Service not configured, skipping sync");

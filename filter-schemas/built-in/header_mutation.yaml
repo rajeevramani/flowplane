@@ -1,0 +1,102 @@
+name: header_mutation
+display_name: Header Mutation
+description: Add, modify, or remove HTTP headers on requests and responses
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.header_mutation
+  type_url: type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutationPerRoute
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: false
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  properties:
+    request_headers_to_add:
+      type: array
+      title: Request Headers to Add
+      description: Headers to add or replace on incoming requests
+      items:
+        type: object
+        required:
+          - key
+          - value
+        properties:
+          key:
+            type: string
+            title: Header Name
+            description: The HTTP header name (e.g., X-Custom-Header)
+            minLength: 1
+          value:
+            type: string
+            title: Header Value
+            description: The value to set for this header
+          append:
+            type: boolean
+            title: Append Mode
+            description: If true, append to existing header instead of replacing
+            default: false
+    request_headers_to_remove:
+      type: array
+      title: Request Headers to Remove
+      description: Header names to remove from incoming requests
+      items:
+        type: string
+        title: Header Name
+        minLength: 1
+    response_headers_to_add:
+      type: array
+      title: Response Headers to Add
+      description: Headers to add or replace on outgoing responses
+      items:
+        type: object
+        required:
+          - key
+          - value
+        properties:
+          key:
+            type: string
+            title: Header Name
+            description: The HTTP header name
+            minLength: 1
+          value:
+            type: string
+            title: Header Value
+            description: The value to set for this header
+          append:
+            type: boolean
+            title: Append Mode
+            description: If true, append to existing header instead of replacing
+            default: false
+    response_headers_to_remove:
+      type: array
+      title: Response Headers to Remove
+      description: Header names to remove from outgoing responses
+      items:
+        type: string
+        title: Header Name
+        minLength: 1
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Request Headers
+      fields:
+        - request_headers_to_add
+        - request_headers_to_remove
+      collapsible: false
+      collapsed_by_default: false
+    - name: Response Headers
+      fields:
+        - response_headers_to_add
+        - response_headers_to_remove
+      collapsible: true
+      collapsed_by_default: false

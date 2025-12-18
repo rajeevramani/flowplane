@@ -1,0 +1,136 @@
+name: compressor
+display_name: Compression
+description: Response compression filter to reduce bandwidth usage (gzip)
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.compressor
+  type_url: type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.compressor.v3.CompressorPerRoute
+
+capabilities:
+  attachment_points:
+    - route
+    - listener
+  requires_listener_config: true
+  per_route_behavior: disable_only
+
+is_implemented: true
+
+config_schema:
+  type: object
+  properties:
+    response_direction_config:
+      type: object
+      description: Configuration for response compression
+      properties:
+        common_config:
+          type: object
+          description: Common compressor settings
+          properties:
+            min_content_length:
+              type: integer
+              description: Minimum response size in bytes to trigger compression
+              minimum: 0
+              default: 30
+            content_type:
+              type: array
+              description: Content types to compress (empty = all)
+              items:
+                type: string
+              default:
+                - application/json
+                - application/xml
+                - text/plain
+                - text/html
+                - text/css
+                - application/javascript
+            disable_on_etag_header:
+              type: boolean
+              description: Disable compression for responses with ETag header
+              default: false
+            remove_accept_encoding_header:
+              type: boolean
+              description: Remove Accept-Encoding header after compression decision
+              default: false
+    compressor_library:
+      type: object
+      description: Compressor library configuration
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum:
+            - gzip
+          description: Compression algorithm
+          default: gzip
+        memory_level:
+          type: integer
+          description: Memory level (1-9). Higher = more memory, faster.
+          minimum: 1
+          maximum: 9
+          default: 5
+        window_bits:
+          type: integer
+          description: Window bits (9-15). Higher = better compression.
+          minimum: 9
+          maximum: 15
+          default: 12
+        compression_level:
+          type: string
+          enum:
+            - best_speed
+            - best_compression
+            - default_compression
+          description: Compression level trade-off
+          default: best_speed
+        compression_strategy:
+          type: string
+          enum:
+            - default_strategy
+            - filtered
+            - huffman_only
+            - rle
+            - fixed
+          description: Compression strategy
+          default: default_strategy
+        chunk_size:
+          type: integer
+          description: Internal compression chunk buffer size in bytes
+          minimum: 1024
+          default: 4096
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable compression for this route
+      default: false
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Content Settings
+      fields:
+        - response_direction_config.common_config.min_content_length
+        - response_direction_config.common_config.content_type
+      description: Configure which content gets compressed
+    - name: Compression Algorithm
+      fields:
+        - compressor_library.type
+        - compressor_library.compression_level
+        - compressor_library.compression_strategy
+      collapsible: false
+    - name: Advanced Gzip Settings
+      fields:
+        - compressor_library.memory_level
+        - compressor_library.window_bits
+        - compressor_library.chunk_size
+      collapsible: true
+    - name: Behavior
+      fields:
+        - response_direction_config.common_config.disable_on_etag_header
+        - response_direction_config.common_config.remove_accept_encoding_header
+      collapsible: true

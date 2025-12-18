@@ -9,6 +9,7 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -25,6 +26,25 @@ use crate::domain::UserId;
 use crate::errors::Error;
 use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
+
+/// Extract client IP from headers, preferring X-Forwarded-For
+fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
+    // Try X-Forwarded-For header first (for proxied requests)
+    if let Some(forwarded) = headers.get("x-forwarded-for") {
+        if let Ok(value) = forwarded.to_str() {
+            // X-Forwarded-For can contain multiple IPs; the first is the original client
+            return value.split(',').next().map(|s| s.trim().to_string());
+        }
+    }
+    // Note: We don't have access to ConnectInfo here, so we just return None
+    // if X-Forwarded-For is not present
+    None
+}
+
+/// Extract User-Agent header
+fn extract_user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+}
 
 fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
     let cluster_repo = state
@@ -130,6 +150,7 @@ fn convert_error(err: Error) -> ApiError {
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state, payload), fields(token_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -144,7 +165,7 @@ pub async fn create_token_handler(
     request.validate().map_err(|err| convert_error(Error::from(err)))?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.create_token(request).await.map_err(convert_error)?;
+    let secret = service.create_token(request, Some(&context)).await.map_err(convert_error)?;
 
     Ok((StatusCode::CREATED, Json(secret)))
 }
@@ -160,6 +181,7 @@ pub async fn create_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -195,6 +217,7 @@ pub async fn list_tokens_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn get_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -222,6 +245,7 @@ pub async fn get_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state, payload), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn update_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -235,7 +259,7 @@ pub async fn update_token_handler(
     request.validate().map_err(|err| convert_error(Error::from(err)))?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.update_token(&id, request).await.map_err(convert_error)?;
+    let token = service.update_token(&id, request, Some(&context)).await.map_err(convert_error)?;
 
     Ok(Json(token))
 }
@@ -252,6 +276,7 @@ pub async fn update_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn revoke_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -261,7 +286,7 @@ pub async fn revoke_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.revoke_token(&id).await.map_err(convert_error)?;
+    let token = service.revoke_token(&id, Some(&context)).await.map_err(convert_error)?;
     Ok(Json(token))
 }
 
@@ -277,6 +302,7 @@ pub async fn revoke_token_handler(
     security(("bearerAuth" = [])),
     tag = "tokens"
 )]
+#[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn rotate_token_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -286,7 +312,7 @@ pub async fn rotate_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.rotate_token(&id).await.map_err(convert_error)?;
+    let secret = service.rotate_token(&id, Some(&context)).await.map_err(convert_error)?;
     Ok(Json(secret))
 }
 
@@ -353,6 +379,7 @@ impl IntoResponse for SessionCreatedResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, payload))]
 pub async fn create_session_handler(
     State(state): State<ApiState>,
     Json(payload): Json<CreateSessionBody>,
@@ -420,6 +447,7 @@ pub struct SessionInfoResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, jar, headers))]
 pub async fn get_session_info_handler(
     State(state): State<ApiState>,
     jar: CookieJar,
@@ -545,6 +573,7 @@ impl IntoResponse for LogoutResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, jar, headers))]
 pub async fn logout_handler(
     State(state): State<ApiState>,
     jar: CookieJar,
@@ -581,8 +610,9 @@ pub async fn logout_handler(
     session_service.validate_session(&session_token).await.map_err(convert_error)?;
 
     // Create token service and revoke the session token
+    // Note: No AuthContext available for logout since we're terminating the session
     let token_service = token_service_for_state(&state)?;
-    token_service.revoke_token(token_id).await.map_err(convert_error)?;
+    token_service.revoke_token(token_id, None).await.map_err(convert_error)?;
 
     // Build cookie clearing directive (same name, empty value, immediate expiration)
     let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
@@ -663,8 +693,10 @@ impl IntoResponse for LoginResponse {
     ),
     tag = "auth"
 )]
+#[instrument(skip(state, payload, headers), fields(email = %payload.email))]
 pub async fn login_handler(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<LoginBody>,
 ) -> Result<LoginResponse, ApiError> {
     use crate::auth::login_service::LoginService;
@@ -672,6 +704,10 @@ pub async fn login_handler(
 
     // Validate request
     payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+
+    // Extract client context from headers for audit logging
+    let client_ip = extract_client_ip(&headers);
+    let user_agent = extract_user_agent(&headers);
 
     // Get database pool
     let pool = state
@@ -687,14 +723,17 @@ pub async fn login_handler(
 
     // Perform login
     let login_request = LoginRequest { email: payload.email, password: payload.password };
-    let (user, scopes) = login_service.login(&login_request).await.map_err(convert_error)?;
+    let (user, scopes) = login_service
+        .login(&login_request, client_ip.clone(), user_agent.clone())
+        .await
+        .map_err(convert_error)?;
 
     // Create session service
     let session_service = session_service_for_state(&state)?;
 
     // Create session from user authentication
     let session_response = session_service
-        .create_session_from_user(&user.id, &user.email, scopes.clone())
+        .create_session_from_user(&user.id, &user.email, scopes.clone(), client_ip, user_agent)
         .await
         .map_err(convert_error)?;
 
@@ -751,6 +790,7 @@ pub struct ChangePasswordBody {
     security(("session" = [])),
     tag = "auth"
 )]
+#[instrument(skip(state, payload), fields(user_id = ?context.user_id))]
 pub async fn change_password_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -788,7 +828,12 @@ pub async fn change_password_handler(
 
     // Change password with verification
     user_service
-        .change_password_with_verification(&user_id, payload.current_password, payload.new_password)
+        .change_password_with_verification(
+            &user_id,
+            payload.current_password,
+            payload.new_password,
+            Some(&context),
+        )
         .await
         .map_err(convert_error)?;
 

@@ -8,10 +8,14 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 use crate::{
+    domain::ClusterDependency,
     errors::Error,
     observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_cluster,
-    storage::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest},
+    storage::{
+        ClusterData, ClusterRepository, CreateClusterRequest, FilterRepository,
+        RouteConfigRepository, UpdateClusterRequest,
+    },
     xds::{ClusterSpec, XdsState},
 };
 use opentelemetry::{
@@ -37,6 +41,56 @@ impl ClusterService {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::internal("Cluster repository not configured"))
+    }
+
+    /// Get the route config repository
+    fn route_config_repository(&self) -> Result<RouteConfigRepository, Error> {
+        self.xds_state
+            .route_config_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Route config repository not configured"))
+    }
+
+    /// Get the filter repository
+    fn filter_repository(&self) -> Result<FilterRepository, Error> {
+        self.xds_state
+            .filter_repository
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::internal("Filter repository not configured"))
+    }
+
+    /// Find all dependencies on a cluster.
+    ///
+    /// Returns a list of resources that reference this cluster.
+    /// Returns empty list if repositories are not configured (e.g., in tests).
+    pub async fn find_cluster_dependencies(&self, cluster_name: &str) -> Vec<ClusterDependency> {
+        let mut dependencies = Vec::new();
+
+        // Check route configs (skip if repository not configured)
+        if let Ok(route_config_repo) = self.route_config_repository() {
+            if let Ok(route_configs) = route_config_repo.find_by_cluster(cluster_name).await {
+                for rc in route_configs {
+                    dependencies.push(ClusterDependency::route_config(rc.id.as_str(), &rc.name));
+                }
+            }
+        }
+
+        // Check filters (OAuth2, JWT, ExtAuthz) - skip if repository not configured
+        if let Ok(filter_repo) = self.filter_repository() {
+            if let Ok(filters) = filter_repo.find_by_cluster(cluster_name).await {
+                for (filter, reference_path) in filters {
+                    dependencies.push(ClusterDependency::filter(
+                        filter.id.as_str(),
+                        &filter.name,
+                        reference_path,
+                    ));
+                }
+            }
+        }
+
+        dependencies
     }
 
     /// Create a new cluster
@@ -162,6 +216,8 @@ impl ClusterService {
     }
 
     /// Delete a cluster by name
+    ///
+    /// Fails if the cluster is referenced by any route configs or filters.
     pub async fn delete_cluster(&self, name: &str) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -177,6 +233,32 @@ impl ClusterService {
         async move {
             let repository = self.repository()?;
             let existing = repository.get_by_name(name).await?;
+
+            // Check for dependencies before deleting
+            let dependencies = self.find_cluster_dependencies(name).await;
+            if !dependencies.is_empty() {
+                let mut parts = vec![];
+                let route_config_count =
+                    dependencies.iter().filter(|d| d.resource_type == "route_config").count();
+                let filter_count =
+                    dependencies.iter().filter(|d| d.resource_type == "filter").count();
+
+                if route_config_count > 0 {
+                    parts.push(format!("{} route config(s)", route_config_count));
+                }
+                if filter_count > 0 {
+                    parts.push(format!("{} filter(s)", filter_count));
+                }
+
+                return Err(Error::conflict(
+                    format!(
+                        "Cluster '{}' is in use by {}. Remove references before deleting.",
+                        name,
+                        parts.join(" and ")
+                    ),
+                    "cluster",
+                ));
+            }
 
             let mut db_span = create_operation_span("db.cluster.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));

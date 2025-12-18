@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -84,6 +84,7 @@ async fn verify_listener_access(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state, payload), fields(team = %payload.team, listener_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -178,6 +179,7 @@ pub async fn list_listeners_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn get_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -213,6 +215,7 @@ pub async fn get_listener_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state, payload), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn update_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -272,6 +275,7 @@ pub async fn update_listener_handler(
     ),
     tag = "listeners"
 )]
+#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn delete_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
@@ -372,7 +376,7 @@ mod tests {
 
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS routes (
+            CREATE TABLE IF NOT EXISTS route_configs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 path_prefix TEXT NOT NULL,
@@ -418,7 +422,9 @@ mod tests {
     async fn build_state() -> (Arc<XdsState>, ApiState) {
         let pool = create_test_pool().await;
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        let api_state = ApiState { xds_state: state.clone() };
+        let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
+        let api_state =
+            ApiState { xds_state: state.clone(), filter_schema_registry: None, stats_cache };
         (state, api_state)
     }
 
@@ -454,6 +460,7 @@ mod tests {
                         timeout: None,
                         prefix_rewrite: None,
                         path_template_rewrite: None,
+                        retry_policy: None,
                     },
                     typed_per_filter_config: HashMap::new(),
                 }],

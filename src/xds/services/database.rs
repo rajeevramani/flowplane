@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use crate::{
-    storage::{ClusterRepository, ListenerRepository, RouteRepository},
+    storage::{ClusterRepository, ListenerRepository, RouteConfigRepository, SecretRepository},
     Result,
 };
 use envoy_types::pb::envoy::service::discovery::v3::{
@@ -17,6 +17,7 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 
 use super::super::{
     resources::{self, BuiltResource},
+    secret::{secrets_from_database_entries, SECRET_TYPE_URL},
     XdsState,
 };
 
@@ -33,12 +34,16 @@ impl DatabaseAggregatedDiscoveryService {
             spawn_cluster_watcher(state.clone(), repo.clone());
         }
 
-        if let Some(repo) = &state.route_repository {
-            spawn_route_watcher(state.clone(), repo.clone());
+        if let Some(repo) = &state.route_config_repository {
+            spawn_route_config_watcher(state.clone(), repo.clone());
         }
 
         if let Some(repo) = &state.listener_repository {
             spawn_listener_watcher(state.clone(), repo.clone());
+        }
+
+        if let Some(repo) = &state.secret_repository {
+            spawn_secret_watcher(state.clone(), repo.clone());
         }
 
         Self { state }
@@ -168,6 +173,16 @@ impl DatabaseAggregatedDiscoveryService {
             built.push(als);
         }
 
+        // Include dynamically created JWKS clusters from cache
+        // These are created by inject_listener_auto_filters for JWT auth providers
+        let existing_names: std::collections::HashSet<String> =
+            built.iter().map(|r| r.name.clone()).collect();
+        for cached in self.state.cached_resources(resources::CLUSTER_TYPE_URL) {
+            if cached.name.contains("jwks") && !existing_names.contains(&cached.name) {
+                built.push(resources::BuiltResource { name: cached.name, resource: cached.body });
+            }
+        }
+
         // NOTE: Platform API clusters are NOT added here to avoid duplicates
         // They are already stored in the database by materialize_native_resources()
         // and loaded above via cluster_repository.list()
@@ -182,7 +197,7 @@ impl DatabaseAggregatedDiscoveryService {
 
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
-        let built = if let Some(repo) = &self.state.route_repository {
+        let built = if let Some(repo) = &self.state.route_config_repository {
             // Extract teams from scope for filtering
             // Default resources (team IS NULL) are always included
             let teams = match scope {
@@ -201,7 +216,7 @@ impl DatabaseAggregatedDiscoveryService {
 
             // Always include default resources (include_default = true)
             match repo.list_by_teams(&teams, true, Some(100), None).await {
-                Ok(route_data_list) => {
+                Ok(mut route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
                     // Record team-scoped resource count metrics
@@ -215,9 +230,16 @@ impl DatabaseAggregatedDiscoveryService {
                     }
 
                     if route_data_list.is_empty() {
-                        info!("No routes found in database, falling back to config-based routes");
+                        info!("No route configs found in database, falling back to config-based routes");
                         self.create_fallback_route_resources()?
                     } else {
+                        // Inject attached filters into route configurations
+                        if let Err(e) =
+                            self.state.inject_route_config_filters(&mut route_data_list).await
+                        {
+                            warn!(error = %e, "Failed to inject filters into route configs for ADS response");
+                        }
+
                         info!(
                             phase = "ads_response",
                             route_count = route_data_list.len(),
@@ -355,6 +377,15 @@ impl DatabaseAggregatedDiscoveryService {
 
         // Intentionally do not emit Platform API listeners here to avoid port conflicts
 
+        // Inject listener-attached filters (e.g., JWT authentication)
+        // This ensures Envoy receives listeners with user-defined filters attached
+        if let Err(e) = self.state.inject_listener_auto_filters(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject listener-attached filters in ADS response"
+            );
+        }
+
         // Inject access log configuration for active learning sessions
         // This ensures Envoy receives listeners with access log config when sessions are active
         if let Err(e) = self.state.inject_learning_session_access_logs(&mut built).await {
@@ -380,6 +411,149 @@ impl DatabaseAggregatedDiscoveryService {
         resources::listeners_from_config(&self.state.config)
     }
 
+    /// Create secret resources from database for SDS (Secret Discovery Service)
+    ///
+    /// Supports both:
+    /// - Legacy database-stored secrets (encrypted configuration in DB)
+    /// - Reference-based secrets (backend/reference fields, fetched on-demand)
+    #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
+    async fn create_secret_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
+        let Some(repo) = &self.state.secret_repository else {
+            info!("No secret repository available, returning empty secrets");
+            return Ok(Vec::new());
+        };
+
+        // Extract teams from scope for filtering
+        let teams = match scope {
+            Scope::All => vec![],
+            Scope::Team { team } => vec![team.clone()],
+            Scope::Allowlist { .. } => vec![],
+        };
+
+        // Record team filtering in span
+        let span = tracing::Span::current();
+        if teams.is_empty() {
+            span.record("teams", "all");
+        } else {
+            span.record("teams", format!("{:?}", teams).as_str());
+        }
+
+        match repo.list_by_teams(&teams, Some(100), None).await {
+            Ok(mut secret_data_list) => {
+                span.record("filtered_count", secret_data_list.len());
+
+                // Record team-scoped resource count metrics
+                if let Some(team) = teams.first() {
+                    crate::observability::metrics::update_team_resource_count(
+                        "secret",
+                        team,
+                        secret_data_list.len(),
+                    )
+                    .await;
+                }
+
+                if secret_data_list.is_empty() {
+                    info!("No secrets found in database for scope");
+                    return Ok(Vec::new());
+                }
+
+                // Resolve reference-based secrets from external backends
+                if let Some(registry) = &self.state.secret_backend_registry {
+                    info!(
+                        secret_count = secret_data_list.len(),
+                        "Resolving reference-based secrets from external backends"
+                    );
+                    self.resolve_reference_secrets(&mut secret_data_list, registry).await;
+                } else {
+                    warn!("No secret backend registry available, reference-based secrets will not be resolved");
+                }
+
+                info!(
+                    phase = "ads_response",
+                    secret_count = secret_data_list.len(),
+                    "Building secret resources from database for SDS response"
+                );
+
+                secrets_from_database_entries(secret_data_list, "ads_response")
+            }
+            Err(e) => {
+                warn!("Failed to load secrets from database: {}", e);
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Resolve reference-based secrets by fetching from external backends
+    ///
+    /// For secrets with `backend` and `reference` fields set, this method
+    /// fetches the actual secret from the external backend (Vault, AWS, GCP)
+    /// and populates the `configuration` field with the JSON serialization.
+    async fn resolve_reference_secrets(
+        &self,
+        secrets: &mut [crate::storage::SecretData],
+        registry: &crate::secrets::backends::SecretBackendRegistry,
+    ) {
+        use crate::secrets::backends::SecretBackendType;
+
+        for secret in secrets.iter_mut() {
+            // Skip if not a reference-based secret
+            let (Some(backend_str), Some(reference)) = (&secret.backend, &secret.reference) else {
+                continue;
+            };
+
+            // Parse backend type
+            let Some(backend_type) = backend_str.parse::<SecretBackendType>().ok() else {
+                warn!(
+                    secret_name = %secret.name,
+                    backend = %backend_str,
+                    "Unknown backend type for secret, skipping"
+                );
+                continue;
+            };
+
+            // Fetch from backend
+            info!(
+                secret_name = %secret.name,
+                backend = %backend_str,
+                reference = %reference,
+                "Fetching reference-based secret from backend"
+            );
+            match registry.fetch_secret(backend_type, reference, secret.secret_type).await {
+                Ok(spec) => {
+                    // Serialize the spec to JSON for consumption by secrets_from_database_entries
+                    match serde_json::to_string(&spec) {
+                        Ok(json) => {
+                            info!(
+                                secret_name = %secret.name,
+                                backend = %backend_str,
+                                reference = %reference,
+                                json_len = json.len(),
+                                "Resolved reference-based secret from backend"
+                            );
+                            secret.configuration = json;
+                        }
+                        Err(e) => {
+                            warn!(
+                                secret_name = %secret.name,
+                                error = %e,
+                                "Failed to serialize secret spec"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        secret_name = %secret.name,
+                        backend = %backend_str,
+                        reference = %reference,
+                        error = %e,
+                        "Failed to fetch secret from backend"
+                    );
+                }
+            }
+        }
+    }
+
     async fn build_resources(&self, type_url: &str, scope: &Scope) -> Result<Vec<BuiltResource>> {
         match type_url {
             "type.googleapis.com/envoy.config.cluster.v3.Cluster" => {
@@ -394,6 +568,7 @@ impl DatabaseAggregatedDiscoveryService {
             "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => {
                 resources::endpoints_from_config(&self.state.config)
             }
+            SECRET_TYPE_URL => self.create_secret_resources_from_db(scope).await,
             _ => {
                 warn!("Unknown resource type requested: {}", type_url);
                 Ok(Vec::new())
@@ -507,51 +682,51 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
     });
 }
 
-fn spawn_route_watcher(state: Arc<XdsState>, repository: RouteRepository) {
+fn spawn_route_config_watcher(state: Arc<XdsState>, repository: RouteConfigRepository) {
     tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
 
         if let Err(error) = state.refresh_routes_from_repository().await {
-            warn!(%error, "Failed to initialize route cache from repository");
+            warn!(%error, "Failed to initialize route config cache from repository");
         }
 
-        // Track route state using count + last modification timestamp
+        // Track route config state using count + last modification timestamp
         // This avoids false positives from PRAGMA data_version which can change
         // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
-        let mut last_route_state: Option<(i64, Option<String>)> = None;
+        let mut last_route_config_state: Option<(i64, Option<String>)> = None;
 
         loop {
-            // Query actual route data: count and max updated_at timestamp
-            // This only changes when routes are actually added/removed/modified
+            // Query actual route config data: count and max updated_at timestamp
+            // This only changes when route configs are actually added/removed/modified
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM routes",
+                "SELECT COUNT(*), MAX(updated_at) FROM route_configs",
             )
             .fetch_one(repository.pool())
             .await;
 
             match poll_result {
-                Ok(current_state) => match &last_route_state {
+                Ok(current_state) => match &last_route_config_state {
                     Some(previous_state) if previous_state == &current_state => {
-                        // No actual route changes, skip update
+                        // No actual route config changes, skip update
                     }
                     Some(_) => {
-                        last_route_state = Some(current_state.clone());
+                        last_route_config_state = Some(current_state.clone());
                         info!(
-                            route_count = current_state.0,
+                            route_config_count = current_state.0,
                             last_updated = ?current_state.1,
-                            "Route data changed, refreshing route cache"
+                            "Route config data changed, refreshing route cache"
                         );
                         if let Err(error) = state.refresh_routes_from_repository().await {
-                            warn!(%error, "Failed to refresh route cache from repository");
+                            warn!(%error, "Failed to refresh route config cache from repository");
                         }
                     }
                     None => {
                         // First poll, just record the state without triggering update
-                        last_route_state = Some(current_state);
+                        last_route_config_state = Some(current_state);
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to poll route state for change detection");
+                    warn!(error = %e, "Failed to poll route config state for change detection");
                 }
             }
 
@@ -613,6 +788,56 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
     });
 }
 
+fn spawn_secret_watcher(state: Arc<XdsState>, repository: SecretRepository) {
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+
+        if let Err(error) = state.refresh_secrets_from_repository().await {
+            warn!(%error, "Failed to initialize secret cache from repository");
+        }
+
+        // Track secret state using count + last modification timestamp
+        let mut last_secret_state: Option<(i64, Option<String>)> = None;
+
+        loop {
+            // Query actual secret data: count and max updated_at timestamp
+            let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
+                "SELECT COUNT(*), MAX(updated_at) FROM secrets",
+            )
+            .fetch_one(repository.pool())
+            .await;
+
+            match poll_result {
+                Ok(current_state) => match &last_secret_state {
+                    Some(previous_state) if previous_state == &current_state => {
+                        // No actual secret changes, skip update
+                    }
+                    Some(_) => {
+                        last_secret_state = Some(current_state.clone());
+                        info!(
+                            secret_count = current_state.0,
+                            last_updated = ?current_state.1,
+                            "Secret data changed, refreshing secret cache"
+                        );
+                        if let Err(error) = state.refresh_secrets_from_repository().await {
+                            warn!(%error, "Failed to refresh secret cache from repository");
+                        }
+                    }
+                    None => {
+                        // First poll, just record the state without triggering update
+                        last_secret_state = Some(current_state);
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to poll secret state for change detection");
+                }
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+}
+
 #[tonic::async_trait]
 impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     type StreamAggregatedResourcesStream =
@@ -627,13 +852,49 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     ) -> std::result::Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
         info!("New database-enabled ADS stream connection established");
 
-        // Extract team from node metadata for connection tracking
+        // Extract trace context from gRPC metadata for distributed tracing
+        let parent_context =
+            crate::xds::services::stream::extract_trace_context(request.metadata());
+
+        // Extract mTLS identity from client certificate (if mTLS is enabled)
+        let mtls_identity = if super::mtls::is_xds_mtls_enabled() {
+            if let Some(peer_certs) = request.peer_certs() {
+                match super::mtls::extract_client_identity(peer_certs.as_slice()) {
+                    Some(identity) => {
+                        info!(
+                            team = %identity.team,
+                            proxy_id = %identity.proxy_id,
+                            serial = %identity.serial_number,
+                            "Client authenticated via mTLS"
+                        );
+                        Some(identity)
+                    }
+                    None => {
+                        warn!("mTLS enabled but no valid SPIFFE identity in client certificate");
+                        return Err(Status::unauthenticated(
+                            "Client certificate does not contain valid SPIFFE identity",
+                        ));
+                    }
+                }
+            } else {
+                warn!("mTLS enabled but client did not present certificate");
+                return Err(Status::unauthenticated(
+                    "Client certificate required for mTLS authentication",
+                ));
+            }
+        } else {
+            // mTLS not enabled, will use node metadata for team identity
+            None
+        };
+
+        // Extract team from node metadata for connection tracking (fallback when mTLS disabled)
         let metadata = request.metadata();
         if let Some(node_id) = metadata.get("node-id").and_then(|v| v.to_str().ok()) {
-            // Try to parse team from node_id or metadata
-            // For now, we'll track this when we see the first request with node metadata
             tracing::debug!(node_id, "xDS stream established");
         }
+
+        // Store mTLS team override for use in stream processing
+        let mtls_team_override = mtls_identity.map(|id| id.team);
 
         let state = self.state.clone();
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
@@ -642,11 +903,13 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
                 as Pin<Box<dyn Future<Output = Result<DiscoveryResponse>> + Send>>
         };
 
-        let stream = crate::xds::services::stream::run_stream_loop(
+        let stream = crate::xds::services::stream::run_stream_loop_with_mtls(
             state,
             request.into_inner(),
             responder,
             "database-enabled",
+            Some(parent_context),
+            mtls_team_override,
         );
 
         Ok(Response::new(Box::pin(stream)))
@@ -659,17 +922,56 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
     ) -> std::result::Result<Response<Self::DeltaAggregatedResourcesStream>, Status> {
         info!("Delta ADS stream connection established (database-enabled)");
 
+        // Extract trace context from gRPC metadata for distributed tracing
+        let parent_context =
+            crate::xds::services::stream::extract_trace_context(request.metadata());
+
+        // Extract mTLS identity from client certificate (if mTLS is enabled)
+        let mtls_identity = if super::mtls::is_xds_mtls_enabled() {
+            if let Some(peer_certs) = request.peer_certs() {
+                match super::mtls::extract_client_identity(peer_certs.as_slice()) {
+                    Some(identity) => {
+                        info!(
+                            team = %identity.team,
+                            proxy_id = %identity.proxy_id,
+                            serial = %identity.serial_number,
+                            "Client authenticated via mTLS (Delta)"
+                        );
+                        Some(identity)
+                    }
+                    None => {
+                        warn!("mTLS enabled but no valid SPIFFE identity in client certificate");
+                        return Err(Status::unauthenticated(
+                            "Client certificate does not contain valid SPIFFE identity",
+                        ));
+                    }
+                }
+            } else {
+                warn!("mTLS enabled but client did not present certificate");
+                return Err(Status::unauthenticated(
+                    "Client certificate required for mTLS authentication",
+                ));
+            }
+        } else {
+            None
+        };
+
+        // Store mTLS team override for use in stream processing
+        let mtls_team_override = mtls_identity.map(|id| id.team);
+
         let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
             let service = DatabaseAggregatedDiscoveryService { state };
             Box::pin(async move { service.create_delta_response(&request).await })
                 as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
         };
 
-        let stream = crate::xds::services::stream::run_delta_loop(
+        let stream = crate::xds::services::stream::run_delta_loop_with_mtls(
             self.state.clone(),
             request.into_inner(),
             responder,
             "database-enabled",
+            Some(parent_context),
+            mtls_team_override,
         );
 
         Ok(Response::new(Box::pin(stream)))

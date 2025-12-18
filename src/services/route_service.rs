@@ -12,7 +12,8 @@ use crate::{
     observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_route,
     storage::{
-        CreateRouteRepositoryRequest, RouteData, RouteRepository, UpdateRouteRepositoryRequest,
+        CreateRouteConfigRepositoryRequest, RouteConfigData, RouteConfigRepository,
+        UpdateRouteConfigRepositoryRequest,
     },
     xds::{route::RouteConfig, XdsState},
 };
@@ -21,7 +22,7 @@ use opentelemetry::{
     KeyValue,
 };
 
-/// Service for managing route business logic
+/// Service for managing route config business logic
 pub struct RouteService {
     xds_state: Arc<XdsState>,
 }
@@ -32,16 +33,16 @@ impl RouteService {
         Self { xds_state }
     }
 
-    /// Get the route repository
-    fn repository(&self) -> Result<RouteRepository, Error> {
+    /// Get the route config repository
+    fn repository(&self) -> Result<RouteConfigRepository, Error> {
         self.xds_state
-            .route_repository
+            .route_config_repository
             .as_ref()
             .cloned()
-            .ok_or_else(|| Error::internal("Route repository not configured"))
+            .ok_or_else(|| Error::internal("Route config repository not configured"))
     }
 
-    /// Create a new route
+    /// Create a new route config
     pub async fn create_route(
         &self,
         name: String,
@@ -49,7 +50,7 @@ impl RouteService {
         cluster_summary: String,
         config: Value,
         team: Option<String>,
-    ) -> Result<RouteData, Error> {
+    ) -> Result<RouteConfigData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
         let mut span = create_operation_span("route_service.create_route", SpanKind::Internal);
@@ -62,7 +63,7 @@ impl RouteService {
         async move {
             let repository = self.repository()?;
 
-            let request = CreateRouteRepositoryRequest {
+            let request = CreateRouteConfigRepositoryRequest {
                 name: name.clone(),
                 path_prefix,
                 cluster_name: cluster_summary,
@@ -96,30 +97,30 @@ impl RouteService {
         .await
     }
 
-    /// List all routes
+    /// List all route configs
     pub async fn list_routes(
         &self,
         limit: Option<i32>,
         offset: Option<i32>,
-    ) -> Result<Vec<RouteData>, Error> {
+    ) -> Result<Vec<RouteConfigData>, Error> {
         let repository = self.repository()?;
         repository.list(limit, offset).await
     }
 
-    /// Get a route by name
-    pub async fn get_route(&self, name: &str) -> Result<RouteData, Error> {
+    /// Get a route config by name
+    pub async fn get_route(&self, name: &str) -> Result<RouteConfigData, Error> {
         let repository = self.repository()?;
         repository.get_by_name(name).await
     }
 
-    /// Update an existing route
+    /// Update an existing route config
     pub async fn update_route(
         &self,
         name: &str,
         path_prefix: String,
         cluster_summary: String,
         config: Value,
-    ) -> Result<RouteData, Error> {
+    ) -> Result<RouteConfigData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
         let mut span = create_operation_span("route_service.update_route", SpanKind::Internal);
@@ -133,7 +134,7 @@ impl RouteService {
             let repository = self.repository()?;
             let existing = repository.get_by_name(name).await?;
 
-            let update_request = UpdateRouteRepositoryRequest {
+            let update_request = UpdateRouteConfigRepositoryRequest {
                 path_prefix: Some(path_prefix),
                 cluster_name: Some(cluster_summary),
                 configuration: Some(config),
@@ -205,7 +206,7 @@ impl RouteService {
     }
 
     /// Parse route configuration from stored JSON
-    pub fn parse_config(&self, data: &RouteData) -> Result<RouteConfig, Error> {
+    pub fn parse_config(&self, data: &RouteConfigData) -> Result<RouteConfig, Error> {
         serde_json::from_str(&data.configuration).map_err(|err| {
             Error::internal(format!("Failed to parse stored route configuration: {}", err))
         })

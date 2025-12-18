@@ -38,8 +38,13 @@ impl AuthService {
         Self::new(Arc::new(SqlxTokenRepository::new(pool)), audit_repository)
     }
 
-    #[instrument(skip(self, header), fields(token_id = field::Empty))]
-    pub async fn authenticate(&self, header: &str) -> std::result::Result<AuthContext, AuthError> {
+    #[instrument(skip(self, header, client_ip, user_agent), fields(token_id = field::Empty))]
+    pub async fn authenticate(
+        &self,
+        header: &str,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    ) -> std::result::Result<AuthContext, AuthError> {
         let token = header.trim();
         if token.is_empty() {
             metrics::record_authentication("missing_bearer").await;
@@ -104,13 +109,22 @@ impl AuthService {
 
         self.repository.update_last_used(&token.id, Utc::now()).await.map_err(AuthError::from)?;
 
+        // Record audit event with user context
+        let user_id_for_audit = token.user_id.as_ref().map(|id| id.to_string());
         self.audit_repository
-            .record_auth_event(AuditEvent::token(
-                "auth.token.authenticated",
-                Some(token.id.as_str()),
-                Some(&token.name),
-                serde_json::json!({ "scopes": token.scopes }),
-            ))
+            .record_auth_event(
+                AuditEvent::token(
+                    "auth.token.authenticated",
+                    Some(token.id.as_str()),
+                    Some(&token.name),
+                    serde_json::json!({ "scopes": token.scopes }),
+                )
+                .with_user_context(
+                    user_id_for_audit,
+                    client_ip.clone(),
+                    user_agent.clone(),
+                ),
+            )
             .await
             .map_err(AuthError::from)?;
 
@@ -119,7 +133,8 @@ impl AuthService {
 
         // Use with_user if the token has user information (for proper user-scoped filtering)
         // Otherwise use new (for system tokens or tokens without user association)
-        Ok(if let (Some(user_id), Some(user_email)) = (&token.user_id, &token.user_email) {
+        let context = if let (Some(user_id), Some(user_email)) = (&token.user_id, &token.user_email)
+        {
             AuthContext::with_user(
                 token.id.clone(),
                 token.name,
@@ -129,6 +144,9 @@ impl AuthService {
             )
         } else {
             AuthContext::new(token.id.clone(), token.name, token.scopes)
-        })
+        };
+
+        // Add client context to the auth context
+        Ok(context.with_request_context(client_ip, user_agent))
     }
 }

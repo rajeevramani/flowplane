@@ -153,10 +153,14 @@ impl TokenService {
     }
 
     #[instrument(
-        skip(self, payload),
+        skip(self, payload, auth_context),
         fields(token_name = field::Empty, correlation_id = field::Empty)
     )]
-    pub async fn create_token(&self, payload: CreateTokenRequest) -> Result<TokenSecretResponse> {
+    pub async fn create_token(
+        &self,
+        payload: CreateTokenRequest,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<TokenSecretResponse> {
         payload.validate().map_err(Error::from)?;
 
         tracing::Span::current().record("token_name", field::display(&payload.name));
@@ -192,11 +196,12 @@ impl TokenService {
         };
 
         self.repository.create_token(new_token).await?;
-        self.record_event(
+        self.record_event_with_context(
             "auth.token.created",
             Some(&id_str),
             Some(&payload.name),
             json!({ "scopes": payload.scopes, "created_by": payload.created_by }),
+            auth_context,
         )
         .await?;
         metrics::record_token_created(payload.scopes.len()).await;
@@ -235,13 +240,14 @@ impl TokenService {
     }
 
     #[instrument(
-        skip(self, payload),
+        skip(self, payload, auth_context),
         fields(token_id = field::Empty, correlation_id = field::Empty)
     )]
     pub async fn update_token(
         &self,
         id: &str,
         payload: UpdateTokenRequest,
+        auth_context: Option<&AuthContext>,
     ) -> Result<PersonalAccessToken> {
         payload.validate().map_err(Error::from)?;
 
@@ -265,7 +271,7 @@ impl TokenService {
 
         let token_id = TokenId::from_str_unchecked(id);
         let token = self.repository.update_metadata(&token_id, update).await?;
-        self.record_event(
+        self.record_event_with_context(
             "auth.token.updated",
             Some(id),
             Some(&token.name),
@@ -274,6 +280,7 @@ impl TokenService {
                 "expires_at": token.expires_at,
                 "scopes": token.scopes,
             }),
+            auth_context,
         )
         .await?;
         let active_count = self.repository.count_active_tokens().await?;
@@ -282,8 +289,12 @@ impl TokenService {
         Ok(token)
     }
 
-    #[instrument(skip(self), fields(token_id = field::Empty, correlation_id = field::Empty))]
-    pub async fn revoke_token(&self, id: &str) -> Result<PersonalAccessToken> {
+    #[instrument(skip(self, auth_context), fields(token_id = field::Empty, correlation_id = field::Empty))]
+    pub async fn revoke_token(
+        &self,
+        id: &str,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<PersonalAccessToken> {
         tracing::Span::current().record("token_id", field::display(id));
         let correlation_id = uuid::Uuid::new_v4();
         tracing::Span::current().record("correlation_id", field::display(&correlation_id));
@@ -297,11 +308,12 @@ impl TokenService {
         };
         let token_id = TokenId::from_str_unchecked(id);
         let token = self.repository.update_metadata(&token_id, update).await?;
-        self.record_event(
+        self.record_event_with_context(
             "auth.token.revoked",
             Some(id),
             Some(&token.name),
             json!({ "status": token.status.as_str() }),
+            auth_context,
         )
         .await?;
         metrics::record_token_revoked().await;
@@ -311,8 +323,12 @@ impl TokenService {
         Ok(token)
     }
 
-    #[instrument(skip(self), fields(token_id = field::Empty, correlation_id = field::Empty))]
-    pub async fn rotate_token(&self, id: &str) -> Result<TokenSecretResponse> {
+    #[instrument(skip(self, auth_context), fields(token_id = field::Empty, correlation_id = field::Empty))]
+    pub async fn rotate_token(
+        &self,
+        id: &str,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<TokenSecretResponse> {
         tracing::Span::current().record("token_id", field::display(id));
         let correlation_id = uuid::Uuid::new_v4();
         tracing::Span::current().record("correlation_id", field::display(&correlation_id));
@@ -323,11 +339,12 @@ impl TokenService {
 
         let token_id = TokenId::from_str_unchecked(id);
         self.repository.rotate_secret(&token_id, hashed_secret).await?;
-        self.record_event(
+        self.record_event_with_context(
             "auth.token.rotated",
             Some(id),
             None,
             json!({ "rotated_at": Utc::now() }),
+            auth_context,
         )
         .await?;
         metrics::record_token_rotated().await;
@@ -350,6 +367,25 @@ impl TokenService {
         self.audit_repository
             .record_auth_event(AuditEvent::token(action, resource_id, resource_name, metadata))
             .await
+    }
+
+    /// Record an audit event with user context from AuthContext.
+    async fn record_event_with_context(
+        &self,
+        action: &str,
+        resource_id: Option<&str>,
+        resource_name: Option<&str>,
+        metadata: serde_json::Value,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<()> {
+        let event = AuditEvent::token(action, resource_id, resource_name, metadata);
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await
     }
 
     pub fn to_auth_context(&self, token: &PersonalAccessToken) -> AuthContext {

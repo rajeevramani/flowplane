@@ -1,17 +1,23 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use crate::domain::filter_schema::FilterSchemaRegistry;
+use crate::secrets::backends::SecretBackendRegistry;
 use crate::xds::resources::{
     clusters_from_config, clusters_from_database_entries, create_ext_proc_cluster,
     listeners_from_config, listeners_from_database_entries, routes_from_config,
     routes_from_database_entries, BuiltResource, CLUSTER_TYPE_URL, LISTENER_TYPE_URL,
     ROUTE_TYPE_URL,
 };
+use crate::xds::secret::{secrets_from_database_entries, SECRET_TYPE_URL};
 use crate::{
     config::SimpleXdsConfig,
-    services::LearningSessionService,
+    services::{LearningSessionService, RouteHierarchySyncService, SecretEncryption},
     storage::{
-        AggregatedSchemaRepository, ClusterRepository, DbPool, ListenerRepository, RouteRepository,
+        AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
+        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
+        RouteFilterRepository, RouteRepository, SecretRepository, VirtualHostFilterRepository,
+        VirtualHostRepository,
     },
     xds::services::{
         access_log_service::FlowplaneAccessLogService, ext_proc_service::FlowplaneExtProcService,
@@ -59,12 +65,29 @@ pub struct XdsState {
     pub config: SimpleXdsConfig,
     pub version: Arc<std::sync::atomic::AtomicU64>,
     pub cluster_repository: Option<ClusterRepository>,
-    pub route_repository: Option<RouteRepository>,
+    pub route_config_repository: Option<RouteConfigRepository>,
     pub listener_repository: Option<ListenerRepository>,
+    pub filter_repository: Option<FilterRepository>,
+    pub listener_auto_filter_repository: Option<ListenerAutoFilterRepository>,
     pub aggregated_schema_repository: Option<AggregatedSchemaRepository>,
+    // Hierarchical filter attachment repositories
+    pub virtual_host_repository: Option<VirtualHostRepository>,
+    pub route_repository: Option<RouteRepository>,
+    pub virtual_host_filter_repository: Option<VirtualHostFilterRepository>,
+    pub route_filter_repository: Option<RouteFilterRepository>,
+    // Sync services
+    pub route_hierarchy_sync_service: Option<RouteHierarchySyncService>,
     pub access_log_service: Option<Arc<FlowplaneAccessLogService>>,
     pub ext_proc_service: Option<Arc<FlowplaneExtProcService>>,
-    pub learning_session_service: Option<Arc<LearningSessionService>>,
+    pub learning_session_service: RwLock<Option<Arc<LearningSessionService>>>,
+    /// Secret repository for SDS (Secret Discovery Service)
+    pub secret_repository: Option<SecretRepository>,
+    /// Encryption service for secret data
+    pub encryption_service: Option<Arc<SecretEncryption>>,
+    /// Secret backend registry for external secrets (Vault, AWS, GCP)
+    pub secret_backend_registry: Option<SecretBackendRegistry>,
+    /// Dynamic filter schema registry for schema-driven filter conversion
+    pub filter_schema_registry: FilterSchemaRegistry,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -76,12 +99,23 @@ impl XdsState {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: None,
-            route_repository: None,
+            route_config_repository: None,
             listener_repository: None,
+            filter_repository: None,
+            listener_auto_filter_repository: None,
             aggregated_schema_repository: None,
+            virtual_host_repository: None,
+            route_repository: None,
+            virtual_host_filter_repository: None,
+            route_filter_repository: None,
+            route_hierarchy_sync_service: None,
             access_log_service: None,
             ext_proc_service: None,
-            learning_session_service: None,
+            learning_session_service: RwLock::new(None),
+            secret_repository: None,
+            encryption_service: None,
+            secret_backend_registry: None,
+            filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -90,22 +124,80 @@ impl XdsState {
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
         let cluster_repository = ClusterRepository::new(pool.clone());
-        let route_repository = RouteRepository::new(pool.clone());
+        let route_config_repository = RouteConfigRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
-        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool);
+        let filter_repository = FilterRepository::new(pool.clone());
+        let listener_auto_filter_repository = ListenerAutoFilterRepository::new(pool.clone());
+        let aggregated_schema_repository = AggregatedSchemaRepository::new(pool.clone());
+        // Hierarchical filter attachment repositories
+        let virtual_host_repository = VirtualHostRepository::new(pool.clone());
+        let route_repository = RouteRepository::new(pool.clone());
+        let virtual_host_filter_repository = VirtualHostFilterRepository::new(pool.clone());
+        let route_filter_repository = RouteFilterRepository::new(pool.clone());
+        // Sync services
+        let route_hierarchy_sync_service = RouteHierarchySyncService::new(pool.clone());
+
+        // Initialize secret repository and encryption service if encryption key is configured
+        let (secret_repository, encryption_service) =
+            match crate::services::SecretEncryptionConfig::from_env() {
+                Ok(encryption_config) => match SecretEncryption::new(&encryption_config) {
+                    Ok(encryption) => {
+                        let encryption = Arc::new(encryption);
+                        let secret_repo = SecretRepository::new(pool, encryption.clone());
+                        info!("Secret encryption configured, SDS enabled");
+                        (Some(secret_repo), Some(encryption))
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Failed to initialize secret encryption service, SDS disabled"
+                        );
+                        (None, None)
+                    }
+                },
+                Err(_) => {
+                    debug!(
+                        "FLOWPLANE_SECRET_ENCRYPTION_KEY not set, SDS disabled. \
+                         Set this env var to enable secret management."
+                    );
+                    (None, None)
+                }
+            };
+
         Self {
             config,
             version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             cluster_repository: Some(cluster_repository),
-            route_repository: Some(route_repository),
+            route_config_repository: Some(route_config_repository),
             listener_repository: Some(listener_repository),
+            filter_repository: Some(filter_repository),
+            listener_auto_filter_repository: Some(listener_auto_filter_repository),
             aggregated_schema_repository: Some(aggregated_schema_repository),
+            virtual_host_repository: Some(virtual_host_repository),
+            route_repository: Some(route_repository),
+            virtual_host_filter_repository: Some(virtual_host_filter_repository),
+            route_filter_repository: Some(route_filter_repository),
+            route_hierarchy_sync_service: Some(route_hierarchy_sync_service),
             access_log_service: None,
             ext_proc_service: None,
-            learning_session_service: None,
+            learning_session_service: RwLock::new(None),
+            secret_repository,
+            encryption_service,
+            secret_backend_registry: None, // Initialized separately via set_secret_backend_registry
+            filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Set the secret backend registry for external secret backends
+    pub fn set_secret_backend_registry(&mut self, registry: SecretBackendRegistry) {
+        self.secret_backend_registry = Some(registry);
+    }
+
+    /// Get the secret backend registry
+    pub fn get_secret_backend_registry(&self) -> Option<&SecretBackendRegistry> {
+        self.secret_backend_registry.as_ref()
     }
 
     pub fn get_version(&self) -> String {
@@ -125,8 +217,19 @@ impl XdsState {
     ) -> Self {
         self.access_log_service = Some(access_log_service);
         self.ext_proc_service = Some(ext_proc_service);
-        self.learning_session_service = Some(learning_session_service);
+        *self.learning_session_service.write().expect("lock poisoned") =
+            Some(learning_session_service);
         self
+    }
+
+    /// Set the learning session service (safe mutation)
+    pub fn set_learning_session_service(&self, service: Arc<LearningSessionService>) {
+        *self.learning_session_service.write().expect("lock poisoned") = Some(service);
+    }
+
+    /// Get the learning session service if available
+    pub fn get_learning_session_service(&self) -> Option<Arc<LearningSessionService>> {
+        self.learning_session_service.read().ok()?.clone()
     }
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
@@ -256,17 +359,22 @@ impl XdsState {
     /// Refresh the route cache from the backing repository (if available).
     #[instrument(skip(self), name = "xds_refresh_routes")]
     pub async fn refresh_routes_from_repository(&self) -> Result<()> {
-        let repository = match &self.route_repository {
+        let repository = match &self.route_config_repository {
             Some(repo) => repo.clone(),
             None => return Ok(()),
         };
 
-        let route_rows = repository.list(Some(1000), None).await?;
+        let mut route_config_rows = repository.list(Some(1000), None).await?;
 
-        let built = if route_rows.is_empty() {
+        // Inject attached filters into route configurations
+        if let Err(e) = self.inject_route_config_filters(&mut route_config_rows).await {
+            warn!(error = %e, "Failed to inject filters into route configs, continuing without filters");
+        }
+
+        let built = if route_config_rows.is_empty() {
             routes_from_config(&self.config)?
         } else {
-            routes_from_database_entries(route_rows, "cache_refresh")?
+            routes_from_database_entries(route_config_rows, "cache_refresh")?
         };
 
         let total_resources = built.len();
@@ -297,6 +405,65 @@ impl XdsState {
         Ok(())
     }
 
+    /// Inject attached filters into route configurations
+    ///
+    /// This modifies the route config's JSON configuration to include any filters
+    /// attached via the route_config_filters junction table.
+    ///
+    /// Supports 3-level hierarchical filter attachment:
+    /// 1. RouteConfig-level filters - applied to ALL routes
+    /// 2. VirtualHost-level filters - applied to routes in that vhost
+    /// 3. Route-level filters - applied to specific routes only (most specific wins)
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_route_filters_hierarchical`]
+    /// when hierarchical repositories are available, otherwise falls back to
+    /// [`crate::xds::filters::injection::inject_route_config_filters`].
+    pub async fn inject_route_config_filters(
+        &self,
+        route_configs: &mut [crate::storage::RouteConfigData],
+    ) -> Result<()> {
+        let filter_repository = match &self.filter_repository {
+            Some(repo) => repo.clone(),
+            None => return Ok(()),
+        };
+
+        // Try hierarchical injection if all required repositories are available
+        if let (
+            Some(vhost_repo),
+            Some(route_repo),
+            Some(vhost_filter_repo),
+            Some(route_filter_repo),
+        ) = (
+            &self.virtual_host_repository,
+            &self.route_repository,
+            &self.virtual_host_filter_repository,
+            &self.route_filter_repository,
+        ) {
+            let ctx = crate::xds::filters::injection::HierarchicalFilterContext {
+                filter_repo: filter_repository,
+                vhost_repo: vhost_repo.clone(),
+                route_repo: route_repo.clone(),
+                vhost_filter_repo: vhost_filter_repo.clone(),
+                route_filter_repo: route_filter_repo.clone(),
+                schema_registry: &self.filter_schema_registry,
+            };
+
+            return crate::xds::filters::injection::inject_route_filters_hierarchical(
+                route_configs,
+                &ctx,
+            )
+            .await;
+        }
+
+        // Fallback to simple route-config-only injection
+        crate::xds::filters::injection::inject_route_config_filters(
+            route_configs,
+            &filter_repository,
+            &self.filter_schema_registry,
+        )
+        .await
+    }
+
     /// Refresh the listener cache from the backing repository (if available).
     #[instrument(skip(self), name = "xds_refresh_listeners")]
     pub async fn refresh_listeners_from_repository(&self) -> Result<()> {
@@ -312,6 +479,14 @@ impl XdsState {
         } else {
             listeners_from_database_entries(listener_rows, "cache_refresh")?
         };
+
+        // Inject listener-attached filters (e.g., JWT authentication)
+        if let Err(e) = self.inject_listener_auto_filters(&mut built).await {
+            warn!(
+                error = %e,
+                "Failed to inject listener-attached filters"
+            );
+        }
 
         // Inject access log configuration for active learning sessions
         if let Err(e) = self.inject_learning_session_access_logs(&mut built).await {
@@ -357,156 +532,55 @@ impl XdsState {
         Ok(())
     }
 
-    /// Inject access log configuration into listeners for active learning sessions
-    ///
-    /// This method:
-    /// 1. Queries active learning sessions from the service
-    /// 2. For each active session, decodes the listener protobuf
-    /// 3. Injects HttpGrpcAccessLogConfig into the listener's filter chains
-    /// 4. Re-encodes the modified listener back into the BuiltResource
-    ///
-    /// This enables dynamic access logging for routes in active learning sessions
-    /// without modifying the stored listener configuration.
-    #[instrument(skip(self, built_listeners), name = "xds_inject_access_logs")]
-    pub(crate) async fn inject_learning_session_access_logs(
-        &self,
-        built_listeners: &mut [BuiltResource],
-    ) -> Result<()> {
-        use crate::xds::access_log::LearningSessionAccessLogConfig;
-        use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use prost::Message;
-
-        // Get learning session service
-        let session_service = match &self.learning_session_service {
-            Some(service) => service,
+    /// Refresh the secret cache from the backing repository (if available).
+    #[instrument(skip(self), name = "xds_refresh_secrets")]
+    pub async fn refresh_secrets_from_repository(&self) -> Result<()> {
+        let repository = match &self.secret_repository {
+            Some(repo) => repo.clone(),
             None => {
-                debug!("No learning session service available, skipping access log injection");
+                debug!("No secret repository available, skipping secret refresh");
                 return Ok(());
             }
         };
 
-        // Query active learning sessions
-        let active_sessions = session_service.list_active_sessions().await?;
+        let mut secret_rows = repository.list(Some(1000), None).await?;
 
-        if active_sessions.is_empty() {
-            debug!("No active learning sessions, skipping access log injection");
-            return Ok(());
+        // Resolve reference-based secrets from external backends (Vault, AWS, GCP)
+        if let Some(registry) = &self.secret_backend_registry {
+            info!(
+                secret_count = secret_rows.len(),
+                phase = "cache_refresh",
+                "Resolving reference-based secrets from external backends"
+            );
+            self.resolve_reference_secrets(&mut secret_rows, registry).await;
+        } else {
+            warn!(phase = "cache_refresh", "No secret backend registry available, reference-based secrets will not be resolved");
         }
 
-        info!(
-            session_count = active_sessions.len(),
-            "Injecting access log configuration for active learning sessions"
-        );
+        // Convert database entries to Envoy Secret resources
+        let built = secrets_from_database_entries(secret_rows, "cache_refresh")?;
 
-        // For each listener, check if it needs access log injection
-        for built in built_listeners.iter_mut() {
-            debug!(
-                listener = %built.name,
-                "Processing listener for access log injection"
-            );
-
-            // Decode the listener protobuf
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            debug!(
-                listener = %built.name,
-                filter_chain_count = listener.filter_chains.len(),
-                "Decoded listener, checking filter chains"
-            );
-
-            // Track if we modified this listener
-            let mut modified = false;
-
-            // Check each active session to see if it applies to this listener
-            for session in &active_sessions {
-                debug!(
-                    listener = %built.name,
-                    session_id = %session.id,
-                    "Checking session for injection"
-                );
-                // For now, we inject access log into ALL listeners when ANY session is active
-                // TODO: In the future, we could be more selective based on session.route_pattern
-                // and match it against the listener's routes
-
-                // Create access log config for this session
-                let access_log_config = LearningSessionAccessLogConfig::new(
-                    session.id.clone(),
-                    session.team.clone(),
-                    self.config.bind_address.clone() + ":" + &self.config.port.to_string(),
-                );
-
-                let access_log = access_log_config.build_access_log()?;
-
-                // Inject access log into each filter chain's HTTP connection manager
-                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
-                    debug!(
-                        listener = %built.name,
-                        filter_chain_index = fc_idx,
-                        filter_count = filter_chain.filters.len(),
-                        "Processing filter chain"
+        let total_resources = built.len();
+        match self.apply_built_resources(SECRET_TYPE_URL, built) {
+            Some(update) => {
+                for delta in &update.deltas {
+                    info!(
+                        phase = "cache_refresh",
+                        type_url = %delta.type_url,
+                        added = delta.added_or_updated.len(),
+                        removed = delta.removed.len(),
+                        version = update.version,
+                        total_resources,
+                        "Secret cache refresh produced delta"
                     );
-
-                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
-                        debug!(
-                            listener = %built.name,
-                            filter_chain_index = fc_idx,
-                            filter_index = f_idx,
-                            filter_name = %filter.name,
-                            "Examining filter"
-                        );
-
-                        // Check if this is an HTTP connection manager
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &mut filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    // Decode HCM, add access log, re-encode
-                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
-
-                                    let mut hcm =
-                                        HttpConnectionManager::decode(&typed_config.value[..])
-                                            .map_err(|e| {
-                                                crate::Error::internal(format!(
-                                                    "Failed to decode HCM for listener '{}': {}",
-                                                    built.name, e
-                                                ))
-                                            })?;
-
-                                    // Add access log to the HCM (avoid duplicates)
-                                    let already_has_log = hcm
-                                        .access_log
-                                        .iter()
-                                        .any(|al| al.name.contains(&session.id));
-
-                                    if !already_has_log {
-                                        hcm.access_log.push(access_log.clone());
-                                        modified = true;
-
-                                        debug!(
-                                            listener = %built.name,
-                                            session_id = %session.id,
-                                            "Injected access log configuration"
-                                        );
-                                    }
-
-                                    // Re-encode HCM back into typed_config
-                                    typed_config.value = hcm.encode_to_vec();
-                                }
-                            }
-                        }
-                    }
                 }
             }
-
-            // If we modified the listener, re-encode it
-            if modified {
-                built.resource.value = listener.encode_to_vec();
+            None => {
                 debug!(
-                    listener = %built.name,
-                    "Re-encoded listener with access log configuration"
+                    phase = "cache_refresh",
+                    type_url = SECRET_TYPE_URL,
+                    total_resources,
+                    "Secret cache refresh detected no changes"
                 );
             }
         }
@@ -514,35 +588,157 @@ impl XdsState {
         Ok(())
     }
 
-    /// Inject ExtProc filter configuration into listeners for active learning sessions
+    /// Resolve reference-based secrets by fetching from external backends
+    ///
+    /// For secrets with `backend` and `reference` fields set, this method
+    /// fetches the actual secret from the external backend (Vault, AWS, GCP)
+    /// and populates the `configuration` field with the JSON serialization.
+    async fn resolve_reference_secrets(
+        &self,
+        secrets: &mut [crate::storage::SecretData],
+        registry: &SecretBackendRegistry,
+    ) {
+        use crate::secrets::backends::SecretBackendType;
+
+        for secret in secrets.iter_mut() {
+            // Skip if not a reference-based secret
+            let (Some(backend_str), Some(reference)) = (&secret.backend, &secret.reference) else {
+                continue;
+            };
+
+            // Parse backend type
+            let Some(backend_type) = backend_str.parse::<SecretBackendType>().ok() else {
+                tracing::warn!(
+                    secret_name = %secret.name,
+                    backend = %backend_str,
+                    "Unknown backend type for secret, skipping"
+                );
+                continue;
+            };
+
+            // Fetch from backend
+            info!(
+                secret_name = %secret.name,
+                backend = %backend_str,
+                reference = %reference,
+                "Fetching reference-based secret from backend (cache_refresh)"
+            );
+            match registry.fetch_secret(backend_type, reference, secret.secret_type).await {
+                Ok(spec) => {
+                    // Serialize the spec to JSON for consumption by secrets_from_database_entries
+                    match serde_json::to_string(&spec) {
+                        Ok(json) => {
+                            info!(
+                                secret_name = %secret.name,
+                                backend = %backend_str,
+                                reference = %reference,
+                                json_len = json.len(),
+                                "Resolved reference-based secret from backend (cache_refresh)"
+                            );
+                            secret.configuration = json;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                secret_name = %secret.name,
+                                error = %e,
+                                "Failed to serialize secret spec"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        secret_name = %secret.name,
+                        backend = %backend_str,
+                        reference = %reference,
+                        error = %e,
+                        "Failed to fetch secret from backend"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Inject access log configuration into listeners for active learning sessions.
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_access_logs`].
+    #[instrument(skip(self, built_listeners), name = "xds_inject_access_logs")]
+    pub(crate) async fn inject_learning_session_access_logs(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        let session_service = match self.get_learning_session_service() {
+            Some(service) => service,
+            None => {
+                debug!("No learning session service available, skipping access log injection");
+                return Ok(());
+            }
+        };
+
+        let grpc_address = format!("{}:{}", self.config.bind_address, self.config.port);
+        crate::xds::filters::injection::inject_access_logs(
+            built_listeners,
+            &session_service,
+            &grpc_address,
+        )
+        .await
+    }
+
+    /// Inject listener-attached filters into the HTTP connection manager filter chain
     ///
     /// This method:
-    /// 1. Queries active learning sessions from the service
-    /// 2. For each active session, decodes the listener protobuf
-    /// 3. Injects ExtProc HTTP filter into the listener's filter chains
-    /// 4. Re-encodes the modified listener back into the BuiltResource
+    /// 1. For each listener, queries the database for attached filters
+    /// 2. Also queries filters attached to the route configuration used by the listener
+    /// 3. Merges compatible filters (specifically JWT authentication)
+    /// 4. Injects the filters into the listener's HCM filter chain
     ///
-    /// This enables dynamic body capture for routes in active learning sessions
-    /// without modifying the stored listener configuration.
+    /// This enables user-defined filters (like JWT authentication) to be dynamically
+    /// applied to listeners without modifying the stored listener configuration.
     ///
-    /// The ExtProc filter is configured to:
-    /// - Buffer request and response bodies up to 10KB
-    /// - Send bodies to the Flowplane ExtProc service
-    /// - Fail-open (requests continue even if ExtProc fails)
+    /// Delegates to [`crate::xds::filters::injection::inject_listener_filters`].
+    #[instrument(skip(self, built_listeners), name = "xds_inject_listener_filters")]
+    pub(crate) async fn inject_listener_auto_filters(
+        &self,
+        built_listeners: &mut [BuiltResource],
+    ) -> Result<()> {
+        let filter_repository = match &self.filter_repository {
+            Some(repo) => repo,
+            None => {
+                debug!("No filter repository available, skipping listener filter injection");
+                return Ok(());
+            }
+        };
+
+        let listener_repository = match &self.listener_repository {
+            Some(repo) => repo,
+            None => {
+                debug!("No listener repository available, skipping listener filter injection");
+                return Ok(());
+            }
+        };
+
+        let route_config_repository = self.route_config_repository.as_ref();
+
+        crate::xds::filters::injection::inject_listener_filters(
+            built_listeners,
+            filter_repository,
+            listener_repository,
+            route_config_repository,
+            self,
+            &self.filter_schema_registry,
+        )
+        .await
+    }
+
+    /// Inject ExtProc filter configuration into listeners for active learning sessions.
+    ///
+    /// Delegates to [`crate::xds::filters::injection::inject_ext_proc`].
     #[instrument(skip(self, built_listeners), name = "xds_inject_ext_proc")]
     pub(crate) async fn inject_learning_session_ext_proc(
         &self,
         built_listeners: &mut [BuiltResource],
     ) -> Result<()> {
-        use crate::xds::filters::http::ext_proc::{
-            ExtProcConfig, GrpcServiceConfig, ProcessingMode,
-        };
-        use envoy_types::pb::envoy::config::listener::v3::Listener;
-        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
-        use prost::Message;
-
-        // Get learning session service
-        let session_service = match &self.learning_session_service {
+        let session_service = match self.get_learning_session_service() {
             Some(service) => service,
             None => {
                 debug!("No learning session service available, skipping ExtProc injection");
@@ -550,143 +746,7 @@ impl XdsState {
             }
         };
 
-        // Query active learning sessions
-        let active_sessions = session_service.list_active_sessions().await?;
-
-        if active_sessions.is_empty() {
-            debug!("No active learning sessions, skipping ExtProc injection");
-            return Ok(());
-        }
-
-        info!(
-            session_count = active_sessions.len(),
-            "Injecting ExtProc configuration for active learning sessions"
-        );
-
-        // For each listener, check if it needs ExtProc injection
-        for built in built_listeners.iter_mut() {
-            debug!(
-                listener = %built.name,
-                "Processing listener for ExtProc injection"
-            );
-
-            // Decode the listener protobuf
-            let mut listener = Listener::decode(&built.resource.value[..]).map_err(|e| {
-                crate::Error::internal(format!("Failed to decode listener '{}': {}", built.name, e))
-            })?;
-
-            // Track if we modified this listener
-            let mut modified = false;
-
-            // Check each active session to see if it applies to this listener
-            for session in &active_sessions {
-                debug!(
-                    listener = %built.name,
-                    session_id = %session.id,
-                    "Checking session for ExtProc injection"
-                );
-
-                // Create ExtProc config for body capture
-                let ext_proc_config = ExtProcConfig {
-                    grpc_service: GrpcServiceConfig {
-                        target_uri: "flowplane_ext_proc_service".to_string(),
-                        timeout_seconds: 5,
-                    },
-                    failure_mode_allow: true, // Fail-open: requests continue even if ExtProc fails
-                    processing_mode: Some(ProcessingMode {
-                        request_header_mode: Some("SEND".to_string()),
-                        response_header_mode: Some("SEND".to_string()),
-                        request_body_mode: Some("BUFFERED".to_string()), // Capture request body
-                        response_body_mode: Some("BUFFERED".to_string()), // Capture response body
-                        request_trailer_mode: Some("SKIP".to_string()),
-                        response_trailer_mode: Some("SKIP".to_string()),
-                    }),
-                    message_timeout_ms: Some(5000), // 5 second timeout per message
-                    request_attributes: vec![],
-                    response_attributes: vec![],
-                };
-
-                let ext_proc_any = ext_proc_config.to_any()?;
-
-                // Create HTTP filter for ExtProc
-                let ext_proc_filter = HttpFilter {
-                    name: format!("envoy.filters.http.ext_proc.session_{}", session.id),
-                    config_type: Some(
-                        envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(ext_proc_any)
-                    ),
-                    is_optional: true, // Make it optional so requests continue if filter fails
-                    disabled: false,
-                };
-
-                // Inject ExtProc filter into each filter chain's HTTP connection manager
-                for (fc_idx, filter_chain) in listener.filter_chains.iter_mut().enumerate() {
-                    for (f_idx, filter) in filter_chain.filters.iter_mut().enumerate() {
-                        // Check if this is an HTTP connection manager
-                        if filter.name == "envoy.filters.network.http_connection_manager" {
-                            if let Some(config_type) = &mut filter.config_type {
-                                use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
-
-                                if let ConfigType::TypedConfig(typed_config) = config_type {
-                                    // Decode HCM, add ExtProc filter, re-encode
-                                    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
-
-                                    let mut hcm =
-                                        HttpConnectionManager::decode(&typed_config.value[..])
-                                            .map_err(|e| {
-                                                crate::Error::internal(format!(
-                                                    "Failed to decode HCM for listener '{}': {}",
-                                                    built.name, e
-                                                ))
-                                            })?;
-
-                                    // Check if ExtProc filter already exists for this session
-                                    let already_has_ext_proc = hcm
-                                        .http_filters
-                                        .iter()
-                                        .any(|f| f.name.contains(&session.id));
-
-                                    if !already_has_ext_proc {
-                                        // Insert ExtProc filter BEFORE the router filter
-                                        // Find router filter position
-                                        let router_pos = hcm
-                                            .http_filters
-                                            .iter()
-                                            .position(|f| f.name == "envoy.filters.http.router")
-                                            .unwrap_or(hcm.http_filters.len());
-
-                                        hcm.http_filters
-                                            .insert(router_pos, ext_proc_filter.clone());
-                                        modified = true;
-
-                                        debug!(
-                                            listener = %built.name,
-                                            filter_chain_index = fc_idx,
-                                            filter_index = f_idx,
-                                            session_id = %session.id,
-                                            "Injected ExtProc filter for body capture"
-                                        );
-                                    }
-
-                                    // Re-encode HCM back into typed_config
-                                    typed_config.value = hcm.encode_to_vec();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If we modified the listener, re-encode it
-            if modified {
-                built.resource.value = listener.encode_to_vec();
-                debug!(
-                    listener = %built.name,
-                    "Re-encoded listener with ExtProc configuration"
-                );
-            }
-        }
-
-        Ok(())
+        crate::xds::filters::injection::inject_ext_proc(built_listeners, &session_service).await
     }
 }
 

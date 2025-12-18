@@ -255,15 +255,18 @@ async fn test_token_rotation_no_downtime() {
 
     // Create a regular token
     let created = service
-        .create_token(CreateTokenRequest {
-            name: "test-token".into(),
-            description: Some("Testing rotation".into()),
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("test".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            CreateTokenRequest {
+                name: "test-token".into(),
+                description: Some("Testing rotation".into()),
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("test".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -286,7 +289,7 @@ async fn test_token_rotation_no_downtime() {
     );
 
     // Rotate the token
-    let rotated = service.rotate_token(&token_id).await.unwrap();
+    let rotated = service.rotate_token(&token_id, None).await.unwrap();
     assert_ne!(original_token, rotated.token, "Rotated token should be different");
 
     // Verify original token is NOW INVALID (rotation is immediate)
@@ -316,20 +319,23 @@ async fn test_audit_logging_completeness() {
 
     // Create a token
     let created = service
-        .create_token(CreateTokenRequest {
-            name: "audit-test".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["clusters:read".into()],
-            created_by: Some("test-user".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            CreateTokenRequest {
+                name: "audit-test".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["clusters:read".into()],
+                created_by: Some("test-user".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
     // Rotate the token
-    service.rotate_token(&created.id).await.unwrap();
+    service.rotate_token(&created.id, None).await.unwrap();
 
     // Verify audit log contains:
     // 1. Token creation event
@@ -434,15 +440,18 @@ async fn test_multiple_rotation_cycles() {
 
     // Create initial token
     let created = service
-        .create_token(CreateTokenRequest {
-            name: "multi-rotate".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["listeners:read".into()],
-            created_by: Some("test".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            CreateTokenRequest {
+                name: "multi-rotate".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["listeners:read".into()],
+                created_by: Some("test".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -450,7 +459,7 @@ async fn test_multiple_rotation_cycles() {
 
     // Perform 5 rotation cycles
     for i in 1..=5 {
-        let rotated = service.rotate_token(&created.id).await.unwrap();
+        let rotated = service.rotate_token(&created.id, None).await.unwrap();
         assert_ne!(previous_token, rotated.token, "Rotation {} should produce different token", i);
         previous_token = rotated.token;
     }

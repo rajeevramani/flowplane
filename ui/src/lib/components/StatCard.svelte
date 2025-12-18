@@ -4,7 +4,7 @@
 		value: number | string;
 		icon?: 'api' | 'cluster' | 'route' | 'listener';
 		href?: string;
-		colorClass?: string;
+		colorClass?: 'blue' | 'purple' | 'green' | 'orange';
 	}
 
 	let { title, value, icon, href, colorClass = 'blue' }: Props = $props();

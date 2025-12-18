@@ -11,15 +11,18 @@ async fn contract_delete_tokens_revokes_token() {
 
     let created = app
         .token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "revoke-me".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "revoke-me".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

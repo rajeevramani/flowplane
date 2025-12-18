@@ -14,14 +14,17 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
 use hyper::Response;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
 use tower::ServiceExt;
+
+#[path = "common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
 // === Test Infrastructure ===
 
@@ -29,6 +32,8 @@ pub struct NativeApiApp {
     state: Arc<XdsState>,
     pub pool: DbPool,
     token_service: TokenService,
+    #[allow(dead_code)]
+    test_db: TestDatabase,
 }
 
 impl NativeApiApp {
@@ -38,26 +43,24 @@ impl NativeApiApp {
 
     pub async fn issue_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
         self.token_service
-            .create_token(CreateTokenRequest::without_user(
-                name.to_string(),
+            .create_token(
+                CreateTokenRequest::without_user(
+                    name.to_string(),
+                    None,
+                    None,
+                    scopes.iter().map(|scope| scope.to_string()).collect(),
+                    Some("native-api-cross-team-tests".into()),
+                ),
                 None,
-                None,
-                scopes.iter().map(|scope| scope.to_string()).collect(),
-                Some("native-api-cross-team-tests".into()),
-            ))
+            )
             .await
             .expect("create token")
     }
 }
 
 pub async fn setup_native_api_app() -> NativeApiApp {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("create sqlite pool");
-
-    storage::run_migrations(&pool).await.expect("run migrations for tests");
+    let test_db = TestDatabase::new("native_api_cross_team").await;
+    let pool = test_db.pool().clone();
 
     // Create teams required for cross-team tests
     let team_id_a = uuid::Uuid::new_v4().to_string();
@@ -85,7 +88,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
 
-    NativeApiApp { state, pool, token_service }
+    NativeApiApp { state, pool, token_service, test_db }
 }
 
 pub async fn send_request(
@@ -363,7 +366,7 @@ async fn team_a_cannot_list_team_b_routes() {
     let create_response = send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -372,7 +375,8 @@ async fn team_a_cannot_list_team_b_routes() {
 
     // Team A lists routes - should NOT see Team B's route
     let list_response =
-        send_request(&app, Method::GET, "/api/v1/routes", Some(&team_a_token.token), None).await;
+        send_request(&app, Method::GET, "/api/v1/route-configs", Some(&team_a_token.token), None)
+            .await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
     let routes: Vec<Value> = read_json(list_response).await;
@@ -425,7 +429,7 @@ async fn team_a_cannot_get_team_b_route() {
     send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -435,7 +439,7 @@ async fn team_a_cannot_get_team_b_route() {
     let get_response = send_request(
         &app,
         Method::GET,
-        "/api/v1/routes/team-b-private-route",
+        "/api/v1/route-configs/team-b-private-route",
         Some(&team_a_token.token),
         None,
     )
@@ -488,7 +492,7 @@ async fn team_a_cannot_delete_team_b_route() {
     send_request(
         &app,
         Method::POST,
-        "/api/v1/routes",
+        "/api/v1/route-configs",
         Some(&team_b_token.token),
         Some(team_b_route),
     )
@@ -498,7 +502,7 @@ async fn team_a_cannot_delete_team_b_route() {
     let delete_response = send_request(
         &app,
         Method::DELETE,
-        "/api/v1/routes/team-b-route",
+        "/api/v1/route-configs/team-b-route",
         Some(&team_a_token.token),
         None,
     )

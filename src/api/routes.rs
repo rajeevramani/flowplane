@@ -13,35 +13,127 @@ use crate::auth::{
     middleware::{authenticate, ensure_dynamic_scopes},
     session::SessionService,
 };
+use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
+use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
 use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
 use super::{
     docs,
+    handlers::secrets::{
+        create_secret_handler, create_secret_reference_handler, delete_secret_handler,
+        get_secret_handler,
+    },
     handlers::{
-        add_team_membership, admin_create_team, admin_delete_team, admin_get_team,
-        admin_list_teams, admin_update_team, bootstrap_initialize_handler,
-        bootstrap_status_handler, change_password_handler, compare_aggregated_schemas_handler,
-        create_cluster_handler, create_learning_session_handler, create_listener_handler,
-        create_route_handler, create_session_handler, create_token_handler, create_user,
-        delete_cluster_handler, delete_learning_session_handler, delete_listener_handler,
-        delete_route_handler, delete_user, export_aggregated_schema_handler,
-        get_aggregated_schema_handler, get_cluster_handler, get_learning_session_handler,
-        get_listener_handler, get_route_handler, get_session_info_handler,
-        get_team_bootstrap_handler, get_token_handler, get_user, health_handler,
-        list_aggregated_schemas_handler, list_all_scopes_handler, list_audit_logs,
-        list_clusters_handler, list_learning_sessions_handler, list_listeners_handler,
-        list_route_flows_handler, list_routes_handler, list_scopes_handler, list_teams_handler,
-        list_tokens_handler, list_user_teams, list_users, login_handler, logout_handler,
-        remove_team_membership, revoke_token_handler, rotate_token_handler, update_cluster_handler,
-        update_listener_handler, update_route_handler, update_token_handler, update_user,
+        add_team_membership,
+        admin_create_team,
+        admin_delete_team,
+        admin_get_team,
+        admin_list_teams,
+        admin_update_team,
+        attach_filter_handler,
+        attach_filter_to_listener_handler,
+        attach_filter_to_route_rule_handler,
+        attach_filter_to_virtual_host_handler,
+        bootstrap_initialize_handler,
+        bootstrap_status_handler,
+        change_password_handler,
+        compare_aggregated_schemas_handler,
+        // Install/Configure redesign handlers
+        configure_filter_handler,
+        create_cluster_handler,
+        create_filter_handler,
+        create_learning_session_handler,
+        create_listener_handler,
+        create_route_config_handler,
+        create_session_handler,
+        create_token_handler,
+        create_user,
+        delete_cluster_handler,
+        delete_filter_handler,
+        delete_learning_session_handler,
+        delete_listener_handler,
+        delete_route_config_handler,
+        delete_user,
+        detach_filter_from_listener_handler,
+        detach_filter_from_route_rule_handler,
+        detach_filter_from_virtual_host_handler,
+        detach_filter_handler,
+        export_aggregated_schema_handler,
+        generate_certificate_handler,
+        get_aggregated_schema_handler,
+        get_app_handler,
+        get_certificate_handler,
+        get_cluster_handler,
+        get_filter_handler,
+        get_filter_status_handler,
+        get_filter_type_handler,
+        get_learning_session_handler,
+        get_listener_handler,
+        get_mtls_status_handler,
+        get_route_config_handler,
+        get_session_info_handler,
+        get_stats_cluster_handler,
+        get_stats_clusters_handler,
+        get_stats_enabled_handler,
+        get_stats_overview_handler,
+        get_team_bootstrap_handler,
+        get_token_handler,
+        get_user,
+        health_handler,
+        install_filter_handler,
+        list_aggregated_schemas_handler,
+        list_all_scopes_handler,
+        list_apps_handler,
+        list_audit_logs,
+        list_certificates_handler,
+        list_clusters_handler,
+        list_filter_configurations_handler,
+        list_filter_installations_handler,
+        list_filter_types_handler,
+        list_filters_handler,
+        list_learning_sessions_handler,
+        list_listener_filters_handler,
+        list_listeners_handler,
+        list_route_configs_handler,
+        list_route_filters_handler,
+        list_route_flows_handler,
+        list_route_rule_filters_handler,
+        list_route_rules_handler,
+        list_scopes_handler,
+        list_secrets_handler,
+        list_teams_handler,
+        list_tokens_handler,
+        list_user_teams,
+        list_users,
+        list_virtual_host_filters_handler,
+        list_virtual_hosts_handler,
+        login_handler,
+        logout_handler,
+        reload_filter_schemas_handler,
+        remove_filter_configuration_handler,
+        remove_team_membership,
+        revoke_certificate_handler,
+        revoke_token_handler,
+        rotate_token_handler,
+        set_app_status_handler,
+        uninstall_filter_handler,
+        update_cluster_handler,
+        update_filter_handler,
+        update_listener_handler,
+        update_route_config_handler,
+        update_secret_handler,
+        update_token_handler,
+        update_user,
     },
 };
 
 #[derive(Clone)]
 pub struct ApiState {
     pub xds_state: Arc<XdsState>,
+    pub filter_schema_registry: Option<SharedFilterSchemaRegistry>,
+    pub stats_cache: Arc<StatsCache>,
 }
 
 /// Build CORS layer from environment configuration
@@ -84,7 +176,17 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
-    let api_state = ApiState { xds_state: state.clone() };
+    build_router_with_registry(state, None)
+}
+
+pub fn build_router_with_registry(
+    state: Arc<XdsState>,
+    filter_schema_registry: Option<SharedFilterSchemaRegistry>,
+) -> Router {
+    // Create stats cache with default config (10 second TTL, 100 max entries)
+    let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
+
+    let api_state = ApiState { xds_state: state.clone(), filter_schema_registry, stats_cache };
 
     let cluster_repo = match &state.cluster_repository {
         Some(repo) => repo.clone(),
@@ -126,12 +228,77 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/clusters/{name}", get(get_cluster_handler))
         .route("/api/v1/clusters/{name}", put(update_cluster_handler))
         .route("/api/v1/clusters/{name}", delete(delete_cluster_handler))
-        // Route endpoints
-        .route("/api/v1/routes", get(list_routes_handler))
-        .route("/api/v1/routes", post(create_route_handler))
-        .route("/api/v1/routes/{name}", get(get_route_handler))
-        .route("/api/v1/routes/{name}", put(update_route_handler))
-        .route("/api/v1/routes/{name}", delete(delete_route_handler))
+        // Route config endpoints
+        .route("/api/v1/route-configs", get(list_route_configs_handler))
+        .route("/api/v1/route-configs", post(create_route_config_handler))
+        .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
+        .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
+        .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
+        // Filter endpoints
+        .route("/api/v1/filters", get(list_filters_handler))
+        .route("/api/v1/filters", post(create_filter_handler))
+        .route("/api/v1/filters/{id}", get(get_filter_handler))
+        .route("/api/v1/filters/{id}", put(update_filter_handler))
+        .route("/api/v1/filters/{id}", delete(delete_filter_handler))
+        // Filter Install/Configure endpoints (redesign)
+        .route("/api/v1/filters/{filter_id}/status", get(get_filter_status_handler))
+        .route("/api/v1/filters/{filter_id}/installations", get(list_filter_installations_handler))
+        .route("/api/v1/filters/{filter_id}/installations", post(install_filter_handler))
+        .route("/api/v1/filters/{filter_id}/installations/{listener_id}", delete(uninstall_filter_handler))
+        .route("/api/v1/filters/{filter_id}/configurations", get(list_filter_configurations_handler))
+        .route("/api/v1/filters/{filter_id}/configurations", post(configure_filter_handler))
+        .route(
+            "/api/v1/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
+            delete(remove_filter_configuration_handler),
+        )
+        // Filter types endpoints (dynamic filter framework)
+        .route("/api/v1/filter-types", get(list_filter_types_handler))
+        .route("/api/v1/filter-types/{filter_type}", get(get_filter_type_handler))
+        // Route config filter attachment endpoints
+        .route("/api/v1/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
+        .route("/api/v1/route-configs/{route_config_id}/filters", post(attach_filter_handler))
+        .route("/api/v1/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
+        // Hierarchical filter attachment endpoints - Virtual Hosts
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+            get(list_virtual_hosts_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            get(list_virtual_host_filters_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            post(attach_filter_to_virtual_host_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+            delete(detach_filter_from_virtual_host_handler),
+        )
+        // Hierarchical filter attachment endpoints - Routes
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+            get(list_route_rules_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            get(list_route_rule_filters_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            post(attach_filter_to_route_rule_handler),
+        )
+        .route(
+            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+            delete(detach_filter_from_route_rule_handler),
+        )
+        // Listener-Filter attachment endpoints
+        .route("/api/v1/listeners/{listener_id}/filters", get(list_listener_filters_handler))
+        .route("/api/v1/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))
+        .route(
+            "/api/v1/listeners/{listener_id}/filters/{filter_id}",
+            delete(detach_filter_from_listener_handler),
+        )
         // OpenAPI import endpoints
         .route(
             "/api/v1/openapi/import",
@@ -152,6 +319,20 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         // Team endpoints
         .route("/api/v1/teams", get(list_teams_handler))
         .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
+        // mTLS status endpoint
+        .route("/api/v1/mtls/status", get(get_mtls_status_handler))
+        // Proxy certificate endpoints (mTLS)
+        .route("/api/v1/teams/{team}/proxy-certificates", get(list_certificates_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates", post(generate_certificate_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates/{id}", get(get_certificate_handler))
+        .route("/api/v1/teams/{team}/proxy-certificates/{id}/revoke", post(revoke_certificate_handler))
+        // Secrets endpoints (SDS)
+        .route("/api/v1/teams/{team}/secrets", get(list_secrets_handler))
+        .route("/api/v1/teams/{team}/secrets", post(create_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/reference", post(create_secret_reference_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}", put(update_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
         .route("/api/v1/listeners", post(create_listener_handler))
@@ -189,6 +370,17 @@ pub fn build_router(state: Arc<XdsState>) -> Router {
         .route("/api/v1/audit-logs", get(list_audit_logs))
         // Admin scopes endpoint (includes hidden scopes like admin:all)
         .route("/api/v1/admin/scopes", get(list_all_scopes_handler))
+        // Admin filter schema management
+        .route("/api/v1/admin/filter-schemas/reload", post(reload_filter_schemas_handler))
+        // Admin app management endpoints
+        .route("/api/v1/admin/apps", get(list_apps_handler))
+        .route("/api/v1/admin/apps/{app_id}", get(get_app_handler))
+        .route("/api/v1/admin/apps/{app_id}", put(set_app_status_handler))
+        // Stats dashboard endpoints
+        .route("/api/v1/stats/enabled", get(get_stats_enabled_handler))
+        .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
+        .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
+        .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)

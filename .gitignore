@@ -59,7 +59,9 @@ CLAUDE.md
 CLAUDE.md.backup
 
 Database
-data/
+data/*
+!data/logs/
+!data/logs/*.log
 flowplane.db-shm
 flowplane.db-wal
 
@@ -100,6 +102,10 @@ ui/.vercel/
 .taskmaster/
 AGENTS.md 
 
+.agent/
+
 # Task files
 # tasks.json
 # tasks/ 
+
+GEMINI.md

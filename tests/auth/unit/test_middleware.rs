@@ -138,15 +138,18 @@ async fn missing_bearer_returns_unauthorized() {
 async fn insufficient_scope_returns_forbidden() {
     let (token_service, auth_service, session_service, _) = setup_services().await;
     let token = token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "scope-test".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["routes:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "scope-test".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["routes:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -170,15 +173,18 @@ async fn insufficient_scope_returns_forbidden() {
 async fn valid_token_allows_request() {
     let (token_service, auth_service, session_service, _) = setup_services().await;
     let token = token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "valid-token".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["clusters:read".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "valid-token".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["clusters:read".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -409,15 +415,18 @@ async fn pat_tokens_bypass_csrf_validation() {
     let (token_service, auth_service, session_service, _) = setup_services().await;
 
     let token = token_service
-        .create_token(flowplane::auth::validation::CreateTokenRequest {
-            name: "pat-token".into(),
-            description: None,
-            expires_at: None,
-            scopes: vec!["clusters:write".into()],
-            created_by: Some("tests".into()),
-            user_id: None,
-            user_email: None,
-        })
+        .create_token(
+            flowplane::auth::validation::CreateTokenRequest {
+                name: "pat-token".into(),
+                description: None,
+                expires_at: None,
+                scopes: vec!["clusters:write".into()],
+                created_by: Some("tests".into()),
+                user_id: None,
+                user_email: None,
+            },
+            None,
+        )
         .await
         .unwrap();
 

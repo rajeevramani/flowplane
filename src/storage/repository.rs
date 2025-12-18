@@ -13,18 +13,18 @@ pub use crate::storage::repositories::{
     CreateClusterRequest,
     // Listener repository
     CreateListenerRequest,
-    // Route repository
-    CreateRouteRequest,
+    // Route Config repository
+    CreateRouteConfigRequest,
     ListenerData,
     ListenerRepository,
-    RouteData,
-    RouteRepository,
+    RouteConfigData,
+    RouteConfigRepository,
     // Token repository
     SqlxTokenRepository,
     TokenRepository,
     UpdateClusterRequest,
     UpdateListenerRequest,
-    UpdateRouteRequest,
+    UpdateRouteConfigRequest,
 };
 
 #[cfg(test)]
@@ -65,7 +65,7 @@ mod tests {
 
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS routes (
+            CREATE TABLE IF NOT EXISTS route_configs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 path_prefix TEXT NOT NULL,
@@ -194,16 +194,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_crud_operations() {
+    async fn test_route_config_crud_operations() {
         let pool = create_test_pool().await;
-        let repo = RouteRepository::new(pool.clone());
+        let repo = RouteConfigRepository::new(pool.clone());
 
-        let create_request = CreateRouteRequest {
-            name: "test_route".to_string(),
+        let create_request = CreateRouteConfigRequest {
+            name: "test_route_config".to_string(),
             path_prefix: "/api".to_string(),
             cluster_name: "cluster-a".to_string(),
             configuration: serde_json::json!({
-                "name": "test_route",
+                "name": "test_route_config",
                 "virtualHosts": [
                     {
                         "name": "default",
@@ -231,20 +231,20 @@ mod tests {
         };
 
         let created = repo.create(create_request).await.unwrap();
-        assert_eq!(created.name, "test_route");
+        assert_eq!(created.name, "test_route_config");
         assert_eq!(created.version, 1);
 
         let fetched = repo.get_by_id(&created.id).await.unwrap();
         assert_eq!(fetched.id, created.id);
 
-        let fetched_by_name = repo.get_by_name("test_route").await.unwrap();
+        let fetched_by_name = repo.get_by_name("test_route_config").await.unwrap();
         assert_eq!(fetched_by_name.id, created.id);
 
-        let update_request = UpdateRouteRequest {
+        let update_request = UpdateRouteConfigRequest {
             path_prefix: Some("/api/v2".to_string()),
             cluster_name: Some("cluster-b".to_string()),
             configuration: Some(serde_json::json!({
-                "name": "test_route",
+                "name": "test_route_config",
                 "virtualHosts": [
                     {
                         "name": "default",

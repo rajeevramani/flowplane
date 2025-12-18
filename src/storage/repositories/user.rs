@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use std::str::FromStr;
+use tracing::instrument;
 
 // Database row structures
 
@@ -144,6 +145,7 @@ impl SqlxUserRepository {
 
 #[async_trait]
 impl UserRepository for SqlxUserRepository {
+    #[instrument(skip(self, user), fields(user_email = %user.email, user_id = %user.id), name = "db_create_user")]
     async fn create_user(&self, user: NewUser) -> Result<User> {
         let id = user.id.to_string();
         let status = user.status.to_string();
@@ -174,6 +176,7 @@ impl UserRepository for SqlxUserRepository {
             .ok_or_else(|| FlowplaneError::internal("User not found after creation"))
     }
 
+    #[instrument(skip(self), fields(user_id = %id), name = "db_get_user")]
     async fn get_user(&self, id: &UserId) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE id = $1",
@@ -189,6 +192,7 @@ impl UserRepository for SqlxUserRepository {
         row.map(|r| self.row_to_user(r)).transpose()
     }
 
+    #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_by_email")]
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE email = $1",
@@ -204,6 +208,7 @@ impl UserRepository for SqlxUserRepository {
         row.map(|r| self.row_to_user(r)).transpose()
     }
 
+    #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_with_password")]
     async fn get_user_with_password(&self, email: &str) -> Result<Option<(User, String)>> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE email = $1",
@@ -225,6 +230,7 @@ impl UserRepository for SqlxUserRepository {
         }
     }
 
+    #[instrument(skip(self, update), fields(user_id = %id), name = "db_update_user")]
     async fn update_user(&self, id: &UserId, update: UpdateUser) -> Result<User> {
         let current = self
             .get_user(id)
@@ -261,6 +267,7 @@ impl UserRepository for SqlxUserRepository {
             .ok_or_else(|| FlowplaneError::internal("User not found after update"))
     }
 
+    #[instrument(skip(self, password_hash), fields(user_id = %id), name = "db_update_password")]
     async fn update_password(&self, id: &UserId, password_hash: String) -> Result<()> {
         sqlx::query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3")
             .bind(&password_hash)
@@ -276,6 +283,7 @@ impl UserRepository for SqlxUserRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_users")]
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
@@ -292,6 +300,7 @@ impl UserRepository for SqlxUserRepository {
         rows.into_iter().map(|r| self.row_to_user(r)).collect()
     }
 
+    #[instrument(skip(self), name = "db_count_users")]
     async fn count_users(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
             .fetch_one(&self.pool)
@@ -304,6 +313,7 @@ impl UserRepository for SqlxUserRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self), fields(status = %status), name = "db_count_users_by_status")]
     async fn count_users_by_status(&self, status: UserStatus) -> Result<i64> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE status = $1")
             .bind(status.to_string())
@@ -317,6 +327,7 @@ impl UserRepository for SqlxUserRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self), fields(user_id = %id), name = "db_delete_user")]
     async fn delete_user(&self, id: &UserId) -> Result<()> {
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(id.to_string())
@@ -359,6 +370,7 @@ impl SqlxTeamMembershipRepository {
 
 #[async_trait]
 impl TeamMembershipRepository for SqlxTeamMembershipRepository {
+    #[instrument(skip(self, membership), fields(user_id = %membership.user_id, team = %membership.team), name = "db_create_membership")]
     async fn create_membership(
         &self,
         membership: NewUserTeamMembership,
@@ -390,6 +402,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
             .ok_or_else(|| FlowplaneError::internal("Membership not found after creation"))
     }
 
+    #[instrument(skip(self), fields(user_id = %user_id), name = "db_list_user_memberships")]
     async fn list_user_memberships(&self, user_id: &UserId) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
             "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE user_id = $1 ORDER BY created_at",
@@ -405,6 +418,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         rows.into_iter().map(|r| self.row_to_membership(r)).collect()
     }
 
+    #[instrument(skip(self), fields(team = %team), name = "db_list_team_members")]
     async fn list_team_members(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
             "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE team = $1 ORDER BY created_at",
@@ -420,6 +434,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         rows.into_iter().map(|r| self.row_to_membership(r)).collect()
     }
 
+    #[instrument(skip(self), name = "db_list_all_teams")]
     async fn list_all_teams(&self) -> Result<Vec<String>> {
         #[derive(FromRow)]
         struct TeamRow {
@@ -439,6 +454,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         Ok(rows.into_iter().map(|r| r.team).collect())
     }
 
+    #[instrument(skip(self), fields(membership_id = %id), name = "db_get_membership")]
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
             "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE id = $1",
@@ -454,6 +470,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         row.map(|r| self.row_to_membership(r)).transpose()
     }
 
+    #[instrument(skip(self), fields(user_id = %user_id, team = %team), name = "db_get_user_team_membership")]
     async fn get_user_team_membership(
         &self,
         user_id: &UserId,
@@ -474,6 +491,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         row.map(|r| self.row_to_membership(r)).transpose()
     }
 
+    #[instrument(skip(self, scopes), fields(membership_id = %id), name = "db_update_membership_scopes")]
     async fn update_membership_scopes(
         &self,
         id: &str,
@@ -498,6 +516,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
             .ok_or_else(|| FlowplaneError::internal("Membership not found after update"))
     }
 
+    #[instrument(skip(self), fields(membership_id = %id), name = "db_delete_membership")]
     async fn delete_membership(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM user_team_memberships WHERE id = $1")
             .bind(id)
@@ -511,6 +530,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(user_id = %user_id, team = %team), name = "db_delete_user_team_membership")]
     async fn delete_user_team_membership(&self, user_id: &UserId, team: &str) -> Result<()> {
         sqlx::query("DELETE FROM user_team_memberships WHERE user_id = $1 AND team = $2")
             .bind(user_id.to_string())

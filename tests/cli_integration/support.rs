@@ -9,14 +9,17 @@ use flowplane::{
         validation::CreateTokenRequest,
     },
     config::SimpleXdsConfig,
-    storage::{self, repository::AuditLogRepository, DbPool},
+    storage::{repository::AuditLogRepository, DbPool},
     xds::XdsState,
 };
-use sqlx::sqlite::SqlitePoolOptions;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+
+#[path = "../common/mod.rs"]
+mod common;
+use common::test_db::TestDatabase;
 
 /// Test server instance
 pub struct TestServer {
@@ -25,18 +28,15 @@ pub struct TestServer {
     pub pool: DbPool,
     pub token_service: TokenService,
     _handle: JoinHandle<()>,
+    #[allow(dead_code)]
+    _test_db: TestDatabase,
 }
 
 impl TestServer {
     /// Start a test server on a random available port
     pub async fn start() -> Self {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:?cache=shared")
-            .await
-            .expect("create sqlite pool");
-
-        storage::run_migrations(&pool).await.expect("run migrations for CLI integration tests");
+        let test_db = TestDatabase::new("cli_integration").await;
+        let pool = test_db.pool().clone();
 
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
@@ -64,19 +64,22 @@ impl TestServer {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        TestServer { addr, pool, token_service, _handle: handle }
+        TestServer { addr, pool, token_service, _handle: handle, _test_db: test_db }
     }
 
     /// Issue a test token with specified scopes
     pub async fn issue_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
         self.token_service
-            .create_token(CreateTokenRequest::without_user(
-                name.to_string(),
+            .create_token(
+                CreateTokenRequest::without_user(
+                    name.to_string(),
+                    None,
+                    None,
+                    scopes.iter().map(|s| s.to_string()).collect(),
+                    Some("cli-integration-tests".into()),
+                ),
                 None,
-                None,
-                scopes.iter().map(|s| s.to_string()).collect(),
-                Some("cli-integration-tests".into()),
-            ))
+            )
             .await
             .expect("create token")
     }

@@ -186,20 +186,20 @@ curl -sS -X PUT http://127.0.0.1:8080/api/v1/clusters/backend-api \
   }'
 ```
 
-### Routes
+### Route Configs
 
 | Endpoint | Method | Scope | Description |
 |----------|--------|-------|-------------|
-| `/api/v1/routes` | `GET` | `routes:read` | List all route configurations |
-| `/api/v1/routes` | `POST` | `routes:write` | Create a new route configuration |
-| `/api/v1/routes/{name}` | `GET` | `routes:read` | Get route configuration by name |
-| `/api/v1/routes/{name}` | `PUT` | `routes:write` | Update existing route configuration |
-| `/api/v1/routes/{name}` | `DELETE` | `routes:write` | Delete route configuration |
+| `/api/v1/route-configs` | `GET` | `routes:read` | List all route configurations |
+| `/api/v1/route-configs` | `POST` | `routes:write` | Create a new route configuration |
+| `/api/v1/route-configs/{name}` | `GET` | `routes:read` | Get route configuration by name |
+| `/api/v1/route-configs/{name}` | `PUT` | `routes:write` | Update existing route configuration |
+| `/api/v1/route-configs/{name}` | `DELETE` | `routes:write` | Delete route configuration |
 
-#### Create Route Example
+#### Create Route Config Example
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/v1/routes \
+curl -sS -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -303,6 +303,332 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/listeners \
 ```
 
 See [filters.md](filters.md) for complete HTTP filter reference and configuration options.
+
+### Filters
+
+Filters provide HTTP request/response processing capabilities (rate limiting, CORS, JWT auth, etc.). Filters can be attached to route configs, virtual hosts, routes, or listeners.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/filters` | `GET` | `filters:read` | List all filters |
+| `/api/v1/filters` | `POST` | `filters:write` | Create a new filter |
+| `/api/v1/filters/{id}` | `GET` | `filters:read` | Get filter by ID |
+| `/api/v1/filters/{id}` | `PUT` | `filters:write` | Update existing filter |
+| `/api/v1/filters/{id}` | `DELETE` | `filters:write` | Delete filter |
+
+#### Filter Attachment - Route Config Level
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/route-configs/{route_config_id}/filters` | `GET` | `routes:read` | List filters attached to route config |
+| `/api/v1/route-configs/{route_config_id}/filters` | `POST` | `routes:write` | Attach filter to route config |
+| `/api/v1/route-configs/{route_config_id}/filters/{filter_id}` | `DELETE` | `routes:write` | Detach filter from route config |
+
+#### Filter Attachment - Virtual Host Level
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/route-configs/{name}/virtual-hosts` | `GET` | `routes:read` | List virtual hosts in route config |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/filters` | `GET` | `routes:read` | List filters on virtual host |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/filters` | `POST` | `routes:write` | Attach filter to virtual host |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/filters/{filter_id}` | `DELETE` | `routes:write` | Detach filter from virtual host |
+
+#### Filter Attachment - Route Level
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/routes` | `GET` | `routes:read` | List routes in virtual host |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/routes/{route}/filters` | `GET` | `routes:read` | List filters on route |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/routes/{route}/filters` | `POST` | `routes:write` | Attach filter to route |
+| `/api/v1/route-configs/{name}/virtual-hosts/{vhost}/routes/{route}/filters/{filter_id}` | `DELETE` | `routes:write` | Detach filter from route |
+
+#### Filter Attachment - Listener Level
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/listeners/{listener_id}/filters` | `GET` | `listeners:read` | List filters on listener |
+| `/api/v1/listeners/{listener_id}/filters` | `POST` | `listeners:write` | Attach filter to listener |
+| `/api/v1/listeners/{listener_id}/filters/{filter_id}` | `DELETE` | `listeners:write` | Detach filter from listener |
+
+#### Create Filter Example
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/filters \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "rate-limit-100rpm",
+    "filterType": "local_rate_limit",
+    "config": {
+      "stat_prefix": "api_rate_limit",
+      "token_bucket": {
+        "max_tokens": 100,
+        "tokens_per_fill": 100,
+        "fill_interval_ms": 60000
+      }
+    }
+  }'
+```
+
+See [filters.md](filters.md) for complete filter type reference.
+
+## OpenAPI Import
+
+Direct OpenAPI import with materialization to native resources (clusters, routes, listeners).
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/openapi/import` | `POST` | `openapi-import:write` | Import OpenAPI spec and create resources |
+| `/api/v1/openapi/imports` | `GET` | `openapi-import:read` | List all imports |
+| `/api/v1/openapi/imports/{id}` | `GET` | `openapi-import:read` | Get import details |
+| `/api/v1/openapi/imports/{id}` | `DELETE` | `openapi-import:write` | Delete import and associated resources |
+
+### Import OpenAPI Spec
+
+```bash
+curl -sS -X POST \
+  "http://127.0.0.1:8080/api/v1/openapi/import?team=payments&listener_mode=existing&existing_listener_name=default-listener" \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-binary @openapi.yaml
+```
+
+**Query Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `team` | Yes | Team namespace for resources |
+| `listener_mode` | Yes | `existing` or `new` |
+| `existing_listener_name` | If mode=existing | Name of existing listener |
+| `new_listener_name` | If mode=new | Name for new listener |
+| `new_listener_address` | No | Bind address (default: `0.0.0.0`) |
+| `new_listener_port` | No | Port number (default: `10000`) |
+
+**Response (201 Created):**
+
+```json
+{
+  "importId": "550e8400-e29b-41d4-a716-446655440000",
+  "specName": "Payments API",
+  "specVersion": "1.0.0",
+  "routesCreated": 5,
+  "clustersCreated": 3,
+  "clustersReused": 2,
+  "listenerName": "payments-listener"
+}
+```
+
+## mTLS & Proxy Certificates
+
+Manage mTLS certificates for secure Envoy-to-control-plane communication.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/mtls/status` | `GET` | `mtls:read` | Get mTLS configuration status |
+| `/api/v1/teams/{team}/proxy-certificates` | `GET` | `proxy-certificates:read` | List proxy certificates for team |
+| `/api/v1/teams/{team}/proxy-certificates` | `POST` | `proxy-certificates:write` | Generate new proxy certificate |
+| `/api/v1/teams/{team}/proxy-certificates/{id}` | `GET` | `proxy-certificates:read` | Get certificate details |
+| `/api/v1/teams/{team}/proxy-certificates/{id}/revoke` | `POST` | `proxy-certificates:write` | Revoke certificate |
+
+### Generate Certificate
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/teams/payments/proxy-certificates \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proxyId": "envoy-proxy-001"
+  }'
+```
+
+**Response (201 Created):**
+
+```json
+{
+  "id": "cert-abc123",
+  "proxyId": "envoy-proxy-001",
+  "spiffeUri": "spiffe://flowplane.io/team/payments/proxy/envoy-proxy-001",
+  "certificate": "-----BEGIN CERTIFICATE-----\n...",
+  "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n...",
+  "caChain": "-----BEGIN CERTIFICATE-----\n...",
+  "expiresAt": "2026-01-01T00:00:00Z"
+}
+```
+
+**Note:** The private key is only returned once at generation time.
+
+### Get mTLS Status
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/mtls/status \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN"
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "vaultConfigured": true,
+  "pkiMountPath": "pki/flowplane",
+  "caCertificateAvailable": true
+}
+```
+
+## Session Management
+
+Cookie-based session authentication for web UI integration.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/v1/auth/login` | `POST` | None | Authenticate with username/password |
+| `/api/v1/auth/sessions` | `POST` | None | Create session from token |
+| `/api/v1/auth/sessions/me` | `GET` | Cookie | Get current session info |
+| `/api/v1/auth/sessions/logout` | `POST` | Cookie | Invalidate session |
+| `/api/v1/auth/change-password` | `POST` | Bearer | Change user password |
+
+### Login (Username/Password)
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{
+    "username": "admin",
+    "password": "secretpassword"
+  }'
+```
+
+### Create Session from Token
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/auth/sessions \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{
+    "token": "fp_pat_abc123.xyz789..."
+  }'
+```
+
+### Get Session Info
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/auth/sessions/me \
+  -b cookies.txt
+```
+
+**Response:**
+
+```json
+{
+  "sessionId": "sess_abc123",
+  "userId": "user-uuid",
+  "username": "admin",
+  "scopes": ["admin:all"],
+  "expiresAt": "2025-01-05T20:00:00Z"
+}
+```
+
+## User Management (Admin Only)
+
+Manage user accounts. Requires `admin:all` scope.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/users` | `GET` | `admin:all` | List all users |
+| `/api/v1/users` | `POST` | `admin:all` | Create new user |
+| `/api/v1/users/{id}` | `GET` | `admin:all` | Get user by ID |
+| `/api/v1/users/{id}` | `PUT` | `admin:all` | Update user |
+| `/api/v1/users/{id}` | `DELETE` | `admin:all` | Delete user |
+| `/api/v1/users/{id}/teams` | `GET` | `admin:all` | List user's team memberships |
+| `/api/v1/users/{id}/teams` | `POST` | `admin:all` | Add user to team |
+| `/api/v1/users/{id}/teams/{team}` | `DELETE` | `admin:all` | Remove user from team |
+
+### Create User
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "jane.doe",
+    "email": "jane@example.com",
+    "password": "securepassword123",
+    "displayName": "Jane Doe"
+  }'
+```
+
+### Add User to Team
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/users/{user_id}/teams \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "team": "engineering",
+    "role": "member"
+  }'
+```
+
+## Team Administration (Admin Only)
+
+Manage team entities. Requires `admin:all` scope.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/admin/teams` | `GET` | `admin:all` | List all teams |
+| `/api/v1/admin/teams` | `POST` | `admin:all` | Create new team |
+| `/api/v1/admin/teams/{id}` | `GET` | `admin:all` | Get team by ID |
+| `/api/v1/admin/teams/{id}` | `PUT` | `admin:all` | Update team |
+| `/api/v1/admin/teams/{id}` | `DELETE` | `admin:all` | Delete team |
+
+### Create Team
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/teams \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "engineering",
+    "displayName": "Engineering Team",
+    "description": "Platform engineering team"
+  }'
+```
+
+## Scopes
+
+List available authorization scopes.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/v1/scopes` | `GET` | None | List public scopes (for token creation UI) |
+| `/api/v1/admin/scopes` | `GET` | `admin:all` | List all scopes including hidden ones |
+
+## Audit Logs (Admin Only)
+
+Query audit log entries. Requires `admin:all` scope.
+
+| Endpoint | Method | Scope | Description |
+|----------|--------|-------|-------------|
+| `/api/v1/audit-logs` | `GET` | `admin:all` | List audit log entries |
+
+### Query Audit Logs
+
+```bash
+curl -sS "http://127.0.0.1:8080/api/v1/audit-logs?limit=50&event_type=auth.token.created" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Maximum records to return (default: 100) |
+| `offset` | integer | Pagination offset |
+| `event_type` | string | Filter by event type (e.g., `auth.token.created`) |
+| `user_id` | string | Filter by user ID |
+| `from` | string | Start timestamp (ISO 8601) |
+| `to` | string | End timestamp (ISO 8601) |
 
 ## Platform API (API Definitions)
 
@@ -889,7 +1215,7 @@ curl -sS \
 # List routes
 curl -sS \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  "http://127.0.0.1:8080/api/v1/routes"
+  "http://127.0.0.1:8080/api/v1/route-configs"
 ```
 
 ### Idempotent Updates
@@ -933,7 +1259,7 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/listeners/api-listener \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN"
 
 # 2. Delete routes (depends on clusters)
-curl -sS -X DELETE http://127.0.0.1:8080/api/v1/routes/api-routes \
+curl -sS -X DELETE http://127.0.0.1:8080/api/v1/route-configs/api-routes \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN"
 
 # 3. Delete cluster (no dependencies)

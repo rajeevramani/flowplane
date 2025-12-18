@@ -358,7 +358,8 @@ async fn team_isolation_listener_filtering() {
 
     // Note: This test uses the deprecated native API approach
     // It should be updated to use the new OpenAPI import endpoint
-    let uri: hyper::http::Uri = format!("http://{}/api/v1/routes", api_addr).parse().unwrap();
+    let uri: hyper::http::Uri =
+        format!("http://{}/api/v1/route-configs", api_addr).parse().unwrap();
     let body_x = serde_json::json!({
         "team": team_x,
         "domain": domain_x,

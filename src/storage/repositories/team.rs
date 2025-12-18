@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use std::str::FromStr;
+use tracing::instrument;
 
 // Database row structure
 
@@ -23,6 +24,7 @@ struct TeamRow {
     pub owner_user_id: Option<String>,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
+    pub envoy_admin_port: Option<i64>, // Stored as INTEGER in SQLite
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -51,6 +53,7 @@ impl TryFrom<TeamRow> for Team {
             owner_user_id: row.owner_user_id.map(|id| id.into()),
             settings,
             status,
+            envoy_admin_port: row.envoy_admin_port.map(|p| p as u16),
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -108,6 +111,7 @@ impl SqlxTeamRepository {
 
 #[async_trait]
 impl TeamRepository for SqlxTeamRepository {
+    #[instrument(skip(self, request), fields(team_name = %request.name), name = "db_create_team")]
     async fn create_team(&self, request: CreateTeamRequest) -> Result<Team> {
         let id = TeamId::new();
         let now = Utc::now();
@@ -118,10 +122,22 @@ impl TeamRepository for SqlxTeamRepository {
             .transpose()
             .map_err(|e| FlowplaneError::validation(format!("Invalid settings JSON: {}", e)))?;
 
+        // Auto-allocate Envoy admin port: MAX(existing) + 1, or base port if none exist
+        let base_port = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT as i64;
+        let next_port: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(envoy_admin_port), $1 - 1) + 1 FROM teams")
+                .bind(base_port)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: "Failed to allocate Envoy admin port".to_string(),
+                })?;
+
         let row = sqlx::query_as::<_, TeamRow>(
             "INSERT INTO teams (
-                id, name, display_name, description, owner_user_id, settings, status, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                id, name, display_name, description, owner_user_id, settings, status, envoy_admin_port, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *"
         )
         .bind(id.as_str())
@@ -131,6 +147,7 @@ impl TeamRepository for SqlxTeamRepository {
         .bind(request.owner_user_id.as_ref().map(|id| id.as_str()))
         .bind(settings_json.as_deref())
         .bind(TeamStatus::Active.as_str())
+        .bind(next_port)
         .bind(now)
         .bind(now)
         .fetch_one(&self.pool)
@@ -143,6 +160,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.try_into()
     }
 
+    #[instrument(skip(self), fields(team_id = %id), name = "db_get_team_by_id")]
     async fn get_team_by_id(&self, id: &TeamId) -> Result<Option<Team>> {
         let row = sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE id = $1")
             .bind(id.as_str())
@@ -156,6 +174,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.map(|r| r.try_into()).transpose()
     }
 
+    #[instrument(skip(self), fields(team_name = %name), name = "db_get_team_by_name")]
     async fn get_team_by_name(&self, name: &str) -> Result<Option<Team>> {
         let row = sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE name = $1")
             .bind(name)
@@ -169,6 +188,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.map(|r| r.try_into()).transpose()
     }
 
+    #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_teams")]
     async fn list_teams(&self, limit: i64, offset: i64) -> Result<Vec<Team>> {
         let rows = sqlx::query_as::<_, TeamRow>(
             "SELECT * FROM teams ORDER BY created_at DESC LIMIT $1 OFFSET $2",
@@ -185,6 +205,7 @@ impl TeamRepository for SqlxTeamRepository {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    #[instrument(skip(self), fields(status = %status, limit = limit, offset = offset), name = "db_list_teams_by_status")]
     async fn list_teams_by_status(
         &self,
         status: TeamStatus,
@@ -207,6 +228,7 @@ impl TeamRepository for SqlxTeamRepository {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
+    #[instrument(skip(self), name = "db_count_teams")]
     async fn count_teams(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams")
             .fetch_one(&self.pool)
@@ -219,6 +241,7 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(count)
     }
 
+    #[instrument(skip(self, update), fields(team_id = %id), name = "db_update_team")]
     async fn update_team(&self, id: &TeamId, update: UpdateTeamRequest) -> Result<Team> {
         // Fetch current team
         let current = self
@@ -266,6 +289,7 @@ impl TeamRepository for SqlxTeamRepository {
         row.try_into()
     }
 
+    #[instrument(skip(self), fields(team_id = %id), name = "db_delete_team")]
     async fn delete_team(&self, id: &TeamId) -> Result<()> {
         let result = sqlx::query("DELETE FROM teams WHERE id = $1")
             .bind(id.as_str())
@@ -283,6 +307,7 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(team_name = %name), name = "db_is_team_name_available")]
     async fn is_name_available(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE name = $1")
             .bind(name)
@@ -510,5 +535,48 @@ mod tests {
 
         assert!(!repo.is_name_available("existing-team").await.expect("check availability"));
         assert!(repo.is_name_available("another-team").await.expect("check availability"));
+    }
+
+    #[tokio::test]
+    async fn test_create_team_allocates_envoy_admin_port() {
+        let pool = setup_test_db().await;
+        let repo = SqlxTeamRepository::new(pool);
+
+        let request = CreateTeamRequest {
+            name: "first-team".to_string(),
+            display_name: "First Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            settings: None,
+        };
+
+        let created = repo.create_team(request).await.expect("create team");
+
+        // First team should get the base port (9901)
+        assert_eq!(created.envoy_admin_port, Some(crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT));
+    }
+
+    #[tokio::test]
+    async fn test_create_multiple_teams_unique_ports() {
+        let pool = setup_test_db().await;
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create 3 teams
+        let mut ports = Vec::new();
+        for i in 1..=3 {
+            let request = CreateTeamRequest {
+                name: format!("team-{}", i),
+                display_name: format!("Team {}", i),
+                description: None,
+                owner_user_id: None,
+                settings: None,
+            };
+            let created = repo.create_team(request).await.expect("create team");
+            ports.push(created.envoy_admin_port.expect("port should be allocated"));
+        }
+
+        // Verify sequential allocation
+        let base = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT;
+        assert_eq!(ports, vec![base, base + 1, base + 2]);
     }
 }
