@@ -5,6 +5,7 @@ use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
 use uuid::Uuid;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../../common/mod.rs"]
 mod common;
 use common::test_db::TestDatabase;

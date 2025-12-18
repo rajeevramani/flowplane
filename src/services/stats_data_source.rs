@@ -392,6 +392,13 @@ pub struct MockStatsDataSource {
 }
 
 #[cfg(test)]
+impl Default for MockStatsDataSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl MockStatsDataSource {
     pub fn new() -> Self {
         Self {

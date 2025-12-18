@@ -3,6 +3,8 @@
 //! Provides file-based SQLite databases under `data/test/` for test isolation
 //! and easier debugging of test failures.
 
+#![allow(clippy::duplicate_mod)]
+
 use flowplane::storage::{self, DbPool};
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::PathBuf;
@@ -143,7 +145,7 @@ pub fn cleanup_all_test_databases() {
     if let Ok(entries) = std::fs::read_dir(&db_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "db") {
+            if path.extension().is_some_and(|ext| ext == "db") {
                 let _ = std::fs::remove_file(&path);
                 // Also remove WAL/SHM files
                 let wal_path = path.with_extension("db-wal");

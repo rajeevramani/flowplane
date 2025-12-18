@@ -8,9 +8,11 @@
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "common/mod.rs"]
 mod common;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "auth/support.rs"]
 mod support;
 use support::{read_json, send_request, setup_test_app};

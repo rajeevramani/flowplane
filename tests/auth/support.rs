@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tower::ServiceExt;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../common/mod.rs"]
 mod common;
 use common::test_db::TestDatabase;
