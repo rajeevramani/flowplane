@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.89-slim as builder
+FROM rust:1.89-slim AS builder
 
 # Install system dependencies for building
 RUN apt-get update && apt-get install -y \
@@ -24,6 +24,7 @@ RUN cargo build --release && rm -rf src
 # Copy source code
 COPY src ./src
 COPY migrations ./migrations
+COPY filter-schemas ./filter-schemas
 
 # Build the application
 RUN touch src/main.rs && cargo build --release
