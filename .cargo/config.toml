@@ -1,0 +1,7 @@
+# Disable rust-lld on Linux to avoid LLVM linker crashes in Rust 1.92
+# The default GNU ld is more stable on CI runners
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=gold"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-fuse-ld=gold"]

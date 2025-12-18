@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev musl-tools
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev binutils musl-tools
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package
