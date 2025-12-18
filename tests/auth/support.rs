@@ -26,6 +26,7 @@ use common::test_db::TestDatabase;
 
 pub struct TestApp {
     state: Arc<XdsState>,
+    #[allow(dead_code)]
     pub pool: DbPool,
     pub token_service: TokenService,
     #[allow(dead_code)]
