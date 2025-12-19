@@ -1,9 +1,7 @@
 services:
   # Flowplane Control Plane
   control-plane:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/rajeevramani/flowplane:latest
     container_name: flowplane-control-plane
     environment:
       # Database configuration (SQLite)
