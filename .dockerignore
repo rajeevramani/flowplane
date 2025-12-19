@@ -22,6 +22,11 @@ docs/
 target/
 **/*.rs.bk
 
+# Node.js / UI
+ui/node_modules/
+ui/build/
+ui/.svelte-kit/
+
 # Logs
 *.log
 

@@ -4,7 +4,22 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
-Dynamic Envoy control plane with REST API, xDS server, and web UI.
+## What is Flowplane?
+
+Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API.
+
+The platform addresses three challenges faced by teams operating Envoy proxies:
+
+Configuration Complexity: Envoy requires protobuf-based xDS configuration that demands deep protocol knowledge. Flowplane exposes REST endpoints for clusters, routes, listeners, and filters, translating JSON payloads into the underlying xDS resources (LDS, RDS, CDS, EDS, SDS) that Envoy consumes via gRPC.
+
+Undocumented APIs: Services in production often lack accurate schema documentation. Flowplane's learning sessions capture traffic samples through Envoy's Access Log Service and External Processor, then infer JSON schemas from observed request/response patterns—extracting type information without persisting actual
+payload data.
+
+Multi-tenant Isolation: Shared proxy infrastructure needs proper team boundaries. Flowplane scopes all resources to teams, enforces authorization through token-based access control with fine-grained scopes, and provides audit logging for security compliance.
+
+The system provides three core capabilities: Configure (REST API and Web UI for managing xDS resources), Import (OpenAPI specifications materialized directly into routes and clusters), and Learn (traffic-based schema inference through learning sessions). These translate into Envoy configuration delivered via a Tonic-based gRPC xDS server supporting ADS, LDS, RDS, CDS, EDS, and SDS protocols.
+
+Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CORS, local and distributed rate limiting, header mutation, custom response handling, external authorization, RBAC, and health checks—all configurable through structured JSON rather than protobuf.
 
 ## Features
 
@@ -26,48 +41,68 @@ Dynamic Envoy control plane with REST API, xDS server, and web UI.
 
 ## Quick Start
 
-### 1. Clone and Build
+### Docker (Recommended)
 
-```bash
-git clone https://github.com/yourusername/flowplane.git
-cd flowplane
-cargo build --release
+```
+docker run -d \
+    --name flowplane \
+    -p 8080:8080 \
+    -p 50051:50051 \
+    -v flowplane_data:/app/data \
+    -e DATABASE_URL=sqlite:///app/data/flowplane.db \
+    -e RUST_LOG=info,flowplane=debug \
+    -e FLOWPLANE_ENABLE_METRICS=true \
+    ghcr.io/rajeevramani/flowplane:latest
 ```
 
-### 2. Start the Control Plane
+#### Access Points
+
+  | Service    | URL                               |
+  |------------|-----------------------------------|
+  | API        | http://localhost:8080/api/v1/     |
+  | Swagger UI | http://localhost:8080/swagger-ui/ |
+  | xDS (gRPC) | localhost:50051                   |
+
+
+- **API**: http://localhost:8080/swagger-ui/
+- **xDS**: localhost:18000
+
+### Binary
+
+Download from [GitHub Releases](https://github.com/flowplane-ai/flowplane/releases):
 
 ```bash
-# Create data directory
-mkdir -p data
+# Linux (x86_64)
+curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-x86_64-unknown-linux-gnu.tar.gz
+tar xzf flowplane-x86_64-unknown-linux-gnu.tar.gz
 
-# Run with defaults (SQLite, API on 8080, xDS on 18000)
-cargo run --release
+# macOS (Apple Silicon)
+curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-aarch64-apple-darwin.tar.gz
+tar xzf flowplane-aarch64-apple-darwin.tar.gz
+
+# Run
+./flowplane-*/flowplane
 ```
 
-The control plane starts:
-- **API Server**: http://127.0.0.1:8080
-- **xDS Server**: 0.0.0.0:18000 (gRPC)
-- **Metrics**: http://0.0.0.0:9090/metrics
+### First Steps
 
-On first startup, a setup token is generated in the logs. Use this to create your first API token.
-
-### 3. Start the UI
+On first startup, a setup token appears in the logs. Use it to create your first API token:
 
 ```bash
-cd ui
-npm install
-npm run dev
-```
+# Initialize with setup token
+curl -X POST http://localhost:8080/api/v1/bootstrap/initialize \
+  -H "Content-Type: application/json" \
+  -d '{"setupToken": "<token-from-logs>", "teamName": "default"}'
 
-Access the dashboard at http://localhost:5173
+# Create a cluster
+curl -X POST http://localhost:8080/api/v1/clusters?team=default \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-service", "endpoints": [{"address": "127.0.0.1", "port": 3000}]}'
 
-### 4. Connect Envoy
-
-Generate a bootstrap configuration:
-
-```bash
-curl http://127.0.0.1:8080/api/v1/teams/{team}/bootstrap > envoy-bootstrap.yaml
-envoy -c envoy-bootstrap.yaml
+# Connect Envoy
+curl http://localhost:8080/api/v1/teams/default/bootstrap > envoy.yaml
+envoy -c envoy.yaml
 ```
 
 ## Environment Variables
@@ -205,6 +240,10 @@ Full API documentation available at `/swagger-ui/` when running.
 - [HTTP Filters](docs/filters.md)
 - [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)
+
+## Acknowledgments
+
+Flowplane's xDS implementation is built on [envoy-types](https://github.com/flemosr/envoy-types), a Rust crate providing pre-compiled protobuf types for the Envoy Proxy. This library enables type-safe gRPC communication with Envoy without requiring manual protobuf compilation.
 
 ## License
 

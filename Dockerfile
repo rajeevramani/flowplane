@@ -1,4 +1,21 @@
-# Build stage
+# UI build stage
+FROM node:22-slim AS ui-builder
+
+WORKDIR /ui
+
+# Copy package files
+COPY ui/package.json ui/package-lock.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy UI source
+COPY ui/ ./
+
+# Build static files
+RUN npm run build
+
+# Rust build stage
 FROM rust:1.89-slim AS builder
 
 # Install system dependencies for building
@@ -51,6 +68,9 @@ COPY --from=builder /app/target/release/flowplane /usr/local/bin/flowplane
 # Copy migrations
 COPY --chown=flowplane:flowplane migrations ./migrations
 
+# Copy UI static files from ui-builder stage
+COPY --from=ui-builder --chown=flowplane:flowplane /ui/build ./ui/build
+
 # Change ownership
 RUN chown -R flowplane:flowplane /app
 
@@ -62,15 +82,17 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/swagger-ui/ || exit 1
 
 # Expose ports
-# 8080: HTTP API
+# 8080: HTTP API + UI
 # 50051: xDS gRPC
 EXPOSE 8080 50051
 
 # Set environment variables
 ENV RUST_LOG=info
-ENV FLOWPLANE_HOST=0.0.0.0
-ENV FLOWPLANE_PORT=8080
+ENV FLOWPLANE_API_BIND_ADDRESS=0.0.0.0
+ENV FLOWPLANE_API_PORT=8080
+ENV FLOWPLANE_XDS_BIND_ADDRESS=0.0.0.0
 ENV FLOWPLANE_XDS_PORT=50051
+ENV FLOWPLANE_UI_DIR=/app/ui/build
 
 # Run the application
 CMD ["flowplane"]

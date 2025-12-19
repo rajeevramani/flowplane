@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -7,6 +8,7 @@ use axum::{
     Router,
 };
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{
     auth_service::AuthService,
@@ -134,6 +136,20 @@ pub struct ApiState {
     pub xds_state: Arc<XdsState>,
     pub filter_schema_registry: Option<SharedFilterSchemaRegistry>,
     pub stats_cache: Arc<StatsCache>,
+}
+
+/// Get the UI static files directory path from environment or default
+fn get_ui_static_dir() -> Option<PathBuf> {
+    let ui_dir = std::env::var("FLOWPLANE_UI_DIR").unwrap_or_else(|_| "./ui/build".to_string());
+
+    let path = PathBuf::from(&ui_dir);
+    if path.exists() && path.is_dir() {
+        tracing::info!(ui_dir = %ui_dir, "UI static files directory found");
+        Some(path)
+    } else {
+        tracing::debug!(ui_dir = %ui_dir, "UI static files directory not found, UI will not be served");
+        None
+    }
 }
 
 /// Build CORS layer from environment configuration
@@ -402,8 +418,21 @@ pub fn build_router_with_registry(
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
-    // Apply CORS layer to all routes
-    secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer)
+    // Build the API router with CORS
+    let api_router = secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer);
+
+    // Check if UI static files directory exists and add fallback service
+    if let Some(ui_dir) = get_ui_static_dir() {
+        let index_file = ui_dir.join("index.html");
+        let serve_dir = ServeDir::new(&ui_dir).not_found_service(ServeFile::new(&index_file));
+
+        tracing::info!("Serving UI from {:?}", ui_dir);
+
+        // API routes take precedence, then fall back to static files
+        api_router.fallback_service(serve_dir)
+    } else {
+        api_router
+    }
 }
 
 #[cfg(test)]
