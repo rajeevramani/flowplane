@@ -82,7 +82,7 @@ async fn verify_listener_access(
         (status = 400, description = "Invalid listener payload"),
         (status = 503, description = "Listener repository unavailable"),
     ),
-    tag = "listeners"
+    tag = "Listeners"
 )]
 #[instrument(skip(state, payload), fields(team = %payload.team, listener_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_listener_handler(
@@ -140,7 +140,7 @@ pub async fn create_listener_handler(
         (status = 200, description = "List of listeners", body = [ListenerResponse]),
         (status = 503, description = "Listener repository unavailable"),
     ),
-    tag = "listeners"
+    tag = "Listeners"
 )]
 pub async fn list_listeners_handler(
     State(state): State<ApiState>,
@@ -177,7 +177,7 @@ pub async fn list_listeners_handler(
         (status = 404, description = "Listener not found"),
         (status = 503, description = "Listener repository unavailable"),
     ),
-    tag = "listeners"
+    tag = "Listeners"
 )]
 #[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn get_listener_handler(
@@ -213,7 +213,7 @@ pub async fn get_listener_handler(
         (status = 404, description = "Listener not found"),
         (status = 503, description = "Listener repository unavailable"),
     ),
-    tag = "listeners"
+    tag = "Listeners"
 )]
 #[instrument(skip(state, payload), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn update_listener_handler(
@@ -273,7 +273,7 @@ pub async fn update_listener_handler(
         (status = 404, description = "Listener not found"),
         (status = 503, description = "Listener repository unavailable"),
     ),
-    tag = "listeners"
+    tag = "Listeners"
 )]
 #[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
 pub async fn delete_listener_handler(

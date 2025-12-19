@@ -107,7 +107,7 @@ pub struct ListRouteFlowsResponse {
         (status = 503, description = "Service unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "reports"
+    tag = "System"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, team = ?params.team))]
 pub async fn list_route_flows_handler(

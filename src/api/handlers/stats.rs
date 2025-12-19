@@ -270,7 +270,7 @@ fn compute_overview(snapshot: &StatsSnapshot) -> StatsOverview {
 #[utoipa::path(
     get,
     path = "/api/v1/stats/enabled",
-    tag = "stats",
+    tag = "System",
     responses(
         (status = 200, description = "Stats dashboard enabled status", body = StatsEnabledResponse),
         (status = 401, description = "Unauthorized")
@@ -303,7 +303,7 @@ pub async fn get_stats_enabled_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/teams/{team}/stats/overview",
-    tag = "stats",
+    tag = "System",
     params(
         ("team" = String, Path, description = "Team name")
     ),
@@ -354,7 +354,7 @@ pub async fn get_stats_overview_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/teams/{team}/stats/clusters",
-    tag = "stats",
+    tag = "System",
     params(
         ("team" = String, Path, description = "Team name")
     ),
@@ -405,7 +405,7 @@ pub async fn get_stats_clusters_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/teams/{team}/stats/clusters/{cluster}",
-    tag = "stats",
+    tag = "System",
     params(
         ("team" = String, Path, description = "Team name"),
         ("cluster" = String, Path, description = "Cluster name")

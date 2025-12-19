@@ -133,7 +133,7 @@ fn build_mtls_transport_socket(
         (status = 403, description = "Forbidden - user does not have access to the specified team"),
         (status = 500, description = "Internal server error during bootstrap generation")
     ),
-    tag = "teams"
+    tag = "Administration"
 )]
 #[instrument(skip(state, q), fields(team = %team, user_id = ?context.user_id, format = ?q.format, mtls = ?q.mtls))]
 pub async fn get_team_bootstrap_handler(
@@ -311,7 +311,7 @@ pub struct ListTeamsResponse {
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
-    tag = "teams"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id))]
 pub async fn list_teams_handler(
@@ -415,7 +415,7 @@ pub struct AdminListTeamsResponse {
         (status = 409, description = "Team with name already exists")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state, payload), fields(team_name = %payload.name, user_id = ?context.user_id))]
 pub async fn admin_create_team(
@@ -464,7 +464,7 @@ pub async fn admin_create_team(
         (status = 404, description = "Team not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_get_team(
@@ -499,7 +499,7 @@ pub async fn admin_get_team(
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, limit = %query.limit, offset = %query.offset))]
 pub async fn admin_list_teams(
@@ -535,7 +535,7 @@ pub async fn admin_list_teams(
         (status = 404, description = "Team not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state, payload), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_update_team(
@@ -577,7 +577,7 @@ pub async fn admin_update_team(
         (status = 409, description = "Team has resources - cannot delete")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(team_id = %id, user_id = ?context.user_id))]
 pub async fn admin_delete_team(
@@ -645,7 +645,7 @@ pub struct MtlsStatusResponse {
     responses(
         (status = 200, description = "mTLS configuration status", body = MtlsStatusResponse),
     ),
-    tag = "mtls"
+    tag = "System"
 )]
 #[instrument]
 pub async fn get_mtls_status_handler() -> Json<MtlsStatusResponse> {

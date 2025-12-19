@@ -179,7 +179,7 @@ pub struct RevokeCertificateRequest {
         (status = 403, description = "Forbidden - user does not have access to the team"),
         (status = 503, description = "mTLS not configured - FLOWPLANE_VAULT_PKI_MOUNT_PATH not set")
     ),
-    tag = "proxy-certificates"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, payload), fields(team = %team, proxy_id = %payload.proxy_id))]
 pub async fn generate_certificate_handler(
@@ -265,7 +265,7 @@ pub async fn generate_certificate_handler(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Team not found")
     ),
-    tag = "proxy-certificates"
+    tag = "Secrets"
 )]
 #[instrument(skip(state), fields(team = %team, limit = query.limit, offset = query.offset))]
 pub async fn list_certificates_handler(
@@ -317,7 +317,7 @@ pub async fn list_certificates_handler(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Certificate not found")
     ),
-    tag = "proxy-certificates"
+    tag = "Secrets"
 )]
 #[instrument(skip(state), fields(team = %team, id = %id))]
 pub async fn get_certificate_handler(
@@ -364,7 +364,7 @@ pub async fn get_certificate_handler(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Certificate not found")
     ),
-    tag = "proxy-certificates"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, payload), fields(team = %team, id = %id, reason = %payload.reason))]
 pub async fn revoke_certificate_handler(

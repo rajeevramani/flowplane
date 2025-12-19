@@ -185,7 +185,7 @@ async fn verify_session_access(
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "learning-sessions"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state, payload), fields(route_pattern = %payload.route_pattern, user_id = ?context.user_id))]
 pub async fn create_learning_session_handler(
@@ -272,7 +272,7 @@ pub async fn create_learning_session_handler(
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "learning-sessions"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, status = ?query.status))]
 pub async fn list_learning_sessions_handler(
@@ -332,7 +332,7 @@ pub async fn list_learning_sessions_handler(
         (status = 404, description = "Learning session not found"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "learning-sessions"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn get_learning_session_handler(
@@ -387,7 +387,7 @@ pub async fn get_learning_session_handler(
         (status = 404, description = "Learning session not found"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "learning-sessions"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
 pub async fn delete_learning_session_handler(

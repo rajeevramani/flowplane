@@ -167,7 +167,7 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
         (status = 400, description = "Invalid OpenAPI spec or parameters"),
         (status = 500, description = "Internal server error")
     ),
-    tag = "openapi-import"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state, request), fields(team = %params.team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
 pub async fn import_openapi_handler(
@@ -346,7 +346,7 @@ pub async fn import_openapi_handler(
         (status = 200, description = "Successfully retrieved imports", body = ListImportsResponse),
         (status = 500, description = "Internal server error")
     ),
-    tag = "openapi-import"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state, query), fields(user_id = ?context.user_id))]
 pub async fn list_imports_handler(
@@ -414,7 +414,7 @@ pub async fn list_imports_handler(
         (status = 404, description = "Import not found"),
         (status = 500, description = "Internal server error")
     ),
-    tag = "openapi-import"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn get_import_handler(
@@ -490,7 +490,7 @@ pub async fn get_import_handler(
         (status = 404, description = "Import not found"),
         (status = 500, description = "Internal server error")
     ),
-    tag = "openapi-import"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(import_id = %id, user_id = ?context.user_id))]
 pub async fn delete_import_handler(

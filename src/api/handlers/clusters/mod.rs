@@ -77,7 +77,7 @@ async fn verify_cluster_access(
         (status = 400, description = "Validation error"),
         (status = 503, description = "Cluster repository unavailable")
     ),
-    tag = "clusters"
+    tag = "Clusters"
 )]
 #[instrument(skip(state, payload), fields(team = %payload.team, cluster_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_cluster_handler(
@@ -126,7 +126,7 @@ pub async fn create_cluster_handler(
         (status = 200, description = "List of clusters", body = [ClusterResponse]),
         (status = 503, description = "Cluster repository unavailable"),
     ),
-    tag = "clusters"
+    tag = "Clusters"
 )]
 #[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_clusters_handler(
@@ -171,7 +171,7 @@ pub async fn list_clusters_handler(
         (status = 404, description = "Cluster not found"),
         (status = 503, description = "Cluster repository unavailable"),
     ),
-    tag = "clusters"
+    tag = "Clusters"
 )]
 #[instrument(skip(state), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn get_cluster_handler(
@@ -207,7 +207,7 @@ pub async fn get_cluster_handler(
         (status = 404, description = "Cluster not found"),
         (status = 503, description = "Cluster repository unavailable"),
     ),
-    tag = "clusters"
+    tag = "Clusters"
 )]
 #[instrument(skip(state, payload), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn update_cluster_handler(
@@ -258,7 +258,7 @@ pub async fn update_cluster_handler(
         (status = 404, description = "Cluster not found"),
         (status = 503, description = "Cluster repository unavailable"),
     ),
-    tag = "clusters"
+    tag = "Clusters"
 )]
 #[instrument(skip(state), fields(cluster_name = %name, user_id = ?context.user_id))]
 pub async fn delete_cluster_handler(

@@ -32,7 +32,7 @@ pub struct ListScopesResponse {
 #[utoipa::path(
     get,
     path = "/api/v1/scopes",
-    tag = "scopes",
+    tag = "Administration",
     responses(
         (status = 200, description = "List of available scopes", body = ListScopesResponse),
         (status = 503, description = "Scope registry not initialized")
@@ -64,7 +64,7 @@ pub async fn list_scopes_handler() -> Result<Json<ListScopesResponse>, (StatusCo
 #[utoipa::path(
     get,
     path = "/api/v1/admin/scopes",
-    tag = "scopes",
+    tag = "Administration",
     responses(
         (status = 200, description = "List of all scopes", body = ListScopesResponse),
         (status = 401, description = "Unauthorized"),

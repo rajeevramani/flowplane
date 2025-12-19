@@ -96,7 +96,7 @@ async fn resolve_listener_id(
         (status = 200, description = "List of filters", body = [FilterResponse]),
         (status = 503, description = "Filter repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(user_id = ?context.user_id))]
 pub async fn list_filters_handler(
@@ -138,7 +138,7 @@ pub async fn list_filters_handler(
         (status = 409, description = "Cluster already exists (when creating)"),
         (status = 503, description = "Filter repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(team = %payload.team, filter_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_filter_handler(
@@ -194,7 +194,7 @@ pub async fn create_filter_handler(
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Filter repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %id, user_id = ?context.user_id))]
 pub async fn get_filter_handler(
@@ -232,7 +232,7 @@ pub async fn get_filter_handler(
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Filter repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(filter_id = %id, user_id = ?context.user_id))]
 pub async fn update_filter_handler(
@@ -291,7 +291,7 @@ pub async fn update_filter_handler(
         (status = 409, description = "Filter is attached to routes"),
         (status = 503, description = "Filter repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %id, user_id = ?context.user_id))]
 pub async fn delete_filter_handler(
@@ -338,7 +338,7 @@ pub async fn delete_filter_handler(
         (status = 404, description = "Route config or filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_handler(
@@ -382,7 +382,7 @@ pub async fn attach_filter_handler(
         (status = 404, description = "Route config, filter, or attachment not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_handler(
@@ -424,7 +424,7 @@ pub async fn detach_filter_handler(
         (status = 404, description = "Route config not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_filters_handler(
@@ -466,7 +466,7 @@ pub async fn list_route_filters_handler(
         (status = 404, description = "Listener or filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(listener_name = %listener_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_listener_handler(
@@ -510,7 +510,7 @@ pub async fn attach_filter_to_listener_handler(
         (status = 404, description = "Listener, filter, or attachment not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(listener_name = %listener_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_listener_handler(
@@ -549,7 +549,7 @@ pub async fn detach_filter_from_listener_handler(
         (status = 404, description = "Listener not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(listener_name = %listener_name, user_id = ?context.user_id))]
 pub async fn list_listener_filters_handler(
@@ -638,7 +638,7 @@ async fn resolve_route_id(
         (status = 409, description = "Filter already installed on this listener"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-installations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(filter_id = %filter_id, listener_name = %payload.listener_name, user_id = ?context.user_id))]
 pub async fn install_filter_handler(
@@ -711,7 +711,7 @@ pub async fn install_filter_handler(
         (status = 404, description = "Filter, listener, or installation not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-installations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %filter_id, listener_id = %listener_id, user_id = ?context.user_id))]
 pub async fn uninstall_filter_handler(
@@ -758,7 +758,7 @@ pub async fn uninstall_filter_handler(
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-installations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn list_filter_installations_handler(
@@ -810,7 +810,7 @@ pub async fn list_filter_installations_handler(
         (status = 409, description = "Filter already configured for this scope"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-configurations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(filter_id = %filter_id, scope_type = %payload.scope_type, scope_id = %payload.scope_id, user_id = ?context.user_id))]
 pub async fn configure_filter_handler(
@@ -918,7 +918,7 @@ pub async fn configure_filter_handler(
         (status = 404, description = "Filter, scope, or configuration not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-configurations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %filter_id, scope_type = %scope_type, scope_id = %scope_id, user_id = ?context.user_id))]
 pub async fn remove_filter_configuration_handler(
@@ -1002,7 +1002,7 @@ pub async fn remove_filter_configuration_handler(
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-configurations"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn list_filter_configurations_handler(
@@ -1051,7 +1051,7 @@ pub async fn list_filter_configurations_handler(
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "filter-status"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn get_filter_status_handler(

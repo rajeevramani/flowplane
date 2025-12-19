@@ -87,7 +87,7 @@ async fn verify_route_config_access(
         (status = 400, description = "Validation error"),
         (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "route-configs"
+    tag = "Routes"
 )]
 #[instrument(skip(state, payload), fields(team = %payload.team, route_config_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_route_config_handler(
@@ -165,7 +165,7 @@ pub async fn create_route_config_handler(
         (status = 200, description = "List of route configs", body = [RouteConfigResponse]),
         (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "route-configs"
+    tag = "Routes"
 )]
 #[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_route_configs_handler(
@@ -203,7 +203,7 @@ pub async fn list_route_configs_handler(
         (status = 404, description = "Route config not found"),
         (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "route-configs"
+    tag = "Routes"
 )]
 #[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
 pub async fn get_route_config_handler(
@@ -238,7 +238,7 @@ pub async fn get_route_config_handler(
         (status = 404, description = "Route config not found"),
         (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "route-configs"
+    tag = "Routes"
 )]
 #[instrument(skip(state, payload), fields(route_config_name = %name, user_id = ?context.user_id))]
 pub async fn update_route_config_handler(
@@ -322,7 +322,7 @@ pub async fn update_route_config_handler(
         (status = 404, description = "Route config not found"),
         (status = 503, description = "Route config repository unavailable"),
     ),
-    tag = "route-configs"
+    tag = "Routes"
 )]
 #[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
 pub async fn delete_route_config_handler(

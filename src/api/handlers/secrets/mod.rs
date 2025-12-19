@@ -66,7 +66,7 @@ fn verify_secret_access(secret_team: &str, team_scopes: &[String]) -> Result<(),
         (status = 400, description = "Validation error"),
         (status = 503, description = "Secret repository unavailable")
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, payload), fields(team = %team, secret_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_secret_handler(
@@ -140,7 +140,7 @@ pub async fn create_secret_handler(
         (status = 400, description = "Validation error"),
         (status = 503, description = "Secret repository unavailable or backend unavailable")
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, payload), fields(team = %team, secret_name = %payload.name, backend = %payload.backend, user_id = ?context.user_id))]
 pub async fn create_secret_reference_handler(
@@ -211,7 +211,7 @@ pub async fn create_secret_reference_handler(
         (status = 200, description = "List of secrets (metadata only)", body = [SecretResponse]),
         (status = 503, description = "Secret repository unavailable"),
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, params), fields(team = %team, user_id = ?context.user_id))]
 pub async fn list_secrets_handler(
@@ -262,7 +262,7 @@ pub async fn list_secrets_handler(
         (status = 404, description = "Secret not found"),
         (status = 503, description = "Secret repository unavailable"),
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state), fields(team = %path.team, secret_id = %path.secret_id, user_id = ?context.user_id))]
 pub async fn get_secret_handler(
@@ -310,7 +310,7 @@ pub async fn get_secret_handler(
         (status = 404, description = "Secret not found"),
         (status = 503, description = "Secret repository unavailable"),
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state, payload), fields(team = %path.team, secret_id = %path.secret_id, user_id = ?context.user_id))]
 pub async fn update_secret_handler(
@@ -394,7 +394,7 @@ pub async fn update_secret_handler(
         (status = 404, description = "Secret not found"),
         (status = 503, description = "Secret repository unavailable"),
     ),
-    tag = "secrets"
+    tag = "Secrets"
 )]
 #[instrument(skip(state), fields(team = %path.team, secret_id = %path.secret_id, user_id = ?context.user_id))]
 pub async fn delete_secret_handler(

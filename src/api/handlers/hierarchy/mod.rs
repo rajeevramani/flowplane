@@ -148,7 +148,7 @@ async fn resolve_route(
         (status = 404, description = "Route config not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Routes"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, user_id = ?context.user_id))]
 pub async fn list_virtual_hosts_handler(
@@ -207,7 +207,7 @@ pub async fn list_virtual_hosts_handler(
         (status = 404, description = "Route config or virtual host not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_virtual_host_filters_handler(
@@ -250,7 +250,7 @@ pub async fn list_virtual_host_filters_handler(
         (status = 404, description = "Route config, virtual host, or filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_virtual_host_handler(
@@ -297,7 +297,7 @@ pub async fn attach_filter_to_virtual_host_handler(
         (status = 404, description = "Route config, virtual host, filter, or attachment not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_virtual_host_handler(
@@ -344,7 +344,7 @@ pub async fn detach_filter_from_virtual_host_handler(
         (status = 404, description = "Route config or virtual host not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Routes"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_route_rules_handler(
@@ -401,7 +401,7 @@ pub async fn list_route_rules_handler(
         (status = 404, description = "Route config, virtual host, or route not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_rule_filters_handler(
@@ -445,7 +445,7 @@ pub async fn list_route_rule_filters_handler(
         (status = 404, description = "Route config, virtual host, route, or filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_route_rule_handler(
@@ -494,7 +494,7 @@ pub async fn attach_filter_to_route_rule_handler(
         (status = 404, description = "Route config, virtual host, route, filter, or attachment not found"),
         (status = 503, description = "Repository unavailable"),
     ),
-    tag = "hierarchy"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_route_rule_handler(

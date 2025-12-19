@@ -148,7 +148,7 @@ fn convert_error(err: Error) -> ApiError {
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, payload), fields(token_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_token_handler(
@@ -179,7 +179,7 @@ pub async fn create_token_handler(
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
 pub async fn list_tokens_handler(
@@ -215,7 +215,7 @@ pub async fn list_tokens_handler(
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn get_token_handler(
@@ -243,7 +243,7 @@ pub async fn get_token_handler(
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, payload), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn update_token_handler(
@@ -274,7 +274,7 @@ pub async fn update_token_handler(
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn revoke_token_handler(
@@ -300,7 +300,7 @@ pub async fn revoke_token_handler(
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
-    tag = "tokens"
+    tag = "Authentication"
 )]
 #[instrument(skip(state), fields(token_id = %id, user_id = ?context.user_id))]
 pub async fn rotate_token_handler(
@@ -377,7 +377,7 @@ impl IntoResponse for SessionCreatedResponse {
         (status = 401, description = "Setup token invalid, expired, or exhausted"),
         (status = 503, description = "Session service unavailable")
     ),
-    tag = "auth"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, payload))]
 pub async fn create_session_handler(
@@ -445,7 +445,7 @@ pub struct SessionInfoResponse {
         (status = 401, description = "Invalid or expired session token"),
         (status = 503, description = "Session service unavailable")
     ),
-    tag = "auth"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, jar, headers))]
 pub async fn get_session_info_handler(
@@ -571,7 +571,7 @@ impl IntoResponse for LogoutResponse {
         (status = 401, description = "Invalid or expired session token"),
         (status = 503, description = "Session service unavailable")
     ),
-    tag = "auth"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, jar, headers))]
 pub async fn logout_handler(
@@ -691,7 +691,7 @@ impl IntoResponse for LoginResponse {
         (status = 401, description = "Invalid credentials or account not active"),
         (status = 503, description = "Service unavailable")
     ),
-    tag = "auth"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, payload, headers), fields(email = %payload.email))]
 pub async fn login_handler(
@@ -788,7 +788,7 @@ pub struct ChangePasswordBody {
         (status = 503, description = "Service unavailable")
     ),
     security(("session" = [])),
-    tag = "auth"
+    tag = "Authentication"
 )]
 #[instrument(skip(state, payload), fields(user_id = ?context.user_id))]
 pub async fn change_password_handler(

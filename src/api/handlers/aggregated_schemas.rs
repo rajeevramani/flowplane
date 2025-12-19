@@ -234,7 +234,7 @@ async fn verify_schema_access(
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "aggregated-schemas"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, path = ?query.path, http_method = ?query.http_method))]
 pub async fn list_aggregated_schemas_handler(
@@ -297,7 +297,7 @@ pub async fn list_aggregated_schemas_handler(
         (status = 404, description = "Schema not found"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "aggregated-schemas"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(schema_id = %id, user_id = ?context.user_id))]
 pub async fn get_aggregated_schema_handler(
@@ -353,7 +353,7 @@ pub async fn get_aggregated_schema_handler(
         (status = 404, description = "Schema or version not found"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "aggregated-schemas"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(schema_id = %id, compare_version = %query.with_version, user_id = ?context.user_id))]
 pub async fn compare_aggregated_schemas_handler(
@@ -444,7 +444,7 @@ pub async fn compare_aggregated_schemas_handler(
         (status = 404, description = "Schema not found"),
         (status = 503, description = "Repository unavailable")
     ),
-    tag = "aggregated-schemas"
+    tag = "API Discovery"
 )]
 #[instrument(skip(state), fields(schema_id = %id, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
 pub async fn export_aggregated_schema_handler(

@@ -95,7 +95,7 @@ pub struct ListUsersResponse {
         (status = 409, description = "User with email already exists")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state, payload), fields(email = %payload.email, user_id = ?context.user_id))]
 pub async fn create_user(
@@ -139,7 +139,7 @@ pub async fn create_user(
         (status = 404, description = "User not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn get_user(
@@ -177,7 +177,7 @@ pub async fn get_user(
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(user_id = ?context.user_id, limit = %query.limit, offset = %query.offset))]
 pub async fn list_users(
@@ -216,7 +216,7 @@ pub async fn list_users(
         (status = 404, description = "User not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state, payload), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn update_user(
@@ -265,7 +265,7 @@ pub async fn update_user(
         (status = 404, description = "User not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn delete_user(
@@ -305,7 +305,7 @@ pub async fn delete_user(
         (status = 409, description = "User already member of team")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state, payload), fields(target_user_id = %id, team = %payload.team, user_id = ?context.user_id))]
 pub async fn add_team_membership(
@@ -358,7 +358,7 @@ pub async fn add_team_membership(
         (status = 404, description = "User not found or not member of team")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(target_user_id = %id, team = %team, user_id = ?context.user_id))]
 pub async fn remove_team_membership(
@@ -395,7 +395,7 @@ pub async fn remove_team_membership(
         (status = 404, description = "User not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
-    tag = "users"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(target_user_id = %id, user_id = ?context.user_id))]
 pub async fn list_user_teams(

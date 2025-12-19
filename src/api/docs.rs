@@ -267,27 +267,21 @@ use crate::xds::{
         )
     ),
     tags(
-        (name = "auth", description = "Authentication and session management"),
-        (name = "bootstrap", description = "Bootstrap initialization for first-time setup"),
-        (name = "clusters", description = "Operations for managing Envoy clusters"),
-        (name = "route-configs", description = "Operations for managing Envoy route configurations"),
-        (name = "listeners", description = "Operations for managing Envoy listeners"),
-        (name = "tokens", description = "Personal access token management APIs"),
-        (name = "teams", description = "Team management and bootstrap configuration"),
-        (name = "admin", description = "Administrative operations for teams and system management"),
-        (name = "users", description = "User management operations (admin only)"),
-        (name = "scopes", description = "Scope discovery and management"),
-        (name = "openapi-import", description = "Import OpenAPI specifications to create routes and clusters"),
-        (name = "audit", description = "Audit log queries (admin only)"),
-        (name = "reports", description = "Platform visibility and reporting endpoints"),
-        (name = "learning-sessions", description = "API schema learning and traffic observation"),
-        (name = "aggregated-schemas", description = "Learned API schemas and catalog management"),
-        (name = "hierarchy", description = "Hierarchical filter attachment to virtual hosts and routes"),
-        (name = "secrets", description = "Secret management for TLS certificates, OAuth tokens, and API keys"),
-        (name = "filters", description = "Filter CRUD operations for creating, reading, updating, and deleting filters"),
-        (name = "filter-installations", description = "Filter installation on listeners (Install/Configure redesign)"),
-        (name = "filter-configurations", description = "Filter configuration for routes, virtual hosts, and route configs"),
-        (name = "filter-status", description = "Combined filter status showing installations and configurations")
+        // Core Envoy Resources
+        (name = "Clusters", description = "Manage Envoy upstream clusters and load balancing"),
+        (name = "Listeners", description = "Manage Envoy listeners for traffic ingress"),
+        (name = "Routes", description = "Manage route configurations, virtual hosts, and routing rules"),
+        // Filters
+        (name = "Filters", description = "Create, install, and configure HTTP filters on listeners, routes, and virtual hosts"),
+        (name = "Secrets", description = "Manage TLS certificates, OAuth tokens, API keys, and proxy certificates"),
+        // API Discovery & Learning
+        (name = "API Discovery", description = "Import OpenAPI specs, observe traffic, and learn API schemas"),
+        // Authentication & Authorization
+        (name = "Authentication", description = "Sessions, login, tokens, and password management"),
+        // Administration
+        (name = "Administration", description = "Users, teams, scopes, and audit logs"),
+        // System
+        (name = "System", description = "Health checks, bootstrap, mTLS status, statistics, and reporting")
     ),
     security(
         ("bearerAuth" = [])
@@ -726,22 +720,21 @@ mod tests {
 
         let tag_names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
 
-        assert!(tag_names.contains(&"auth"), "Missing 'auth' tag");
-        assert!(tag_names.contains(&"bootstrap"), "Missing 'bootstrap' tag");
-        assert!(tag_names.contains(&"clusters"), "Missing 'clusters' tag");
-        assert!(tag_names.contains(&"route-configs"), "Missing 'route-configs' tag");
-        assert!(tag_names.contains(&"listeners"), "Missing 'listeners' tag");
-        assert!(tag_names.contains(&"tokens"), "Missing 'tokens' tag");
-        assert!(tag_names.contains(&"teams"), "Missing 'teams' tag");
-        assert!(tag_names.contains(&"admin"), "Missing 'admin' tag");
-        assert!(tag_names.contains(&"users"), "Missing 'users' tag");
-        assert!(tag_names.contains(&"scopes"), "Missing 'scopes' tag");
-        assert!(tag_names.contains(&"openapi-import"), "Missing 'openapi-import' tag");
-        assert!(tag_names.contains(&"audit"), "Missing 'audit' tag");
-        assert!(tag_names.contains(&"reports"), "Missing 'reports' tag");
-        assert!(tag_names.contains(&"learning-sessions"), "Missing 'learning-sessions' tag");
-        assert!(tag_names.contains(&"aggregated-schemas"), "Missing 'aggregated-schemas' tag");
-        assert!(tag_names.contains(&"secrets"), "Missing 'secrets' tag");
+        // Core Envoy Resources
+        assert!(tag_names.contains(&"Clusters"), "Missing 'Clusters' tag");
+        assert!(tag_names.contains(&"Listeners"), "Missing 'Listeners' tag");
+        assert!(tag_names.contains(&"Routes"), "Missing 'Routes' tag");
+        // Filters
+        assert!(tag_names.contains(&"Filters"), "Missing 'Filters' tag");
+        assert!(tag_names.contains(&"Secrets"), "Missing 'Secrets' tag");
+        // API Discovery & Learning
+        assert!(tag_names.contains(&"API Discovery"), "Missing 'API Discovery' tag");
+        // Authentication & Authorization
+        assert!(tag_names.contains(&"Authentication"), "Missing 'Authentication' tag");
+        // Administration
+        assert!(tag_names.contains(&"Administration"), "Missing 'Administration' tag");
+        // System
+        assert!(tag_names.contains(&"System"), "Missing 'System' tag");
     }
 
     #[test]

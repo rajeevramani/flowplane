@@ -69,7 +69,7 @@ pub struct ListAuditLogsResponse {
         (status = 503, description = "Service unavailable")
     ),
     security(("bearerAuth" = ["admin:all"])),
-    tag = "audit"
+    tag = "Administration"
 )]
 #[instrument(skip(state), fields(user_id = ?auth_context.user_id, resource_type = ?query.resource_type, action = ?query.action))]
 pub async fn list_audit_logs(

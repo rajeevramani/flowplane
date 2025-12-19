@@ -123,7 +123,7 @@ pub struct FilterTypesResponse {
         (status = 401, description = "Unauthorized"),
         (status = 503, description = "Schema registry not available"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(user_id = ?context.user_id))]
 pub async fn list_filter_types_handler(
@@ -206,7 +206,7 @@ pub async fn list_filter_types_handler(
         (status = 404, description = "Filter type not found"),
         (status = 503, description = "Schema registry not available"),
     ),
-    tag = "filters"
+    tag = "Filters"
 )]
 #[instrument(skip(state, context), fields(filter_type = %filter_type, user_id = ?context.user_id))]
 pub async fn get_filter_type_handler(
@@ -285,7 +285,7 @@ pub async fn get_filter_type_handler(
         (status = 500, description = "Failed to reload schemas"),
         (status = 503, description = "Schema registry not available"),
     ),
-    tag = "admin"
+    tag = "Administration"
 )]
 #[instrument(skip(state, context), fields(user_id = ?context.user_id))]
 pub async fn reload_filter_schemas_handler(

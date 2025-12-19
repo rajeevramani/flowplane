@@ -128,7 +128,7 @@ fn extract_user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
         (status = 403, description = "System already initialized - tokens exist"),
         (status = 503, description = "Service unavailable")
     ),
-    tag = "bootstrap"
+    tag = "System"
 )]
 #[instrument(skip(state, payload, headers), fields(email = %payload.email))]
 pub async fn bootstrap_initialize_handler(
@@ -382,7 +382,7 @@ pub async fn bootstrap_initialize_handler(
         (status = 200, description = "Bootstrap status retrieved successfully", body = BootstrapStatusResponse),
         (status = 503, description = "Service unavailable")
     ),
-    tag = "bootstrap"
+    tag = "System"
 )]
 #[instrument(skip(state))]
 pub async fn bootstrap_status_handler(
