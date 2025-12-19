@@ -435,6 +435,9 @@ pub struct SessionInfoResponse {
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Control plane version
+    #[schema(example = "0.0.11")]
+    pub version: String,
 }
 
 #[utoipa::path(
@@ -536,6 +539,7 @@ pub async fn get_session_info_handler(
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
+        version: crate::VERSION.to_string(),
     };
 
     Ok(Json(response))

@@ -48,6 +48,7 @@ export interface SessionInfoResponse {
 	teams: string[];
 	scopes: string[];
 	expiresAt: string | null;
+	version: string;
 }
 
 export interface ListTeamsResponse {

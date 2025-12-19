@@ -262,4 +262,9 @@
 			</a>
 		</div>
 	</nav>
+
+	<!-- Version Footer -->
+	<div class="px-4 py-3 border-t border-gray-800">
+		<span class="text-xs text-gray-500">v{sessionInfo.version}</span>
+	</div>
 </aside>
