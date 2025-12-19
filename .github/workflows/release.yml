@@ -62,7 +62,7 @@ jobs:
       - name: Build UI
         run: |
           cd ui
-          npm ci
+          npm install
           npm run build
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -73,7 +73,8 @@ jobs:
           cp target/${{ matrix.target }}/release/flowplane flowplane-${{ matrix.target }}/
           cp target/${{ matrix.target }}/release/flowplane-cli flowplane-${{ matrix.target }}/
           cp -r migrations flowplane-${{ matrix.target }}/
-          cp -r ui/build flowplane-${{ matrix.target }}/ui-build
+          mkdir -p flowplane-${{ matrix.target }}/ui
+          cp -r ui/build flowplane-${{ matrix.target }}/ui/
           tar czvf flowplane-${{ matrix.target }}.tar.gz flowplane-${{ matrix.target }}/
           rm -rf flowplane-${{ matrix.target }}
       - name: Upload Release Asset

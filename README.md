@@ -45,14 +45,12 @@ Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CO
 
 ```
 docker run -d \
-    --name flowplane \
-    -p 8080:8080 \
-    -p 50051:50051 \
-    -v flowplane_data:/app/data \
-    -e DATABASE_URL=sqlite:///app/data/flowplane.db \
-    -e RUST_LOG=info,flowplane=debug \
-    -e FLOWPLANE_ENABLE_METRICS=true \
-    ghcr.io/rajeevramani/flowplane:latest
+--name flowplane \
+-p 8080:8080 \
+-p 50051:50051 \
+-v flowplane_data:/app/data \
+-e FLOW_PLANE_DATABASE_URL=sqlite:///app/data/flowplane.db \
+ghcr.io/rajeevramani/flowplane:latest
 ```
 
 #### Access Points
@@ -60,12 +58,10 @@ docker run -d \
   | Service    | URL                               |
   |------------|-----------------------------------|
   | API        | http://localhost:8080/api/v1/     |
+  | UI | http://localhost:8080/                    |
   | Swagger UI | http://localhost:8080/swagger-ui/ |
   | xDS (gRPC) | localhost:50051                   |
 
-
-- **API**: http://localhost:8080/swagger-ui/
-- **xDS**: localhost:18000
 
 ### Binary
 
