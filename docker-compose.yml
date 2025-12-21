@@ -5,7 +5,7 @@ services:
     container_name: flowplane-control-plane
     environment:
       # Database configuration (SQLite)
-      DATABASE_URL: sqlite:///app/data/flowplane.db
+      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
 
       # Server configuration
       FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
@@ -19,9 +19,18 @@ services:
       # Observability
       FLOWPLANE_ENABLE_METRICS: "true"
       FLOWPLANE_ENABLE_TRACING: "false"
+
+      # Secrets encryption (enables SDS)
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: "d2t71S8xKUQqhaWbj1VofrH/Z8Dq4qR+hAcgXpP6Udg="
+
+      # Vault integration
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "flowplane-dev-token"
     ports:
       - "8080:8080"   # HTTP API
       - "50051:50051" # xDS gRPC
+      - "50052:50052"  
+      - "50053:50053"  
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
       interval: 30s

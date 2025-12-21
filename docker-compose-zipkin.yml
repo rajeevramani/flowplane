@@ -58,7 +58,7 @@ services:
     container_name: flowplane-control-plane
     environment:
       # Database configuration (SQLite)
-      DATABASE_URL: sqlite:///app/data/flowplane.db
+      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
 
       # Server configuration
       FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0

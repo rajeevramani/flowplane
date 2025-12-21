@@ -2,6 +2,8 @@
 
 Flowplane provides secure secret management for Envoy proxies via the **Secret Discovery Service (SDS)**. Secrets such as OAuth2 tokens, TLS certificates, and API keys are delivered to Envoy on-demand without embedding them in static configuration.
 
+For control plane TLS configuration (Admin API HTTPS, xDS mTLS, Vault PKI), see [TLS Configuration](tls.md).
+
 ## Overview
 
 Flowplane supports two secret storage backends:
@@ -15,13 +17,45 @@ Flowplane supports two secret storage backends:
 
 The Secrets feature must be enabled before use. This is an admin-level operation.
 
-### Enable Database Backend (Default)
+### Required: Secret Encryption Key
 
-Database-backed secrets are available by default when the encryption key is configured:
+**This key is required for ALL backends (Database and Vault).** It enables the secret repository that stores secret metadata in the database.
 
 ```bash
-export FLOWPLANE_SECRET_ENCRYPTION_KEY="your-32-byte-encryption-key-here"
+# Generate a 32-byte encryption key
+openssl rand -base64 32
+
+# Set the environment variable
+export FLOWPLANE_SECRET_ENCRYPTION_KEY="your-generated-key-here"
 ```
+
+**For Docker Compose deployments:**
+
+A complete example with Vault and tracing is available at [`docker-compose-secrets-tracing.yml`](docker-compose-secrets-tracing.yml):
+
+```bash
+# Start Flowplane with Vault and Jaeger
+docker-compose -f docker-compose-secrets-tracing.yml up
+
+# Access:
+# - Flowplane API: http://localhost:8080
+# - Vault UI: http://localhost:8200 (token: flowplane-dev-token)
+# - Jaeger UI: http://localhost:16686
+```
+
+Key environment variables:
+```yaml
+services:
+  control-plane:
+    environment:
+      # Required for secrets/SDS to work
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: "d2t71S8xKUQqhaWbj1VofrH/Z8Dq4qR+hAcgXpP6Udg="
+      # For Vault integration
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "flowplane-dev-token"
+```
+
+Without this key, the control plane will return "Secret repository unavailable" errors and SDS will not deliver secrets to Envoy.
 
 ### Enable External Secrets (Vault)
 
@@ -329,7 +363,7 @@ export VAULT_TOKEN='root' #flowplane-dev-token
 SECRET_VALUE=$(echo -n "your-oauth2-client-secret" | base64)
 vault kv put secret/teams/engineering/oauth2-client-secret \
   type="generic_secret" \
-  secret="${CLIENT_SECRET_VALUE}"
+  secret="${SECRET_VALUE}"
 ```
 
 ### Step 3: Configure Flowplane
@@ -410,22 +444,75 @@ Create clusters, routes, and listeners, then attach the OAuth2 filter to protect
 
 ## Architecture
 
+### Why Both Encryption Key and Vault Are Needed
+
+The `FLOWPLANE_SECRET_ENCRYPTION_KEY` and Vault serve different purposes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     FLOWPLANE CONTROL PLANE                                  │
+│                                                                              │
+│  FLOWPLANE_SECRET_ENCRYPTION_KEY (AES-256-GCM)                              │
+│         │                                                                    │
+│         ▼  Encrypts metadata at rest                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │              SQLite Database (Secret Metadata)                       │    │
+│  │  ┌─────────────────────────────────────────────────────────────┐    │    │
+│  │  │ name: "oauth2-client-secret"                                │    │    │
+│  │  │ backend: "vault"                                            │    │    │
+│  │  │ reference: "teams/engineering/oauth2-client-secret"         │    │    │
+│  │  │ team: "engineering"                                         │    │    │
+│  │  └─────────────────────────────────────────────────────────────┘    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│         │                                                                    │
+│         │ On SDS request: look up metadata, then fetch from Vault           │
+│         ▼                                                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+          │
+          │ Fetch actual secret value
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              VAULT                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ secret/data/teams/engineering/oauth2-client-secret                  │    │
+│  │   → type: "generic_secret"                                          │    │
+│  │   → secret: "BASE64_ENCODED_CLIENT_SECRET"                          │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+          │
+          │ SDS delivers plaintext to Envoy
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              ENVOY                                           │
+│  OAuth2 Filter uses secrets for token exchange and cookie signing           │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key points:**
+- **Encryption key**: Enables the database that stores *where* secrets are (metadata)
+- **Vault**: Stores the *actual secret values*
+- Without the encryption key, the control plane can't store/retrieve secret references
+
+### Setup and Runtime Flow
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              SETUP PHASE                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  1. Store secret in Vault                                                   │
+│  1. Set FLOWPLANE_SECRET_ENCRYPTION_KEY (enables secret repository)         │
+│                                                                             │
+│  2. Store secret in Vault                                                   │
 │     vault kv put secret/teams/my-team/oauth2-secret ...                     │
 │                                                                             │
-│  2. Enable external_secrets feature in Flowplane                            │
+│  3. Enable external_secrets feature in Flowplane                            │
 │     PUT /api/v1/admin/apps/external_secrets                                 │
 │                                                                             │
-│  3. Create reference in Flowplane                                           │
+│  4. Create reference in Flowplane                                           │
 │     POST /api/v1/teams/{team}/secrets/reference                             │
 │     {name: "oauth2-secret", backend: "vault", reference: "..."}             │
 │                                                                             │
-│  4. Create filter referencing the secret                                    │
+│  5. Create filter referencing the secret                                    │
 │     {token_secret: {type: "sds", name: "oauth2-secret"}}                    │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -449,6 +536,14 @@ Create clusters, routes, and listeners, then attach the OAuth2 filter to protect
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## High Availability
+
+Since Flowplane intermediates between Envoy and external secret backends (Vault, AWS, GCP), it becomes a dependency for secret delivery. See [TLS Configuration - High Availability](tls.md#high-availability-considerations) for:
+
+- What happens when CP connection breaks
+- Mitigation strategies
+- Architecture tradeoffs
+
 ## Caching
 
 Secrets fetched from external backends are cached in memory:
@@ -468,20 +563,99 @@ Secrets fetched from external backends are cached in memory:
 
 ## Troubleshooting
 
+### "Secret repository unavailable" (503 Error)
+
+This is the most common issue. The control plane cannot store or retrieve secrets.
+
+**Cause:** `FLOWPLANE_SECRET_ENCRYPTION_KEY` is not set.
+
+**Solution:**
+```bash
+# Generate and set the encryption key
+export FLOWPLANE_SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+
+# Restart the control plane
+docker-compose restart control-plane
+```
+
+**Verify in logs:**
+```
+# Good - you should see:
+"Secret encryption configured, SDS enabled"
+
+# Bad - if you see:
+"FLOWPLANE_SECRET_ENCRYPTION_KEY not set, SDS disabled"
+```
+
+### Secrets Stuck in "warming" / "uninitialized" State
+
+Check Envoy's admin interface:
+```bash
+curl -s "http://localhost:9902/config_dump?resource=secrets" | jq '.configs[].dynamic_warming_secrets'
+```
+
+If you see `"version_info": "uninitialized"`, secrets are not being delivered.
+
+**Causes:**
+1. Control plane missing `FLOWPLANE_SECRET_ENCRYPTION_KEY`
+2. Secret references not created in Flowplane database
+3. Vault connectivity issues
+
+**Debug steps:**
+```bash
+# 1. Check if secrets API works
+curl -s "http://localhost:8080/api/v1/teams/my-team/secrets" \
+  -H "Authorization: Bearer $TOKEN"
+
+# If 503: Set FLOWPLANE_SECRET_ENCRYPTION_KEY and restart
+
+# 2. Check control plane logs for secret resolution
+docker logs flowplane-control-plane 2>&1 | grep -i secret
+
+# 3. Verify secret references exist
+# If empty, create them via POST /api/v1/teams/{team}/secrets/reference
+```
+
+### OAuth2 Filter Returns 401 from Token Endpoint
+
+**Symptom:** OAuth2 login redirects correctly, but callback fails with "OAuth flow failed".
+
+**Check Envoy stats:**
+```bash
+curl -s "http://localhost:9902/stats" | grep oauth2
+# Look for: cluster.oauth2-auth-cluster.internal.upstream_rq_401
+```
+
+**Cause:** The OAuth2 filter can't get the client secret from SDS, so it sends requests to the token endpoint without credentials.
+
+**Solution:** Ensure secrets are delivered (see above), then verify:
+```bash
+# Check if secrets are active (not warming)
+curl -s "http://localhost:9902/config_dump?resource=secrets" | jq '.configs[].dynamic_active_secrets'
+```
+
 ### "Backend type 'vault' not registered"
 
-- Ensure `FLOWPLANE_VAULT_ADDR` is set before starting Flowplane
+- Ensure `VAULT_ADDR` is set before starting Flowplane
 - Check Flowplane logs for: `"Registered Vault secret backend"`
 
 ### "Secret not found in Vault"
 
 - Verify Vault path: `vault kv get secret/path/to/secret`
 - Ensure `reference` field matches Vault path (without mount prefix)
+- The reference should NOT include `secret/data/` - just use `teams/my-team/secret-name`
 
 ### "Invalid secret format in Vault"
 
 - Vault secret must include `type` field or standard field names
-- For generic secrets: use `secret` or `value` field
+- For generic secrets: use `secret` or `value` field (base64 encoded)
+
+**Correct format:**
+```bash
+vault kv put secret/teams/my-team/oauth2-secret \
+  type="generic_secret" \
+  secret="$(echo -n 'your-secret-value' | base64)"
+```
 
 ### "Feature not enabled"
 
@@ -493,3 +667,22 @@ Secrets fetched from external backends are cached in memory:
 - Secrets are cached for 5 minutes by default
 - To force refresh: delete and recreate the secret reference
 - Or restart the control plane
+
+### Quick Diagnostic Checklist
+
+```bash
+# 1. Is encryption key set?
+docker exec flowplane-control-plane env | grep FLOWPLANE_SECRET
+
+# 2. Is Vault configured?
+docker exec flowplane-control-plane env | grep VAULT
+
+# 3. Are secrets in database?
+curl -s "http://localhost:8080/api/v1/teams/my-team/secrets" -H "Authorization: Bearer $TOKEN"
+
+# 4. Are secrets delivered to Envoy?
+curl -s "http://localhost:9902/config_dump?resource=secrets" | jq '.configs[].dynamic_active_secrets'
+
+# 5. Check control plane logs
+docker logs flowplane-control-plane 2>&1 | grep -E "secret|SDS|vault" | tail -20
+```

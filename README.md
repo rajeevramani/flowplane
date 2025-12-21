@@ -43,24 +43,26 @@ Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CO
 
 ### Docker (Recommended)
 
-```
+```bash
 docker run -d \
---name flowplane \
--p 8080:8080 \
--p 50051:50051 \
--v flowplane_data:/app/data \
--e FLOW_PLANE_DATABASE_URL=sqlite:///app/data/flowplane.db \
-ghcr.io/rajeevramani/flowplane:latest
+  --name flowplane \
+  -p 8080:8080 \
+  -p 50051:50051 \
+  -v flowplane_data:/app/data \
+  -e FLOWPLANE_DATABASE_URL=sqlite:///app/data/flowplane.db \
+  ghcr.io/rajeevramani/flowplane:latest
 ```
 
 #### Access Points
 
-  | Service    | URL                               |
-  |------------|-----------------------------------|
-  | API        | http://localhost:8080/api/v1/     |
-  | UI | http://localhost:8080/                    |
-  | Swagger UI | http://localhost:8080/swagger-ui/ |
-  | xDS (gRPC) | localhost:50051                   |
+| Service    | URL                               |
+|------------|-----------------------------------|
+| API        | http://localhost:8080/api/v1/     |
+| UI         | http://localhost:8080/            |
+| Swagger UI | http://localhost:8080/swagger-ui/ |
+| xDS (gRPC) | localhost:50051                   |
+
+> **Ports are configurable**: `FLOWPLANE_API_PORT` (default: 8080), `FLOWPLANE_XDS_PORT` (default: 50051 in Docker, 18000 for local dev). See [Configuration](docs/configuration.md).
 
 
 ### Binary
@@ -230,7 +232,7 @@ curl http://localhost:10000/get
 graph TD
     Client[DevOps / Developer] -->|REST / UI| API[API Server :8080]
     API -->|Persist| DB[(SQLite/PostgreSQL)]
-    DB -.->|Query| XDS[xDS Server :18000]
+    DB -.->|Query| XDS[xDS Server :50051]
 
     subgraph Control Plane
         API
@@ -252,10 +254,10 @@ graph TD
 
 - [Getting Started](docs/getting-started.md)
 - [Configuration](docs/configuration.md)
-- [Authentication](docs/authentication.md)
-- [HTTP Filters](docs/filters.md)
-- [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)
+- [HTTP Filters](docs/filters.md)
+- [TLS](docs/tls.md)
+- [Secrets Management (SDS)](docs/secrets-sds.md)
 
 ## Acknowledgments
 
