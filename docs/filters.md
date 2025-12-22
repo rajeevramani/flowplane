@@ -9,10 +9,10 @@ All filters support both global (listener-level) and per-route configuration via
 | Filter | Envoy Filter Name | Description | Per-Route Support | Documentation |
 |--------|-------------------|-------------|-------------------|---------------|
 | **OAuth2** | `envoy.filters.http.oauth2` | OAuth2 authentication with authorization code flow | No | [oauth2.md](filters/oauth2.md) |
-| **JWT Authentication** | `envoy.filters.http.jwt_authn` | JWT token validation with JWKS providers | Yes | Coming soon |
-| **External Authorization** | `envoy.filters.http.ext_authz` | External authorization service integration | Yes | Coming soon |
+| **JWT Authentication** | `envoy.filters.http.jwt_authn` | JWT token validation with JWKS providers | Yes | [jwt_authn.md](filters/jwt_authn.md) |
+| **External Authorization** | `envoy.filters.http.ext_authz` | External authorization service integration | Yes | [ext_authz.md](filters/ext_authz.md) |
 | **RBAC** | `envoy.filters.http.rbac` | Role-based access control policies | Yes | Coming soon |
-| **Local Rate Limit** | `envoy.filters.http.local_ratelimit` | In-process token bucket rate limiting | Yes | Coming soon |
+| **Local Rate Limit** | `envoy.filters.http.local_ratelimit` | In-process token bucket rate limiting | Yes | [local_rate_limit.md](filters/local_rate_limit.md) |
 | **Rate Limit** | `envoy.filters.http.ratelimit` | Distributed rate limiting with external service | Yes | Coming soon |
 | **Rate Limit Quota** | `envoy.filters.http.rate_limit_quota` | Advanced quota management with RLQS | Yes | Coming soon |
 | **CORS** | `envoy.filters.http.cors` | Cross-Origin Resource Sharing policies | Yes | Coming soon |
@@ -21,7 +21,7 @@ All filters support both global (listener-level) and per-route configuration via
 | **Health Check** | `envoy.filters.http.health_check` | Health check endpoint responses | No | Coming soon |
 | **Credential Injector** | `envoy.filters.http.credential_injector` | OAuth2/API key credential injection | No | Coming soon |
 | **External Processor** | `envoy.filters.http.ext_proc` | External request/response processing | No | Coming soon |
-| **Compressor** | `envoy.filters.http.compressor` | Response compression (gzip, brotli) | Yes | Coming soon |
+| **Compressor** | `envoy.filters.http.compressor` | Response compression (gzip, brotli) | Yes | [compressor.md](filters/compressor.md) |
 | **Router** | `envoy.filters.http.router` | Terminal filter for request routing (auto-appended) | N/A | Coming soon |
 
 ## Filter Categories
