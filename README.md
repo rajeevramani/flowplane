@@ -253,6 +253,7 @@ graph TD
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
+- [CLI](docs/cli.md)
 - [Configuration](docs/configuration.md)
 - [Operations](docs/operations.md)
 - [HTTP Filters](docs/filters.md)

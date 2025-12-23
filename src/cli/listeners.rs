@@ -99,17 +99,21 @@ pub enum ListenerCommands {
     },
 }
 
-/// Listener response structure
+/// Listener response structure matching API response
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerResponse {
     pub name: String,
+    pub team: String,
     pub address: String,
-    pub port: Option<u16>,
+    pub port: u16,
     pub protocol: String,
-    pub version: i64,
-    pub created_at: String,
-    pub updated_at: String,
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub import_id: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
 }
 
 /// Handle listener commands
@@ -222,7 +226,7 @@ async fn delete_listener(client: &FlowplaneClient, name: &str, yes: bool) -> Res
     }
 
     let path = format!("/api/v1/listeners/{}", name);
-    let _: serde_json::Value = client.delete_json(&path).await?;
+    client.delete_no_content(&path).await?;
 
     println!("Listener '{}' deleted successfully", name);
     Ok(())
@@ -252,20 +256,17 @@ fn print_listeners_table(listeners: &[ListenerResponse]) {
     }
 
     println!();
-    println!(
-        "{:<30} {:<20} {:<10} {:<12} {:<10}",
-        "Name", "Address", "Port", "Protocol", "Version"
-    );
-    println!("{}", "-".repeat(90));
+    println!("{:<35} {:<18} {:<18} {:<8} {:<10}", "Name", "Team", "Address", "Port", "Protocol");
+    println!("{}", "-".repeat(95));
 
     for listener in listeners {
         println!(
-            "{:<30} {:<20} {:<10} {:<12} {:<10}",
-            truncate(&listener.name, 28),
-            truncate(&listener.address, 18),
-            listener.port.map_or("-".to_string(), |p| p.to_string()),
+            "{:<35} {:<18} {:<18} {:<8} {:<10}",
+            truncate(&listener.name, 33),
+            truncate(&listener.team, 16),
+            truncate(&listener.address, 16),
+            listener.port,
             listener.protocol,
-            listener.version
         );
     }
     println!();

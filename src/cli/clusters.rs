@@ -99,15 +99,19 @@ pub enum ClusterCommands {
     },
 }
 
-/// Cluster response structure
+/// Cluster response structure matching API response
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterResponse {
     pub name: String,
+    pub team: String,
     pub service_name: String,
-    pub version: i64,
-    pub created_at: String,
-    pub updated_at: String,
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub import_id: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
 }
 
 /// Handle cluster commands
@@ -220,7 +224,7 @@ async fn delete_cluster(client: &FlowplaneClient, name: &str, yes: bool) -> Resu
     }
 
     let path = format!("/api/v1/clusters/{}", name);
-    let _: serde_json::Value = client.delete_json(&path).await?;
+    client.delete_no_content(&path).await?;
 
     println!("Cluster '{}' deleted successfully", name);
     Ok(())
@@ -250,15 +254,15 @@ fn print_clusters_table(clusters: &[ClusterResponse]) {
     }
 
     println!();
-    println!("{:<30} {:<30} {:<10}", "Name", "Service", "Version");
-    println!("{}", "-".repeat(75));
+    println!("{:<35} {:<20} {:<35}", "Name", "Team", "Service");
+    println!("{}", "-".repeat(95));
 
     for cluster in clusters {
         println!(
-            "{:<30} {:<30} {:<10}",
-            truncate(&cluster.name, 28),
-            truncate(&cluster.service_name, 28),
-            cluster.version
+            "{:<35} {:<20} {:<35}",
+            truncate(&cluster.name, 33),
+            truncate(&cluster.team, 18),
+            truncate(&cluster.service_name, 33),
         );
     }
     println!();

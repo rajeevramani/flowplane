@@ -144,6 +144,27 @@ impl FlowplaneClient {
         self.handle_response(response).await
     }
 
+    /// Send a DELETE request that expects no content response (204)
+    pub async fn delete_no_content(&self, path: &str) -> Result<()> {
+        let response = self.delete(path).send().await.context("Failed to send DELETE request")?;
+
+        let status = response.status();
+        debug!("Response status: {}", status);
+
+        if !status.is_success() {
+            let error_text =
+                response.text().await.unwrap_or_else(|_| "<unable to read error>".to_string());
+
+            if self.config.verbose {
+                trace!("Error response:\n{}", error_text);
+            }
+
+            anyhow::bail!("HTTP request failed with status {}: {}", status, error_text);
+        }
+
+        Ok(())
+    }
+
     /// Handle HTTP response, checking status and deserializing JSON
     async fn handle_response<T: DeserializeOwned>(&self, response: Response) -> Result<T> {
         let status = response.status();

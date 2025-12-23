@@ -220,7 +220,7 @@ async fn delete_route(client: &FlowplaneClient, name: &str, yes: bool) -> Result
     }
 
     let path = format!("/api/v1/route-configs/{}", name);
-    let _: serde_json::Value = client.delete_json(&path).await?;
+    client.delete_no_content(&path).await?;
 
     println!("Route config '{}' deleted successfully", name);
     Ok(())
