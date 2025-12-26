@@ -23,6 +23,11 @@ use crate::xds::XdsState;
 
 use super::{
     docs,
+    handlers::custom_wasm_filters::{
+        create_custom_wasm_filter_handler, delete_custom_wasm_filter_handler,
+        download_wasm_binary_handler, get_custom_wasm_filter_handler,
+        list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
+    },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
         get_secret_handler,
@@ -349,6 +354,13 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", put(update_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
+        // Custom WASM filter endpoints
+        .route("/api/v1/teams/{team}/custom-filters", get(list_custom_wasm_filters_handler))
+        .route("/api/v1/teams/{team}/custom-filters", post(create_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", get(get_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", put(update_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", delete(delete_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}/download", get(download_wasm_binary_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
         .route("/api/v1/listeners", post(create_listener_handler))

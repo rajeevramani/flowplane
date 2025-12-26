@@ -109,3 +109,5 @@ AGENTS.md
 # tasks/ 
 
 GEMINI.md
+
+examples/custom-filter/add-header/target

@@ -2,7 +2,9 @@
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    domain::FilterConfig,
+    domain::{
+        filter_schema::FilterSchemaRegistry, FilterConfig, FilterType, SharedFilterSchemaRegistry,
+    },
     errors::Error,
     storage::{FilterData, FilterRepository},
 };
@@ -19,20 +21,37 @@ pub fn require_filter_repository(state: &ApiState) -> Result<FilterRepository, A
         .ok_or_else(|| ApiError::internal("Filter repository not configured"))
 }
 
-/// Filter types that require backend clusters
-const CLUSTER_REQUIRING_FILTER_TYPES: &[crate::domain::FilterType] = &[
-    crate::domain::FilterType::OAuth2,
-    crate::domain::FilterType::JwtAuth,
-    crate::domain::FilterType::ExtAuthz,
-];
+/// Filter type names that require backend clusters
+const CLUSTER_REQUIRING_FILTER_TYPES: &[&str] = &["oauth2", "jwt_auth", "ext_authz"];
 
 /// Check if a filter type requires a backend cluster
-pub fn filter_type_requires_cluster(filter_type: &crate::domain::FilterType) -> bool {
-    CLUSTER_REQUIRING_FILTER_TYPES.contains(filter_type)
+pub fn filter_type_requires_cluster(filter_type: &str) -> bool {
+    CLUSTER_REQUIRING_FILTER_TYPES.contains(&filter_type)
+}
+
+/// Check if a filter type is valid (either built-in or in schema registry)
+fn is_valid_filter_type(filter_type: &str, registry: &FilterSchemaRegistry) -> bool {
+    // Check if it's a built-in type
+    if filter_type.parse::<FilterType>().is_ok() {
+        return true;
+    }
+    // Check if it's in the schema registry (custom types)
+    registry.get(filter_type).is_some()
+}
+
+/// Check if a built-in filter type is fully implemented
+fn is_builtin_filter_implemented(filter_type: &str) -> bool {
+    if let Ok(ft) = filter_type.parse::<FilterType>() {
+        return ft.is_fully_implemented();
+    }
+    false
 }
 
 /// Validate create filter request
-pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(), ApiError> {
+pub async fn validate_create_filter_request(
+    payload: &CreateFilterRequest,
+    schema_registry: Option<&SharedFilterSchemaRegistry>,
+) -> Result<(), ApiError> {
     // Validate name is not empty
     if payload.name.trim().is_empty() {
         return Err(ApiError::validation("Filter name cannot be empty"));
@@ -48,10 +67,29 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         return Err(ApiError::validation("Team name cannot be empty"));
     }
 
-    // Validate filter type is fully implemented
-    if !payload.filter_type.is_fully_implemented() {
+    // Check if this is a known filter type (built-in or from schema registry)
+    let is_valid = if let Some(registry) = schema_registry {
+        let reg = registry.read().await;
+        is_valid_filter_type(&payload.filter_type, &reg)
+    } else {
+        // Fallback to built-in only if no registry provided
+        let reg = FilterSchemaRegistry::with_builtin_schemas();
+        is_valid_filter_type(&payload.filter_type, &reg)
+    };
+
+    if !is_valid {
         return Err(ApiError::validation(format!(
-            "Filter type '{}' is not yet supported. Available types: header_mutation, jwt_auth, local_rate_limit, custom_response",
+            "Unknown filter type '{}'. Available built-in types: header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors, compressor, ext_authz, rbac, oauth2. Custom types must have a schema in filter-schemas/custom/",
+            payload.filter_type
+        )));
+    }
+
+    // For built-in types, check if fully implemented
+    if payload.filter_type.parse::<FilterType>().is_ok()
+        && !is_builtin_filter_implemented(&payload.filter_type)
+    {
+        return Err(ApiError::validation(format!(
+            "Filter type '{}' is not yet fully supported",
             payload.filter_type
         )));
     }
@@ -76,24 +114,42 @@ pub fn validate_create_filter_request(payload: &CreateFilterRequest) -> Result<(
         config_type = ?std::mem::discriminant(&payload.config),
         "Validating filter type matches config"
     );
-    match (&payload.filter_type, &payload.config) {
-        (crate::domain::FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => Ok(()),
-        (crate::domain::FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => Ok(()),
-        (crate::domain::FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => Ok(()),
-        (crate::domain::FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => Ok(()),
-        (crate::domain::FilterType::Mcp, FilterConfig::Mcp(_)) => Ok(()),
-        (crate::domain::FilterType::Cors, FilterConfig::Cors(_)) => Ok(()),
-        (crate::domain::FilterType::Compressor, FilterConfig::Compressor(_)) => Ok(()),
-        (crate::domain::FilterType::ExtAuthz, FilterConfig::ExtAuthz(_)) => Ok(()),
-        (crate::domain::FilterType::Rbac, FilterConfig::Rbac(_)) => Ok(()),
-        (crate::domain::FilterType::OAuth2, FilterConfig::OAuth2(_)) => Ok(()),
+
+    // For custom filters, the config type is "custom" and filter_type comes from the CustomFilterConfig
+    if payload.config.is_custom() {
+        // Verify the filter_type in the request matches the one in the config
+        let config_filter_type = payload.config.filter_type_str();
+        if payload.filter_type != config_filter_type {
+            return Err(ApiError::validation(format!(
+                "Filter type '{}' in request does not match config type '{}'",
+                payload.filter_type, config_filter_type
+            )));
+        }
+        return Ok(());
+    }
+
+    // For built-in types, validate filter type matches config variant
+    match (payload.filter_type.as_str(), &payload.config) {
+        ("header_mutation", FilterConfig::HeaderMutation(_)) => Ok(()),
+        ("jwt_auth", FilterConfig::JwtAuth(_)) => Ok(()),
+        ("local_rate_limit", FilterConfig::LocalRateLimit(_)) => Ok(()),
+        ("custom_response", FilterConfig::CustomResponse(_)) => Ok(()),
+        ("mcp", FilterConfig::Mcp(_)) => Ok(()),
+        ("cors", FilterConfig::Cors(_)) => Ok(()),
+        ("compressor", FilterConfig::Compressor(_)) => Ok(()),
+        ("ext_authz", FilterConfig::ExtAuthz(_)) => Ok(()),
+        ("rbac", FilterConfig::Rbac(_)) => Ok(()),
+        ("oauth2", FilterConfig::OAuth2(_)) => Ok(()),
         _ => {
             tracing::warn!(
                 filter_type = ?payload.filter_type,
                 config = ?payload.config,
                 "Filter type and configuration do not match"
             );
-            Err(ApiError::validation("Filter type and configuration do not match"))
+            Err(ApiError::validation(format!(
+                "Filter type '{}' does not match configuration type",
+                payload.filter_type
+            )))
         }
     }
 }

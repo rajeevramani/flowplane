@@ -8,6 +8,7 @@ pub mod audit_log;
 pub mod cluster;
 pub mod cluster_endpoint;
 pub mod cluster_references;
+pub mod custom_wasm_filter;
 pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
@@ -39,6 +40,10 @@ pub use cluster_endpoint::{
     ClusterEndpointData, ClusterEndpointRepository, CreateEndpointRequest, UpdateEndpointRequest,
 };
 pub use cluster_references::{ClusterReferenceData, ClusterReferencesRepository};
+pub use custom_wasm_filter::{
+    CreateCustomWasmFilterRequest, CustomWasmFilterData, CustomWasmFilterRepository,
+    UpdateCustomWasmFilterRequest,
+};
 pub use filter::{
     CreateFilterRequest, FilterConfiguration, FilterData, FilterInstallation, FilterRepository,
     FilterScopeType, UpdateFilterRequest,

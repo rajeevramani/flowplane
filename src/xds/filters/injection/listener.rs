@@ -8,14 +8,16 @@
 
 use super::JwtConfigMerger;
 use crate::domain::filter_schema::FilterSchemaRegistry;
-use crate::domain::AttachmentPoint;
+use crate::domain::{AttachmentPoint, CustomWasmFilterId};
 use crate::storage::{FilterData, FilterRepository, ListenerRepository, RouteConfigRepository};
 use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
 use crate::xds::filters::http::jwt_auth::JwtAuthenticationConfig;
+use crate::xds::filters::http::wasm::{WasmCodeSource, WasmConfig, WasmLocalSource, WasmVmConfig};
 use crate::xds::helpers::ListenerModifier;
 use crate::xds::resources::{create_jwks_cluster, BuiltResource, CLUSTER_TYPE_URL};
 use crate::xds::state::XdsState;
 use crate::Result;
+use base64::Engine;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use std::collections::HashSet;
 use tracing::{debug, info, warn};
@@ -139,8 +141,13 @@ pub async fn inject_listener_filters(
             continue;
         }
 
+        // 2.5. Resolve custom WASM filter types to standard wasm configs with inline_bytes
+        let mut resolved_filters = filters.clone();
+        resolve_custom_wasm_filters(&mut resolved_filters, xds_state, &built.name).await;
+
         // 3. Process and merge filters using dynamic schema-driven conversion
-        let (jwt_merger, other_filters) = process_filters(&filters, &built.name, schema_registry)?;
+        let (jwt_merger, other_filters) =
+            process_filters(&resolved_filters, &built.name, schema_registry)?;
 
         // Build the final list of HTTP filters to inject
         let mut http_filters_to_inject = other_filters;
@@ -468,9 +475,159 @@ fn try_typed_conversion(
             };
             Some(config.to_any())
         }
+        "wasm" => {
+            use crate::xds::filters::http::wasm::WasmConfig;
+            let config: WasmConfig = match serde_json::from_value(config.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(Err(crate::Error::config(format!("Invalid wasm config: {}", e))))
+                }
+            };
+            Some(config.to_any())
+        }
         // JWT is handled specially in process_filters, so we don't need it here
         // Unknown filter types return None to fall back to dynamic conversion
         _ => None,
+    }
+}
+
+/// Resolve custom WASM filter types to standard wasm configs with inline_bytes.
+///
+/// This function processes filters with types starting with "custom_wasm_" and:
+/// 1. Extracts the custom filter ID from the type name
+/// 2. Fetches the WASM binary from the repository
+/// 3. Builds a WasmConfig with inline_bytes containing the base64-encoded binary
+/// 4. Transforms the filter to use the standard "wasm" type
+///
+/// This allows custom user-uploaded WASM filters to be injected into the
+/// listener filter chain using the same mechanism as built-in WASM filters.
+async fn resolve_custom_wasm_filters(
+    filters: &mut [FilterData],
+    xds_state: &XdsState,
+    listener_name: &str,
+) {
+    let custom_wasm_repo = match &xds_state.custom_wasm_filter_repository {
+        Some(repo) => repo,
+        None => return, // No repository configured, nothing to resolve
+    };
+
+    for filter in filters.iter_mut() {
+        if !filter.filter_type.starts_with("custom_wasm_") {
+            continue;
+        }
+
+        let custom_id = match filter.filter_type.strip_prefix("custom_wasm_") {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let filter_id = CustomWasmFilterId::from_string(custom_id.to_string());
+
+        // Fetch the custom filter metadata
+        let custom_filter = match custom_wasm_repo.get_by_id(&filter_id).await {
+            Ok(data) => data,
+            Err(e) => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter.name,
+                    filter_type = %filter.filter_type,
+                    error = %e,
+                    "Failed to fetch custom WASM filter metadata, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Fetch the WASM binary
+        let wasm_binary = match custom_wasm_repo.get_wasm_binary(&filter_id).await {
+            Ok(binary) => binary,
+            Err(e) => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter.name,
+                    custom_filter_name = %custom_filter.name,
+                    error = %e,
+                    "Failed to fetch custom WASM binary, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Parse the user's configuration
+        let user_config: serde_json::Value = match serde_json::from_str(&filter.configuration) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter.name,
+                    error = %e,
+                    "Failed to parse custom WASM filter configuration, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Extract the inner config (handle both wrapped and unwrapped formats)
+        let inner_config = if let Some(obj) = user_config.as_object() {
+            if let Some(config) = obj.get("config") {
+                config.clone()
+            } else {
+                user_config.clone()
+            }
+        } else {
+            user_config.clone()
+        };
+
+        // Base64-encode the WASM binary
+        let inline_bytes_b64 = base64::engine::general_purpose::STANDARD.encode(&wasm_binary);
+
+        // Build the WasmConfig with inline_bytes
+        let wasm_config = WasmConfig {
+            name: custom_filter.name.clone(),
+            root_id: String::new(),
+            vm_config: WasmVmConfig {
+                vm_id: format!("custom_wasm_{}", custom_filter.id),
+                runtime: custom_filter.runtime.clone(),
+                code: WasmCodeSource {
+                    local: Some(WasmLocalSource {
+                        filename: None,
+                        inline_bytes: Some(inline_bytes_b64),
+                        inline_string: None,
+                    }),
+                    remote: None,
+                },
+                configuration: None,
+                allow_precompiled: false,
+                nack_on_code_cache_miss: false,
+            },
+            configuration: Some(inner_config),
+            failure_policy: Some(custom_filter.failure_policy.clone()),
+        };
+
+        // Serialize the WasmConfig as the new configuration
+        match serde_json::to_string(&wasm_config) {
+            Ok(new_config) => {
+                info!(
+                    listener = %listener_name,
+                    filter_name = %filter.name,
+                    custom_filter_name = %custom_filter.name,
+                    wasm_size = wasm_binary.len(),
+                    "Resolved custom WASM filter to inline binary"
+                );
+
+                // Transform the filter to use standard wasm type
+                filter.filter_type = "wasm".to_string();
+                filter.configuration = new_config;
+            }
+            Err(e) => {
+                warn!(
+                    listener = %listener_name,
+                    filter_name = %filter.name,
+                    error = %e,
+                    "Failed to serialize WASM config, skipping"
+                );
+            }
+        }
     }
 }
 

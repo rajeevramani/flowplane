@@ -6,6 +6,7 @@
 pub mod access_log_processor;
 pub mod cluster_endpoint_sync;
 pub mod cluster_service;
+pub mod custom_wasm_filter_service;
 pub mod filter_service;
 pub mod filter_validation;
 pub mod learning_session_service;
@@ -26,6 +27,7 @@ pub mod webhook_service;
 pub use access_log_processor::{AccessLogProcessor, ProcessorConfig, ProcessorHandle};
 pub use cluster_endpoint_sync::ClusterEndpointSyncService;
 pub use cluster_service::ClusterService;
+pub use custom_wasm_filter_service::CustomWasmFilterService;
 pub use filter_service::FilterService;
 pub use filter_validation::{
     create_filter_validator, FilterConfigValidator, FilterValidationError, ValidationErrorDetail,

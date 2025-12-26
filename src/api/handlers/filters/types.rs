@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::domain::{AttachmentPoint, FilterConfig, FilterType};
+use crate::domain::{get_filter_type_attachment_points, AttachmentPoint, FilterConfig};
 use crate::storage::FilterData;
 use crate::xds::ClusterSpec;
 
@@ -78,7 +78,9 @@ pub struct ListFiltersQuery {
 #[serde(rename_all = "camelCase")]
 pub struct CreateFilterRequest {
     pub name: String,
-    pub filter_type: FilterType,
+    /// Filter type - can be a built-in type (header_mutation, jwt_auth, etc.)
+    /// or a custom type loaded from filter-schemas/custom/ (e.g., "wasm", "lua")
+    pub filter_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub config: FilterConfig,
@@ -137,12 +139,8 @@ impl FilterResponse {
         config: FilterConfig,
         attachment_count: Option<i64>,
     ) -> Self {
-        // Parse filter type to get allowed attachment points
-        let allowed_attachment_points = data
-            .filter_type
-            .parse::<FilterType>()
-            .map(|ft| ft.allowed_attachment_points())
-            .unwrap_or_default();
+        // Get allowed attachment points (supports both built-in and custom types)
+        let allowed_attachment_points = get_filter_type_attachment_points(&data.filter_type);
 
         Self {
             id: data.id.to_string(),

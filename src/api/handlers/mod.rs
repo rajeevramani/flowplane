@@ -5,6 +5,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
+pub mod custom_wasm_filters;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
@@ -35,6 +36,11 @@ pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
+};
+pub use custom_wasm_filters::{
+    create_custom_wasm_filter_handler, delete_custom_wasm_filter_handler,
+    download_wasm_binary_handler, get_custom_wasm_filter_handler, list_custom_wasm_filters_handler,
+    update_custom_wasm_filter_handler,
 };
 pub use filters::{
     attach_filter_handler, attach_filter_to_listener_handler, configure_filter_handler,
@@ -122,6 +128,12 @@ pub use teams::{
     MtlsStatusResponse,
 };
 pub use users::ListUsersResponse;
+
+// Custom WASM filter DTOs
+pub use custom_wasm_filters::{
+    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
+    ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+};
 
 // Hierarchy DTOs for route hierarchy filter attachment
 pub use hierarchy::{

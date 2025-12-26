@@ -4,6 +4,7 @@ use flowplane::{
     api::start_api_server,
     auth::scope_registry::init_scope_registry,
     config::{ApiServerConfig, DatabaseConfig, ObservabilityConfig, SimpleXdsConfig},
+    domain::filter_schema::FilterSchemaRegistry,
     observability::init_observability,
     secrets::SecretBackendRegistry,
     services::{LearningSessionService, SchemaAggregator, WebhookService},
@@ -141,6 +142,74 @@ async fn main() -> Result<()> {
             }
             Err(e) => {
                 warn!(error = %e, "Failed to initialize secret backend registry - external secrets will not work");
+            }
+        }
+    }
+
+    // Initialize filter schema registry with custom schemas from disk
+    // This enables support for custom filter types like WASM, Lua, etc.
+    {
+        let schema_dir = std::path::Path::new("filter-schemas");
+        if schema_dir.exists() {
+            match FilterSchemaRegistry::load_from_directory(schema_dir) {
+                Ok(registry) => {
+                    info!(
+                        path = %schema_dir.display(),
+                        schema_count = registry.len(),
+                        "Loaded filter schemas from directory (including custom filters)"
+                    );
+                    state_struct.set_filter_schema_registry(registry);
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to load filter schemas from directory, using built-in only"
+                    );
+                }
+            }
+        } else {
+            info!("No filter-schemas directory found, using built-in schemas only");
+        }
+    }
+
+    // Load custom WASM filter schemas from the database and register them
+    // This enables users to upload custom WASM filters and have them available as filter types
+    {
+        use flowplane::services::CustomWasmFilterService;
+        if let Some(ref repo) = state_struct.custom_wasm_filter_repository {
+            match repo.list_all().await {
+                Ok(custom_filters) if !custom_filters.is_empty() => {
+                    let registry = &mut state_struct.filter_schema_registry;
+                    let mut registered_count = 0;
+                    for custom_filter in &custom_filters {
+                        let schema =
+                            CustomWasmFilterService::generate_schema_definition(custom_filter);
+                        if let Err(e) = registry.register_custom_schema(schema) {
+                            warn!(
+                                filter_name = %custom_filter.name,
+                                error = %e,
+                                "Failed to register custom WASM filter schema"
+                            );
+                        } else {
+                            registered_count += 1;
+                        }
+                    }
+                    if registered_count > 0 {
+                        info!(
+                            count = registered_count,
+                            "Registered custom WASM filter schemas from database"
+                        );
+                    }
+                }
+                Ok(_) => {
+                    info!("No custom WASM filters found in database");
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to load custom WASM filters from database"
+                    );
+                }
             }
         }
     }

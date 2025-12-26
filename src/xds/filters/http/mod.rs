@@ -20,6 +20,7 @@ pub mod oauth2;
 pub mod rate_limit;
 pub mod rate_limit_quota;
 pub mod rbac;
+pub mod wasm;
 
 use crate::xds::filters::http::compressor::{
     CompressorConfig, CompressorPerRouteConfig, COMPRESSOR_PER_ROUTE_TYPE_URL,
@@ -223,6 +224,10 @@ pub enum HttpScopedConfig {
     Rbac(RbacPerRouteConfig),
     /// Raw typed config (type URL + base64 protobuf)
     Typed(TypedConfig),
+    /// Custom/dynamic filter per-route config (pre-built Any)
+    /// Used for filters loaded from filter-schemas/custom/
+    #[serde(skip)]
+    Custom(EnvoyAny),
 }
 
 impl HttpScopedConfig {
@@ -243,6 +248,7 @@ impl HttpScopedConfig {
             Self::CustomResponse(cfg) => cfg.to_any(),
             Self::Mcp(cfg) => cfg.to_any(),
             Self::Rbac(cfg) => cfg.to_any(),
+            Self::Custom(any) => Ok(any.clone()),
         }
     }
 

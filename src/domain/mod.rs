@@ -23,6 +23,7 @@
 //! - `cluster`: Cluster (upstream) configuration and policies
 
 pub mod cluster;
+pub mod custom_wasm_filter;
 pub mod endpoint;
 pub mod filter;
 pub mod filter_schema;
@@ -39,10 +40,15 @@ pub use cluster::{
     EndpointAddress, HealthCheck, HealthCheckProtocol, HealthStatus, LoadBalancingPolicy,
     OutlierDetection, UpstreamTlsConfig,
 };
+pub use custom_wasm_filter::{
+    compute_sha256, validate_wasm_binary, CustomWasmFilterSpec, CustomWasmFilterValidationError,
+    WasmFailurePolicy, WasmRuntime, MAX_WASM_BINARY_SIZE, WASM_MAGIC_BYTES,
+};
 pub use endpoint::EndpointHealthStatus;
 pub use filter::{
-    AttachmentPoint, FilterConfig, FilterType, FilterTypeMetadata, HeaderMutationEntry,
-    HeaderMutationFilterConfig, PerRouteBehavior,
+    can_filter_type_attach_to, get_filter_type_attachment_points, AttachmentPoint, FilterConfig,
+    FilterType, FilterTypeMetadata, HeaderMutationEntry, HeaderMutationFilterConfig,
+    PerRouteBehavior,
 };
 pub use filter_schema::{
     create_shared_registry, create_shared_registry_from_dir, EnvoyFilterMetadata,
@@ -50,8 +56,8 @@ pub use filter_schema::{
     SchemaLoadError, SchemaSource, SchemaValidationError, SharedFilterSchemaRegistry, UiHints,
 };
 pub use id::{
-    ClusterId, EndpointId, FilterId, ListenerId, ProxyCertificateId, RouteConfigId, RouteId,
-    ScopeId, SecretId, TeamId, TokenId, UserId, VirtualHostId,
+    ClusterId, CustomWasmFilterId, EndpointId, FilterId, ListenerId, ProxyCertificateId,
+    RouteConfigId, RouteId, ScopeId, SecretId, TeamId, TokenId, UserId, VirtualHostId,
 };
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,

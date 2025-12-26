@@ -152,7 +152,7 @@ pub async fn create_filter_handler(
         cluster_config = ?payload.cluster_config,
         "Creating filter - received payload"
     );
-    validate_create_filter_request(&payload)?;
+    validate_create_filter_request(&payload, state.filter_schema_registry.as_ref()).await?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "filters", "write", Some(&payload.team))?;
