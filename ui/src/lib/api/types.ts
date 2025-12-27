@@ -1526,3 +1526,59 @@ export interface ExportMultipleSchemasRequest {
 	description?: string;
 	includeMetadata: boolean;
 }
+
+// ============================================================================
+// Custom WASM Filter Types (Plugin Management)
+// ============================================================================
+
+/** Response for a custom WASM filter */
+export interface CustomWasmFilterResponse {
+	id: string;
+	name: string;
+	display_name: string;
+	description: string | null;
+	wasm_sha256: string;
+	wasm_size_bytes: number;
+	config_schema: Record<string, unknown>;
+	per_route_config_schema: Record<string, unknown> | null;
+	ui_hints: Record<string, unknown> | null;
+	attachment_points: string[];
+	runtime: string;
+	failure_policy: string;
+	version: number;
+	team: string;
+	created_by: string | null;
+	created_at: string;
+	updated_at: string;
+	filter_type: string;
+}
+
+/** Request to create a custom WASM filter */
+export interface CreateCustomWasmFilterRequest {
+	name: string;
+	display_name: string;
+	description?: string;
+	wasm_binary_base64: string;
+	config_schema: Record<string, unknown>;
+	per_route_config_schema?: Record<string, unknown>;
+	ui_hints?: Record<string, unknown>;
+	attachment_points?: string[];
+	runtime?: string;
+	failure_policy?: string;
+}
+
+/** Request to update a custom WASM filter (metadata only, not binary) */
+export interface UpdateCustomWasmFilterRequest {
+	display_name?: string;
+	description?: string;
+	config_schema?: Record<string, unknown>;
+	per_route_config_schema?: Record<string, unknown>;
+	ui_hints?: Record<string, unknown>;
+	attachment_points?: string[];
+}
+
+/** Response for listing custom WASM filters */
+export interface ListCustomWasmFiltersResponse {
+	items: CustomWasmFilterResponse[];
+	total: number;
+}

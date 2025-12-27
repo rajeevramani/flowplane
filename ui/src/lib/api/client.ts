@@ -91,7 +91,12 @@ import type {
 	ListAggregatedSchemasQuery,
 	SchemaComparisonResponse,
 	OpenApiExportResponse,
-	ExportMultipleSchemasRequest
+	ExportMultipleSchemasRequest,
+	// Custom WASM Filter types
+	CustomWasmFilterResponse,
+	CreateCustomWasmFilterRequest,
+	UpdateCustomWasmFilterRequest,
+	ListCustomWasmFiltersResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -1117,6 +1122,103 @@ class ApiClient {
 	 */
 	async exportMultipleSchemasAsOpenApi(request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
 		return this.post<OpenApiExportResponse>('/api/v1/aggregated-schemas/export', request);
+	}
+
+	// ============================================================================
+	// Custom WASM Filters API (Plugin Management)
+	// ============================================================================
+
+	/**
+	 * List all custom WASM filters for a team.
+	 * Supports pagination via limit and offset.
+	 */
+	async listCustomWasmFilters(
+		team: string,
+		params?: { limit?: number; offset?: number }
+	): Promise<ListCustomWasmFiltersResponse> {
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/custom-filters${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+		return this.get<ListCustomWasmFiltersResponse>(path);
+	}
+
+	/**
+	 * Get a specific custom WASM filter by ID.
+	 */
+	async getCustomWasmFilter(team: string, id: string): Promise<CustomWasmFilterResponse> {
+		return this.get<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Create a new custom WASM filter.
+	 * The wasmBinaryBase64 field should contain the base64-encoded WASM binary.
+	 * Upon successful creation, the filter type is automatically registered in the schema registry.
+	 */
+	async createCustomWasmFilter(
+		team: string,
+		request: CreateCustomWasmFilterRequest
+	): Promise<CustomWasmFilterResponse> {
+		return this.post<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters`,
+			request
+		);
+	}
+
+	/**
+	 * Update a custom WASM filter's metadata.
+	 * Note: The WASM binary cannot be updated. Upload a new filter instead.
+	 */
+	async updateCustomWasmFilter(
+		team: string,
+		id: string,
+		request: UpdateCustomWasmFilterRequest
+	): Promise<CustomWasmFilterResponse> {
+		return this.put<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`,
+			request
+		);
+	}
+
+	/**
+	 * Delete a custom WASM filter.
+	 * Warning: Ensure no filter instances are using this filter type before deletion.
+	 */
+	async deleteCustomWasmFilter(team: string, id: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Download the WASM binary for a custom filter.
+	 * Returns the binary as a Blob.
+	 */
+	async downloadCustomWasmFilterBinary(team: string, id: string): Promise<Blob> {
+		const response = await fetch(
+			`${API_BASE}/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}/download`,
+			{
+				method: 'GET',
+				headers: this.getHeaders(),
+				credentials: 'include'
+			}
+		);
+
+		if (!response.ok) {
+			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+			try {
+				const errorData = await response.json();
+				errorMessage = errorData.message || errorMessage;
+			} catch {
+				// If JSON parsing fails, use status text
+			}
+			throw new Error(errorMessage);
+		}
+
+		return response.blob();
 	}
 }
 

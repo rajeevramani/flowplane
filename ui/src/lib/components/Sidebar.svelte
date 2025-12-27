@@ -17,7 +17,8 @@
 		BarChart3,
 		Lock,
 		BookOpen,
-		FileCode
+		FileCode,
+		Puzzle
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -53,7 +54,8 @@
 	// HTTP Filters submenu items
 	const filtersSubmenu = [
 		{ id: 'manage-filters', label: 'Manage Filters', href: '/filters', icon: List },
-		{ id: 'attach-filters', label: 'Attach Filters', href: '/filters/attach', icon: Link }
+		{ id: 'attach-filters', label: 'Attach Filters', href: '/filters/attach', icon: Link },
+		{ id: 'custom-filters', label: 'Custom Filters', href: '/custom-filters', icon: Puzzle }
 	];
 
 	// Admin navigation items
@@ -79,7 +81,7 @@
 	// Check if any filter submenu item is active
 	function isFiltersActive(): boolean {
 		const currentPath = $page.url.pathname;
-		return currentPath.startsWith('/filters');
+		return currentPath.startsWith('/filters') || currentPath.startsWith('/custom-filters');
 	}
 
 	// Toggle filters submenu
