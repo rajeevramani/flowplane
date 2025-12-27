@@ -42,8 +42,9 @@ impl SchemaAggregator {
     /// This is the main entry point for Task 6.1 - it groups observations by endpoint
     /// and creates aggregated schemas.
     ///
-    /// Later subtasks will enhance the aggregation logic with field presence tracking,
-    /// type conflict resolution, confidence scoring, and breaking change detection.
+    /// The aggregation is atomic: either all endpoints are aggregated or none are.
+    /// This is achieved by collecting all aggregation requests first, then batch
+    /// creating them in a single transaction.
     #[instrument(skip(self), fields(session_id = %session_id), name = "aggregate_session_schemas")]
     pub async fn aggregate_session(&self, session_id: &str) -> Result<Vec<i64>> {
         info!(session_id = %session_id, "Starting schema aggregation for session");
@@ -57,54 +58,62 @@ impl SchemaAggregator {
             "Grouped schemas by endpoint"
         );
 
-        let mut aggregated_ids = Vec::new();
+        // Step 2: For each group (endpoint), build the aggregation request
+        // This phase is read-only - all writes happen in the batch create below
+        let mut create_requests = Vec::new();
 
-        // Step 2: For each group (endpoint), aggregate the observations
         for ((http_method, path_pattern, response_status_code), observations) in grouped_schemas {
             info!(
                 method = %http_method,
                 path = %path_pattern,
                 status_code = ?response_status_code,
                 observation_count = observations.len(),
-                "Aggregating endpoint"
+                "Preparing endpoint aggregation"
             );
 
-            let aggregated_id = self
-                .aggregate_endpoint(&http_method, &path_pattern, response_status_code, observations)
+            let request = self
+                .prepare_aggregation(
+                    &http_method,
+                    &path_pattern,
+                    response_status_code,
+                    observations,
+                )
                 .await?;
 
-            aggregated_ids.push(aggregated_id);
+            create_requests.push(request);
         }
+
+        // Step 3: Batch create all aggregated schemas in a single transaction
+        // If any insert fails, the entire transaction is rolled back
+        let aggregated_ids = self.aggregated_repo.create_batch(create_requests).await?;
 
         info!(
             session_id = %session_id,
             aggregated_count = aggregated_ids.len(),
-            "Completed schema aggregation for session"
+            "Completed schema aggregation for session (atomic batch)"
         );
 
         Ok(aggregated_ids)
     }
 
-    /// Aggregate observations for a single endpoint
+    /// Prepare aggregation for a single endpoint
     ///
-    /// **Current implementation (Task 6.1):** Basic aggregation
-    /// - Combine observations by endpoint
-    /// - Count total samples
-    /// - Use first non-null schema as representative
+    /// This function performs all the read operations and schema merging,
+    /// then returns a CreateAggregatedSchemaRequest that can be batch-inserted.
     ///
-    /// **Future enhancements:**
+    /// **Implementation:**
     /// - Task 6.2: Field presence tracking
     /// - Task 6.3: Type conflict resolution
     /// - Task 6.4: Confidence scoring
     /// - Task 6.5: Breaking change detection
-    #[instrument(skip(self, observations), fields(method = %http_method, path = %path_pattern), name = "aggregate_endpoint")]
-    async fn aggregate_endpoint(
+    #[instrument(skip(self, observations), fields(method = %http_method, path = %path_pattern), name = "prepare_aggregation")]
+    async fn prepare_aggregation(
         &self,
         http_method: &str,
         path_pattern: &str,
         response_status_code: Option<i64>,
         observations: Vec<InferredSchemaData>,
-    ) -> Result<i64> {
+    ) -> Result<CreateAggregatedSchemaRequest> {
         if observations.is_empty() {
             return Err(FlowplaneError::validation("Cannot aggregate empty observation set"));
         }
@@ -168,11 +177,19 @@ impl SchemaAggregator {
             None
         };
 
-        // Check for breaking changes before moving the value
         let has_breaking_changes = breaking_changes.is_some();
 
-        // Create aggregated schema
-        let request = CreateAggregatedSchemaRequest {
+        info!(
+            method = %http_method,
+            path = %path_pattern,
+            sample_count = sample_count,
+            confidence = confidence_score,
+            has_breaking_changes = has_breaking_changes,
+            "Prepared aggregation request for endpoint"
+        );
+
+        // Return the request (actual DB write happens in batch)
+        Ok(CreateAggregatedSchemaRequest {
             team: team.clone(),
             path: path_pattern.to_string(),
             http_method: http_method.to_string(),
@@ -184,22 +201,7 @@ impl SchemaAggregator {
             first_observed,
             last_observed,
             previous_version_id,
-        };
-
-        let aggregated = self.aggregated_repo.create(request).await?;
-
-        info!(
-            aggregated_id = aggregated.id,
-            method = %http_method,
-            path = %path_pattern,
-            version = aggregated.version,
-            sample_count = sample_count,
-            confidence = confidence_score,
-            has_breaking_changes = has_breaking_changes,
-            "Successfully wrote aggregated schema to aggregated_api_schemas table"
-        );
-
-        Ok(aggregated.id)
+        })
     }
 }
 
@@ -269,8 +271,8 @@ where
 /// doesn't properly track field presence. We need to count how many times each field
 /// appears by looking at all the original observations.
 ///
-/// For now, we use a heuristic: after merging, each field that exists has been seen
-/// at least once. We need to count presence from the original observations.
+/// This function properly traverses nested objects and counts actual field presence
+/// at each level of nesting.
 fn fix_field_stats_with_observations<F>(
     schema: &mut InferredSchema,
     observations: &[InferredSchemaData],
@@ -280,21 +282,37 @@ fn fix_field_stats_with_observations<F>(
 {
     let total_observations = observations.len();
 
-    if let Some(ref mut properties) = schema.properties {
-        // Count presence for each field across all observations
-        for (field_name, field_schema) in properties.iter_mut() {
-            let mut presence_count = 0u64;
+    // Extract JSON values from observations for recursive processing
+    let obs_json_values: Vec<serde_json::Value> =
+        observations.iter().filter_map(|obs| schema_accessor(obs).cloned()).collect();
 
-            // Check each observation to see if it has this field
-            for obs in observations {
-                if let Some(obs_schema_json) = schema_accessor(obs) {
-                    if let Ok(obs_schema) =
-                        serde_json::from_value::<InferredSchema>(obs_schema_json.clone())
-                    {
-                        if let Some(ref obs_props) = obs_schema.properties {
-                            if obs_props.contains_key(field_name) {
-                                presence_count += 1;
-                            }
+    fix_field_stats_recursive(schema, &obs_json_values, total_observations);
+}
+
+/// Recursively fix stats for all fields including nested objects
+///
+/// This properly counts presence for nested fields by traversing into
+/// the nested structure of each observation.
+fn fix_field_stats_recursive(
+    schema: &mut InferredSchema,
+    obs_schemas: &[serde_json::Value],
+    total_observations: usize,
+) {
+    if let Some(ref mut properties) = schema.properties {
+        for (field_name, field_schema) in properties.iter_mut() {
+            // Count how many observations have this field at the current level
+            let mut presence_count = 0u64;
+            let mut nested_obs_values: Vec<serde_json::Value> = Vec::new();
+
+            for obs_json in obs_schemas {
+                // Try to find this field in the observation
+                if let Some(obs_props) = obs_json.get("properties").and_then(|p| p.as_object()) {
+                    if let Some(obs_field) = obs_props.get(field_name) {
+                        presence_count += 1;
+
+                        // If this is a nested object, collect the nested schema for recursive processing
+                        if field_schema.properties.is_some() {
+                            nested_obs_values.push(obs_field.clone());
                         }
                     }
                 }
@@ -309,28 +327,15 @@ fn fix_field_stats_with_observations<F>(
                 0.0
             };
 
-            // Recursively fix nested objects
-            // For nested objects, all fields within exist whenever the parent exists
-            if field_schema.properties.is_some() {
-                fix_nested_field_stats(field_schema, presence_count);
-            }
-        }
-    }
-}
-
-/// Recursively fix stats for nested object fields
-/// All fields in a nested object are present whenever the parent object is present
-fn fix_nested_field_stats(schema: &mut InferredSchema, parent_presence: u64) {
-    if let Some(ref mut properties) = schema.properties {
-        for (_, field_schema) in properties.iter_mut() {
-            // Nested fields have the same presence as their parent
-            field_schema.stats.sample_count = parent_presence;
-            field_schema.stats.presence_count = parent_presence;
-            field_schema.stats.confidence = 1.0; // Always present when parent is present
-
-            // Recursively handle deeper nesting
-            if field_schema.properties.is_some() {
-                fix_nested_field_stats(field_schema, parent_presence);
+            // Recursively fix nested objects using only observations that have this field
+            if field_schema.properties.is_some() && !nested_obs_values.is_empty() {
+                // For nested objects, the total observations count is how many times
+                // the parent field was present (not the overall total)
+                fix_field_stats_recursive(
+                    field_schema,
+                    &nested_obs_values,
+                    presence_count as usize,
+                );
             }
         }
     }
@@ -1816,5 +1821,201 @@ mod tests {
         let has_field_became_required =
             breaking_changes.iter().any(|c| c["type"].as_str() == Some("field_became_required"));
         assert!(has_field_became_required);
+    }
+
+    // Issue #4: Nested Object Field Stats Bug Test
+    // Tests that nested fields have correct presence counts, not assumed 100%
+
+    #[tokio::test]
+    async fn test_nested_field_optional_presence() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1: user has name AND email
+        let schema1 = infer_schema_json(&serde_json::json!({
+            "user": {
+                "name": "Alice",
+                "email": "alice@test.com"
+            }
+        }));
+
+        // Observation 2: user has only name (no email)
+        let schema2 = infer_schema_json(&serde_json::json!({
+            "user": {
+                "name": "Bob"
+            }
+        }));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/profiles",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/profiles",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+
+        // Navigate to nested "user" object
+        let user_field = schema_200.get("properties").unwrap().get("user").unwrap();
+        let user_props = user_field.get("properties").unwrap();
+
+        // "name" should have 100% presence (2/2)
+        let name_field = user_props.get("name").unwrap();
+        assert_eq!(
+            name_field.get("presence_count").unwrap().as_u64().unwrap(),
+            2,
+            "name should be present in 2/2 observations"
+        );
+        assert!(
+            (name_field.get("confidence").unwrap().as_f64().unwrap() - 1.0).abs() < 0.01,
+            "name confidence should be 1.0 (100%)"
+        );
+
+        // "email" should have 50% presence (1/2) - THIS IS THE BUG!
+        let email_field = user_props.get("email").unwrap();
+        assert_eq!(
+            email_field.get("presence_count").unwrap().as_u64().unwrap(),
+            1,
+            "email should be present in 1/2 observations"
+        );
+        assert!(
+            (email_field.get("confidence").unwrap().as_f64().unwrap() - 0.5).abs() < 0.01,
+            "email confidence should be 0.5 (50%)"
+        );
+
+        // Check required fields: only "name" should be required for nested user object
+        let user_required = user_field.get("required");
+        assert!(user_required.is_some(), "user should have required array");
+        let user_required_fields: Vec<String> =
+            serde_json::from_value(user_required.unwrap().clone()).unwrap();
+
+        assert!(
+            user_required_fields.contains(&"name".to_string()),
+            "name should be required (100% presence)"
+        );
+        assert!(
+            !user_required_fields.contains(&"email".to_string()),
+            "email should NOT be required (50% presence)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deeply_nested_field_optional_presence() {
+        let pool = setup_test_db().await;
+        let session_id = create_test_session(&pool).await;
+
+        // Observation 1: deeply nested with all fields
+        let schema1 = infer_schema_json(&serde_json::json!({
+            "data": {
+                "user": {
+                    "name": "Alice",
+                    "profile": {
+                        "bio": "Hello",
+                        "avatar": "url1"
+                    }
+                }
+            }
+        }));
+
+        // Observation 2: deeply nested with some fields missing
+        let schema2 = infer_schema_json(&serde_json::json!({
+            "data": {
+                "user": {
+                    "name": "Bob",
+                    "profile": {
+                        "bio": "World"
+                        // avatar missing
+                    }
+                }
+            }
+        }));
+
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/deep",
+            Some(200),
+            None,
+            Some(&schema1),
+        )
+        .await;
+        insert_test_observation(
+            &pool,
+            &session_id,
+            "GET",
+            "/deep",
+            Some(200),
+            None,
+            Some(&schema2),
+        )
+        .await;
+
+        let inferred_repo = InferredSchemaRepository::new(pool.clone());
+        let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+        let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+        let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+        let aggregated = aggregated_repo.get_by_id(ids[0]).await.unwrap();
+
+        let response_schemas = aggregated.response_schemas.unwrap();
+        let schema_200 = response_schemas.get("200").unwrap();
+
+        // Navigate to deeply nested profile
+        let data = schema_200.get("properties").unwrap().get("data").unwrap();
+        let user = data.get("properties").unwrap().get("user").unwrap();
+        let profile = user.get("properties").unwrap().get("profile").unwrap();
+        let profile_props = profile.get("properties").unwrap();
+
+        // "bio" should have 100% presence
+        let bio_field = profile_props.get("bio").unwrap();
+        assert_eq!(
+            bio_field.get("presence_count").unwrap().as_u64().unwrap(),
+            2,
+            "bio should be present in 2/2 observations"
+        );
+
+        // "avatar" should have 50% presence
+        let avatar_field = profile_props.get("avatar").unwrap();
+        assert_eq!(
+            avatar_field.get("presence_count").unwrap().as_u64().unwrap(),
+            1,
+            "avatar should be present in 1/2 observations"
+        );
+        assert!(
+            (avatar_field.get("confidence").unwrap().as_f64().unwrap() - 0.5).abs() < 0.01,
+            "avatar confidence should be 0.5 (50%)"
+        );
+
+        // Check required fields for profile: only "bio" should be required
+        let profile_required = profile.get("required");
+        assert!(profile_required.is_some());
+        let profile_required_fields: Vec<String> =
+            serde_json::from_value(profile_required.unwrap().clone()).unwrap();
+
+        assert!(profile_required_fields.contains(&"bio".to_string()));
+        assert!(!profile_required_fields.contains(&"avatar".to_string()));
     }
 }

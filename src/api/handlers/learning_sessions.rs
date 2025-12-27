@@ -15,7 +15,7 @@ use validator::Validate;
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     storage::repositories::{
@@ -314,9 +314,6 @@ pub async fn list_learning_sessions_handler(
     // Authorization: require learning-sessions:read scope
     require_resource_access(&context, "learning-sessions", "read", None)?;
 
-    // Extract team from auth context
-    let team = require_single_team_scope(&context)?;
-
     // Get repository
     let repo = state
         .xds_state
@@ -334,14 +331,25 @@ pub async fn list_learning_sessions_handler(
         .transpose()
         .map_err(|e| ApiError::BadRequest(format!("Invalid status filter: {}", e)))?;
 
-    // List sessions
-    let sessions = session_repo
-        .list_by_team(&team, status_filter, query.limit, query.offset)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, team = %team, "Failed to list learning sessions");
+    // List sessions based on authorization
+    // Admin users (with admin:all scope) can see all sessions across all teams
+    // Regular users can only see sessions for their team
+    let sessions = if has_admin_bypass(&context) {
+        tracing::info!(user_id = ?context.user_id, "Admin listing all learning sessions");
+        session_repo.list_all(status_filter, query.limit, query.offset).await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to list all learning sessions");
             ApiError::Internal(format!("Failed to list learning sessions: {}", e))
-        })?;
+        })?
+    } else {
+        // Extract team from auth context for non-admin users
+        let team = require_single_team_scope(&context)?;
+        session_repo.list_by_team(&team, status_filter, query.limit, query.offset).await.map_err(
+            |e| {
+                tracing::error!(error = %e, team = %team, "Failed to list learning sessions");
+                ApiError::Internal(format!("Failed to list learning sessions: {}", e))
+            },
+        )?
+    };
 
     let responses: Vec<LearningSessionResponse> =
         sessions.into_iter().map(session_response_from_data).collect();
@@ -410,6 +418,7 @@ pub async fn get_learning_session_handler(
     ),
     responses(
         (status = 204, description = "Learning session cancelled"),
+        (status = 400, description = "Invalid state transition - session already completed, cancelled, or failed"),
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Learning session not found"),
         (status = 503, description = "Repository unavailable")
@@ -449,6 +458,44 @@ pub async fn delete_learning_session_handler(
 
     // Verify access
     verify_session_access(session.clone(), &team_scopes).await?;
+
+    // Validate session state - only allow cancellation of pending/active/completing sessions
+    // Terminal states (completed, cancelled, failed) cannot be cancelled
+    match session.status {
+        LearningSessionStatus::Pending
+        | LearningSessionStatus::Active
+        | LearningSessionStatus::Completing => {
+            // Valid states for cancellation
+        }
+        LearningSessionStatus::Completed => {
+            tracing::warn!(
+                session_id = %id,
+                status = %session.status,
+                "Attempted to cancel already completed session"
+            );
+            return Err(ApiError::BadRequest(
+                "Cannot cancel a completed learning session".to_string(),
+            ));
+        }
+        LearningSessionStatus::Cancelled => {
+            tracing::warn!(
+                session_id = %id,
+                status = %session.status,
+                "Attempted to cancel already cancelled session"
+            );
+            return Err(ApiError::BadRequest("Learning session is already cancelled".to_string()));
+        }
+        LearningSessionStatus::Failed => {
+            tracing::warn!(
+                session_id = %id,
+                status = %session.status,
+                "Attempted to cancel already failed session"
+            );
+            return Err(ApiError::BadRequest(
+                "Cannot cancel a failed learning session".to_string(),
+            ));
+        }
+    }
 
     // Use the learning session service to properly handle cancellation
     // This ensures Access Log Service is unregistered

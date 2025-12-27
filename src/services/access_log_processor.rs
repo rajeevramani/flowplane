@@ -329,19 +329,54 @@ impl AccessLogProcessor {
                                             "Stored log entry, waiting for body"
                                         );
                                         let mut logs_map = pending_logs.lock().await;
-                                        logs_map.insert(merge_key, PendingLogEntry {
-                                            entry,
-                                            created_at: tokio::time::Instant::now(),
-                                        });
+
+                                        // Check if there's already an entry with this key (duplicate request_id)
+                                        // If so, process the old entry before storing the new one to prevent data loss
+                                        if let Some(old_pending) = logs_map.remove(&merge_key) {
+                                            warn!(
+                                                worker_id,
+                                                session_id = %entry.session_id,
+                                                request_id = ?entry.request_id,
+                                                "Duplicate request_id detected - processing old entry before storing new one"
+                                            );
+                                            // Release lock before processing to avoid deadlock
+                                            drop(logs_map);
+                                            // Process the old entry without body merge (data loss prevention)
+                                            if let Err(e) = Self::process_entry(worker_id, old_pending.entry, &schema_tx, &path_norm_config).await {
+                                                error!(
+                                                    worker_id,
+                                                    error = %e,
+                                                    "Failed to process old pending entry"
+                                                );
+                                            }
+                                            // Re-acquire lock to store new entry
+                                            let mut logs_map = pending_logs.lock().await;
+                                            logs_map.insert(merge_key, PendingLogEntry {
+                                                entry,
+                                                created_at: tokio::time::Instant::now(),
+                                            });
+                                        } else {
+                                            logs_map.insert(merge_key, PendingLogEntry {
+                                                entry,
+                                                created_at: tokio::time::Instant::now(),
+                                            });
+                                        }
                                         continue;
                                     }
                                 } else {
-                                    // No request_id - cannot merge, process as-is
-                                    debug!(
+                                    // No request_id - cannot merge with body, process as-is
+                                    // Log at warn level so operators can identify misconfigured clients/Envoy setups
+                                    // that are missing x-request-id headers needed for body correlation
+                                    warn!(
                                         worker_id,
                                         session_id = %entry.session_id,
-                                        "Processing log entry without request_id (no body merge possible)"
+                                        path = %entry.path,
+                                        method = entry.method,
+                                        "Missing x-request-id header - body merge not possible. \
+                                         Configure Envoy to add x-request-id header for complete schema inference."
                                     );
+                                    // Record metric for observability
+                                    metrics::record_missing_request_id(&entry.session_id).await;
                                     entry
                                 };
 
@@ -397,6 +432,17 @@ impl AccessLogProcessor {
                                     );
                                     drop(logs_map); // Release logs lock
                                     let mut bodies_map = pending_bodies.lock().await;
+
+                                    // Check if there's already a body with this key (duplicate request_id)
+                                    // If so, log a warning and replace with the newer body
+                                    if bodies_map.contains_key(&merge_key) {
+                                        warn!(
+                                            worker_id,
+                                            session_id = %captured_body.session_id,
+                                            request_id = %captured_body.request_id,
+                                            "Duplicate request_id detected for body - replacing old body with new one"
+                                        );
+                                    }
                                     bodies_map.insert(merge_key, PendingBodyEntry {
                                         body: captured_body,
                                         created_at: tokio::time::Instant::now(),
