@@ -566,16 +566,18 @@ impl AccessLogService for FlowplaneAccessLogService {
                         for http_entry in &http_logs.log_entry {
                             // Extract path and method for matching
                             let (path, method) = if let Some(request) = &http_entry.request {
+                                // Map Envoy's RequestMethod enum to HTTP method string
+                                // See: envoy/config/core/v3/base.proto - RequestMethod enum
                                 let method_str = match request.request_method {
                                     1 => "GET",
-                                    2 => "POST",
-                                    3 => "PUT",
-                                    4 => "DELETE",
-                                    5 => "PATCH",
-                                    6 => "HEAD",
+                                    2 => "HEAD",
+                                    3 => "POST",
+                                    4 => "PUT",
+                                    5 => "DELETE",
+                                    6 => "CONNECT",
                                     7 => "OPTIONS",
                                     8 => "TRACE",
-                                    9 => "CONNECT",
+                                    9 => "PATCH",
                                     _ => "UNKNOWN",
                                 };
                                 (request.path.as_str(), method_str)

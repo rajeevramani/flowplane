@@ -366,6 +366,7 @@ impl LearningSessionService {
     }
 
     /// Mark a session as failed with an error message
+    #[instrument(skip(self), fields(session_id = %session_id), name = "fail_learning_session")]
     pub async fn fail_session(
         &self,
         session_id: &str,
@@ -390,6 +391,24 @@ impl LearningSessionService {
         // Unregister from ExtProc Service
         if let Some(ext_proc_service) = &self.ext_proc_service {
             ext_proc_service.remove_session(session_id).await;
+        }
+
+        // Trigger LDS update to remove access log configuration
+        if let Some(weak_state) = &self.xds_state {
+            if let Some(xds_state) = weak_state.upgrade() {
+                if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to refresh listeners after session failure"
+                    );
+                } else {
+                    info!(
+                        session_id = %session_id,
+                        "Triggered LDS update to remove access log configuration after failure"
+                    );
+                }
+            }
         }
 
         error!(

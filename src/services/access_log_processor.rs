@@ -44,18 +44,21 @@ use crate::Result;
 use sqlx::{Pool, Sqlite};
 
 /// Convert HTTP method code to string
+///
+/// Maps Envoy's RequestMethod enum values to HTTP method strings.
+/// See: envoy/config/core/v3/base.proto - RequestMethod enum
 fn method_to_string(method: i32) -> String {
     match method {
-        0 => "UNKNOWN",
+        0 => "UNKNOWN", // METHOD_UNSPECIFIED
         1 => "GET",
-        2 => "POST",
-        3 => "PUT",
-        4 => "DELETE",
-        5 => "PATCH",
-        6 => "HEAD",
+        2 => "HEAD",
+        3 => "POST",
+        4 => "PUT",
+        5 => "DELETE",
+        6 => "CONNECT",
         7 => "OPTIONS",
         8 => "TRACE",
-        9 => "CONNECT",
+        9 => "PATCH",
         _ => "UNKNOWN",
     }
     .to_string()
@@ -91,6 +94,15 @@ pub struct ProcessorConfig {
     /// Path normalization configuration
     /// Default: REST API defaults (plural conversion enabled, common REST keywords)
     pub path_normalization: PathNormalizationConfig,
+
+    /// TTL in seconds for pending entries (logs waiting for bodies or vice versa)
+    /// Entries older than this will be removed to prevent unbounded memory growth
+    /// Default: 300 seconds (5 minutes)
+    pub pending_entry_ttl_secs: u64,
+
+    /// Interval in seconds for cleanup task to check for stale entries
+    /// Default: 60 seconds
+    pub pending_cleanup_interval_secs: u64,
 }
 
 impl Default for ProcessorConfig {
@@ -103,6 +115,8 @@ impl Default for ProcessorConfig {
             initial_backoff_ms: 100,              // Start with 100ms backoff
             max_queue_capacity: 10_000,           // Drop entries after 10k queued
             path_normalization: PathNormalizationConfig::rest_defaults(), // Use REST defaults
+            pending_entry_ttl_secs: 300,          // 5 minute TTL for pending entries
+            pending_cleanup_interval_secs: 60,    // Check for stale entries every 60 seconds
         }
     }
 }
@@ -119,6 +133,20 @@ pub struct InferredSchemaRecord {
     pub response_status_code: Option<u32>,
 }
 
+/// Wrapper for pending log entries with creation timestamp for TTL cleanup
+#[derive(Debug)]
+struct PendingLogEntry {
+    entry: ProcessedLogEntry,
+    created_at: tokio::time::Instant,
+}
+
+/// Wrapper for pending body captures with creation timestamp for TTL cleanup
+#[derive(Debug)]
+struct PendingBodyEntry {
+    body: CapturedBody,
+    created_at: tokio::time::Instant,
+}
+
 /// Background processor for access log entries
 ///
 /// Spawns a pool of worker tasks that process access log entries asynchronously.
@@ -133,10 +161,12 @@ pub struct AccessLogProcessor {
     ext_proc_rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<CapturedBody>>>>,
     /// Pending log entries waiting for matching bodies
     /// Key: "{session_id}:{request_id}"
-    pending_logs: Arc<Mutex<HashMap<String, ProcessedLogEntry>>>,
+    /// Wrapped with creation timestamp for TTL-based cleanup
+    pending_logs: Arc<Mutex<HashMap<String, PendingLogEntry>>>,
     /// Pending captured bodies waiting for matching log entries
     /// Key: "{session_id}:{request_id}"
-    pending_bodies: Arc<Mutex<HashMap<String, CapturedBody>>>,
+    /// Wrapped with creation timestamp for TTL-based cleanup
+    pending_bodies: Arc<Mutex<HashMap<String, PendingBodyEntry>>>,
     /// Channel for sending inferred schemas to the batcher task (bounded for backpressure)
     schema_tx: mpsc::Sender<InferredSchemaRecord>,
     /// Receiver for inferred schemas (moved to batcher task)
@@ -156,6 +186,7 @@ pub struct ProcessorHandle {
     shutdown_tx: watch::Sender<bool>,
     worker_handles: Vec<tokio::task::JoinHandle<()>>,
     batcher_handle: Option<tokio::task::JoinHandle<()>>,
+    cleanup_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ProcessorHandle {
@@ -170,7 +201,7 @@ impl ProcessorHandle {
 
     /// Wait for all workers to finish
     ///
-    /// This consumes the handle and waits for all worker tasks and batcher to complete
+    /// This consumes the handle and waits for all worker tasks, batcher, and cleanup task to complete
     pub async fn join(self) {
         for handle in self.worker_handles {
             let _ = handle.await;
@@ -178,6 +209,10 @@ impl ProcessorHandle {
 
         if let Some(batcher) = self.batcher_handle {
             let _ = batcher.await;
+        }
+
+        if let Some(cleanup) = self.cleanup_handle {
+            let _ = cleanup.await;
         }
     }
 }
@@ -276,7 +311,7 @@ impl AccessLogProcessor {
                                 // Try to merge with pending body if request_id is present
                                 let entry_to_process = if let Some(merge_key) = Self::make_merge_key(&entry.session_id, entry.request_id.as_deref()) {
                                     let mut bodies_map = pending_bodies.lock().await;
-                                    if let Some(captured_body) = bodies_map.remove(&merge_key) {
+                                    if let Some(pending_body) = bodies_map.remove(&merge_key) {
                                         // Found matching body - merge and process immediately
                                         debug!(
                                             worker_id,
@@ -284,7 +319,7 @@ impl AccessLogProcessor {
                                             request_id = ?entry.request_id,
                                             "Merged log entry with pending body"
                                         );
-                                        Self::merge_bodies(entry, captured_body)
+                                        Self::merge_bodies(entry, pending_body.body)
                                     } else {
                                         // No matching body yet - store log entry and skip processing for now
                                         debug!(
@@ -294,7 +329,10 @@ impl AccessLogProcessor {
                                             "Stored log entry, waiting for body"
                                         );
                                         let mut logs_map = pending_logs.lock().await;
-                                        logs_map.insert(merge_key, entry);
+                                        logs_map.insert(merge_key, PendingLogEntry {
+                                            entry,
+                                            created_at: tokio::time::Instant::now(),
+                                        });
                                         continue;
                                     }
                                 } else {
@@ -331,7 +369,7 @@ impl AccessLogProcessor {
                                 // Try to merge with pending log entry
                                 let merge_key = format!("{}:{}", captured_body.session_id, captured_body.request_id);
                                 let mut logs_map = pending_logs.lock().await;
-                                if let Some(log_entry) = logs_map.remove(&merge_key) {
+                                if let Some(pending_log) = logs_map.remove(&merge_key) {
                                     // Found matching log entry - merge and process immediately
                                     debug!(
                                         worker_id,
@@ -341,7 +379,7 @@ impl AccessLogProcessor {
                                     );
                                     drop(logs_map); // Release lock before processing
 
-                                    let merged_entry = Self::merge_bodies(log_entry, captured_body);
+                                    let merged_entry = Self::merge_bodies(pending_log.entry, captured_body);
                                     if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx, &path_norm_config).await {
                                         error!(
                                             worker_id,
@@ -359,7 +397,10 @@ impl AccessLogProcessor {
                                     );
                                     drop(logs_map); // Release logs lock
                                     let mut bodies_map = pending_bodies.lock().await;
-                                    bodies_map.insert(merge_key, captured_body);
+                                    bodies_map.insert(merge_key, PendingBodyEntry {
+                                        body: captured_body,
+                                        created_at: tokio::time::Instant::now(),
+                                    });
                                 }
                             }
                         }
@@ -382,8 +423,8 @@ impl AccessLogProcessor {
                                             // Best-effort merge on shutdown
                                             let entry_to_process = if let Some(merge_key) = Self::make_merge_key(&entry.session_id, entry.request_id.as_deref()) {
                                                 let mut bodies_map = pending_bodies.lock().await;
-                                                if let Some(captured_body) = bodies_map.remove(&merge_key) {
-                                                    Self::merge_bodies(entry, captured_body)
+                                                if let Some(pending_body) = bodies_map.remove(&merge_key) {
+                                                    Self::merge_bodies(entry, pending_body.body)
                                                 } else {
                                                     entry
                                                 }
@@ -417,9 +458,9 @@ impl AccessLogProcessor {
                                             Ok(captured_body) => {
                                                 let merge_key = format!("{}:{}", captured_body.session_id, captured_body.request_id);
                                                 let mut logs_map = pending_logs.lock().await;
-                                                if let Some(log_entry) = logs_map.remove(&merge_key) {
+                                                if let Some(pending_log) = logs_map.remove(&merge_key) {
                                                     drop(logs_map);
-                                                    let merged_entry = Self::merge_bodies(log_entry, captured_body);
+                                                    let merged_entry = Self::merge_bodies(pending_log.entry, captured_body);
                                                     if let Err(e) = Self::process_entry(worker_id, merged_entry, &schema_tx, &path_norm_config).await {
                                                         warn!(
                                                             worker_id,
@@ -498,7 +539,94 @@ impl AccessLogProcessor {
             None
         };
 
-        ProcessorHandle { shutdown_tx: self.shutdown_tx, worker_handles: handles, batcher_handle }
+        // Spawn cleanup task for TTL-based removal of stale pending entries
+        let cleanup_handle = {
+            let pending_logs = Arc::clone(&self.pending_logs);
+            let pending_bodies = Arc::clone(&self.pending_bodies);
+            let ttl_secs = self.config.pending_entry_ttl_secs;
+            let cleanup_interval_secs = self.config.pending_cleanup_interval_secs;
+            let mut shutdown_rx = self.shutdown_rx.clone();
+
+            let handle = tokio::spawn(async move {
+                info!(ttl_secs, cleanup_interval_secs, "Pending entry cleanup task started");
+
+                let mut interval =
+                    tokio::time::interval(tokio::time::Duration::from_secs(cleanup_interval_secs));
+                let ttl_duration = tokio::time::Duration::from_secs(ttl_secs);
+
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let now = tokio::time::Instant::now();
+
+                            // Clean up stale pending logs
+                            let logs_removed = {
+                                let mut logs_map = pending_logs.lock().await;
+                                let initial_count = logs_map.len();
+                                logs_map.retain(|key, pending| {
+                                    let age = now.duration_since(pending.created_at);
+                                    if age > ttl_duration {
+                                        debug!(
+                                            key,
+                                            age_secs = age.as_secs(),
+                                            "Removing stale pending log entry"
+                                        );
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                initial_count - logs_map.len()
+                            };
+
+                            // Clean up stale pending bodies
+                            let bodies_removed = {
+                                let mut bodies_map = pending_bodies.lock().await;
+                                let initial_count = bodies_map.len();
+                                bodies_map.retain(|key, pending| {
+                                    let age = now.duration_since(pending.created_at);
+                                    if age > ttl_duration {
+                                        debug!(
+                                            key,
+                                            age_secs = age.as_secs(),
+                                            "Removing stale pending body"
+                                        );
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                initial_count - bodies_map.len()
+                            };
+
+                            if logs_removed > 0 || bodies_removed > 0 {
+                                info!(
+                                    logs_removed,
+                                    bodies_removed,
+                                    "Cleaned up stale pending entries"
+                                );
+                            }
+                        }
+
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Cleanup task received shutdown signal");
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            info!("Pending entry cleanup task spawned");
+            Some(handle)
+        };
+
+        ProcessorHandle {
+            shutdown_tx: self.shutdown_tx,
+            worker_handles: handles,
+            batcher_handle,
+            cleanup_handle,
+        }
     }
 
     /// Merge captured body data into a processed log entry
@@ -986,6 +1114,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1003,6 +1133,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1029,6 +1161,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1073,6 +1207,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1100,6 +1236,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1146,6 +1284,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1194,6 +1334,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1240,6 +1382,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1286,6 +1430,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
 
@@ -1361,6 +1507,8 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 2, // Very small queue to test backpressure
             path_normalization: PathNormalizationConfig::rest_defaults(),
+            pending_entry_ttl_secs: 300,
+            pending_cleanup_interval_secs: 60,
         };
 
         // Create processor without database to avoid actual writes

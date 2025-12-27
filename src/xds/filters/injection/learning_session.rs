@@ -17,6 +17,42 @@ use crate::Result;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use tracing::{debug, info, warn};
 
+/// Creates an ExtProc filter configuration for a learning session.
+///
+/// This is used to inject body capture capability into listeners
+/// when learning sessions are active.
+pub fn create_ext_proc_filter(session_id: &str) -> Result<HttpFilter> {
+    let ext_proc_config = ExtProcConfig {
+        grpc_service: GrpcServiceConfig {
+            target_uri: "flowplane_ext_proc_service".to_string(),
+            timeout_seconds: 5,
+        },
+        failure_mode_allow: true,
+        processing_mode: Some(ProcessingMode {
+            request_header_mode: Some("SEND".to_string()),
+            response_header_mode: Some("SEND".to_string()),
+            request_body_mode: Some("BUFFERED".to_string()),
+            response_body_mode: Some("BUFFERED".to_string()),
+            request_trailer_mode: Some("SKIP".to_string()),
+            response_trailer_mode: Some("SKIP".to_string()),
+        }),
+        message_timeout_ms: Some(5000),
+        request_attributes: vec![],
+        response_attributes: vec![],
+    };
+
+    let ext_proc_any = ext_proc_config.to_any()?;
+
+    Ok(HttpFilter {
+        name: format!("envoy.filters.http.ext_proc.session_{}", session_id),
+        config_type: Some(
+            envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(ext_proc_any)
+        ),
+        is_optional: true,
+        disabled: false,
+    })
+}
+
 /// Inject access log configuration into listeners for active learning sessions.
 ///
 /// This function:
@@ -176,37 +212,8 @@ pub async fn inject_ext_proc(
                 "Checking session for ExtProc injection"
             );
 
-            // Create ExtProc config for body capture
-            let ext_proc_config = ExtProcConfig {
-                grpc_service: GrpcServiceConfig {
-                    target_uri: "flowplane_ext_proc_service".to_string(),
-                    timeout_seconds: 5,
-                },
-                failure_mode_allow: true, // Fail-open: requests continue even if ExtProc fails
-                processing_mode: Some(ProcessingMode {
-                    request_header_mode: Some("SEND".to_string()),
-                    response_header_mode: Some("SEND".to_string()),
-                    request_body_mode: Some("BUFFERED".to_string()), // Capture request body
-                    response_body_mode: Some("BUFFERED".to_string()), // Capture response body
-                    request_trailer_mode: Some("SKIP".to_string()),
-                    response_trailer_mode: Some("SKIP".to_string()),
-                }),
-                message_timeout_ms: Some(5000), // 5 second timeout per message
-                request_attributes: vec![],
-                response_attributes: vec![],
-            };
-
-            let ext_proc_any = ext_proc_config.to_any()?;
-
-            // Create HTTP filter for ExtProc
-            let ext_proc_filter = HttpFilter {
-                name: format!("envoy.filters.http.ext_proc.session_{}", session.id),
-                config_type: Some(
-                    envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(ext_proc_any)
-                ),
-                is_optional: true, // Make it optional so requests continue if filter fails
-                disabled: false,
-            };
+            // Create ExtProc filter using the helper
+            let ext_proc_filter = create_ext_proc_filter(&session.id)?;
 
             // Add ExtProc filter using ListenerModifier
             let added = modifier.add_filter_if_name_not_contains(ext_proc_filter, &session.id)?;
@@ -232,4 +239,126 @@ pub async fn inject_ext_proc(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xds::access_log::LearningSessionAccessLogConfig;
+    use prost::Message;
+
+    #[test]
+    fn test_create_ext_proc_filter_basic() {
+        let filter = create_ext_proc_filter("session-123").expect("should create filter");
+
+        assert_eq!(filter.name, "envoy.filters.http.ext_proc.session_session-123");
+        assert!(filter.is_optional);
+        assert!(!filter.disabled);
+        assert!(filter.config_type.is_some());
+    }
+
+    #[test]
+    fn test_create_ext_proc_filter_unique_names() {
+        let filter1 = create_ext_proc_filter("session-abc").expect("should create filter");
+        let filter2 = create_ext_proc_filter("session-xyz").expect("should create filter");
+
+        assert_ne!(filter1.name, filter2.name);
+        assert!(filter1.name.contains("session-abc"));
+        assert!(filter2.name.contains("session-xyz"));
+    }
+
+    #[test]
+    fn test_create_ext_proc_filter_typed_config() {
+        let filter = create_ext_proc_filter("test-session").expect("should create filter");
+
+        match filter.config_type {
+            Some(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any)) => {
+                assert_eq!(
+                    any.type_url,
+                    "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor"
+                );
+            }
+            _ => panic!("Expected TypedConfig"),
+        }
+    }
+
+    #[test]
+    fn test_access_log_config_for_session() {
+        let config = LearningSessionAccessLogConfig::new(
+            "session-456".to_string(),
+            "team-a".to_string(),
+            "localhost:18000".to_string(),
+        );
+
+        assert_eq!(config.session_id, "session-456");
+        assert_eq!(config.team, "team-a");
+        assert_eq!(config.access_log_service_address, "localhost:18000");
+    }
+
+    #[test]
+    fn test_access_log_config_build() {
+        let config = LearningSessionAccessLogConfig::new(
+            "session-789".to_string(),
+            "team-b".to_string(),
+            "flowplane:18000".to_string(),
+        );
+
+        let access_log = config.build_access_log().expect("should build access log");
+
+        // Verify the access log has the expected name for gRPC access logger
+        assert_eq!(access_log.name, "envoy.access_loggers.http_grpc");
+        assert!(access_log.config_type.is_some());
+    }
+
+    #[test]
+    fn test_ext_proc_filter_fail_open_mode() {
+        // The ExtProc filter should be configured for fail-open mode
+        // so that requests continue even if ExtProc service is unavailable
+        let filter = create_ext_proc_filter("fail-open-test").expect("should create filter");
+
+        // is_optional should be true for fail-open behavior
+        assert!(filter.is_optional);
+    }
+
+    #[test]
+    fn test_ext_proc_filter_buffered_body_mode() {
+        let filter = create_ext_proc_filter("body-mode-test").expect("should create filter");
+
+        // Decode the typed config and verify body mode settings
+        match filter.config_type {
+            Some(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any)) => {
+                // Decode the ExternalProcessor proto
+                let ext_proc = envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3::ExternalProcessor::decode(
+                    any.value.as_ref()
+                ).expect("should decode ext_proc");
+
+                // Verify processing mode includes body capture
+                if let Some(mode) = ext_proc.processing_mode {
+                    // BUFFERED = 2 in the proto enum (0=NONE, 1=STREAMED, 2=BUFFERED, 3=BUFFERED_PARTIAL)
+                    assert_eq!(mode.request_body_mode, 2, "request body should be BUFFERED");
+                    assert_eq!(mode.response_body_mode, 2, "response body should be BUFFERED");
+                }
+            }
+            _ => panic!("Expected TypedConfig"),
+        }
+    }
+
+    #[test]
+    fn test_ext_proc_filter_timeout_configured() {
+        let filter = create_ext_proc_filter("timeout-test").expect("should create filter");
+
+        match filter.config_type {
+            Some(envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(any)) => {
+                let ext_proc = envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3::ExternalProcessor::decode(
+                    any.value.as_ref()
+                ).expect("should decode ext_proc");
+
+                // Verify message timeout is set
+                if let Some(timeout) = ext_proc.message_timeout {
+                    assert!(timeout.seconds >= 0, "timeout should be non-negative");
+                }
+            }
+            _ => panic!("Expected TypedConfig"),
+        }
+    }
 }

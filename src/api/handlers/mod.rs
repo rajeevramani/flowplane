@@ -12,6 +12,7 @@ pub mod hierarchy;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod openapi_import;
+pub mod openapi_utils;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
@@ -24,7 +25,8 @@ pub mod users;
 // Re-export handler functions for backward compatibility
 pub use aggregated_schemas::{
     compare_aggregated_schemas_handler, export_aggregated_schema_handler,
-    get_aggregated_schema_handler, list_aggregated_schemas_handler,
+    export_multiple_schemas_handler, get_aggregated_schema_handler,
+    list_aggregated_schemas_handler,
 };
 pub use audit_log::list_audit_logs;
 pub use auth::{
@@ -100,8 +102,8 @@ pub use hierarchy::{
 
 // Re-export DTOs for OpenAPI docs
 pub use aggregated_schemas::{
-    AggregatedSchemaResponse, CompareSchemaQuery, ExportSchemaQuery, ListAggregatedSchemasQuery,
-    OpenApiExportResponse, SchemaComparisonResponse,
+    AggregatedSchemaResponse, CompareSchemaQuery, ExportMultipleSchemasRequest, ExportSchemaQuery,
+    ListAggregatedSchemasQuery, OpenApiExportResponse, SchemaComparisonResponse,
 };
 pub use clusters::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,

@@ -173,6 +173,36 @@ async fn verify_session_access(
     }
 }
 
+/// Extract a single team from auth context for team-scoped operations.
+/// Returns BadRequest error if no team scope is available.
+fn require_single_team_scope(context: &AuthContext) -> Result<String, ApiError> {
+    extract_team_scopes(context).into_iter().next().ok_or_else(|| {
+        ApiError::BadRequest("Team scope required for learning sessions".to_string())
+    })
+}
+
+/// Valid HTTP methods for learning session filtering
+const VALID_HTTP_METHODS: &[&str] =
+    &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+
+/// Validate that all HTTP methods in the list are valid HTTP verbs.
+/// Returns BadRequest error if any method is invalid.
+fn validate_http_methods(methods: &Option<Vec<String>>) -> Result<(), ApiError> {
+    if let Some(methods) = methods {
+        for method in methods {
+            let upper = method.to_uppercase();
+            if !VALID_HTTP_METHODS.contains(&upper.as_str()) {
+                return Err(ApiError::BadRequest(format!(
+                    "Invalid HTTP method '{}'. Valid methods are: {}",
+                    method,
+                    VALID_HTTP_METHODS.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 // === Handler Implementations ===
 
 #[utoipa::path(
@@ -197,9 +227,7 @@ pub async fn create_learning_session_handler(
     require_resource_access(&context, "learning-sessions", "write", None)?;
 
     // Extract team from auth context (team-scoped users create for their team)
-    let team = extract_team_scopes(&context).into_iter().next().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for learning sessions".to_string())
-    })?;
+    let team = require_single_team_scope(&context)?;
 
     // Validate payload
     use validator::Validate;
@@ -209,6 +237,9 @@ pub async fn create_learning_session_handler(
     if let Err(e) = regex::Regex::new(&payload.route_pattern) {
         return Err(ApiError::BadRequest(format!("Invalid route pattern regex: {}", e)));
     }
+
+    // Validate HTTP methods
+    validate_http_methods(&payload.http_methods)?;
 
     // Get repository
     let repo = state
@@ -284,9 +315,7 @@ pub async fn list_learning_sessions_handler(
     require_resource_access(&context, "learning-sessions", "read", None)?;
 
     // Extract team from auth context
-    let team = extract_team_scopes(&context).into_iter().next().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for learning sessions".to_string())
-    })?;
+    let team = require_single_team_scope(&context)?;
 
     // Get repository
     let repo = state
@@ -345,9 +374,7 @@ pub async fn get_learning_session_handler(
 
     // Extract team from auth context
     let team_scopes = extract_team_scopes(&context);
-    let team = team_scopes.first().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for learning sessions".to_string())
-    })?;
+    let team = require_single_team_scope(&context)?;
 
     // Get repository
     let repo = state
@@ -359,7 +386,7 @@ pub async fn get_learning_session_handler(
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
     // Get session
-    let session = session_repo.get_by_id_and_team(&id, team).await.map_err(|e| {
+    let session = session_repo.get_by_id_and_team(&id, &team).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, team = %team, "Failed to get learning session");
         match e {
             Error::NotFound { .. } => ApiError::NotFound(format!("Learning session with ID '{}' not found", id)),
@@ -400,9 +427,7 @@ pub async fn delete_learning_session_handler(
 
     // Extract team from auth context
     let team_scopes = extract_team_scopes(&context);
-    let team = team_scopes.first().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for learning sessions".to_string())
-    })?;
+    let team = require_single_team_scope(&context)?;
 
     // Get repository
     let repo = state
@@ -414,7 +439,7 @@ pub async fn delete_learning_session_handler(
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
     // First, get the session to update its status to cancelled
-    let session = session_repo.get_by_id_and_team(&id, team).await.map_err(|e| {
+    let session = session_repo.get_by_id_and_team(&id, &team).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, team = %team, "Failed to get learning session for cancellation");
         match e {
             Error::NotFound { .. } => ApiError::NotFound(format!("Learning session with ID '{}' not found", id)),
@@ -452,4 +477,436 @@ pub async fn delete_learning_session_handler(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tests for session_response_from_data helper function
+    mod response_conversion {
+        use super::*;
+        use crate::storage::repositories::{LearningSessionData, LearningSessionStatus};
+
+        fn sample_session_data() -> LearningSessionData {
+            LearningSessionData {
+                id: "test-session-123".to_string(),
+                team: "test-team".to_string(),
+                route_pattern: "^/api/v1/.*".to_string(),
+                cluster_name: Some("api-cluster".to_string()),
+                http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
+                status: LearningSessionStatus::Active,
+                created_at: chrono::Utc::now(),
+                started_at: Some(chrono::Utc::now()),
+                ends_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                completed_at: None,
+                target_sample_count: 100,
+                current_sample_count: 50,
+                triggered_by: Some("deploy-pipeline".to_string()),
+                deployment_version: Some("v1.0.0".to_string()),
+                configuration_snapshot: None,
+                error_message: None,
+                updated_at: chrono::Utc::now(),
+            }
+        }
+
+        #[test]
+        fn test_session_response_progress_percentage() {
+            let data = sample_session_data();
+            let response = session_response_from_data(data);
+
+            assert_eq!(response.progress_percentage, 50.0);
+            assert_eq!(response.current_sample_count, 50);
+            assert_eq!(response.target_sample_count, 100);
+        }
+
+        #[test]
+        fn test_session_response_zero_target() {
+            let mut data = sample_session_data();
+            data.target_sample_count = 0;
+            data.current_sample_count = 10;
+
+            let response = session_response_from_data(data);
+
+            // Should return 0% when target is 0 (avoid division by zero)
+            assert_eq!(response.progress_percentage, 0.0);
+        }
+
+        #[test]
+        fn test_session_response_over_target() {
+            let mut data = sample_session_data();
+            data.target_sample_count = 100;
+            data.current_sample_count = 150;
+
+            let response = session_response_from_data(data);
+
+            // Progress can exceed 100%
+            assert_eq!(response.progress_percentage, 150.0);
+        }
+
+        #[test]
+        fn test_session_response_status_serialization() {
+            let data = sample_session_data();
+            let response = session_response_from_data(data);
+
+            assert_eq!(response.status, "active");
+        }
+
+        #[test]
+        fn test_session_response_all_statuses() {
+            for (status, expected_str) in [
+                (LearningSessionStatus::Pending, "pending"),
+                (LearningSessionStatus::Active, "active"),
+                (LearningSessionStatus::Completing, "completing"),
+                (LearningSessionStatus::Completed, "completed"),
+                (LearningSessionStatus::Failed, "failed"),
+                (LearningSessionStatus::Cancelled, "cancelled"),
+            ] {
+                let mut data = sample_session_data();
+                data.status = status;
+                let response = session_response_from_data(data);
+                assert_eq!(response.status, expected_str);
+            }
+        }
+
+        #[test]
+        fn test_session_response_optional_fields() {
+            let mut data = sample_session_data();
+            data.cluster_name = None;
+            data.http_methods = None;
+            data.started_at = None;
+            data.ends_at = None;
+            data.completed_at = None;
+            data.triggered_by = None;
+            data.deployment_version = None;
+            data.error_message = None;
+
+            let response = session_response_from_data(data);
+
+            assert!(response.cluster_name.is_none());
+            assert!(response.http_methods.is_none());
+            assert!(response.started_at.is_none());
+            assert!(response.ends_at.is_none());
+            assert!(response.completed_at.is_none());
+            assert!(response.triggered_by.is_none());
+            assert!(response.deployment_version.is_none());
+            assert!(response.error_message.is_none());
+        }
+
+        #[test]
+        fn test_session_response_with_error_message() {
+            let mut data = sample_session_data();
+            data.status = LearningSessionStatus::Failed;
+            data.error_message = Some("Connection timeout".to_string());
+
+            let response = session_response_from_data(data);
+
+            assert_eq!(response.status, "failed");
+            assert_eq!(response.error_message, Some("Connection timeout".to_string()));
+        }
+    }
+
+    /// Tests for session access verification
+    mod access_verification {
+        use super::*;
+        use crate::storage::repositories::{LearningSessionData, LearningSessionStatus};
+
+        fn sample_session(team: &str) -> LearningSessionData {
+            LearningSessionData {
+                id: "test-session".to_string(),
+                team: team.to_string(),
+                route_pattern: "^/api/.*".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                status: LearningSessionStatus::Active,
+                created_at: chrono::Utc::now(),
+                started_at: None,
+                ends_at: None,
+                completed_at: None,
+                target_sample_count: 100,
+                current_sample_count: 0,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+                error_message: None,
+                updated_at: chrono::Utc::now(),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_same_team() {
+            let session = sample_session("team-a");
+            let team_scopes = vec!["team-a".to_string()];
+
+            let result = verify_session_access(session.clone(), &team_scopes).await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().team, "team-a");
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_different_team() {
+            let session = sample_session("team-a");
+            let team_scopes = vec!["team-b".to_string()];
+
+            let result = verify_session_access(session, &team_scopes).await;
+
+            assert!(result.is_err());
+            match result {
+                Err(ApiError::NotFound(_)) => {} // Expected - return 404 to avoid leaking info
+                _ => panic!("Expected NotFound error for cross-team access"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_admin_empty_scopes() {
+            // Admin users have empty team_scopes and can access everything
+            let session = sample_session("any-team");
+            let team_scopes: Vec<String> = vec![];
+
+            let result = verify_session_access(session.clone(), &team_scopes).await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().team, "any-team");
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_multiple_teams() {
+            let session = sample_session("team-b");
+            let team_scopes =
+                vec!["team-a".to_string(), "team-b".to_string(), "team-c".to_string()];
+
+            let result = verify_session_access(session.clone(), &team_scopes).await;
+
+            assert!(result.is_ok());
+        }
+    }
+
+    /// Tests for request validation
+    mod validation {
+        use super::*;
+
+        #[test]
+        fn test_valid_route_pattern_regex() {
+            let pattern = "^/api/v1/users/.*";
+            let result = regex::Regex::new(pattern);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_invalid_route_pattern_regex() {
+            let pattern = "[invalid(regex";
+            let result = regex::Regex::new(pattern);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_create_body_validation_valid() {
+            let body = CreateLearningSessionBody {
+                route_pattern: "^/api/.*".to_string(),
+                cluster_name: None,
+                http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
+                target_sample_count: 1000,
+                max_duration_seconds: Some(3600),
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            use validator::Validate;
+            let result = body.validate();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_create_body_validation_sample_count_too_low() {
+            let body = CreateLearningSessionBody {
+                route_pattern: "^/api/.*".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 0, // Below minimum of 1
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            use validator::Validate;
+            let result = body.validate();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_create_body_validation_sample_count_too_high() {
+            let body = CreateLearningSessionBody {
+                route_pattern: "^/api/.*".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 100001, // Above maximum of 100000
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            use validator::Validate;
+            let result = body.validate();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_create_body_validation_empty_route_pattern() {
+            let body = CreateLearningSessionBody {
+                route_pattern: "".to_string(), // Empty pattern
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 100,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            use validator::Validate;
+            let result = body.validate();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_create_body_validation_boundary_values() {
+            // Minimum valid sample count
+            let body_min = CreateLearningSessionBody {
+                route_pattern: "^/".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 1,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            use validator::Validate;
+            assert!(body_min.validate().is_ok());
+
+            // Maximum valid sample count
+            let body_max = CreateLearningSessionBody {
+                route_pattern: "^/".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 100000,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+
+            assert!(body_max.validate().is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_valid() {
+            let methods = Some(vec!["GET".to_string(), "POST".to_string(), "PUT".to_string()]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_lowercase_valid() {
+            let methods = Some(vec!["get".to_string(), "post".to_string()]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_mixed_case_valid() {
+            let methods = Some(vec!["Get".to_string(), "Post".to_string()]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_all_valid() {
+            let methods = Some(vec![
+                "GET".to_string(),
+                "POST".to_string(),
+                "PUT".to_string(),
+                "DELETE".to_string(),
+                "PATCH".to_string(),
+                "HEAD".to_string(),
+                "OPTIONS".to_string(),
+                "TRACE".to_string(),
+                "CONNECT".to_string(),
+            ]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_invalid() {
+            let methods = Some(vec!["GET".to_string(), "INVALID".to_string()]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_err());
+            match result {
+                Err(ApiError::BadRequest(msg)) => {
+                    assert!(msg.contains("INVALID"));
+                    assert!(msg.contains("Valid methods are"));
+                }
+                _ => panic!("Expected BadRequest error"),
+            }
+        }
+
+        #[test]
+        fn test_validate_http_methods_none() {
+            let methods: Option<Vec<String>> = None;
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_http_methods_empty() {
+            let methods = Some(vec![]);
+            let result = validate_http_methods(&methods);
+            assert!(result.is_ok());
+        }
+    }
+
+    /// Tests for query parameter parsing
+    mod query_parsing {
+        use super::*;
+        use crate::storage::repositories::LearningSessionStatus;
+
+        #[test]
+        fn test_status_filter_parsing_valid() {
+            for status_str in
+                ["pending", "active", "completing", "completed", "failed", "cancelled"]
+            {
+                let result = status_str.parse::<LearningSessionStatus>();
+                assert!(result.is_ok(), "Failed to parse status: {}", status_str);
+            }
+        }
+
+        #[test]
+        fn test_status_filter_parsing_invalid() {
+            let result = "invalid_status".parse::<LearningSessionStatus>();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_list_query_default_values() {
+            let query: ListLearningSessionsQuery = serde_json::from_str("{}").unwrap();
+            assert!(query.status.is_none());
+            assert!(query.limit.is_none());
+            assert!(query.offset.is_none());
+        }
+
+        #[test]
+        fn test_list_query_with_values() {
+            let query: ListLearningSessionsQuery =
+                serde_json::from_str(r#"{"status": "active", "limit": 50, "offset": 10}"#).unwrap();
+            assert_eq!(query.status, Some("active".to_string()));
+            assert_eq!(query.limit, Some(50));
+            assert_eq!(query.offset, Some(10));
+        }
+    }
 }

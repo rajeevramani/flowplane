@@ -218,6 +218,50 @@ impl AggregatedSchemaRepository {
         }
     }
 
+    /// Get multiple aggregated schemas by IDs
+    ///
+    /// Returns schemas ordered by path and http_method for consistent output.
+    /// Returns only the schemas that exist; caller should verify expected count.
+    #[instrument(skip(self), fields(ids_count = ids.len()), name = "db_get_aggregated_schemas_by_ids")]
+    pub async fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<AggregatedSchemaData>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build dynamic IN clause with positional placeholders
+        let placeholders: String = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!(
+            "SELECT id, team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+             FROM aggregated_api_schemas
+             WHERE id IN ({})
+             ORDER BY path, http_method",
+            placeholders
+        );
+
+        let mut query_builder = sqlx::query_as::<Sqlite, AggregatedSchemaRow>(&query);
+        for id in ids {
+            query_builder = query_builder.bind(id);
+        }
+
+        let rows = query_builder.fetch_all(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, ids_count = ids.len(), "Failed to get aggregated schemas by IDs");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to get aggregated schemas by IDs".to_string(),
+            }
+        })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
     /// Get latest aggregated schema for a specific endpoint and team
     #[instrument(skip(self), fields(team = %team, path = %path, method = %http_method), name = "db_get_latest_aggregated_schema")]
     pub async fn get_latest(
@@ -636,5 +680,117 @@ mod tests {
             assert_eq!(schema.version, 2);
             assert_eq!(schema.sample_count, 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_returns_all_requested() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        // Create 3 schemas
+        let mut ids: Vec<i64> = Vec::new();
+        for path in ["/users", "/products", "/orders"] {
+            let request = CreateAggregatedSchemaRequest {
+                team: "test-team".to_string(),
+                path: path.to_string(),
+                http_method: "GET".to_string(),
+                request_schema: None,
+                response_schemas: Some(serde_json::json!({"type": "object"})),
+                sample_count: 10,
+                confidence_score: 0.9,
+                breaking_changes: None,
+                first_observed: now,
+                last_observed: now,
+                previous_version_id: None,
+            };
+            let schema = repo.create(request).await.unwrap();
+            ids.push(schema.id);
+        }
+
+        // Fetch all three
+        let result = repo.get_by_ids(&ids).await.unwrap();
+        assert_eq!(result.len(), 3);
+
+        // Fetch first two
+        let result = repo.get_by_ids(&ids[0..2]).await.unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_empty_returns_empty() {
+        let pool = setup_test_db().await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let result = repo.get_by_ids(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_orders_by_path() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        // Create schemas in non-alphabetical order
+        let mut ids: Vec<i64> = Vec::new();
+        for path in ["/zebra", "/apple", "/mango"] {
+            let request = CreateAggregatedSchemaRequest {
+                team: "test-team".to_string(),
+                path: path.to_string(),
+                http_method: "GET".to_string(),
+                request_schema: None,
+                response_schemas: None,
+                sample_count: 5,
+                confidence_score: 0.8,
+                breaking_changes: None,
+                first_observed: now,
+                last_observed: now,
+                previous_version_id: None,
+            };
+            let schema = repo.create(request).await.unwrap();
+            ids.push(schema.id);
+        }
+
+        // Fetch all and verify order
+        let result = repo.get_by_ids(&ids).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].path, "/apple");
+        assert_eq!(result[1].path, "/mango");
+        assert_eq!(result[2].path, "/zebra");
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_partial_match() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        let request = CreateAggregatedSchemaRequest {
+            team: "test-team".to_string(),
+            path: "/test".to_string(),
+            http_method: "GET".to_string(),
+            request_schema: None,
+            response_schemas: None,
+            sample_count: 5,
+            confidence_score: 0.8,
+            breaking_changes: None,
+            first_observed: now,
+            last_observed: now,
+            previous_version_id: None,
+        };
+
+        let schema = repo.create(request).await.unwrap();
+
+        // Request existing + non-existing ID
+        let result = repo.get_by_ids(&[schema.id, 99999]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, schema.id);
     }
 }

@@ -563,13 +563,19 @@ fn detect_schema_breaking_changes(
         let diff = detect_breaking_changes(old_req, new_req);
         for change in diff.breaking_changes {
             // Prefix path with "request" to indicate it's in the request schema
-            let mut change_json = serde_json::to_value(&change).unwrap();
-            if let Some(path) = change_json.get_mut("path") {
-                if let Some(path_str) = path.as_str() {
-                    *path = serde_json::Value::String(format!("request{}", path_str));
+            match serde_json::to_value(&change) {
+                Ok(mut change_json) => {
+                    if let Some(path) = change_json.get_mut("path") {
+                        if let Some(path_str) = path.as_str() {
+                            *path = serde_json::Value::String(format!("request{}", path_str));
+                        }
+                    }
+                    all_changes.push(change_json);
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to serialize breaking change for request schema");
                 }
             }
-            all_changes.push(change_json);
         }
     } else if old_request.is_some() && new_request.is_none() {
         // Request body was removed - this could be breaking
@@ -589,16 +595,26 @@ fn detect_schema_breaking_changes(
                     let diff = detect_breaking_changes(old_schema, new_schema);
                     for change in diff.breaking_changes {
                         // Prefix path with "response[status]" to indicate location
-                        let mut change_json = serde_json::to_value(&change).unwrap();
-                        if let Some(path) = change_json.get_mut("path") {
-                            if let Some(path_str) = path.as_str() {
-                                *path = serde_json::Value::String(format!(
-                                    "response[{}]{}",
-                                    status_code, path_str
-                                ));
+                        match serde_json::to_value(&change) {
+                            Ok(mut change_json) => {
+                                if let Some(path) = change_json.get_mut("path") {
+                                    if let Some(path_str) = path.as_str() {
+                                        *path = serde_json::Value::String(format!(
+                                            "response[{}]{}",
+                                            status_code, path_str
+                                        ));
+                                    }
+                                }
+                                all_changes.push(change_json);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    status_code = %status_code,
+                                    "Failed to serialize breaking change for response schema"
+                                );
                             }
                         }
-                        all_changes.push(change_json);
                     }
                 } else {
                     // Status code was removed - potentially breaking

@@ -1397,3 +1397,132 @@ export interface FilterStatusResponse {
 	installations: FilterInstallationItem[];
 	configurations: FilterConfigurationItem[];
 }
+
+// ============================================================================
+// Learning Session Types
+// ============================================================================
+
+/** Learning session status */
+export type LearningSessionStatus =
+	| 'pending'
+	| 'active'
+	| 'completing'
+	| 'completed'
+	| 'cancelled'
+	| 'failed';
+
+/** Learning session response from API */
+export interface LearningSessionResponse {
+	id: string;
+	team: string;
+	routePattern: string;
+	clusterName: string | null;
+	httpMethods: string[] | null;
+	status: string;
+	createdAt: string;
+	startedAt: string | null;
+	endsAt: string | null;
+	completedAt: string | null;
+	targetSampleCount: number;
+	currentSampleCount: number;
+	progressPercentage: number;
+	triggeredBy: string | null;
+	deploymentVersion: string | null;
+	errorMessage: string | null;
+}
+
+/** Request to create a learning session */
+export interface CreateLearningSessionRequest {
+	routePattern: string;
+	clusterName?: string;
+	httpMethods?: string[];
+	targetSampleCount: number;
+	maxDurationSeconds?: number;
+	triggeredBy?: string;
+	deploymentVersion?: string;
+	configurationSnapshot?: Record<string, unknown>;
+}
+
+/** Query parameters for listing learning sessions */
+export interface ListLearningSessionsQuery {
+	status?: LearningSessionStatus;
+	limit?: number;
+	offset?: number;
+}
+
+// ============================================================================
+// Aggregated Schema Types
+// ============================================================================
+
+/** Breaking change information for schema versioning */
+export interface BreakingChange {
+	changeType: string;
+	path: string;
+	description: string;
+	severity: 'warning' | 'error';
+}
+
+/** Aggregated schema response from API */
+export interface AggregatedSchemaResponse {
+	id: number;
+	team: string;
+	path: string;
+	httpMethod: string;
+	version: number;
+	previousVersionId: number | null;
+	requestSchema: Record<string, unknown> | null;
+	responseSchemas: Record<string, unknown> | null;
+	sampleCount: number;
+	confidenceScore: number;
+	breakingChanges: BreakingChange[] | null;
+	firstObserved: string;
+	lastObserved: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Query parameters for listing aggregated schemas */
+export interface ListAggregatedSchemasQuery {
+	path?: string;
+	httpMethod?: string;
+	minConfidence?: number;
+	limit?: number;
+	offset?: number;
+}
+
+/** Schema comparison response */
+export interface SchemaComparisonResponse {
+	currentSchema: AggregatedSchemaResponse;
+	comparedSchema: AggregatedSchemaResponse;
+	differences: SchemaDifferences;
+}
+
+/** Differences between schema versions */
+export interface SchemaDifferences {
+	versionChange: number;
+	sampleCountChange: number;
+	confidenceChange: number;
+	hasBreakingChanges: boolean;
+	breakingChanges: BreakingChange[] | null;
+}
+
+/** OpenAPI export response */
+export interface OpenApiExportResponse {
+	openapi: string;
+	info: {
+		title: string;
+		version: string;
+		description: string | null;
+	};
+	paths: Record<string, unknown>;
+	components: Record<string, unknown>;
+}
+
+/** Request to export multiple schemas as unified OpenAPI */
+export interface ExportMultipleSchemasRequest {
+	schemaIds: number[];
+	title: string;
+	version: string;
+	description?: string;
+	includeMetadata: boolean;
+}

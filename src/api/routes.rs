@@ -68,6 +68,7 @@ use super::{
         detach_filter_from_virtual_host_handler,
         detach_filter_handler,
         export_aggregated_schema_handler,
+        export_multiple_schemas_handler,
         generate_certificate_handler,
         get_aggregated_schema_handler,
         get_app_handler,
@@ -377,6 +378,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
         .route("/api/v1/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
+        .route("/api/v1/aggregated-schemas/export", post(export_multiple_schemas_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         // User management endpoints (admin only)

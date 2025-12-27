@@ -81,7 +81,17 @@ import type {
 	ConfigureFilterRequest,
 	ConfigureFilterResponse,
 	FilterConfigurationsResponse,
-	FilterStatusResponse
+	FilterStatusResponse,
+	// Learning Session types
+	LearningSessionResponse,
+	CreateLearningSessionRequest,
+	ListLearningSessionsQuery,
+	// Aggregated Schema types
+	AggregatedSchemaResponse,
+	ListAggregatedSchemasQuery,
+	SchemaComparisonResponse,
+	OpenApiExportResponse,
+	ExportMultipleSchemasRequest
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -1008,6 +1018,105 @@ class ApiClient {
 		return this.get<FilterStatusResponse>(
 			`/api/v1/filters/${encodeURIComponent(filterId)}/status`
 		);
+	}
+
+	// ============================================================================
+	// Learning Sessions API
+	// ============================================================================
+
+	/**
+	 * List learning sessions for the current user's team.
+	 * Supports filtering by status and pagination.
+	 */
+	async listLearningSessions(query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.status) params.append('status', query.status);
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/learning-sessions${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<LearningSessionResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific learning session by ID.
+	 */
+	async getLearningSession(id: string): Promise<LearningSessionResponse> {
+		return this.get<LearningSessionResponse>(
+			`/api/v1/learning-sessions/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Create a new learning session.
+	 * The session will automatically start capturing traffic matching the route pattern.
+	 */
+	async createLearningSession(request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
+		return this.post<LearningSessionResponse>('/api/v1/learning-sessions', request);
+	}
+
+	/**
+	 * Cancel a learning session.
+	 * This will stop traffic capture and mark the session as cancelled.
+	 */
+	async cancelLearningSession(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/learning-sessions/${encodeURIComponent(id)}`);
+	}
+
+	// ============================================================================
+	// Aggregated Schemas API
+	// ============================================================================
+
+	/**
+	 * List aggregated schemas discovered through learning sessions.
+	 * Supports filtering by path, HTTP method, and minimum confidence.
+	 */
+	async listAggregatedSchemas(query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.path) params.append('path', query.path);
+		if (query?.httpMethod) params.append('http_method', query.httpMethod);
+		if (query?.minConfidence) params.append('min_confidence', query.minConfidence.toString());
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/aggregated-schemas${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<AggregatedSchemaResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific aggregated schema by ID.
+	 */
+	async getAggregatedSchema(id: number): Promise<AggregatedSchemaResponse> {
+		return this.get<AggregatedSchemaResponse>(`/api/v1/aggregated-schemas/${id}`);
+	}
+
+	/**
+	 * Compare two versions of a schema.
+	 * Returns differences including breaking changes.
+	 */
+	async compareSchemaVersions(id: number, withVersion: number): Promise<SchemaComparisonResponse> {
+		return this.get<SchemaComparisonResponse>(
+			`/api/v1/aggregated-schemas/${id}/compare?with_version=${withVersion}`
+		);
+	}
+
+	/**
+	 * Export a schema as OpenAPI 3.1 specification.
+	 */
+	async exportSchemaAsOpenApi(id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
+		const params = new URLSearchParams();
+		params.append('include_metadata', includeMetadata.toString());
+
+		return this.get<OpenApiExportResponse>(
+			`/api/v1/aggregated-schemas/${id}/export?${params.toString()}`
+		);
+	}
+
+	/**
+	 * Export multiple schemas as a unified OpenAPI 3.1 specification.
+	 */
+	async exportMultipleSchemasAsOpenApi(request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
+		return this.post<OpenApiExportResponse>('/api/v1/aggregated-schemas/export', request);
 	}
 }
 
