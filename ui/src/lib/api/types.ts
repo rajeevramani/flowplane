@@ -858,11 +858,6 @@ export interface UpdateFilterRequest {
 	config?: FilterConfig;
 }
 
-export interface AttachFilterRequest {
-	filterId: string;
-	order?: number;
-}
-
 export interface RouteFiltersResponse {
 	routeId: string;
 	filters: FilterResponse[];

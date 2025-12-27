@@ -13,7 +13,6 @@
 		FileText,
 		ChevronDown,
 		List,
-		Link,
 		BarChart3,
 		Lock,
 		BookOpen,
@@ -54,7 +53,6 @@
 	// HTTP Filters submenu items
 	const filtersSubmenu = [
 		{ id: 'manage-filters', label: 'Manage Filters', href: '/filters', icon: List },
-		{ id: 'attach-filters', label: 'Attach Filters', href: '/filters/attach', icon: Link },
 		{ id: 'custom-filters', label: 'Custom Filters', href: '/custom-filters', icon: Puzzle }
 	];
 

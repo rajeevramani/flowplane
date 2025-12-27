@@ -48,7 +48,6 @@ import type {
 	FilterResponse,
 	CreateFilterRequest,
 	UpdateFilterRequest,
-	AttachFilterRequest,
 	RouteFiltersResponse,
 	ListenerFiltersResponse,
 	VirtualHostSummary,
@@ -608,30 +607,14 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/filters/${id}`);
 	}
 
-	// Route Config Filter attachment methods
+	// Route Config Filter methods
 	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
 		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
 	}
 
-	async attachFilterToRouteConfig(routeConfigName: string, body: AttachFilterRequest): Promise<void> {
-		return this.post<void>(`/api/v1/route-configs/${routeConfigName}/filters`, body);
-	}
-
-	async detachFilterFromRouteConfig(routeConfigName: string, filterId: string): Promise<void> {
-		return this.delete<void>(`/api/v1/route-configs/${routeConfigName}/filters/${filterId}`);
-	}
-
-	// Listener-Filter attachment methods
+	// Listener-Filter methods
 	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
 		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
-	}
-
-	async attachFilterToListener(listenerId: string, body: AttachFilterRequest): Promise<void> {
-		return this.post<void>(`/api/v1/listeners/${listenerId}/filters`, body);
-	}
-
-	async detachFilterFromListener(listenerId: string, filterId: string): Promise<void> {
-		return this.delete<void>(`/api/v1/listeners/${listenerId}/filters/${filterId}`);
 	}
 
 	// ============================================================================
@@ -659,7 +642,7 @@ class ApiClient {
 		return response.routes;
 	}
 
-	// Virtual Host Filter Attachment
+	// Virtual Host Filter methods
 	async listVirtualHostFilters(
 		routeConfigName: string,
 		virtualHostName: string
@@ -669,28 +652,7 @@ class ApiClient {
 		);
 	}
 
-	async attachFilterToVirtualHost(
-		routeConfigName: string,
-		virtualHostName: string,
-		body: AttachFilterRequest
-	): Promise<void> {
-		return this.post<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`,
-			body
-		);
-	}
-
-	async detachFilterFromVirtualHost(
-		routeConfigName: string,
-		virtualHostName: string,
-		filterId: string
-	): Promise<void> {
-		return this.delete<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters/${filterId}`
-		);
-	}
-
-	// Route (within Virtual Host) Filter Attachment
+	// Route (within Virtual Host) Filter methods
 	async listRouteHierarchyFilters(
 		routeConfigName: string,
 		virtualHostName: string,
@@ -698,29 +660,6 @@ class ApiClient {
 	): Promise<RouteHierarchyFiltersResponse> {
 		return this.get<RouteHierarchyFiltersResponse>(
 			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
-		);
-	}
-
-	async attachFilterToRoute(
-		routeConfigName: string,
-		virtualHostName: string,
-		routeName: string,
-		body: AttachFilterRequest
-	): Promise<void> {
-		return this.post<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`,
-			body
-		);
-	}
-
-	async detachFilterFromRoute(
-		routeConfigName: string,
-		virtualHostName: string,
-		routeName: string,
-		filterId: string
-	): Promise<void> {
-		return this.delete<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters/${filterId}`
 		);
 	}
 
