@@ -2,13 +2,14 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { ArrowLeft, Loader2 } from 'lucide-svelte';
+	import { Loader2 } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { FilterType, FilterConfig, FilterTypeInfo } from '$lib/api/types';
-	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
 	import { generateDefaultValues, generateFormFields } from '$lib/utils/json-schema-form';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
 
 	// Form state
 	let currentTeam = $state<string>('');
@@ -81,18 +82,13 @@
 		} as FilterConfig;
 	}
 
-	// Validate form
+	// Validate form using reusable validators
 	function validateForm(): string | null {
-		if (!filterName.trim()) {
-			return 'Filter name is required';
-		}
-
-		if (filterName.length > 255) {
-			return 'Filter name must be 255 characters or less';
-		}
-
+		return runValidators([
+			() => validateRequired(filterName, 'Filter name'),
+			() => validateMaxLength(filterName, 255, 'Filter name')
+		]);
 		// For dynamic forms, we rely on schema-based validation on the backend
-		return null;
 	}
 
 	// Handle form submission
@@ -134,20 +130,11 @@
 
 <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Page Header with Back Button -->
-	<div class="mb-6">
-		<div class="flex items-center gap-4 mb-2">
-			<button
-				onclick={handleCancel}
-				class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
-			>
-				<ArrowLeft class="w-5 h-5" />
-			</button>
-			<div>
-				<h1 class="text-2xl font-bold text-gray-900">Create Filter</h1>
-				<p class="mt-1 text-sm text-gray-600">Create a reusable filter configuration</p>
-			</div>
-		</div>
-	</div>
+	<PageHeader
+		title="Create Filter"
+		subtitle="Create a reusable filter configuration"
+		onBack={handleCancel}
+	/>
 
 	<!-- Loading State -->
 	{#if isLoadingFilterTypes}
@@ -159,11 +146,7 @@
 		</div>
 	{:else}
 		<!-- Error Message -->
-		{#if error}
-			<div class="mb-6 bg-red-50 border border-red-200 rounded-md p-4">
-				<p class="text-sm text-red-800">{error}</p>
-			</div>
-		{/if}
+		<ErrorAlert message={error} />
 
 		<!-- Basic Information -->
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -268,11 +251,12 @@
 		</div>
 
 		<!-- Action Buttons -->
-		<div class="flex justify-end gap-3">
-			<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>Cancel</Button>
-			<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
-				{isSubmitting ? 'Creating...' : 'Create Filter'}
-			</Button>
-		</div>
+		<FormActions
+			{isSubmitting}
+			submitLabel="Create Filter"
+			submittingLabel="Creating..."
+			onSubmit={handleSubmit}
+			onCancel={handleCancel}
+		/>
 	{/if}
 </div>

@@ -19,6 +19,7 @@ pub mod route_configs;
 pub mod scopes;
 pub mod secrets;
 pub mod stats;
+pub mod team_access;
 pub mod teams;
 pub mod users;
 
@@ -91,6 +92,9 @@ pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
     remove_team_membership, update_user,
 };
+
+// Re-export team access utilities for use across handlers
+pub use team_access::{get_effective_team_scopes, verify_team_access, TeamOwned};
 
 // Re-export hierarchy handlers for route hierarchy filter attachment
 pub use hierarchy::{

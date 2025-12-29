@@ -194,31 +194,3 @@ pub fn filter_response_from_data_with_count(
     Ok(FilterResponse::from_data_with_count(data, config, attachment_count))
 }
 
-/// Verify that a filter belongs to one of the user's teams
-pub async fn verify_filter_access(
-    filter: FilterData,
-    team_scopes: &[String],
-) -> Result<FilterData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(filter);
-    }
-
-    // Check if filter belongs to one of user's teams
-    if team_scopes.contains(&filter.team) {
-        Ok(filter)
-    } else {
-        // Record cross-team access attempt for security monitoring
-        if let Some(from_team) = team_scopes.first() {
-            crate::observability::metrics::record_cross_team_access_attempt(
-                from_team,
-                &filter.team,
-                "filters",
-            )
-            .await;
-        }
-
-        // Return 404 to avoid leaking existence of other teams' resources
-        Err(ApiError::NotFound(format!("Filter with id '{}' not found", filter.id)))
-    }
-}

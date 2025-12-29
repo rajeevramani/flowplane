@@ -14,7 +14,11 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
     auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
@@ -143,35 +147,6 @@ fn session_response_from_data(
     }
 }
 
-/// Verify that a learning session belongs to one of the user's teams.
-/// Returns the session if authorized, otherwise returns NotFound error.
-async fn verify_session_access(
-    session: crate::storage::repositories::LearningSessionData,
-    team_scopes: &[String],
-) -> Result<crate::storage::repositories::LearningSessionData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(session);
-    }
-
-    // Check if session belongs to one of user's teams
-    if team_scopes.contains(&session.team) {
-        Ok(session)
-    } else {
-        // Record cross-team access attempt for security monitoring
-        if let Some(from_team) = team_scopes.first() {
-            crate::observability::metrics::record_cross_team_access_attempt(
-                from_team,
-                &session.team,
-                "learning_sessions",
-            )
-            .await;
-        }
-
-        // Return 404 to avoid leaking existence of other teams' resources
-        Err(ApiError::NotFound(format!("Learning session with ID '{}' not found", session.id)))
-    }
-}
 
 /// Extract a single team from auth context for team-scoped operations.
 /// Returns BadRequest error if no team scope is available.
@@ -381,7 +356,7 @@ pub async fn get_learning_session_handler(
     require_resource_access(&context, "learning-sessions", "read", None)?;
 
     // Extract team from auth context
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = get_effective_team_scopes(&context);
     let team = require_single_team_scope(&context)?;
 
     // Get repository
@@ -403,7 +378,7 @@ pub async fn get_learning_session_handler(
     })?;
 
     // Verify access
-    let authorized_session = verify_session_access(session, &team_scopes).await?;
+    let authorized_session = verify_team_access(session, &team_scopes).await?;
 
     let response = session_response_from_data(authorized_session);
 
@@ -435,7 +410,7 @@ pub async fn delete_learning_session_handler(
     require_resource_access(&context, "learning-sessions", "write", None)?;
 
     // Extract team from auth context
-    let team_scopes = extract_team_scopes(&context);
+    let team_scopes = get_effective_team_scopes(&context);
     let team = require_single_team_scope(&context)?;
 
     // Get repository
@@ -457,7 +432,7 @@ pub async fn delete_learning_session_handler(
     })?;
 
     // Verify access
-    verify_session_access(session.clone(), &team_scopes).await?;
+    verify_team_access(session.clone(), &team_scopes).await?;
 
     // Validate session state - only allow cancellation of pending/active/completing sessions
     // Terminal states (completed, cancelled, failed) cannot be cancelled
@@ -685,7 +660,7 @@ mod tests {
             let session = sample_session("team-a");
             let team_scopes = vec!["team-a".to_string()];
 
-            let result = verify_session_access(session.clone(), &team_scopes).await;
+            let result = verify_team_access(session.clone(), &team_scopes).await;
 
             assert!(result.is_ok());
             assert_eq!(result.unwrap().team, "team-a");
@@ -696,7 +671,7 @@ mod tests {
             let session = sample_session("team-a");
             let team_scopes = vec!["team-b".to_string()];
 
-            let result = verify_session_access(session, &team_scopes).await;
+            let result = verify_team_access(session, &team_scopes).await;
 
             assert!(result.is_err());
             match result {
@@ -711,7 +686,7 @@ mod tests {
             let session = sample_session("any-team");
             let team_scopes: Vec<String> = vec![];
 
-            let result = verify_session_access(session.clone(), &team_scopes).await;
+            let result = verify_team_access(session.clone(), &team_scopes).await;
 
             assert!(result.is_ok());
             assert_eq!(result.unwrap().team, "any-team");
@@ -723,7 +698,7 @@ mod tests {
             let team_scopes =
                 vec!["team-a".to_string(), "team-b".to_string(), "team-c".to_string()];
 
-            let result = verify_session_access(session.clone(), &team_scopes).await;
+            let result = verify_team_access(session.clone(), &team_scopes).await;
 
             assert!(result.is_ok());
         }

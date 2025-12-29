@@ -22,59 +22,23 @@ use axum::{
 use tracing::{error, info, instrument};
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::RouteConfigId,
     errors::Error,
     openapi::defaults::is_default_gateway_route,
-    storage::{
-        CreateRouteConfigRepositoryRequest, RouteConfigData, UpdateRouteConfigRepositoryRequest,
-    },
+    storage::{CreateRouteConfigRepositoryRequest, UpdateRouteConfigRepositoryRequest},
 };
 
 use validation::{
     require_route_config_repository, route_config_response_from_data, summarize_route_config,
     validate_route_config, validate_route_config_payload,
 };
-
-// === Helper Functions ===
-
-/// Verify that a route config belongs to one of the user's teams or is global.
-/// Returns the route config if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_route_config_access(
-    route_config: RouteConfigData,
-    team_scopes: &[String],
-) -> Result<RouteConfigData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(route_config);
-    }
-
-    // Check if route config is global (team = NULL) or belongs to one of user's teams
-    match &route_config.team {
-        None => Ok(route_config), // Global route config, accessible to all
-        Some(route_team) => {
-            if team_scopes.contains(route_team) {
-                Ok(route_config)
-            } else {
-                // Record cross-team access attempt for security monitoring
-                if let Some(from_team) = team_scopes.first() {
-                    crate::observability::metrics::record_cross_team_access_attempt(
-                        from_team, route_team, "routes",
-                    )
-                    .await;
-                }
-
-                // Return 404 to avoid leaking existence of other teams' resources
-                Err(ApiError::NotFound(format!(
-                    "Route with name '{}' not found",
-                    route_config.name
-                )))
-            }
-        }
-    }
-}
 
 // === Handler Implementations ===
 
@@ -177,8 +141,7 @@ pub async fn list_route_configs_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_route_config_repository(&state)?;
     let rows = repository
@@ -215,14 +178,13 @@ pub async fn get_route_config_handler(
     require_resource_access(&context, "routes", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_route_config_repository(&state)?;
     let route_config = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the route config belongs to one of the user's teams or is global
-    let route_config = verify_route_config_access(route_config, &team_scopes).await?;
+    let route_config = verify_team_access(route_config, &team_scopes).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
 }
@@ -260,14 +222,13 @@ pub async fn update_route_config_handler(
     }
 
     // Extract team scopes and verify access before updating
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_route_config_repository(&state)?;
     let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
 
     // Verify the route config belongs to one of the user's teams or is global
-    verify_route_config_access(existing.clone(), &team_scopes).await?;
+    verify_team_access(existing.clone(), &team_scopes).await?;
 
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
     let (path_prefix, cluster_summary) = summarize_route_config(&payload);
@@ -340,14 +301,13 @@ pub async fn delete_route_config_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_route_config_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the route config belongs to one of the user's teams or is global
-    verify_route_config_access(existing.clone(), &team_scopes).await?;
+    verify_team_access(existing.clone(), &team_scopes).await?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 

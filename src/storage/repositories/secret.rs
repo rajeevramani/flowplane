@@ -64,6 +64,24 @@ pub struct SecretData {
     pub reference_version: Option<String>,
 }
 
+impl crate::api::handlers::TeamOwned for SecretData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "Secret"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "secrets"
+    }
+}
+
 /// Create secret request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSecretRequest {

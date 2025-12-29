@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
-	import { ArrowLeft, Loader2, Plus, Trash2 } from 'lucide-svelte';
+	import { Plus, Trash2 } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { SecretType, SecretBackend } from '$lib/api/types';
-	import Button from '$lib/components/Button.svelte';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
 
 	// Form state
 	let currentTeam = $state<string>('');
@@ -115,50 +116,39 @@
 		}
 	}
 
-	// Validate form
+	// Validate form using reusable validators
 	function validateForm(): string | null {
-		if (!secretName.trim()) {
-			return 'Secret name is required';
-		}
-		if (secretName.length > 255) {
-			return 'Secret name must be 255 characters or less';
-		}
+		// Basic validation
+		const basicError = runValidators([
+			() => validateRequired(secretName, 'Secret name'),
+			() => validateMaxLength(secretName, 255, 'Secret name')
+		]);
+		if (basicError) return basicError;
 
 		if (storageMethod === 'external') {
-			if (!reference.trim()) {
-				return 'Backend reference is required';
-			}
-		} else {
-			// Validate direct storage based on type
-			switch (secretType) {
-				case 'generic_secret':
-					if (!genericSecret.trim()) {
-						return 'Secret value is required';
-					}
-					break;
-				case 'tls_certificate':
-					if (!certificateChain.trim()) {
-						return 'Certificate chain is required';
-					}
-					if (!privateKey.trim()) {
-						return 'Private key is required';
-					}
-					break;
-				case 'certificate_validation_context':
-					if (!trustedCa.trim()) {
-						return 'Trusted CA is required';
-					}
-					break;
-				case 'session_ticket_keys':
-					const validKeys = sessionTicketKeys.filter(k => k.name && k.key);
-					if (validKeys.length === 0) {
-						return 'At least one session ticket key is required';
-					}
-					break;
-			}
+			return validateRequired(reference, 'Backend reference');
 		}
 
-		return null;
+		// Validate direct storage based on type
+		switch (secretType) {
+			case 'generic_secret':
+				return validateRequired(genericSecret, 'Secret value');
+			case 'tls_certificate':
+				return runValidators([
+					() => validateRequired(certificateChain, 'Certificate chain'),
+					() => validateRequired(privateKey, 'Private key')
+				]);
+			case 'certificate_validation_context':
+				return validateRequired(trustedCa, 'Trusted CA');
+			case 'session_ticket_keys':
+				const validKeys = sessionTicketKeys.filter(k => k.name && k.key);
+				if (validKeys.length === 0) {
+					return 'At least one session ticket key is required';
+				}
+				return null;
+			default:
+				return null;
+		}
 	}
 
 	// Convert datetime-local value to ISO 8601 format
@@ -219,27 +209,14 @@
 
 <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Page Header with Back Button -->
-	<div class="mb-6">
-		<div class="flex items-center gap-4 mb-2">
-			<button
-				onclick={handleCancel}
-				class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
-			>
-				<ArrowLeft class="w-5 h-5" />
-			</button>
-			<div>
-				<h1 class="text-2xl font-bold text-gray-900">Create Secret</h1>
-				<p class="mt-1 text-sm text-gray-600">Create a new SDS secret for your Envoy configuration</p>
-			</div>
-		</div>
-	</div>
+	<PageHeader
+		title="Create Secret"
+		subtitle="Create a new SDS secret for your Envoy configuration"
+		onBack={handleCancel}
+	/>
 
 	<!-- Error Message -->
-	{#if error}
-		<div class="mb-6 bg-red-50 border border-red-200 rounded-md p-4">
-			<p class="text-sm text-red-800">{error}</p>
-		</div>
-	{/if}
+	<ErrorAlert message={error} />
 
 	<!-- Basic Information -->
 	<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -593,15 +570,11 @@
 	</div>
 
 	<!-- Action Buttons -->
-	<div class="flex justify-end gap-3">
-		<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>Cancel</Button>
-		<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
-			{#if isSubmitting}
-				<Loader2 class="h-4 w-4 mr-2 animate-spin" />
-				Creating...
-			{:else}
-				Create Secret
-			{/if}
-		</Button>
-	</div>
+	<FormActions
+		{isSubmitting}
+		submitLabel="Create Secret"
+		submittingLabel="Creating..."
+		onSubmit={handleSubmit}
+		onCancel={handleCancel}
+	/>
 </div>

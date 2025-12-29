@@ -145,6 +145,28 @@ impl TryFrom<LearningSessionRow> for LearningSessionData {
     }
 }
 
+impl crate::api::handlers::TeamOwned for LearningSessionData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.id
+    }
+
+    fn resource_type() -> &'static str {
+        "Learning session"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "learning_sessions"
+    }
+
+    fn identifier_label() -> &'static str {
+        "ID"
+    }
+}
+
 /// Create learning session request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLearningSessionRequest {

@@ -21,55 +21,22 @@ use axum::{
 use tracing::{error, info, instrument};
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     errors::Error,
     openapi::defaults::is_default_gateway_listener,
-    storage::{CreateListenerRequest, ListenerData, UpdateListenerRequest},
+    storage::{CreateListenerRequest, UpdateListenerRequest},
 };
 
 use validation::{
     listener_config_from_create, listener_config_from_update, listener_response_from_data,
     require_listener_repository, validate_create_listener_body, validate_update_listener_body,
 };
-
-// === Helper Functions ===
-
-/// Verify that a listener belongs to one of the user's teams or is global.
-/// Returns the listener if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_listener_access(
-    listener: ListenerData,
-    team_scopes: &[String],
-) -> Result<ListenerData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(listener);
-    }
-
-    // Check if listener is global (team = NULL) or belongs to one of user's teams
-    match &listener.team {
-        None => Ok(listener), // Global listener, accessible to all
-        Some(listener_team) => {
-            if team_scopes.contains(listener_team) {
-                Ok(listener)
-            } else {
-                // Record cross-team access attempt for security monitoring
-                if let Some(from_team) = team_scopes.first() {
-                    crate::observability::metrics::record_cross_team_access_attempt(
-                        from_team,
-                        listener_team,
-                        "listeners",
-                    )
-                    .await;
-                }
-
-                // Return 404 to avoid leaking existence of other teams' resources
-                Err(ApiError::NotFound(format!("Listener with name '{}' not found", listener.name)))
-            }
-        }
-    }
-}
 
 // === Handler Implementations ===
 
@@ -151,8 +118,7 @@ pub async fn list_listeners_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes from auth context for filtering
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_listener_repository(&state)?;
     let rows = repository
@@ -189,14 +155,13 @@ pub async fn get_listener_handler(
     require_resource_access(&context, "listeners", "read", None)?;
 
     // Extract team scopes for access verification
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_listener_repository(&state)?;
     let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
 
     // Verify the listener belongs to one of the user's teams or is global
-    let listener = verify_listener_access(listener, &team_scopes).await?;
+    let listener = verify_team_access(listener, &team_scopes).await?;
 
     let response = listener_response_from_data(listener)?;
     Ok(Json(response))
@@ -228,12 +193,11 @@ pub async fn update_listener_handler(
     validate_update_listener_body(&payload)?;
 
     // Extract team scopes and verify access before updating
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_listener_access(existing.clone(), &team_scopes).await?;
+    verify_team_access(existing.clone(), &team_scopes).await?;
 
     let config = listener_config_from_update(name.clone(), &payload)?;
     let configuration = serde_json::to_value(&config).map_err(|err| {
@@ -291,12 +255,11 @@ pub async fn delete_listener_handler(
     }
 
     // Extract team scopes and verify access before deleting
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
 
     let repository = require_listener_repository(&state)?;
     let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_listener_access(existing.clone(), &team_scopes).await?;
+    verify_team_access(existing.clone(), &team_scopes).await?;
 
     repository.delete(&existing.id).await.map_err(ApiError::from)?;
 
