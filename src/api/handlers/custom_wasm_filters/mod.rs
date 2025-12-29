@@ -61,9 +61,9 @@ async fn unregister_custom_schema(state: &ApiState, filter_type: &str) {
     }
 }
 
-/// Verify the user has access to the specified team for custom_wasm_filters resource
+/// Verify the user has access to the specified team for custom-wasm-filters resource
 fn verify_team_access(context: &AuthContext, team: &str, action: &str) -> Result<(), ApiError> {
-    require_resource_access(context, "custom_wasm_filters", action, Some(team))
+    require_resource_access(context, "custom-wasm-filters", action, Some(team))
         .map_err(ApiError::from)
 }
 

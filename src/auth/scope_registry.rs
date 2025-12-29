@@ -290,9 +290,11 @@ mod tests {
         assert!(SCOPE_FORMAT_REGEX.is_match("clusters:write"));
         assert!(SCOPE_FORMAT_REGEX.is_match("admin:all"));
         assert!(SCOPE_FORMAT_REGEX.is_match("api-definitions:read"));
+        assert!(SCOPE_FORMAT_REGEX.is_match("custom-wasm-filters:read"));
         assert!(SCOPE_FORMAT_REGEX.is_match("team:platform:routes:read"));
         assert!(SCOPE_FORMAT_REGEX.is_match("team:eng-team:api-definitions:write"));
         assert!(SCOPE_FORMAT_REGEX.is_match("team:team-test-1:clusters:read"));
+        assert!(SCOPE_FORMAT_REGEX.is_match("team:engineering:custom-wasm-filters:read"));
         assert!(SCOPE_FORMAT_REGEX.is_match("team:platform:*:*"));
 
         // Invalid formats

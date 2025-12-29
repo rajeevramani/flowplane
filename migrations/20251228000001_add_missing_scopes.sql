@@ -7,7 +7,7 @@
 -- Resources added:
 -- - secrets (SDS management)
 -- - proxy-certificates (mTLS certificate management)
--- - custom_wasm_filters (custom WASM filter management)
+-- - custom-wasm-filters (custom WASM filter management)
 -- - learning-sessions (API learning feature)
 -- - aggregated-schemas (API catalog)
 -- - reports (analytics)
@@ -28,12 +28,11 @@ VALUES
     ('scope-proxy-certificates-delete', 'proxy-certificates:delete', 'proxy-certificates', 'delete', 'Revoke certificates', 'Revoke proxy certificates', 'Certificates', TRUE, TRUE);
 
 -- Custom WASM Filters scopes
--- Note: Resource name uses underscore to match handler code
 INSERT INTO scopes (id, value, resource, action, label, description, category, visible_in_ui, enabled)
 VALUES
-    ('scope-custom-wasm-filters-read', 'custom_wasm_filters:read', 'custom_wasm_filters', 'read', 'Read custom filters', 'View custom WASM filter configurations', 'Custom Filters', TRUE, TRUE),
-    ('scope-custom-wasm-filters-write', 'custom_wasm_filters:write', 'custom_wasm_filters', 'write', 'Create/update custom filters', 'Upload and modify custom WASM filters', 'Custom Filters', TRUE, TRUE),
-    ('scope-custom-wasm-filters-delete', 'custom_wasm_filters:delete', 'custom_wasm_filters', 'delete', 'Delete custom filters', 'Remove custom WASM filters', 'Custom Filters', TRUE, TRUE);
+    ('scope-custom-wasm-filters-read', 'custom-wasm-filters:read', 'custom-wasm-filters', 'read', 'Read custom filters', 'View custom WASM filter configurations', 'Custom Filters', TRUE, TRUE),
+    ('scope-custom-wasm-filters-write', 'custom-wasm-filters:write', 'custom-wasm-filters', 'write', 'Create/update custom filters', 'Upload and modify custom WASM filters', 'Custom Filters', TRUE, TRUE),
+    ('scope-custom-wasm-filters-delete', 'custom-wasm-filters:delete', 'custom-wasm-filters', 'delete', 'Delete custom filters', 'Remove custom WASM filters', 'Custom Filters', TRUE, TRUE);
 
 -- Learning Sessions scopes
 INSERT INTO scopes (id, value, resource, action, label, description, category, visible_in_ui, enabled)
