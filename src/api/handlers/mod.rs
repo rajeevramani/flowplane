@@ -90,7 +90,7 @@ pub use teams::{
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
-    remove_team_membership, update_user,
+    remove_team_membership, update_team_membership_scopes, update_user,
 };
 
 // Re-export team access utilities for use across handlers

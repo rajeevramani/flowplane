@@ -2,7 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Plus, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-svelte';
+	import { Plus, ChevronDown, ChevronUp } from 'lucide-svelte';
 	import type { ClusterResponse, CreateRouteBody } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import VirtualHostEditor, {
@@ -10,7 +10,8 @@
 		type RouteFormState
 	} from '$lib/components/route-config/VirtualHostEditor.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
-	import Button from '$lib/components/Button.svelte';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { validateRequired, runValidators } from '$lib/utils/validators';
 
 	interface FormState {
 		name: string;
@@ -145,11 +146,19 @@
 		);
 	}
 
-	// Validate form
+	// Validate form using reusable validators
 	function validateForm(): string | null {
-		if (!formState.name) return 'Configuration name is required';
+		// Basic validation
+		const basicError = runValidators([
+			() => validateRequired(formState.name, 'Configuration name')
+		]);
+		if (basicError) return basicError;
+
+		// Pattern validation
 		if (!/^[a-z0-9-]+$/.test(formState.name))
 			return 'Name must be lowercase alphanumeric with dashes';
+
+		// Virtual hosts validation
 		if (formState.virtualHosts.length === 0) return 'At least one virtual host is required';
 
 		for (const vh of formState.virtualHosts) {
@@ -216,31 +225,15 @@
 
 		<!-- Tab Content -->
 		{#if activeTab === 'configuration'}
-			<!-- Header -->
-			<div class="mb-8">
-				<div class="flex items-center gap-4 mb-4">
-					<button
-						onclick={handleCancel}
-						class="text-blue-600 hover:text-blue-800 transition-colors"
-						title="Back to list"
-					>
-						<ArrowLeft class="w-6 h-6" />
-					</button>
-					<div>
-						<h1 class="text-3xl font-bold text-gray-900">Create Route Configuration</h1>
-						<p class="text-sm text-gray-600 mt-1">
-							Define a new route configuration with virtual hosts and routes
-						</p>
-					</div>
-				</div>
-			</div>
+			<!-- Page Header with Back Button -->
+			<PageHeader
+				title="Create Route Configuration"
+				subtitle="Define a new route configuration with virtual hosts and routes"
+				onBack={handleCancel}
+			/>
 
 			<!-- Error Message -->
-			{#if error}
-				<div class="mb-6 bg-red-50 border border-red-200 rounded-md p-4">
-					<p class="text-sm text-red-800">{error}</p>
-				</div>
-			{/if}
+			<ErrorAlert message={error} />
 
 			<!-- Basic Information -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -335,14 +328,13 @@
 			</div>
 
 			<!-- Action Buttons -->
-			<div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 -mx-8 flex justify-end gap-3">
-				<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>
-					Cancel
-				</Button>
-				<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
-					{isSubmitting ? 'Creating...' : 'Create Configuration'}
-				</Button>
-			</div>
+			<FormActions
+				{isSubmitting}
+				submitLabel="Create Configuration"
+				submittingLabel="Creating..."
+				onSubmit={handleSubmit}
+				onCancel={handleCancel}
+			/>
 		{:else}
 			<!-- JSON Tab -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

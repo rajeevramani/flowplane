@@ -3,6 +3,14 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { CreateUserRequest } from '$lib/api/types';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import {
+		validateRequired,
+		validateEmail,
+		validatePassword,
+		validatePasswordMatch,
+		runValidators
+	} from '$lib/utils/validators';
 
 	let formData = $state({
 		email: '',
@@ -14,7 +22,7 @@
 
 	let errors = $state<Record<string, string>>({});
 	let isSubmitting = $state(false);
-	let submitError = $state<string | null>(null);
+	let error = $state<string | null>(null);
 
 	onMount(async () => {
 		// Check authentication and admin access
@@ -71,29 +79,24 @@
 	function validateForm(): boolean {
 		const newErrors: Record<string, string> = {};
 
-		// Email validation
-		if (!formData.email.trim()) {
-			newErrors.email = 'Email is required';
-		} else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-			newErrors.email = 'Invalid email format';
-		}
+		// Email validation using reusable validators
+		const emailError = runValidators([
+			() => validateRequired(formData.email, 'Email'),
+			() => validateEmail(formData.email)
+		]);
+		if (emailError) newErrors.email = emailError;
 
 		// Name validation
-		if (!formData.name.trim()) {
-			newErrors.name = 'Name is required';
-		}
+		const nameError = validateRequired(formData.name, 'Full name');
+		if (nameError) newErrors.name = nameError;
 
-		// Password validation
-		if (!formData.password) {
-			newErrors.password = 'Password is required';
-		} else if (formData.password.length < 8) {
-			newErrors.password = 'Password must be at least 8 characters';
-		}
+		// Password validation using reusable validator
+		const passwordError = validatePassword(formData.password);
+		if (passwordError) newErrors.password = passwordError;
 
 		// Confirm password validation
-		if (formData.password !== formData.confirmPassword) {
-			newErrors.confirmPassword = 'Passwords do not match';
-		}
+		const confirmError = validatePasswordMatch(formData.password, formData.confirmPassword);
+		if (confirmError) newErrors.confirmPassword = confirmError;
 
 		errors = newErrors;
 		return Object.keys(newErrors).length === 0;
@@ -105,7 +108,7 @@
 		}
 
 		isSubmitting = true;
-		submitError = null;
+		error = null;
 
 		try {
 			const request: CreateUserRequest = {
@@ -119,8 +122,8 @@
 
 			// Navigate to user detail page
 			goto(`/admin/users/${user.id}`);
-		} catch (err: any) {
-			submitError = err.message || 'Failed to create user';
+		} catch (err: unknown) {
+			error = err instanceof Error ? err.message : 'Failed to create user';
 		} finally {
 			isSubmitting = false;
 		}
@@ -131,44 +134,21 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<!-- Navigation -->
-	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="w-full px-4 sm:px-6 lg:px-8">
-			<div class="flex justify-between h-16 items-center">
-				<div class="flex items-center gap-4">
-					<a
-						href="/admin/users"
-						class="text-blue-600 hover:text-blue-800"
-						aria-label="Back to users"
-					>
-						<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10 19l-7-7m0 0l7-7m-7 7h18"
-							/>
-						</svg>
-					</a>
-					<h1 class="text-xl font-bold text-gray-900">Create User</h1>
-				</div>
-			</div>
-		</div>
-	</nav>
+<div class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+	<!-- Page Header with Back Button -->
+	<PageHeader
+		title="Create User"
+		subtitle="Add a new user to the system"
+		onBack={handleCancel}
+	/>
 
-	<main class="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-		<!-- Error Message -->
-		{#if submitError}
-			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
-				<p class="text-red-800 text-sm">{submitError}</p>
-			</div>
-		{/if}
+	<!-- Error Message -->
+	<ErrorAlert message={error} />
 
-		<!-- Create User Form -->
-		<div class="bg-white rounded-lg shadow-md p-6">
-			<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<div class="space-y-6">
+	<!-- Create User Form -->
+	<div class="bg-white rounded-lg shadow-md p-6">
+		<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+			<div class="space-y-6">
 					<!-- Email -->
 					<div>
 						<label for="email" class="block text-sm font-medium text-gray-700 mb-2">
@@ -301,26 +281,15 @@
 						</div>
 					</div>
 				</div>
-
-				<!-- Form Actions -->
-				<div class="mt-6 flex justify-end gap-3">
-					<button
-						type="button"
-						onclick={handleCancel}
-						disabled={isSubmitting}
-						class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
-					>
-						Cancel
-					</button>
-					<button
-						type="submit"
-						disabled={isSubmitting}
-						class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
-					>
-						{isSubmitting ? 'Creating...' : 'Create User'}
-					</button>
-				</div>
 			</form>
 		</div>
-	</main>
+
+	<!-- Action Buttons -->
+	<FormActions
+		{isSubmitting}
+		submitLabel="Create User"
+		submittingLabel="Creating..."
+		onSubmit={handleSubmit}
+		onCancel={handleCancel}
+	/>
 </div>

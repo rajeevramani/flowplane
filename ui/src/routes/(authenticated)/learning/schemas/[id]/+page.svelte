@@ -14,9 +14,10 @@
 		GitCompare,
 		CheckCircle
 	} from 'lucide-svelte';
-	import type { AggregatedSchemaResponse, SchemaComparisonResponse } from '$lib/api/types';
+	import type { AggregatedSchemaResponse, SchemaComparisonResponse, SessionInfoResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import { canReadSchemas } from '$lib/utils/permissions';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -24,6 +25,7 @@
 	let comparison = $state<SchemaComparisonResponse | null>(null);
 	let isLoadingComparison = $state(false);
 	let isExporting = $state(false);
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// Tab state
 	let activeTab = $state<'request' | 'response' | 'comparison'>('request');
@@ -31,6 +33,11 @@
 	const schemaId = Number($page.params.id);
 
 	onMount(async () => {
+		try {
+			sessionInfo = await apiClient.getSessionInfo();
+		} catch (e) {
+			console.error('Failed to load session info:', e);
+		}
 		await loadSchema();
 	});
 
@@ -68,6 +75,12 @@
 
 	async function handleExport(includeExamples: boolean = false) {
 		if (!schema) return;
+
+		// Permission check
+		if (sessionInfo && !canReadSchemas(sessionInfo)) {
+			error = "You don't have permission to export schemas. Contact your administrator.";
+			return;
+		}
 
 		isExporting = true;
 		try {
@@ -162,10 +175,12 @@
 			</div>
 
 			<div class="flex gap-2">
-				<Button onclick={() => handleExport(false)} variant="secondary" disabled={isExporting}>
-					<Download class="h-4 w-4 mr-2" />
-					{isExporting ? 'Exporting...' : 'Export OpenAPI'}
-				</Button>
+				{#if sessionInfo && canReadSchemas(sessionInfo)}
+					<Button onclick={() => handleExport(false)} variant="secondary" disabled={isExporting}>
+						<Download class="h-4 w-4 mr-2" />
+						{isExporting ? 'Exporting...' : 'Export OpenAPI'}
+					</Button>
+				{/if}
 			</div>
 		</div>
 

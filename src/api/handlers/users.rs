@@ -20,8 +20,8 @@ use crate::api::routes::ApiState;
 use crate::auth::authorization::has_admin_bypass;
 use crate::auth::models::AuthContext;
 use crate::auth::user::{
-    CreateTeamMembershipRequest, CreateUserRequest, UpdateUser, UpdateUserRequest, UserResponse,
-    UserTeamMembership, UserWithTeamsResponse,
+    CreateTeamMembershipRequest, CreateUserRequest, UpdateTeamMembershipRequest, UpdateUser,
+    UpdateUserRequest, UserResponse, UserTeamMembership, UserWithTeamsResponse,
 };
 use crate::auth::user_service::UserService;
 use crate::domain::UserId;
@@ -380,6 +380,56 @@ pub async fn remove_team_membership(
         .map_err(convert_error)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Update scopes for a team membership (admin only).
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{id}/teams/{team}",
+    params(
+        ("id" = String, Path, description = "User ID"),
+        ("team" = String, Path, description = "Team name")
+    ),
+    request_body = UpdateTeamMembershipRequest,
+    responses(
+        (status = 200, description = "Scopes updated successfully", body = UserTeamMembership),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Admin privileges required"),
+        (status = 404, description = "User or membership not found")
+    ),
+    security(("bearer_auth" = ["admin:all"])),
+    tag = "Administration"
+)]
+#[instrument(skip(state, payload), fields(target_user_id = %id, team = %team, user_id = ?context.user_id))]
+pub async fn update_team_membership_scopes(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((id, team)): Path<(String, String)>,
+    Json(payload): Json<UpdateTeamMembershipRequest>,
+) -> Result<Json<UserTeamMembership>, ApiError> {
+    // Check admin authorization
+    require_admin(&context)?;
+
+    // Validate request
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Parse user ID
+    let user_id = UserId::from_string(id);
+
+    // Update scopes
+    let service = user_service_for_state(&state)?;
+    let membership = service
+        .update_team_membership_scopes(
+            &user_id,
+            &team,
+            payload.scopes,
+            Some(context.token_id.to_string()),
+            Some(&context),
+        )
+        .await
+        .map_err(convert_error)?;
+
+    Ok(Json(membership))
 }
 
 /// List all teams for a user (admin only).

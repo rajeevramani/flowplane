@@ -147,7 +147,6 @@ fn session_response_from_data(
     }
 }
 
-
 /// Extract a single team from auth context for team-scoped operations.
 /// Returns BadRequest error if no team scope is available.
 fn require_single_team_scope(context: &AuthContext) -> Result<String, ApiError> {
@@ -406,8 +405,11 @@ pub async fn delete_learning_session_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require learning-sessions:write scope
-    require_resource_access(&context, "learning-sessions", "write", None)?;
+    // Authorization: require learning-sessions:delete scope
+    // Note: This uses the dedicated delete scope (not write) to follow principle of least privilege.
+    // Users who should only create/modify sessions need write scope, but cannot delete unless
+    // explicitly granted the delete scope.
+    require_resource_access(&context, "learning-sessions", "delete", None)?;
 
     // Extract team from auth context
     let team_scopes = get_effective_team_scopes(&context);

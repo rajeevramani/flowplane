@@ -3,10 +3,11 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { FileCode, Search, RefreshCw, Eye, Download, AlertTriangle, FileJson } from 'lucide-svelte';
-	import type { AggregatedSchemaResponse } from '$lib/api/types';
+	import type { AggregatedSchemaResponse, SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Badge from '$lib/components/Badge.svelte';
 	import SchemaExportModal from '$lib/components/learning/SchemaExportModal.svelte';
+	import { canReadSchemas } from '$lib/utils/permissions';
 
 	let isLoading = $state(true);
 	let showExportModal = $state(false);
@@ -14,6 +15,7 @@
 	let searchQuery = $state('');
 	let methodFilter = $state('');
 	let currentTeam = $state<string>('');
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// Data
 	let schemas = $state<AggregatedSchemaResponse[]>([]);
@@ -29,6 +31,11 @@
 	});
 
 	onMount(async () => {
+		try {
+			sessionInfo = await apiClient.getSessionInfo();
+		} catch (e) {
+			console.error('Failed to load session info:', e);
+		}
 		await loadData();
 	});
 
@@ -78,6 +85,12 @@
 
 	// Export as OpenAPI
 	async function handleExport(schema: AggregatedSchemaResponse) {
+		// Permission check
+		if (sessionInfo && !canReadSchemas(sessionInfo)) {
+			error = "You don't have permission to export schemas. Contact your administrator.";
+			return;
+		}
+
 		try {
 			const openapi = await apiClient.exportSchemaAsOpenApi(schema.id, false);
 			const blob = new Blob([JSON.stringify(openapi, null, 2)], { type: 'application/json' });
@@ -210,14 +223,16 @@
 		</select>
 
 		<!-- Export Button -->
-		<button
-			onclick={() => (showExportModal = true)}
-			disabled={filteredSchemas.length === 0}
-			class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
-		>
-			<FileJson class="h-4 w-4" />
-			Export as OpenAPI
-		</button>
+		{#if sessionInfo && canReadSchemas(sessionInfo)}
+			<button
+				onclick={() => (showExportModal = true)}
+				disabled={filteredSchemas.length === 0}
+				class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+			>
+				<FileJson class="h-4 w-4" />
+				Export as OpenAPI
+			</button>
+		{/if}
 	</div>
 
 	<!-- Error Message -->
@@ -321,13 +336,15 @@
 									>
 										<Eye class="h-4 w-4" />
 									</button>
-									<button
-										onclick={() => handleExport(schema)}
-										class="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-										title="Export as OpenAPI"
-									>
-										<Download class="h-4 w-4" />
-									</button>
+									{#if sessionInfo && canReadSchemas(sessionInfo)}
+										<button
+											onclick={() => handleExport(schema)}
+											class="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+											title="Export as OpenAPI"
+										>
+											<Download class="h-4 w-4" />
+										</button>
+									{/if}
 								</div>
 							</td>
 						</tr>

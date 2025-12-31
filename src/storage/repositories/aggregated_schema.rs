@@ -88,6 +88,28 @@ impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
     }
 }
 
+impl crate::api::handlers::team_access::TeamOwned for AggregatedSchemaData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.path
+    }
+
+    fn resource_type() -> &'static str {
+        "Aggregated schema"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "aggregated_schemas"
+    }
+
+    fn identifier_label() -> &'static str {
+        "path"
+    }
+}
+
 /// Request to create a new aggregated schema
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateAggregatedSchemaRequest {

@@ -36,6 +36,7 @@ import type {
 	ListUsersResponse,
 	UserTeamMembership,
 	CreateTeamMembershipRequest,
+	UpdateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
 	ListAuditLogsResponse,
@@ -547,6 +548,17 @@ class ApiClient {
 
 	async removeTeamMembership(userId: string, team: string): Promise<void> {
 		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
+	}
+
+	async updateTeamMembershipScopes(
+		userId: string,
+		team: string,
+		request: UpdateTeamMembershipRequest
+	): Promise<UserTeamMembership> {
+		return this.put<UserTeamMembership>(
+			`/api/v1/users/${userId}/teams/${encodeURIComponent(team)}`,
+			request
+		);
 	}
 
 	// Audit Log methods (admin only)

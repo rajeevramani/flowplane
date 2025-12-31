@@ -44,7 +44,13 @@ VALUES
 -- Aggregated Schemas scopes (read-only resource)
 INSERT INTO scopes (id, value, resource, action, label, description, category, visible_in_ui, enabled)
 VALUES
-    ('scope-aggregated-schemas-read', 'aggregated-schemas:read', 'aggregated-schemas', 'read', 'Read API schemas', 'View and export learned API schemas', 'Schemas', TRUE, TRUE);
+    ('scope-aggregated-schemas-read', 'aggregated-schemas:read', 'aggregated-schemas', 'read', 'Read API schemas', 'View learned API schemas', 'Schemas', TRUE, TRUE);
+
+-- Aggregated Schemas scopes (write-only resource)
+INSERT INTO scopes (id, value, resource, action, label, description, category, visible_in_ui, enabled)
+VALUES
+    ('scope-aggregated-schemas-write', 'aggregated-schemas:write', 'aggregated-schemas', 'write', 'Export API schemas', 'Export learned API schemas', 'Schemas', TRUE, TRUE);
+
 
 -- Reports scopes (read-only resource)
 INSERT INTO scopes (id, value, resource, action, label, description, category, visible_in_ui, enabled)

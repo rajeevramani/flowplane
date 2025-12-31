@@ -12,7 +12,11 @@ use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
     auth::authorization::{extract_team_scopes, require_resource_access},
     auth::models::AuthContext,
 };
@@ -220,34 +224,6 @@ fn schema_response_from_data(
     }
 }
 
-async fn verify_schema_access(
-    schema: crate::storage::repositories::AggregatedSchemaData,
-    team_scopes: &[String],
-) -> Result<crate::storage::repositories::AggregatedSchemaData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(schema);
-    }
-
-    // Check if schema belongs to one of user's teams
-    if team_scopes.contains(&schema.team) {
-        Ok(schema)
-    } else {
-        // Record cross-team access attempt for security monitoring
-        if let Some(from_team) = team_scopes.first() {
-            crate::observability::metrics::record_cross_team_access_attempt(
-                from_team,
-                &schema.team,
-                "aggregated_schemas",
-            )
-            .await;
-        }
-
-        // Return 404 to avoid leaking existence of other teams' resources
-        Err(ApiError::NotFound(format!("Aggregated schema with ID '{}' not found", schema.id)))
-    }
-}
-
 // === Handlers ===
 
 /// List aggregated schemas with optional filters
@@ -344,9 +320,6 @@ pub async fn get_aggregated_schema_handler(
     // Authorization
     require_resource_access(&context, "aggregated-schemas", "read", None)?;
 
-    // Extract team scopes
-    let team_scopes = extract_team_scopes(&context);
-
     // Get repository
     let repo = state
         .xds_state
@@ -360,8 +333,19 @@ pub async fn get_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access
-    let authorized_schema = verify_schema_access(schema, &team_scopes).await?;
+    // Verify team access based on user's scope type
+    let team_scopes = get_effective_team_scopes(&context);
+    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
+    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
+        || context.has_scope("aggregated-schemas:write");
+
+    let authorized_schema = if is_admin || has_global_resource_scope {
+        // Admin or global scope - allow access to all schemas
+        schema
+    } else {
+        // Team-scoped user - verify access
+        verify_team_access(schema, &team_scopes).await?
+    };
 
     tracing::info!(
         id = id,
@@ -401,9 +385,6 @@ pub async fn compare_aggregated_schemas_handler(
     // Authorization
     require_resource_access(&context, "aggregated-schemas", "read", None)?;
 
-    // Extract team scopes
-    let team_scopes = extract_team_scopes(&context);
-
     // Get repository
     let repo = state
         .xds_state
@@ -417,8 +398,19 @@ pub async fn compare_aggregated_schemas_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access to current schema
-    let authorized_current = verify_schema_access(current_schema.clone(), &team_scopes).await?;
+    // Verify team access based on user's scope type
+    let team_scopes = get_effective_team_scopes(&context);
+    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
+    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
+        || context.has_scope("aggregated-schemas:write");
+
+    let authorized_current = if is_admin || has_global_resource_scope {
+        // Admin or global scope - allow access to all schemas
+        current_schema.clone()
+    } else {
+        // Team-scoped user - verify access
+        verify_team_access(current_schema.clone(), &team_scopes).await?
+    };
 
     // Get comparison version (same path, method, different version)
     let compared_schema = repo
@@ -492,9 +484,6 @@ pub async fn export_aggregated_schema_handler(
     // Authorization
     require_resource_access(&context, "aggregated-schemas", "read", None)?;
 
-    // Extract team scopes
-    let team_scopes = extract_team_scopes(&context);
-
     // Get repository
     let repo = state
         .xds_state
@@ -508,8 +497,22 @@ pub async fn export_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access
-    let authorized_schema = verify_schema_access(schema, &team_scopes).await?;
+    // Verify team access based on user's scope type
+    // - Admin users (admin:all) can access all schemas
+    // - Users with global aggregated-schemas:read can access all schemas
+    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
+    let team_scopes = get_effective_team_scopes(&context);
+    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
+    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
+        || context.has_scope("aggregated-schemas:write");
+
+    let authorized_schema = if is_admin || has_global_resource_scope {
+        // Admin or global scope - allow access to all schemas
+        schema
+    } else {
+        // Team-scoped user - verify access
+        verify_team_access(schema, &team_scopes).await?
+    };
 
     // Build OpenAPI 3.1 specification
     let openapi = build_openapi_spec(&authorized_schema, query.include_metadata);
@@ -552,9 +555,6 @@ pub async fn export_multiple_schemas_handler(
     // Authorization
     require_resource_access(&context, "aggregated-schemas", "read", None)?;
 
-    // Extract team scopes
-    let team_scopes = extract_team_scopes(&context);
-
     // Get repository
     let repo = state
         .xds_state
@@ -576,10 +576,22 @@ pub async fn export_multiple_schemas_handler(
         return Err(ApiError::NotFound(format!("Schemas not found: {:?}", missing)));
     }
 
-    // Verify all schemas belong to user's team (team isolation)
-    for schema in &schemas {
-        verify_schema_access(schema.clone(), &team_scopes).await?;
+    // Verify team access based on user's scope type
+    // - Admin users (admin:all) can access all schemas
+    // - Users with global aggregated-schemas:read can access all schemas
+    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
+    let team_scopes = get_effective_team_scopes(&context);
+    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
+    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
+        || context.has_scope("aggregated-schemas:write");
+
+    if !is_admin && !has_global_resource_scope {
+        // Team-scoped user - verify access to each schema
+        for schema in &schemas {
+            verify_team_access(schema.clone(), &team_scopes).await?;
+        }
     }
+    // Admin or global scope - allow access to all schemas (no verification needed)
 
     // Build unified OpenAPI spec
     let openapi = build_unified_openapi_spec(&schemas, &body);
@@ -1451,5 +1463,64 @@ mod tests {
             responses.contains_key("default"),
             "should have default response when response_schemas is empty"
         );
+    }
+
+    /// Tests for team access verification using unified pattern
+    mod access_verification_tests {
+        use super::*;
+        use crate::api::handlers::team_access::verify_team_access;
+
+        fn sample_schema(
+            team: &str,
+            id: i64,
+        ) -> crate::storage::repositories::AggregatedSchemaData {
+            crate::storage::repositories::AggregatedSchemaData {
+                id,
+                team: team.to_string(),
+                path: "/api/test".to_string(),
+                http_method: "GET".to_string(),
+                version: 1,
+                previous_version_id: None,
+                request_schema: Some(serde_json::json!({"type": "object"})),
+                response_schemas: Some(serde_json::json!({
+                    "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
+                })),
+                sample_count: 10,
+                confidence_score: 0.9,
+                breaking_changes: None,
+                first_observed: chrono::Utc::now(),
+                last_observed: chrono::Utc::now(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_same_team() {
+            let schema = sample_schema("team-a", 1);
+            let team_scopes = vec!["team-a".to_string()];
+            let result = verify_team_access(schema, &team_scopes).await;
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_different_team() {
+            let schema = sample_schema("team-a", 1);
+            let team_scopes = vec!["team-b".to_string()];
+            let result = verify_team_access(schema, &team_scopes).await;
+            assert!(result.is_err());
+            match result {
+                Err(ApiError::NotFound(_)) => {} // Expected - return 404 to avoid leaking info
+                _ => panic!("Expected NotFound error for cross-team access"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_verify_access_admin_empty_scopes() {
+            let schema = sample_schema("any-team", 1);
+            let team_scopes: Vec<String> = vec![]; // Admin bypass
+            let result = verify_team_access(schema, &team_scopes).await;
+            assert!(result.is_ok());
+        }
     }
 }

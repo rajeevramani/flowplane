@@ -11,6 +11,7 @@
 		onCancel: () => void;
 		variant?: 'default' | 'sticky';
 		class?: string;
+		disabled?: boolean;
 	}
 
 	let {
@@ -21,7 +22,8 @@
 		onSubmit,
 		onCancel,
 		variant = 'default',
-		class: className = ''
+		class: className = '',
+		disabled = false
 	}: Props = $props();
 
 	let submittingText = $derived(submittingLabel ?? 'Saving...');
@@ -32,7 +34,7 @@
 		<Button onclick={onCancel} variant="secondary" disabled={isSubmitting}>
 			{cancelLabel}
 		</Button>
-		<Button onclick={onSubmit} variant="primary" disabled={isSubmitting}>
+		<Button onclick={onSubmit} variant="primary" disabled={isSubmitting || disabled}>
 			{#if isSubmitting}
 				<Loader2 class="h-4 w-4 mr-2 animate-spin" />
 				{submittingText}
@@ -46,7 +48,7 @@
 		<Button onclick={onCancel} variant="secondary" disabled={isSubmitting}>
 			{cancelLabel}
 		</Button>
-		<Button onclick={onSubmit} variant="primary" disabled={isSubmitting}>
+		<Button onclick={onSubmit} variant="primary" disabled={isSubmitting || disabled}>
 			{#if isSubmitting}
 				<Loader2 class="h-4 w-4 mr-2 animate-spin" />
 				{submittingText}

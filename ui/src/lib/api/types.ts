@@ -290,6 +290,10 @@ export interface CreateTeamMembershipRequest {
 	scopes: string[];
 }
 
+export interface UpdateTeamMembershipRequest {
+	scopes: string[];
+}
+
 export interface ListUsersResponse {
 	users: UserResponse[];
 	total: number;

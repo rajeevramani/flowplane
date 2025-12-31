@@ -373,6 +373,73 @@ pub fn action_from_http_method(method: &str) -> &'static str {
     }
 }
 
+/// Determine the semantic action from both HTTP method and request path.
+///
+/// Some POST endpoints are semantically read operations (they use POST to send
+/// request bodies, not to modify data). This function identifies such endpoints
+/// by analyzing the path and returns the correct semantic action.
+///
+/// # Semantic Read Operations
+///
+/// The following patterns are treated as "read" regardless of HTTP method:
+/// - Paths ending in `/export` (e.g., `/api/v1/aggregated-schemas/export`)
+/// - Paths ending in `/compare` (e.g., `/api/v1/schemas/compare`)
+/// - Paths containing `/search` (e.g., `/api/v1/resources/search`)
+/// - Paths containing `/query` (e.g., `/api/v1/data/query`)
+///
+/// # Arguments
+///
+/// * `method` - The HTTP method string
+/// * `path` - The request path
+///
+/// # Returns
+///
+/// The semantic action string ("read" or "write").
+///
+/// # Examples
+///
+/// ```rust
+/// use flowplane::auth::authorization::action_from_request;
+///
+/// // Regular GET → read
+/// assert_eq!(action_from_request("GET", "/api/v1/routes"), "read");
+///
+/// // Regular POST → write
+/// assert_eq!(action_from_request("POST", "/api/v1/routes"), "write");
+///
+/// // Export endpoint uses POST but is semantically read
+/// assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/export"), "read");
+///
+/// // Compare endpoint
+/// assert_eq!(action_from_request("POST", "/api/v1/schemas/compare"), "read");
+///
+/// // Search endpoint
+/// assert_eq!(action_from_request("POST", "/api/v1/resources/search"), "read");
+///
+/// // Query endpoint
+/// assert_eq!(action_from_request("POST", "/api/v1/data/query"), "read");
+/// ```
+pub fn action_from_request(method: &str, path: &str) -> &'static str {
+    // Check if path indicates a semantic read operation
+    // Export and compare must be at the end of the path
+    if path.ends_with("/export") || path.ends_with("/compare") {
+        return "read";
+    }
+
+    // Search and query must be a complete path segment (preceded by /)
+    // This prevents false positives like "search-configs" or "query-builder"
+    // Split path into segments and check if any segment is exactly "search" or "query"
+    let segments: Vec<&str> = path.split('/').collect();
+    for segment in segments {
+        if segment == "search" || segment == "query" {
+            return "read";
+        }
+    }
+
+    // Otherwise, delegate to HTTP method-based detection
+    action_from_http_method(method)
+}
+
 /// Extract resource name from a URL path.
 ///
 /// Parses paths like `/api/v1/routes/{id}` and extracts "routes".
@@ -411,6 +478,25 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
         // This allows tokens with generate-envoy-config:read to access team bootstrap
         if parts[2] == "teams" && parts.len() >= 4 && parts.last() == Some(&"bootstrap") {
             return Some("generate-envoy-config");
+        }
+
+        // Special case: /api/v1/teams/{team}/{resource} - team-scoped resources
+        // These paths have the pattern: ["api", "v1", "teams", "{team}", "{resource}"]
+        // We need to extract the sub-resource (parts[4]) not "teams" (parts[2])
+        // Examples:
+        //   /api/v1/teams/engineering/secrets → "secrets"
+        //   /api/v1/teams/engineering/proxy-certificates → "proxy-certificates"
+        //   /api/v1/teams/engineering/custom-filters → "custom-wasm-filters"
+        if parts[2] == "teams" && parts.len() >= 5 {
+            let sub_resource = parts[4];
+
+            // Handle resource name mappings for team-scoped resources
+            // URL path uses "custom-filters" but scope uses "custom-wasm-filters"
+            if sub_resource == "custom-filters" {
+                return Some("custom-wasm-filters");
+            }
+
+            return Some(sub_resource);
         }
 
         // Special case: /api/v1/openapi/* routes use "openapi-import" resource
@@ -594,6 +680,128 @@ mod tests {
         assert_eq!(action_from_http_method("UNKNOWN"), "read");
     }
 
+    #[test]
+    fn action_from_request_handles_regular_methods() {
+        // Regular GET request → read
+        assert_eq!(action_from_request("GET", "/api/v1/routes"), "read");
+        assert_eq!(action_from_request("GET", "/api/v1/clusters/123"), "read");
+
+        // Regular POST request → write
+        assert_eq!(action_from_request("POST", "/api/v1/routes"), "write");
+        assert_eq!(action_from_request("POST", "/api/v1/clusters"), "write");
+
+        // Regular PUT/PATCH/DELETE → write
+        assert_eq!(action_from_request("PUT", "/api/v1/routes/123"), "write");
+        assert_eq!(action_from_request("PATCH", "/api/v1/routes/123"), "write");
+        assert_eq!(action_from_request("DELETE", "/api/v1/routes/123"), "write");
+    }
+
+    #[test]
+    fn action_from_request_identifies_export_as_read() {
+        // Export endpoints are semantic reads regardless of method
+        assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/export"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/schemas/export"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/data/export"), "read");
+
+        // Even if someone uses PUT or other methods, still read
+        assert_eq!(action_from_request("PUT", "/api/v1/data/export"), "read");
+        assert_eq!(action_from_request("PATCH", "/api/v1/data/export"), "read");
+    }
+
+    #[test]
+    fn action_from_request_identifies_compare_as_read() {
+        // Compare endpoints are semantic reads
+        assert_eq!(action_from_request("POST", "/api/v1/schemas/compare"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/compare"), "read");
+        assert_eq!(action_from_request("PUT", "/api/v1/data/compare"), "read");
+    }
+
+    #[test]
+    fn action_from_request_identifies_search_as_read() {
+        // Search endpoints are semantic reads
+        assert_eq!(action_from_request("POST", "/api/v1/resources/search"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/routes/search"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/search"), "read");
+
+        // Search in the middle of path
+        assert_eq!(action_from_request("POST", "/api/v1/search/filters"), "read");
+    }
+
+    #[test]
+    fn action_from_request_identifies_query_as_read() {
+        // Query endpoints are semantic reads
+        assert_eq!(action_from_request("POST", "/api/v1/data/query"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/query"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/query/advanced"), "read");
+
+        // Query in the middle of path
+        assert_eq!(action_from_request("POST", "/api/v1/logs/query/recent"), "read");
+    }
+
+    #[test]
+    fn action_from_request_does_not_false_positive() {
+        // Paths containing "search" or "query" as part of resource names should still work
+        // but paths with these as actual operations should be read
+
+        // These are normal write operations (resource creation/modification)
+        assert_eq!(action_from_request("POST", "/api/v1/search-configs"), "write");
+        assert_eq!(action_from_request("POST", "/api/v1/query-builder"), "write");
+
+        // Export/compare must be at the END of the path
+        assert_eq!(action_from_request("POST", "/api/v1/export-configs"), "write");
+        assert_eq!(action_from_request("POST", "/api/v1/compare-tool"), "write");
+    }
+
+    #[test]
+    fn action_from_request_case_insensitive_methods() {
+        // HTTP methods should be case-insensitive
+        assert_eq!(action_from_request("post", "/api/v1/routes"), "write");
+        assert_eq!(action_from_request("get", "/api/v1/routes"), "read");
+        assert_eq!(action_from_request("POST", "/api/v1/schemas/export"), "read");
+        assert_eq!(action_from_request("post", "/api/v1/schemas/export"), "read");
+    }
+
+    #[test]
+    fn action_from_request_real_world_examples() {
+        // Real-world bug fix: aggregated-schemas export
+        assert_eq!(
+            action_from_request("POST", "/api/v1/aggregated-schemas/export"),
+            "read",
+            "aggregated-schemas export should be read operation"
+        );
+
+        // Other potential export endpoints
+        assert_eq!(
+            action_from_request("POST", "/api/v1/routes/export"),
+            "read",
+            "routes export should be read operation"
+        );
+        assert_eq!(
+            action_from_request("POST", "/api/v1/clusters/export"),
+            "read",
+            "clusters export should be read operation"
+        );
+
+        // Search endpoints
+        assert_eq!(
+            action_from_request("POST", "/api/v1/api-definitions/search"),
+            "read",
+            "api-definitions search should be read operation"
+        );
+
+        // Regular write operations should remain unchanged
+        assert_eq!(
+            action_from_request("POST", "/api/v1/aggregated-schemas"),
+            "write",
+            "creating aggregated-schema should be write operation"
+        );
+        assert_eq!(
+            action_from_request("PUT", "/api/v1/aggregated-schemas/123"),
+            "write",
+            "updating aggregated-schema should be write operation"
+        );
+    }
+
     // === Regression tests for admin-with-team-memberships bug ===
     // These tests ensure admin bypass works correctly even when the admin
     // also has team-scoped permissions from their team memberships.
@@ -769,16 +977,49 @@ mod tests {
             "list teams endpoint should be accessible to all authenticated users"
         );
 
-        // But other team endpoints should return "teams"
+        // Single team detail endpoint should return "teams"
         assert_eq!(
             resource_from_path("/api/v1/teams/payments"),
             Some("teams"),
-            "other team endpoints should return teams as resource"
+            "single team detail endpoint should return teams as resource"
+        );
+
+        // Team-scoped resources should extract the sub-resource (parts[4])
+        // Pattern: /api/v1/teams/{team}/{resource}
+        assert_eq!(
+            resource_from_path("/api/v1/teams/engineering/secrets"),
+            Some("secrets"),
+            "team-scoped secrets endpoint should return secrets"
         );
         assert_eq!(
-            resource_from_path("/api/v1/teams/payments/settings"),
-            Some("teams"),
-            "other team endpoints should return teams as resource"
+            resource_from_path("/api/v1/teams/engineering/secrets/abc-123"),
+            Some("secrets"),
+            "team-scoped secrets detail endpoint should return secrets"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/platform/custom-filters"),
+            Some("custom-wasm-filters"),
+            "team-scoped custom-filters should map to custom-wasm-filters scope"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/platform/custom-filters/filter-id"),
+            Some("custom-wasm-filters"),
+            "team-scoped custom-filters detail should map to custom-wasm-filters scope"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/eng/proxy-certificates"),
+            Some("proxy-certificates"),
+            "team-scoped proxy-certificates endpoint should return proxy-certificates"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/eng/stats"),
+            Some("stats"),
+            "team-scoped stats endpoint should return stats"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/teams/eng/stats/overview"),
+            Some("stats"),
+            "team-scoped stats sub-path should return stats"
         );
 
         // OpenAPI import routes should map to "openapi-import" resource

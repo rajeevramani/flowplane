@@ -132,6 +132,7 @@ use super::{
         update_listener_handler,
         update_route_config_handler,
         update_secret_handler,
+        update_team_membership_scopes,
         update_token_handler,
         update_user,
     },
@@ -390,6 +391,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/users/{id}/teams", get(list_user_teams))
         .route("/api/v1/users/{id}/teams", post(add_team_membership))
         .route("/api/v1/users/{id}/teams/{team}", delete(remove_team_membership))
+        .route("/api/v1/users/{id}/teams/{team}", put(update_team_membership_scopes))
         // Admin team management endpoints (admin only)
         .route("/api/v1/admin/teams", get(admin_list_teams))
         .route("/api/v1/admin/teams", post(admin_create_team))

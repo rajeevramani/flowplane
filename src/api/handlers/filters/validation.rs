@@ -193,4 +193,3 @@ pub fn filter_response_from_data_with_count(
     let config = parse_filter_config(&data)?;
     Ok(FilterResponse::from_data_with_count(data, config, attachment_count))
 }
-

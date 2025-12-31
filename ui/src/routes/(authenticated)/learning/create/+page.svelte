@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
-	import { ArrowLeft, AlertCircle, CheckCircle } from 'lucide-svelte';
-	import type { CreateLearningSessionRequest } from '$lib/api/types';
-	import Button from '$lib/components/Button.svelte';
+	import { onMount } from 'svelte';
+	import type { CreateLearningSessionRequest, SessionInfoResponse } from '$lib/api/types';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { canWriteLearningSessions } from '$lib/utils/permissions';
+	import { handleApiError } from '$lib/utils/errorHandling';
 
 	let isSubmitting = $state(false);
 	let error = $state<string | null>(null);
 	let regexError = $state<string | null>(null);
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let isLoadingPermissions = $state(true);
 
 	// Form state
 	let routePattern = $state('^/api/.*');
@@ -20,6 +24,22 @@
 
 	// HTTP method options
 	const availableMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
+
+	onMount(async () => {
+		try {
+			sessionInfo = await apiClient.getSessionInfo();
+
+			// Check if user has permission
+			if (!canWriteLearningSessions(sessionInfo)) {
+				error = "You don't have permission to create learning sessions. Contact your administrator.";
+			}
+		} catch (e) {
+			console.error('Failed to load session info:', e);
+			error = 'Failed to verify permissions. Please try again.';
+		} finally {
+			isLoadingPermissions = false;
+		}
+	});
 
 	// Toggle HTTP method selection
 	function toggleMethod(method: string) {
@@ -47,9 +67,14 @@
 	}
 
 	// Handle form submission
-	async function handleSubmit(e: Event) {
-		e.preventDefault();
+	async function handleSubmit() {
 		error = null;
+
+		// Permission check
+		if (sessionInfo && !canWriteLearningSessions(sessionInfo)) {
+			error = "You don't have permission to create learning sessions. Contact your administrator.";
+			return;
+		}
 
 		if (!validateRegex()) {
 			return;
@@ -91,10 +116,15 @@
 			const session = await apiClient.createLearningSession(request);
 			goto(`/learning/${encodeURIComponent(session.id)}`);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to create learning session';
+			const apiError = handleApiError(err, 'create learning session');
+			error = apiError.userMessage;
 		} finally {
 			isSubmitting = false;
 		}
+	}
+
+	function handleCancel() {
+		goto('/learning');
 	}
 
 	// Handle pattern input change
@@ -106,33 +136,29 @@
 </script>
 
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
-	<!-- Back Button -->
-	<button
-		onclick={() => goto('/learning')}
-		class="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-6 transition-colors"
-	>
-		<ArrowLeft class="h-4 w-4" />
-		Back to Sessions
-	</button>
+	<!-- Page Header with Back Button -->
+	<PageHeader
+		title="Create Learning Session"
+		subtitle="Configure a session to capture and analyze API traffic"
+		onBack={handleCancel}
+	/>
 
-	<!-- Header -->
-	<div class="mb-8">
-		<h1 class="text-3xl font-bold text-gray-900">Create Learning Session</h1>
-		<p class="mt-2 text-sm text-gray-600">
-			Configure a session to capture and analyze API traffic
-		</p>
-	</div>
-
-	<!-- Error -->
-	{#if error}
-		<div class="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
-			<AlertCircle class="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
-			<div class="text-red-700">{error}</div>
+	<!-- Loading State -->
+	{#if isLoadingPermissions}
+		<div class="max-w-2xl">
+			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-8 flex items-center justify-center">
+				<div class="flex items-center gap-3">
+					<div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+					<span class="text-gray-600">Checking permissions...</span>
+				</div>
+			</div>
 		</div>
-	{/if}
+	{:else}
+		<!-- Error Message -->
+		<ErrorAlert message={error} />
 
-	<!-- Form -->
-	<form onsubmit={handleSubmit} class="max-w-2xl space-y-6">
+		<!-- Form -->
+		<div class="max-w-2xl space-y-6">
 		<!-- Route Pattern -->
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
 			<h2 class="text-lg font-semibold text-gray-900 mb-4">Traffic Matching</h2>
@@ -283,19 +309,15 @@
 			</div>
 		</div>
 
-		<!-- Submit Buttons -->
-		<div class="flex gap-4">
-			<Button type="button" variant="secondary" onclick={() => goto('/learning')}>
-				Cancel
-			</Button>
-			<Button type="submit" variant="primary" disabled={isSubmitting}>
-				{#if isSubmitting}
-					Creating...
-				{:else}
-					<CheckCircle class="h-4 w-4 mr-2" />
-					Create Session
-				{/if}
-			</Button>
-		</div>
-	</form>
+		<!-- Action Buttons -->
+		<FormActions
+			{isSubmitting}
+			submitLabel="Create Session"
+			submittingLabel="Creating..."
+			onSubmit={handleSubmit}
+			onCancel={handleCancel}
+			disabled={sessionInfo ? !canWriteLearningSessions(sessionInfo) : true}
+		/>
+	</div>
+	{/if}
 </div>

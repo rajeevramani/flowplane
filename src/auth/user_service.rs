@@ -450,6 +450,60 @@ impl UserService {
         Ok(())
     }
 
+    /// Update scopes for an existing team membership.
+    pub async fn update_team_membership_scopes(
+        &self,
+        user_id: &UserId,
+        team: &str,
+        scopes: Vec<String>,
+        updated_by: Option<String>,
+        auth_context: Option<&AuthContext>,
+    ) -> Result<UserTeamMembership> {
+        // Verify user exists
+        let user = self
+            .user_repository
+            .get_user(user_id)
+            .await?
+            .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
+
+        // Verify membership exists
+        let membership =
+            self.membership_repository.get_user_team_membership(user_id, team).await?.ok_or_else(
+                || Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team)),
+            )?;
+
+        // Store old scopes for audit
+        let old_scopes = membership.scopes.clone();
+
+        // Update scopes
+        let updated = self
+            .membership_repository
+            .update_membership_scopes(&membership.id, scopes.clone())
+            .await?;
+
+        // Log audit event
+        let event = AuditEvent::token(
+            "user.team_membership_scopes_updated",
+            Some(user_id.as_str()),
+            Some(&user.email),
+            serde_json::json!({
+                "team": team,
+                "old_scopes": old_scopes,
+                "new_scopes": scopes,
+                "updated_by": updated_by,
+            }),
+        );
+        let event = if let Some(ctx) = auth_context {
+            let (user_id, client_ip, user_agent) = ctx.to_audit_context();
+            event.with_user_context(user_id, client_ip, user_agent)
+        } else {
+            event
+        };
+        self.audit_repository.record_auth_event(event).await?;
+
+        Ok(updated)
+    }
+
     /// List all team memberships for a user.
     pub async fn list_user_teams(&self, user_id: &UserId) -> Result<Vec<UserTeamMembership>> {
         // Verify user exists
@@ -813,6 +867,117 @@ mod tests {
         assert!(
             err_msg.contains("does not exist"),
             "Error message should mention team doesn't exist: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_team_membership_scopes() {
+        let (service, pool) = setup_test_service().await;
+
+        // Create the team first
+        create_test_team(&pool, "team-alpha", "Team Alpha").await;
+
+        let user = service
+            .create_user(
+                "test@example.com".to_string(),
+                "Password123".to_string(),
+                "Test User".to_string(),
+                false,
+                None,
+                None,
+            )
+            .await
+            .expect("create user");
+
+        // Add initial membership with some scopes
+        service
+            .add_team_membership(
+                &user.id,
+                "team-alpha".to_string(),
+                vec!["team:team-alpha:clusters:read".to_string()],
+                None,
+                None,
+            )
+            .await
+            .expect("add team membership");
+
+        // Update scopes
+        let updated = service
+            .update_team_membership_scopes(
+                &user.id,
+                "team-alpha",
+                vec![
+                    "team:team-alpha:clusters:read".to_string(),
+                    "team:team-alpha:routes:write".to_string(),
+                ],
+                None,
+                None,
+            )
+            .await
+            .expect("update scopes");
+
+        assert_eq!(updated.scopes.len(), 2);
+        assert!(updated.scopes.contains(&"team:team-alpha:clusters:read".to_string()));
+        assert!(updated.scopes.contains(&"team:team-alpha:routes:write".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_team_membership_scopes_user_not_found() {
+        let (service, _pool) = setup_test_service().await;
+
+        let fake_user_id = UserId::new();
+        let result = service
+            .update_team_membership_scopes(
+                &fake_user_id,
+                "nonexistent-team",
+                vec!["clusters:read".to_string()],
+                None,
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not found") || err_msg.contains("User"),
+            "Error should indicate user not found: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_team_membership_scopes_membership_not_found() {
+        let (service, _pool) = setup_test_service().await;
+
+        let user = service
+            .create_user(
+                "test@example.com".to_string(),
+                "Password123".to_string(),
+                "Test User".to_string(),
+                false,
+                None,
+                None,
+            )
+            .await
+            .expect("create user");
+
+        // Try to update scopes for a team the user is not a member of
+        let result = service
+            .update_team_membership_scopes(
+                &user.id,
+                "nonexistent-team",
+                vec!["clusters:read".to_string()],
+                None,
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not found") || err_msg.contains("TeamMembership"),
+            "Error should indicate membership not found: {}",
             err_msg
         );
     }

@@ -12,11 +12,13 @@
 		Search,
 		Eye
 	} from 'lucide-svelte';
-	import type { LearningSessionResponse, LearningSessionStatus } from '$lib/api/types';
+	import type { LearningSessionResponse, LearningSessionStatus, SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import SessionStatusBadge from '$lib/components/learning/SessionStatusBadge.svelte';
 	import SessionProgressBar from '$lib/components/learning/SessionProgressBar.svelte';
+	import { canWriteLearningSessions, canDeleteLearningSessions } from '$lib/utils/permissions';
+	import { handleApiError } from '$lib/utils/errorHandling';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -26,6 +28,7 @@
 	let currentTeam = $state<string>('');
 	let pollingEnabled = $state(false);
 	let pollingInterval: ReturnType<typeof setInterval> | null = null;
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// Data
 	let sessions = $state<LearningSessionResponse[]>([]);
@@ -41,6 +44,11 @@
 	});
 
 	onMount(async () => {
+		try {
+			sessionInfo = await apiClient.getSessionInfo();
+		} catch (e) {
+			console.error('Failed to load session info:', e);
+		}
 		await loadData();
 	});
 
@@ -68,7 +76,8 @@
 				stopPolling();
 			}
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load learning sessions';
+			const apiError = handleApiError(e, 'load learning sessions');
+			error = apiError.userMessage;
 			console.error('Failed to load learning sessions:', e);
 		} finally {
 			isLoading = false;
@@ -136,6 +145,12 @@
 
 	// Cancel session
 	async function handleCancel(session: LearningSessionResponse) {
+		// Permission check
+		if (sessionInfo && !canDeleteLearningSessions(sessionInfo)) {
+			actionError = "You don't have permission to cancel learning sessions. Contact your administrator.";
+			return;
+		}
+
 		if (
 			!confirm(
 				`Are you sure you want to cancel the session for "${session.routePattern}"? This will stop traffic capture.`
@@ -149,7 +164,8 @@
 			await apiClient.cancelLearningSession(session.id);
 			await loadData();
 		} catch (err) {
-			actionError = err instanceof Error ? err.message : 'Failed to cancel session';
+			const apiError = handleApiError(err, 'cancel learning session');
+			actionError = apiError.userMessage;
 		}
 	}
 
@@ -202,10 +218,12 @@
 
 	<!-- Action Buttons -->
 	<div class="mb-6 flex items-center gap-4">
-		<Button onclick={handleCreate} variant="primary">
-			<Plus class="h-4 w-4 mr-2" />
-			Create Session
-		</Button>
+		{#if sessionInfo && canWriteLearningSessions(sessionInfo)}
+			<Button onclick={handleCreate} variant="primary">
+				<Plus class="h-4 w-4 mr-2" />
+				Create Session
+			</Button>
+		{/if}
 		{#if pollingEnabled}
 			<span class="text-sm text-gray-500 flex items-center gap-2">
 				<RefreshCw class="h-4 w-4 animate-spin" />
@@ -321,7 +339,7 @@
 					? 'No sessions match your filters.'
 					: 'Create a learning session to start capturing API traffic.'}
 			</p>
-			{#if !searchQuery && !statusFilter}
+			{#if !searchQuery && !statusFilter && sessionInfo && canWriteLearningSessions(sessionInfo)}
 				<Button onclick={handleCreate} variant="primary">
 					<Plus class="h-4 w-4 mr-2" />
 					Create Session
@@ -392,7 +410,7 @@
 									>
 										<Eye class="h-4 w-4" />
 									</button>
-									{#if session.status === 'active' || session.status === 'pending'}
+									{#if (session.status === 'active' || session.status === 'pending') && sessionInfo && canDeleteLearningSessions(sessionInfo)}
 										<button
 											onclick={() => handleCancel(session)}
 											class="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"

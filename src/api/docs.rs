@@ -79,6 +79,7 @@ use crate::xds::{
         crate::api::handlers::users::list_user_teams,
         crate::api::handlers::users::add_team_membership,
         crate::api::handlers::users::remove_team_membership,
+        crate::api::handlers::users::update_team_membership_scopes,
         // Scope endpoints
         crate::api::handlers::scopes::list_scopes_handler,
         crate::api::handlers::scopes::list_all_scopes_handler,
