@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import type { UserWithTeamsResponse, UserTeamMembership, UpdateUserRequest, CreateTeamMembershipRequest } from '$lib/api/types';
+	import type { UserWithTeamsResponse, UserTeamMembership, UpdateUserRequest, CreateTeamMembershipRequest, UpdateTeamMembershipRequest } from '$lib/api/types';
 	import ScopeSelector from '$lib/components/ScopeSelector.svelte';
 
 	let user = $state<UserWithTeamsResponse | null>(null);
@@ -26,6 +26,11 @@
 
 	// Delete modal
 	let showDeleteModal = $state(false);
+
+	// Edit scopes modal state
+	let showEditScopesModal = $state(false);
+	let editingMembership = $state<UserTeamMembership | null>(null);
+	let editedScopes = $state<string[]>([]);
 
 	// Status update
 	let isUpdatingStatus = $state(false);
@@ -205,6 +210,59 @@
 		} catch (err: any) {
 			error = err.message || 'Failed to remove team membership';
 		}
+	}
+
+	function openEditScopesModal(membership: UserTeamMembership) {
+		editingMembership = membership;
+		// Strip team prefix from scopes for display
+		editedScopes = membership.scopes.map((scope) => {
+			const prefix = `team:${membership.team}:`;
+			return scope.startsWith(prefix) ? scope.substring(prefix.length) : scope;
+		});
+		showEditScopesModal = true;
+	}
+
+	function toggleEditScope(scope: string) {
+		if (editedScopes.includes(scope)) {
+			editedScopes = editedScopes.filter((s) => s !== scope);
+		} else {
+			editedScopes = [...editedScopes, scope];
+		}
+	}
+
+	async function saveEditedScopes() {
+		if (!user || !editingMembership) return;
+
+		try {
+			// Transform scopes back to team-scoped format
+			const teamScopedScopes = editedScopes.map(
+				(scope) => `team:${editingMembership!.team}:${scope}`
+			);
+
+			const request: UpdateTeamMembershipRequest = {
+				scopes: teamScopedScopes
+			};
+			const updated = await apiClient.updateTeamMembershipScopes(
+				user.id,
+				editingMembership.team,
+				request
+			);
+
+			// Update local state
+			user.teams = user.teams.map((t) => (t.id === updated.id ? updated : t));
+
+			showEditScopesModal = false;
+			editingMembership = null;
+			editedScopes = [];
+		} catch (err: any) {
+			error = err.message || 'Failed to update scopes';
+		}
+	}
+
+	function cancelEditScopes() {
+		showEditScopesModal = false;
+		editingMembership = null;
+		editedScopes = [];
 	}
 
 	function handleDelete() {
@@ -450,12 +508,20 @@
 										Added {formatDate(membership.createdAt)}
 									</p>
 								</div>
-								<button
-									onclick={() => removeTeamMembership(membership.team)}
-									class="text-red-600 hover:text-red-800 text-sm"
-								>
-									Remove
-								</button>
+								<div class="flex gap-2">
+									<button
+										onclick={() => openEditScopesModal(membership)}
+										class="text-blue-600 hover:text-blue-800 text-sm"
+									>
+										Edit Scopes
+									</button>
+									<button
+										onclick={() => removeTeamMembership(membership.team)}
+										class="text-red-600 hover:text-red-800 text-sm"
+									>
+										Remove
+									</button>
+								</div>
 							</div>
 						{/each}
 					</div>
@@ -555,6 +621,45 @@
 					class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
 				>
 					Add Team
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Edit Scopes Modal -->
+{#if showEditScopesModal && editingMembership}
+	<div
+		class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+		role="dialog"
+		aria-modal="true"
+	>
+		<div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full max-h-[80vh] overflow-y-auto">
+			<h2 class="text-lg font-semibold text-gray-900 mb-4">
+				Edit Scopes for Team: {editingMembership.team}
+			</h2>
+
+			<div class="space-y-4">
+				<ScopeSelector
+					bind:selectedScopes={editedScopes}
+					onScopeToggle={toggleEditScope}
+					required={true}
+				/>
+			</div>
+
+			<div class="mt-6 flex justify-end gap-3">
+				<button
+					onclick={cancelEditScopes}
+					class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+				>
+					Cancel
+				</button>
+				<button
+					onclick={saveEditedScopes}
+					disabled={editedScopes.length === 0}
+					class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+				>
+					Save Scopes
 				</button>
 			</div>
 		</div>

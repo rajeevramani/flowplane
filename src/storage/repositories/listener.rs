@@ -84,6 +84,24 @@ impl From<ListenerRow> for ListenerData {
     }
 }
 
+impl crate::api::handlers::TeamOwned for ListenerData {
+    fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "Listener"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "listeners"
+    }
+}
+
 /// Request to create a new listener.
 ///
 /// # Example

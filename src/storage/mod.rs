@@ -17,16 +17,17 @@ pub use migrations::{
 pub use pool::{create_pool, get_pool_stats, DbPool, PoolStats};
 pub use repositories::{
     AggregatedSchemaData, AggregatedSchemaRepository, ClusterEndpointData,
-    ClusterEndpointRepository, CreateAggregatedSchemaRequest, CreateEndpointRequest,
-    CreateFilterRequest, CreateRouteAutoFilterRequest, CreateRouteConfigAutoFilterRequest,
-    CreateRouteRequest, CreateSecretReferenceRequest, CreateSecretRequest,
-    CreateVirtualHostAutoFilterRequest, CreateVirtualHostRequest, FilterConfiguration, FilterData,
+    ClusterEndpointRepository, CreateAggregatedSchemaRequest, CreateCustomWasmFilterRequest,
+    CreateEndpointRequest, CreateFilterRequest, CreateRouteAutoFilterRequest,
+    CreateRouteConfigAutoFilterRequest, CreateRouteRequest, CreateSecretReferenceRequest,
+    CreateSecretRequest, CreateVirtualHostAutoFilterRequest, CreateVirtualHostRequest,
+    CustomWasmFilterData, CustomWasmFilterRepository, FilterConfiguration, FilterData,
     FilterInstallation, FilterRepository, FilterScopeType, ListenerAutoFilterData,
     ListenerAutoFilterRepository, ListenerRouteConfigData, ListenerRouteConfigRepository,
     RouteData, RouteFilterData, RouteFilterRepository, RouteRepository, SecretData,
-    SecretRepository, UpdateEndpointRequest, UpdateFilterRequest, UpdateRouteRequest,
-    UpdateSecretRequest, UpdateVirtualHostRequest, VirtualHostData, VirtualHostFilterData,
-    VirtualHostFilterRepository, VirtualHostRepository,
+    SecretRepository, UpdateCustomWasmFilterRequest, UpdateEndpointRequest, UpdateFilterRequest,
+    UpdateRouteRequest, UpdateSecretRequest, UpdateVirtualHostRequest, VirtualHostData,
+    VirtualHostFilterData, VirtualHostFilterRepository, VirtualHostRepository,
 };
 pub use repository::{
     AuditEvent, AuditLogRepository, ClusterData, ClusterRepository, CreateClusterRequest,

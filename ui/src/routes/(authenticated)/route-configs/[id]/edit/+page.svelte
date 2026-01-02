@@ -166,27 +166,30 @@
 	}
 
 	// Config-level filter handlers
-	async function handleAttachConfigFilter(filterId: string, order?: number) {
+	async function handleConfigureConfigFilter(filterId: string, _order?: number) {
 		if (!configId) return;
 
 		try {
-			await apiClient.attachFilterToRouteConfig(configId, { filterId, order });
+			await apiClient.configureFilter(filterId, {
+				scopeType: 'route-config',
+				scopeId: configId
+			});
 			await loadFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to attach filter';
-			console.error('Failed to attach filter:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to configure filter';
+			console.error('Failed to configure filter:', e);
 		}
 	}
 
-	async function handleDetachConfigFilter(filterId: string) {
+	async function handleRemoveConfigFilter(filterId: string) {
 		if (!configId) return;
 
 		try {
-			await apiClient.detachFilterFromRouteConfig(configId, filterId);
+			await apiClient.removeFilterConfiguration(filterId, 'route-config', configId);
 			await loadFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to detach filter';
-			console.error('Failed to detach filter:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration';
+			console.error('Failed to remove filter configuration:', e);
 		}
 	}
 
@@ -200,27 +203,30 @@
 		showFilterModal = true;
 	}
 
-	async function handleAttachVirtualHostFilter(virtualHostName: string, filterId: string, order?: number) {
+	async function handleConfigureVirtualHostFilter(virtualHostName: string, filterId: string, _order?: number) {
 		if (!configId) return;
 
 		try {
-			await apiClient.attachFilterToVirtualHost(configId, virtualHostName, { filterId, order });
+			await apiClient.configureFilter(filterId, {
+				scopeType: 'virtual-host',
+				scopeId: `${configId}/${virtualHostName}`
+			});
 			await loadHierarchicalFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to attach filter to virtual host';
-			console.error('Failed to attach filter to virtual host:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to configure filter for virtual host';
+			console.error('Failed to configure filter for virtual host:', e);
 		}
 	}
 
-	async function handleDetachVirtualHostFilter(virtualHostName: string, filterId: string) {
+	async function handleRemoveVirtualHostFilter(virtualHostName: string, filterId: string) {
 		if (!configId) return;
 
 		try {
-			await apiClient.detachFilterFromVirtualHost(configId, virtualHostName, filterId);
+			await apiClient.removeFilterConfiguration(filterId, 'virtual-host', `${configId}/${virtualHostName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to detach filter from virtual host';
-			console.error('Failed to detach filter from virtual host:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from virtual host';
+			console.error('Failed to remove filter configuration from virtual host:', e);
 		}
 	}
 
@@ -235,27 +241,30 @@
 		showFilterModal = true;
 	}
 
-	async function handleAttachRouteFilter(virtualHostName: string, routeName: string, filterId: string, order?: number) {
+	async function handleConfigureRouteFilter(virtualHostName: string, routeName: string, filterId: string, _order?: number) {
 		if (!configId) return;
 
 		try {
-			await apiClient.attachFilterToRoute(configId, virtualHostName, routeName, { filterId, order });
+			await apiClient.configureFilter(filterId, {
+				scopeType: 'route',
+				scopeId: `${configId}/${virtualHostName}/${routeName}`
+			});
 			await loadHierarchicalFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to attach filter to route';
-			console.error('Failed to attach filter to route:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to configure filter for route';
+			console.error('Failed to configure filter for route:', e);
 		}
 	}
 
-	async function handleDetachRouteFilter(virtualHostName: string, routeName: string, filterId: string) {
+	async function handleRemoveRouteFilter(virtualHostName: string, routeName: string, filterId: string) {
 		if (!configId) return;
 
 		try {
-			await apiClient.detachFilterFromRoute(configId, virtualHostName, routeName, filterId);
+			await apiClient.removeFilterConfiguration(filterId, 'route', `${configId}/${virtualHostName}/${routeName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
-			filterError = e instanceof Error ? e.message : 'Failed to detach filter from route';
-			console.error('Failed to detach filter from route:', e);
+			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from route';
+			console.error('Failed to remove filter configuration from route:', e);
 		}
 	}
 
@@ -265,16 +274,16 @@
 
 		switch (currentFilterContext.level) {
 			case 'route_config':
-				await handleAttachConfigFilter(filterId, order);
+				await handleConfigureConfigFilter(filterId, order);
 				break;
 			case 'virtual_host':
 				if (currentFilterContext.virtualHostName) {
-					await handleAttachVirtualHostFilter(currentFilterContext.virtualHostName, filterId, order);
+					await handleConfigureVirtualHostFilter(currentFilterContext.virtualHostName, filterId, order);
 				}
 				break;
 			case 'route':
 				if (currentFilterContext.virtualHostName && currentFilterContext.routeName) {
-					await handleAttachRouteFilter(
+					await handleConfigureRouteFilter(
 						currentFilterContext.virtualHostName,
 						currentFilterContext.routeName,
 						filterId,
@@ -637,9 +646,9 @@
 								virtualHostFilters={virtualHostFiltersMap.get(vh.name) || []}
 								routeFilters={routeFiltersMap.get(vh.name) || new Map()}
 								onAddVirtualHostFilter={handleOpenVirtualHostFilterModal}
-								onDetachVirtualHostFilter={handleDetachVirtualHostFilter}
+								onDetachVirtualHostFilter={handleRemoveVirtualHostFilter}
 								onAddRouteFilter={handleOpenRouteFilterModal}
-								onDetachRouteFilter={handleDetachRouteFilter}
+								onDetachRouteFilter={handleRemoveRouteFilter}
 							/>
 						{/each}
 					</div>
@@ -713,7 +722,7 @@
 
 							<FilterAttachmentList
 								filters={attachedFilters}
-								onDetach={handleDetachConfigFilter}
+								onDetach={handleRemoveConfigFilter}
 								isLoading={isLoadingFilters}
 								emptyMessage="No filters configured for this route configuration"
 							/>

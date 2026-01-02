@@ -2,13 +2,15 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { ArrowLeft, ChevronDown, ChevronUp, Search, Link as LinkIcon } from 'lucide-svelte';
+	import { ChevronDown, ChevronUp } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { ListenerFilterChainInput, RouteResponse, ListenerResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import FilterChainList from '$lib/components/listener/FilterChainList.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { validateRequired, validateIdentifier, validatePort, runValidators } from '$lib/utils/validators';
 
 	interface FormState {
 		name: string;
@@ -210,11 +212,14 @@
 
 	// Validate form
 	function validateForm(): string | null {
-		if (!formState.name) return 'Listener name is required';
-		if (!/^[a-z0-9-]+$/.test(formState.name))
-			return 'Name must be lowercase alphanumeric with dashes';
-		if (!formState.address) return 'Address is required';
-		if (formState.port < 1 || formState.port > 65535) return 'Port must be between 1 and 65535';
+		// Basic validation using reusable validators
+		const basicError = runValidators([
+			() => validateRequired(formState.name, 'Listener name'),
+			() => validateIdentifier(formState.name, 'Listener name'),
+			() => validateRequired(formState.address, 'Address'),
+			() => validatePort(formState.port)
+		]);
+		if (basicError) return basicError;
 
 		// Validate filter chains
 		if (formState.filterChains.length === 0) {
@@ -300,31 +305,15 @@
 
 		<!-- Tab Content -->
 		{#if activeTab === 'configuration'}
-			<!-- Header -->
-			<div class="mb-8">
-				<div class="flex items-center gap-4 mb-4">
-					<button
-						onclick={handleCancel}
-						class="text-blue-600 hover:text-blue-800 transition-colors"
-						title="Back to list"
-					>
-						<ArrowLeft class="w-6 h-6" />
-					</button>
-					<div>
-						<h1 class="text-3xl font-bold text-gray-900">Create Listener</h1>
-						<p class="text-sm text-gray-600 mt-1">
-							Define a new network listener
-						</p>
-					</div>
-				</div>
-			</div>
+			<!-- Page Header with Back Button -->
+			<PageHeader
+				title="Create Listener"
+				subtitle="Define a new network listener"
+				onBack={handleCancel}
+			/>
 
 			<!-- Error Message -->
-			{#if error}
-				<div class="mb-6 bg-red-50 border border-red-200 rounded-md p-4">
-					<p class="text-sm text-red-800">{error}</p>
-				</div>
-			{/if}
+			<ErrorAlert message={error} />
 
 			<!-- Basic Information -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -511,14 +500,13 @@
 			</div>
 
 			<!-- Action Buttons -->
-			<div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 -mx-8 flex justify-end gap-3">
-				<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>
-					Cancel
-				</Button>
-				<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
-					{isSubmitting ? 'Creating...' : 'Create Listener'}
-				</Button>
-			</div>
+			<FormActions
+				{isSubmitting}
+				submitLabel="Create Listener"
+				submittingLabel="Creating..."
+				onSubmit={handleSubmit}
+				onCancel={handleCancel}
+			/>
 		{:else}
 			<!-- JSON Tab -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

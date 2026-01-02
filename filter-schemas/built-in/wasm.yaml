@@ -1,0 +1,185 @@
+name: wasm
+display_name: WebAssembly Filter
+description: Execute custom WebAssembly modules for request/response processing
+version: "1.0"
+
+envoy:
+  http_filter_name: envoy.filters.http.wasm
+  type_url: type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+  per_route_type_url: type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+
+capabilities:
+  attachment_points:
+    - listener
+    - route
+  requires_listener_config: true
+  per_route_behavior: full_config
+
+is_implemented: true
+
+config_schema:
+  type: object
+  required:
+    - config
+  properties:
+    config:
+      type: object
+      description: WASM plugin configuration
+      required:
+        - vm_config
+      properties:
+        name:
+          type: string
+          description: Unique name for this plugin instance
+        root_id:
+          type: string
+          description: Root context ID for sharing state between plugin instances
+        vm_config:
+          type: object
+          description: Virtual machine configuration
+          required:
+            - runtime
+            - code
+          properties:
+            vm_id:
+              type: string
+              description: VM instance identifier for sharing across plugins
+            runtime:
+              type: string
+              description: WASM runtime to use
+              enum:
+                - envoy.wasm.runtime.v8
+                - envoy.wasm.runtime.wasmtime
+                - envoy.wasm.runtime.wamr
+                - envoy.wasm.runtime.null
+              default: envoy.wasm.runtime.v8
+            code:
+              type: object
+              description: WASM binary source
+              properties:
+                local:
+                  type: object
+                  description: Local file source
+                  properties:
+                    filename:
+                      type: string
+                      description: Path to the WASM file
+                    inline_bytes:
+                      type: string
+                      description: Base64-encoded WASM binary
+                    inline_string:
+                      type: string
+                      description: WASM binary as string (for text format)
+                remote:
+                  type: object
+                  description: Remote HTTP source
+                  properties:
+                    http_uri:
+                      type: object
+                      properties:
+                        uri:
+                          type: string
+                          description: Full URI to fetch WASM binary
+                        cluster:
+                          type: string
+                          description: Cluster to use for fetching
+                          x-field-type: cluster_selector
+                        timeout:
+                          type: string
+                          description: Fetch timeout (e.g., "30s")
+                          default: "30s"
+                    sha256:
+                      type: string
+                      description: SHA256 hash for verification
+                    retry_policy:
+                      type: object
+                      properties:
+                        num_retries:
+                          type: integer
+                          description: Number of retry attempts
+            configuration:
+              type: object
+              description: VM-level configuration passed to the WASM module
+              additionalProperties: true
+            allow_precompiled:
+              type: boolean
+              description: Allow loading precompiled WASM modules
+              default: false
+            nack_on_code_cache_miss:
+              type: boolean
+              description: NACK xDS update if WASM code is not in cache
+              default: false
+            environment_variables:
+              type: object
+              description: Environment variables for the WASM VM
+              properties:
+                host_env_keys:
+                  type: array
+                  description: Host environment variable names to inject
+                  items:
+                    type: string
+                key_values:
+                  type: object
+                  description: Explicit key-value pairs to inject
+                  additionalProperties:
+                    type: string
+        configuration:
+          type: object
+          description: Plugin-level configuration passed on each request
+          additionalProperties: true
+        failure_policy:
+          type: string
+          description: Behavior when VM fails
+          enum:
+            - FAIL_CLOSED
+            - FAIL_OPEN
+            - FAIL_RELOAD
+          default: FAIL_CLOSED
+
+per_route_config_schema:
+  type: object
+  properties:
+    disabled:
+      type: boolean
+      description: Disable WASM filter for this route
+      default: false
+    configuration:
+      type: object
+      description: Per-route plugin configuration override
+      additionalProperties: true
+
+ui_hints:
+  form_layout: sections
+  sections:
+    - name: Plugin Identity
+      description: Name and root context for the WASM plugin
+      fields:
+        - config.name
+        - config.root_id
+    - name: Virtual Machine
+      description: WASM runtime and code source configuration
+      fields:
+        - config.vm_config.vm_id
+        - config.vm_config.runtime
+        - config.vm_config.code.local.filename
+        - config.vm_config.code.remote.http_uri.uri
+        - config.vm_config.code.remote.http_uri.cluster
+        - config.vm_config.code.remote.sha256
+    - name: Configuration
+      description: Plugin and VM configuration
+      fields:
+        - config.vm_config.configuration
+        - config.configuration
+      collapsible: true
+    - name: Failure Handling
+      description: Behavior when the WASM module fails
+      fields:
+        - config.failure_policy
+      collapsible: true
+    - name: Advanced
+      description: Advanced VM settings
+      fields:
+        - config.vm_config.allow_precompiled
+        - config.vm_config.nack_on_code_cache_miss
+        - config.vm_config.environment_variables
+      collapsible: true

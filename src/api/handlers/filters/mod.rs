@@ -29,8 +29,12 @@ use axum::{
 use tracing::{info, instrument};
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::{FilterId, ListenerId, RouteConfigId},
     services::FilterService,
@@ -38,7 +42,7 @@ use crate::{
 
 use validation::{
     filter_response_from_data, filter_response_from_data_with_count, require_filter_repository,
-    validate_create_filter_request, validate_update_filter_request, verify_filter_access,
+    validate_create_filter_request, validate_update_filter_request,
 };
 
 // === Helper Functions ===
@@ -107,8 +111,7 @@ pub async fn list_filters_handler(
     require_resource_access(&context, "filters", "read", None)?;
 
     // Admin users see all filters, regular users see only their team's filters
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     let filters = repository
@@ -152,7 +155,7 @@ pub async fn create_filter_handler(
         cluster_config = ?payload.cluster_config,
         "Creating filter - received payload"
     );
-    validate_create_filter_request(&payload)?;
+    validate_create_filter_request(&payload, state.filter_schema_registry.as_ref()).await?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "filters", "write", Some(&payload.team))?;
@@ -204,15 +207,14 @@ pub async fn get_filter_handler(
 ) -> Result<Json<FilterResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
 
     // Verify access to this filter
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     let response = filter_response_from_data(filter)?;
 
@@ -243,15 +245,14 @@ pub async fn update_filter_handler(
 ) -> Result<Json<FilterResponse>, ApiError> {
     validate_update_filter_request(&payload)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
 
     // Get existing filter and verify access
     let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let existing = verify_filter_access(existing, &team_scopes).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Verify user has write access to the filter's team
     require_resource_access(&context, "filters", "write", Some(&existing.team))?;
@@ -299,15 +300,14 @@ pub async fn delete_filter_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     let filter_id = FilterId::from_string(id);
 
     // Get existing filter and verify access
     let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let existing = verify_filter_access(existing, &team_scopes).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Verify user has write access to the filter's team
     require_resource_access(&context, "filters", "write", Some(&existing.team))?;
@@ -649,14 +649,13 @@ pub async fn install_filter_handler(
 ) -> Result<(StatusCode, Json<InstallFilterResponse>), ApiError> {
     require_resource_access(&context, "filters", "write", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     // Resolve listener name to ID
     let listener_id = resolve_listener_id(&state, &payload.listener_name).await?;
@@ -721,14 +720,13 @@ pub async fn uninstall_filter_handler(
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "filters", "write", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let _filter = verify_filter_access(filter, &team_scopes).await?;
+    let _filter = verify_team_access(filter, &team_scopes).await?;
 
     // Resolve listener name to ID
     let listener_id = resolve_listener_id(&state, &listener_id).await?;
@@ -768,14 +766,13 @@ pub async fn list_filter_installations_handler(
 ) -> Result<Json<FilterInstallationsResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     // Get all listeners this filter is installed on
     let installations =
@@ -821,14 +818,13 @@ pub async fn configure_filter_handler(
 ) -> Result<(StatusCode, Json<ConfigureFilterResponse>), ApiError> {
     require_resource_access(&context, "filters", "write", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     let service = FilterService::new(state.xds_state.clone());
 
@@ -928,14 +924,13 @@ pub async fn remove_filter_configuration_handler(
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "filters", "write", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let _filter = verify_filter_access(filter, &team_scopes).await?;
+    let _filter = verify_team_access(filter, &team_scopes).await?;
 
     // Parse scope type
     let scope_type: ScopeType = scope_type.parse().map_err(|e: String| ApiError::validation(&e))?;
@@ -1012,14 +1007,13 @@ pub async fn list_filter_configurations_handler(
 ) -> Result<Json<FilterConfigurationsResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     // Get all configurations for this filter
     let configurations =
@@ -1061,14 +1055,13 @@ pub async fn get_filter_status_handler(
 ) -> Result<Json<FilterStatusResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
+    let team_scopes = get_effective_team_scopes(&context);
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
     let filter_id = FilterId::from_string(filter_id);
     let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let filter = verify_filter_access(filter, &team_scopes).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     // Get installations and configurations
     let installations =

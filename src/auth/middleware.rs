@@ -15,7 +15,7 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::api::error::ApiError;
 use crate::auth::auth_service::AuthService;
 use crate::auth::authorization::{
-    action_from_http_method, require_resource_access, resource_from_path,
+    action_from_request, require_resource_access, resource_from_path,
 };
 use crate::auth::models::{AuthContext, AuthError};
 use crate::auth::session::{SessionService, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
@@ -342,8 +342,8 @@ pub async fn ensure_dynamic_scopes(
         }
     };
 
-    // Derive action from HTTP method
-    let action = action_from_http_method(method.as_str());
+    // Derive action from HTTP method and path (semantic action detection)
+    let action = action_from_request(method.as_str(), path);
 
     let span = info_span!(
         "auth_middleware.ensure_dynamic_scopes",

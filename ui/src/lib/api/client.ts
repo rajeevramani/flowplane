@@ -36,6 +36,7 @@ import type {
 	ListUsersResponse,
 	UserTeamMembership,
 	CreateTeamMembershipRequest,
+	UpdateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
 	ListAuditLogsResponse,
@@ -48,7 +49,6 @@ import type {
 	FilterResponse,
 	CreateFilterRequest,
 	UpdateFilterRequest,
-	AttachFilterRequest,
 	RouteFiltersResponse,
 	ListenerFiltersResponse,
 	VirtualHostSummary,
@@ -81,7 +81,22 @@ import type {
 	ConfigureFilterRequest,
 	ConfigureFilterResponse,
 	FilterConfigurationsResponse,
-	FilterStatusResponse
+	FilterStatusResponse,
+	// Learning Session types
+	LearningSessionResponse,
+	CreateLearningSessionRequest,
+	ListLearningSessionsQuery,
+	// Aggregated Schema types
+	AggregatedSchemaResponse,
+	ListAggregatedSchemasQuery,
+	SchemaComparisonResponse,
+	OpenApiExportResponse,
+	ExportMultipleSchemasRequest,
+	// Custom WASM Filter types
+	CustomWasmFilterResponse,
+	CreateCustomWasmFilterRequest,
+	UpdateCustomWasmFilterRequest,
+	ListCustomWasmFiltersResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -535,6 +550,17 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
 	}
 
+	async updateTeamMembershipScopes(
+		userId: string,
+		team: string,
+		request: UpdateTeamMembershipRequest
+	): Promise<UserTeamMembership> {
+		return this.put<UserTeamMembership>(
+			`/api/v1/users/${userId}/teams/${encodeURIComponent(team)}`,
+			request
+		);
+	}
+
 	// Audit Log methods (admin only)
 	async listAuditLogs(query: ListAuditLogsQuery = {}): Promise<ListAuditLogsResponse> {
 		const params = new URLSearchParams();
@@ -593,30 +619,14 @@ class ApiClient {
 		return this.delete<void>(`/api/v1/filters/${id}`);
 	}
 
-	// Route Config Filter attachment methods
+	// Route Config Filter methods
 	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
 		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
 	}
 
-	async attachFilterToRouteConfig(routeConfigName: string, body: AttachFilterRequest): Promise<void> {
-		return this.post<void>(`/api/v1/route-configs/${routeConfigName}/filters`, body);
-	}
-
-	async detachFilterFromRouteConfig(routeConfigName: string, filterId: string): Promise<void> {
-		return this.delete<void>(`/api/v1/route-configs/${routeConfigName}/filters/${filterId}`);
-	}
-
-	// Listener-Filter attachment methods
+	// Listener-Filter methods
 	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
 		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
-	}
-
-	async attachFilterToListener(listenerId: string, body: AttachFilterRequest): Promise<void> {
-		return this.post<void>(`/api/v1/listeners/${listenerId}/filters`, body);
-	}
-
-	async detachFilterFromListener(listenerId: string, filterId: string): Promise<void> {
-		return this.delete<void>(`/api/v1/listeners/${listenerId}/filters/${filterId}`);
 	}
 
 	// ============================================================================
@@ -644,7 +654,7 @@ class ApiClient {
 		return response.routes;
 	}
 
-	// Virtual Host Filter Attachment
+	// Virtual Host Filter methods
 	async listVirtualHostFilters(
 		routeConfigName: string,
 		virtualHostName: string
@@ -654,28 +664,7 @@ class ApiClient {
 		);
 	}
 
-	async attachFilterToVirtualHost(
-		routeConfigName: string,
-		virtualHostName: string,
-		body: AttachFilterRequest
-	): Promise<void> {
-		return this.post<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`,
-			body
-		);
-	}
-
-	async detachFilterFromVirtualHost(
-		routeConfigName: string,
-		virtualHostName: string,
-		filterId: string
-	): Promise<void> {
-		return this.delete<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters/${filterId}`
-		);
-	}
-
-	// Route (within Virtual Host) Filter Attachment
+	// Route (within Virtual Host) Filter methods
 	async listRouteHierarchyFilters(
 		routeConfigName: string,
 		virtualHostName: string,
@@ -683,29 +672,6 @@ class ApiClient {
 	): Promise<RouteHierarchyFiltersResponse> {
 		return this.get<RouteHierarchyFiltersResponse>(
 			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
-		);
-	}
-
-	async attachFilterToRoute(
-		routeConfigName: string,
-		virtualHostName: string,
-		routeName: string,
-		body: AttachFilterRequest
-	): Promise<void> {
-		return this.post<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`,
-			body
-		);
-	}
-
-	async detachFilterFromRoute(
-		routeConfigName: string,
-		virtualHostName: string,
-		routeName: string,
-		filterId: string
-	): Promise<void> {
-		return this.delete<void>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters/${filterId}`
 		);
 	}
 
@@ -1008,6 +974,202 @@ class ApiClient {
 		return this.get<FilterStatusResponse>(
 			`/api/v1/filters/${encodeURIComponent(filterId)}/status`
 		);
+	}
+
+	// ============================================================================
+	// Learning Sessions API
+	// ============================================================================
+
+	/**
+	 * List learning sessions for the current user's team.
+	 * Supports filtering by status and pagination.
+	 */
+	async listLearningSessions(query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.status) params.append('status', query.status);
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/learning-sessions${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<LearningSessionResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific learning session by ID.
+	 */
+	async getLearningSession(id: string): Promise<LearningSessionResponse> {
+		return this.get<LearningSessionResponse>(
+			`/api/v1/learning-sessions/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Create a new learning session.
+	 * The session will automatically start capturing traffic matching the route pattern.
+	 */
+	async createLearningSession(request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
+		return this.post<LearningSessionResponse>('/api/v1/learning-sessions', request);
+	}
+
+	/**
+	 * Cancel a learning session.
+	 * This will stop traffic capture and mark the session as cancelled.
+	 */
+	async cancelLearningSession(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/learning-sessions/${encodeURIComponent(id)}`);
+	}
+
+	// ============================================================================
+	// Aggregated Schemas API
+	// ============================================================================
+
+	/**
+	 * List aggregated schemas discovered through learning sessions.
+	 * Supports filtering by path, HTTP method, and minimum confidence.
+	 */
+	async listAggregatedSchemas(query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.path) params.append('path', query.path);
+		if (query?.httpMethod) params.append('http_method', query.httpMethod);
+		if (query?.minConfidence) params.append('min_confidence', query.minConfidence.toString());
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/aggregated-schemas${params.toString() ? `?${params.toString()}` : ''}`;
+		return this.get<AggregatedSchemaResponse[]>(path);
+	}
+
+	/**
+	 * Get a specific aggregated schema by ID.
+	 */
+	async getAggregatedSchema(id: number): Promise<AggregatedSchemaResponse> {
+		return this.get<AggregatedSchemaResponse>(`/api/v1/aggregated-schemas/${id}`);
+	}
+
+	/**
+	 * Compare two versions of a schema.
+	 * Returns differences including breaking changes.
+	 */
+	async compareSchemaVersions(id: number, withVersion: number): Promise<SchemaComparisonResponse> {
+		return this.get<SchemaComparisonResponse>(
+			`/api/v1/aggregated-schemas/${id}/compare?with_version=${withVersion}`
+		);
+	}
+
+	/**
+	 * Export a schema as OpenAPI 3.1 specification.
+	 */
+	async exportSchemaAsOpenApi(id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
+		const params = new URLSearchParams();
+		params.append('include_metadata', includeMetadata.toString());
+
+		return this.get<OpenApiExportResponse>(
+			`/api/v1/aggregated-schemas/${id}/export?${params.toString()}`
+		);
+	}
+
+	/**
+	 * Export multiple schemas as a unified OpenAPI 3.1 specification.
+	 */
+	async exportMultipleSchemasAsOpenApi(request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
+		return this.post<OpenApiExportResponse>('/api/v1/aggregated-schemas/export', request);
+	}
+
+	// ============================================================================
+	// Custom WASM Filters API (Plugin Management)
+	// ============================================================================
+
+	/**
+	 * List all custom WASM filters for a team.
+	 * Supports pagination via limit and offset.
+	 */
+	async listCustomWasmFilters(
+		team: string,
+		params?: { limit?: number; offset?: number }
+	): Promise<ListCustomWasmFiltersResponse> {
+		const searchParams = new URLSearchParams();
+		if (params?.limit) searchParams.append('limit', params.limit.toString());
+		if (params?.offset) searchParams.append('offset', params.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/custom-filters${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+		return this.get<ListCustomWasmFiltersResponse>(path);
+	}
+
+	/**
+	 * Get a specific custom WASM filter by ID.
+	 */
+	async getCustomWasmFilter(team: string, id: string): Promise<CustomWasmFilterResponse> {
+		return this.get<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Create a new custom WASM filter.
+	 * The wasmBinaryBase64 field should contain the base64-encoded WASM binary.
+	 * Upon successful creation, the filter type is automatically registered in the schema registry.
+	 */
+	async createCustomWasmFilter(
+		team: string,
+		request: CreateCustomWasmFilterRequest
+	): Promise<CustomWasmFilterResponse> {
+		return this.post<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters`,
+			request
+		);
+	}
+
+	/**
+	 * Update a custom WASM filter's metadata.
+	 * Note: The WASM binary cannot be updated. Upload a new filter instead.
+	 */
+	async updateCustomWasmFilter(
+		team: string,
+		id: string,
+		request: UpdateCustomWasmFilterRequest
+	): Promise<CustomWasmFilterResponse> {
+		return this.put<CustomWasmFilterResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`,
+			request
+		);
+	}
+
+	/**
+	 * Delete a custom WASM filter.
+	 * Warning: Ensure no filter instances are using this filter type before deletion.
+	 */
+	async deleteCustomWasmFilter(team: string, id: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`
+		);
+	}
+
+	/**
+	 * Download the WASM binary for a custom filter.
+	 * Returns the binary as a Blob.
+	 */
+	async downloadCustomWasmFilterBinary(team: string, id: string): Promise<Blob> {
+		const response = await fetch(
+			`${API_BASE}/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}/download`,
+			{
+				method: 'GET',
+				headers: this.getHeaders(),
+				credentials: 'include'
+			}
+		);
+
+		if (!response.ok) {
+			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+			try {
+				const errorData = await response.json();
+				errorMessage = errorData.message || errorMessage;
+			} catch {
+				// If JSON parsing fails, use status text
+			}
+			throw new Error(errorMessage);
+		}
+
+		return response.blob();
 	}
 }
 

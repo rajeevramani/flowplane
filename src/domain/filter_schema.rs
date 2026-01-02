@@ -319,6 +319,7 @@ impl FilterSchemaRegistry {
         ("compressor", include_str!("../../filter-schemas/built-in/compressor.yaml")),
         ("rbac", include_str!("../../filter-schemas/built-in/rbac.yaml")),
         ("oauth2", include_str!("../../filter-schemas/built-in/oauth2.yaml")),
+        ("wasm", include_str!("../../filter-schemas/built-in/wasm.yaml")),
     ];
 
     /// Load built-in filter schemas from embedded YAML files.
@@ -447,6 +448,76 @@ impl FilterSchemaRegistry {
     pub fn get_metadata(&self, filter_type: &str) -> Option<FilterTypeMetadata> {
         self.get(filter_type).map(|s| s.to_metadata())
     }
+
+    /// Register a custom filter schema at runtime.
+    ///
+    /// This allows dynamically adding filter schemas (e.g., for custom WASM filters)
+    /// without restarting the control plane.
+    ///
+    /// # Arguments
+    /// * `schema` - The filter schema definition to register
+    ///
+    /// # Returns
+    /// * `Ok(())` if registration succeeds
+    /// * `Err(SchemaValidationError)` if the schema is invalid
+    pub fn register_custom_schema(
+        &mut self,
+        schema: FilterSchemaDefinition,
+    ) -> Result<(), SchemaValidationError> {
+        // Validate the schema before registering
+        schema.validate()?;
+
+        tracing::info!(
+            name = %schema.name,
+            display_name = %schema.display_name,
+            source = ?schema.source,
+            "Registering custom filter schema"
+        );
+
+        self.schemas.insert(schema.name.clone(), schema);
+        Ok(())
+    }
+
+    /// Unregister a custom filter schema by name.
+    ///
+    /// This removes a dynamically registered filter schema from the registry.
+    /// Built-in schemas should not be unregistered via this method.
+    ///
+    /// # Arguments
+    /// * `filter_type` - The name of the filter type to unregister
+    ///
+    /// # Returns
+    /// * `Some(FilterSchemaDefinition)` - The removed schema if it existed
+    /// * `None` - If no schema with that name was registered
+    pub fn unregister_custom_schema(
+        &mut self,
+        filter_type: &str,
+    ) -> Option<FilterSchemaDefinition> {
+        if let Some(schema) = self.schemas.get(filter_type) {
+            // Don't allow unregistering built-in schemas
+            if schema.source == SchemaSource::BuiltIn {
+                tracing::warn!(
+                    filter_type = %filter_type,
+                    "Attempted to unregister built-in schema, ignoring"
+                );
+                return None;
+            }
+        }
+
+        let removed = self.schemas.remove(filter_type);
+        if removed.is_some() {
+            tracing::info!(
+                filter_type = %filter_type,
+                "Unregistered custom filter schema"
+            );
+        }
+        removed
+    }
+
+    /// List only custom filter schemas (not built-in).
+    pub fn list_custom(&self) -> Vec<&FilterSchemaDefinition> {
+        self.schemas.values().filter(|s| s.source == SchemaSource::Custom).collect()
+    }
 }
 
 impl Default for FilterSchemaRegistry {
@@ -510,6 +581,7 @@ mod tests {
         assert!(registry.contains("local_rate_limit"));
         assert!(registry.contains("custom_response"));
         assert!(registry.contains("mcp"));
+        assert!(registry.contains("wasm"));
     }
 
     #[test]
@@ -533,6 +605,7 @@ mod tests {
         assert!(implemented.iter().any(|s| s.name == "rbac"));
         assert!(implemented.iter().any(|s| s.name == "compressor"));
         assert!(implemented.iter().any(|s| s.name == "oauth2"));
+        assert!(implemented.iter().any(|s| s.name == "wasm"));
         // rate_limit is not implemented
         assert!(!implemented.iter().any(|s| s.name == "rate_limit"));
     }
@@ -623,5 +696,137 @@ mod tests {
                 schema.name
             );
         }
+    }
+
+    #[test]
+    fn test_register_custom_schema() {
+        let mut registry = FilterSchemaRegistry::with_builtin_schemas();
+        let initial_count = registry.len();
+
+        let custom_schema = FilterSchemaDefinition {
+            name: "custom_wasm_test".to_string(),
+            display_name: "Custom WASM Test".to_string(),
+            description: "Test custom WASM filter".to_string(),
+            version: "1.0".to_string(),
+            envoy: EnvoyFilterMetadata {
+                http_filter_name: "envoy.filters.http.wasm".to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm"
+                    .to_string(),
+                per_route_type_url: Some(
+                    "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.PerRouteConfig"
+                        .to_string(),
+                ),
+            },
+            capabilities: FilterCapabilities {
+                attachment_points: vec![AttachmentPoint::Listener, AttachmentPoint::Route],
+                requires_listener_config: true,
+                per_route_behavior: PerRouteBehavior::FullConfig,
+            },
+            config_schema: serde_json::json!({"type": "object"}),
+            per_route_config_schema: None,
+            proto_mapping: HashMap::new(),
+            ui_hints: None,
+            source: SchemaSource::Custom,
+            is_implemented: true,
+        };
+
+        // Register the custom schema
+        registry.register_custom_schema(custom_schema).expect("registration should succeed");
+        assert_eq!(registry.len(), initial_count + 1);
+        assert!(registry.contains("custom_wasm_test"));
+
+        // Verify we can retrieve it
+        let retrieved = registry.get("custom_wasm_test").expect("should exist");
+        assert_eq!(retrieved.display_name, "Custom WASM Test");
+        assert_eq!(retrieved.source, SchemaSource::Custom);
+    }
+
+    #[test]
+    fn test_unregister_custom_schema() {
+        let mut registry = FilterSchemaRegistry::with_builtin_schemas();
+        let initial_count = registry.len();
+
+        // First register a custom schema
+        let custom_schema = FilterSchemaDefinition {
+            name: "custom_to_remove".to_string(),
+            display_name: "Custom To Remove".to_string(),
+            description: "Will be removed".to_string(),
+            version: "1.0".to_string(),
+            envoy: EnvoyFilterMetadata {
+                http_filter_name: "envoy.filters.http.wasm".to_string(),
+                type_url: "type.googleapis.com/test".to_string(),
+                per_route_type_url: None,
+            },
+            capabilities: FilterCapabilities {
+                attachment_points: vec![AttachmentPoint::Route],
+                requires_listener_config: false,
+                per_route_behavior: PerRouteBehavior::FullConfig,
+            },
+            config_schema: serde_json::json!({"type": "object"}),
+            per_route_config_schema: None,
+            proto_mapping: HashMap::new(),
+            ui_hints: None,
+            source: SchemaSource::Custom,
+            is_implemented: true,
+        };
+
+        registry.register_custom_schema(custom_schema).unwrap();
+        assert!(registry.contains("custom_to_remove"));
+
+        // Unregister it
+        let removed = registry.unregister_custom_schema("custom_to_remove");
+        assert!(removed.is_some());
+        assert!(!registry.contains("custom_to_remove"));
+        assert_eq!(registry.len(), initial_count);
+    }
+
+    #[test]
+    fn test_cannot_unregister_builtin_schema() {
+        let mut registry = FilterSchemaRegistry::with_builtin_schemas();
+        let initial_count = registry.len();
+
+        // Try to unregister a built-in schema
+        let removed = registry.unregister_custom_schema("header_mutation");
+        assert!(removed.is_none());
+        assert!(registry.contains("header_mutation"));
+        assert_eq!(registry.len(), initial_count);
+    }
+
+    #[test]
+    fn test_list_custom_schemas() {
+        let mut registry = FilterSchemaRegistry::with_builtin_schemas();
+
+        // Initially no custom schemas
+        assert!(registry.list_custom().is_empty());
+
+        // Register a custom schema
+        let custom_schema = FilterSchemaDefinition {
+            name: "my_custom_filter".to_string(),
+            display_name: "My Custom Filter".to_string(),
+            description: "Custom filter".to_string(),
+            version: "1.0".to_string(),
+            envoy: EnvoyFilterMetadata {
+                http_filter_name: "envoy.filters.http.wasm".to_string(),
+                type_url: "type.googleapis.com/test".to_string(),
+                per_route_type_url: None,
+            },
+            capabilities: FilterCapabilities {
+                attachment_points: vec![AttachmentPoint::Route],
+                requires_listener_config: false,
+                per_route_behavior: PerRouteBehavior::FullConfig,
+            },
+            config_schema: serde_json::json!({"type": "object"}),
+            per_route_config_schema: None,
+            proto_mapping: HashMap::new(),
+            ui_hints: None,
+            source: SchemaSource::Custom,
+            is_implemented: true,
+        };
+
+        registry.register_custom_schema(custom_schema).unwrap();
+
+        let custom_list = registry.list_custom();
+        assert_eq!(custom_list.len(), 1);
+        assert_eq!(custom_list[0].name, "my_custom_filter");
     }
 }

@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::{ApiServerConfig, ApiTlsConfig},
-    domain::filter_schema::create_shared_registry,
+    domain::filter_schema::{create_shared_registry, create_shared_registry_from_dir},
     errors::Error,
     utils::certificates::{load_certificate_bundle, CertificateInfo},
     xds::XdsState,
@@ -22,8 +22,31 @@ pub async fn start_api_server(config: ApiServerConfig, state: Arc<XdsState>) -> 
         .parse()
         .map_err(|e| Error::config(format!("Invalid API address: {}", e)))?;
 
-    // Initialize filter schema registry with built-in schemas
-    let filter_schema_registry = create_shared_registry();
+    // Initialize filter schema registry - try to load from filter-schemas directory first
+    let filter_schema_registry = {
+        let schema_dir = std::path::Path::new("filter-schemas");
+        if schema_dir.exists() {
+            match create_shared_registry_from_dir(schema_dir) {
+                Ok(registry) => {
+                    info!(
+                        path = %schema_dir.display(),
+                        "Loaded filter schemas from directory"
+                    );
+                    registry
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to load filter schemas from directory, using built-in only"
+                    );
+                    create_shared_registry()
+                }
+            }
+        } else {
+            info!("No filter-schemas directory found, using built-in schemas only");
+            create_shared_registry()
+        }
+    };
     {
         let registry = filter_schema_registry.read().await;
         info!(filter_count = registry.len(), "Initialized filter schema registry");

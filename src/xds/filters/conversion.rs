@@ -77,6 +77,15 @@ impl FilterConfig {
             FilterConfig::ExtAuthz(config) => config.to_any(),
             FilterConfig::Rbac(config) => config.to_any(),
             FilterConfig::OAuth2(config) => config.to_any(),
+            FilterConfig::Custom(custom) => {
+                // Use dynamic filter converter for custom filter types
+                use crate::domain::filter_schema::FilterSchemaRegistry;
+                use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
+
+                let registry = FilterSchemaRegistry::with_builtin_schemas();
+                let converter = DynamicFilterConverter::new(&registry);
+                converter.to_listener_any(&custom.filter_type, &custom.config)
+            }
         }
     }
 
@@ -97,6 +106,22 @@ impl FilterConfig {
     /// - `Ok(None)` - If this filter type doesn't support per-route config
     /// - `Err(Error)` - If configuration is invalid
     pub fn to_per_route_config(&self) -> Result<Option<(String, HttpScopedConfig)>> {
+        // Handle custom filters separately since they don't have a FilterType enum variant
+        if let FilterConfig::Custom(custom) = self {
+            // Use dynamic filter converter for custom filter types
+            use crate::domain::filter_schema::FilterSchemaRegistry;
+            use crate::xds::filters::dynamic_conversion::DynamicFilterConverter;
+
+            let registry = FilterSchemaRegistry::with_builtin_schemas();
+            let converter = DynamicFilterConverter::new(&registry);
+            if let Some((filter_name, any)) =
+                converter.to_per_route_any(&custom.filter_type, &custom.config)?
+            {
+                return Ok(Some((filter_name, HttpScopedConfig::Custom(any))));
+            }
+            return Ok(None);
+        }
+
         let filter_type = self.filter_type();
         let metadata = filter_type.metadata();
 
@@ -193,6 +218,11 @@ impl FilterConfig {
                 // OAuth2 only supports disable-only per-route config
                 // When attached at route level, we don't want to disable it
                 Ok(None)
+            }
+            FilterConfig::Custom(_) => {
+                // Custom filters are handled at the beginning of this function
+                // This arm should never be reached
+                unreachable!("Custom filter should be handled by early return")
             }
         }
     }

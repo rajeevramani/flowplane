@@ -290,6 +290,10 @@ export interface CreateTeamMembershipRequest {
 	scopes: string[];
 }
 
+export interface UpdateTeamMembershipRequest {
+	scopes: string[];
+}
+
 export interface ListUsersResponse {
 	users: UserResponse[];
 	total: number;
@@ -858,11 +862,6 @@ export interface UpdateFilterRequest {
 	config?: FilterConfig;
 }
 
-export interface AttachFilterRequest {
-	filterId: string;
-	order?: number;
-}
-
 export interface RouteFiltersResponse {
 	routeId: string;
 	filters: FilterResponse[];
@@ -1396,4 +1395,189 @@ export interface FilterStatusResponse {
 	description: string | null;
 	installations: FilterInstallationItem[];
 	configurations: FilterConfigurationItem[];
+}
+
+// ============================================================================
+// Learning Session Types
+// ============================================================================
+
+/** Learning session status */
+export type LearningSessionStatus =
+	| 'pending'
+	| 'active'
+	| 'completing'
+	| 'completed'
+	| 'cancelled'
+	| 'failed';
+
+/** Learning session response from API */
+export interface LearningSessionResponse {
+	id: string;
+	team: string;
+	routePattern: string;
+	clusterName: string | null;
+	httpMethods: string[] | null;
+	status: string;
+	createdAt: string;
+	startedAt: string | null;
+	endsAt: string | null;
+	completedAt: string | null;
+	targetSampleCount: number;
+	currentSampleCount: number;
+	progressPercentage: number;
+	triggeredBy: string | null;
+	deploymentVersion: string | null;
+	errorMessage: string | null;
+}
+
+/** Request to create a learning session */
+export interface CreateLearningSessionRequest {
+	routePattern: string;
+	clusterName?: string;
+	httpMethods?: string[];
+	targetSampleCount: number;
+	maxDurationSeconds?: number;
+	triggeredBy?: string;
+	deploymentVersion?: string;
+	configurationSnapshot?: Record<string, unknown>;
+}
+
+/** Query parameters for listing learning sessions */
+export interface ListLearningSessionsQuery {
+	status?: LearningSessionStatus;
+	limit?: number;
+	offset?: number;
+}
+
+// ============================================================================
+// Aggregated Schema Types
+// ============================================================================
+
+/** Breaking change information for schema versioning */
+export interface BreakingChange {
+	changeType: string;
+	path: string;
+	description: string;
+	severity: 'warning' | 'error';
+}
+
+/** Aggregated schema response from API */
+export interface AggregatedSchemaResponse {
+	id: number;
+	team: string;
+	path: string;
+	httpMethod: string;
+	version: number;
+	previousVersionId: number | null;
+	requestSchema: Record<string, unknown> | null;
+	responseSchemas: Record<string, unknown> | null;
+	sampleCount: number;
+	confidenceScore: number;
+	breakingChanges: BreakingChange[] | null;
+	firstObserved: string;
+	lastObserved: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Query parameters for listing aggregated schemas */
+export interface ListAggregatedSchemasQuery {
+	path?: string;
+	httpMethod?: string;
+	minConfidence?: number;
+	limit?: number;
+	offset?: number;
+}
+
+/** Schema comparison response */
+export interface SchemaComparisonResponse {
+	currentSchema: AggregatedSchemaResponse;
+	comparedSchema: AggregatedSchemaResponse;
+	differences: SchemaDifferences;
+}
+
+/** Differences between schema versions */
+export interface SchemaDifferences {
+	versionChange: number;
+	sampleCountChange: number;
+	confidenceChange: number;
+	hasBreakingChanges: boolean;
+	breakingChanges: BreakingChange[] | null;
+}
+
+/** OpenAPI export response */
+export interface OpenApiExportResponse {
+	openapi: string;
+	info: {
+		title: string;
+		version: string;
+		description: string | null;
+	};
+	paths: Record<string, unknown>;
+	components: Record<string, unknown>;
+}
+
+/** Request to export multiple schemas as unified OpenAPI */
+export interface ExportMultipleSchemasRequest {
+	schemaIds: number[];
+	title: string;
+	version: string;
+	description?: string;
+	includeMetadata: boolean;
+}
+
+// ============================================================================
+// Custom WASM Filter Types (Plugin Management)
+// ============================================================================
+
+/** Response for a custom WASM filter */
+export interface CustomWasmFilterResponse {
+	id: string;
+	name: string;
+	display_name: string;
+	description: string | null;
+	wasm_sha256: string;
+	wasm_size_bytes: number;
+	config_schema: Record<string, unknown>;
+	per_route_config_schema: Record<string, unknown> | null;
+	ui_hints: Record<string, unknown> | null;
+	attachment_points: string[];
+	runtime: string;
+	failure_policy: string;
+	version: number;
+	team: string;
+	created_by: string | null;
+	created_at: string;
+	updated_at: string;
+	filter_type: string;
+}
+
+/** Request to create a custom WASM filter */
+export interface CreateCustomWasmFilterRequest {
+	name: string;
+	display_name: string;
+	description?: string;
+	wasm_binary_base64: string;
+	config_schema: Record<string, unknown>;
+	per_route_config_schema?: Record<string, unknown>;
+	ui_hints?: Record<string, unknown>;
+	attachment_points?: string[];
+	runtime?: string;
+	failure_policy?: string;
+}
+
+/** Request to update a custom WASM filter (metadata only, not binary) */
+export interface UpdateCustomWasmFilterRequest {
+	display_name?: string;
+	description?: string;
+	config_schema?: Record<string, unknown>;
+	per_route_config_schema?: Record<string, unknown>;
+	ui_hints?: Record<string, unknown>;
+	attachment_points?: string[];
+}
+
+/** Response for listing custom WASM filters */
+export interface ListCustomWasmFiltersResponse {
+	items: CustomWasmFilterResponse[];
+	total: number;
 }

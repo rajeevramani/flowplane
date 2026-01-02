@@ -88,6 +88,28 @@ impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
     }
 }
 
+impl crate::api::handlers::team_access::TeamOwned for AggregatedSchemaData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.path
+    }
+
+    fn resource_type() -> &'static str {
+        "Aggregated schema"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "aggregated_schemas"
+    }
+
+    fn identifier_label() -> &'static str {
+        "path"
+    }
+}
+
 /// Request to create a new aggregated schema
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateAggregatedSchemaRequest {
@@ -117,16 +139,15 @@ impl AggregatedSchemaRepository {
     }
 
     /// Create a new aggregated schema
+    ///
+    /// Uses a transaction to atomically determine the next version number and insert,
+    /// preventing race conditions where concurrent aggregations could get the same version.
     #[instrument(skip(self, request), fields(team = %request.team, path = %request.path, method = %request.http_method), name = "db_create_aggregated_schema")]
     pub async fn create(
         &self,
         request: CreateAggregatedSchemaRequest,
     ) -> Result<AggregatedSchemaData> {
         let now = chrono::Utc::now();
-
-        // Determine next version number
-        let version =
-            self.get_next_version(&request.team, &request.path, &request.http_method).await?;
 
         let request_schema_json =
             request.request_schema.as_ref().map(serde_json::to_string).transpose().map_err(
@@ -142,6 +163,31 @@ impl AggregatedSchemaRepository {
             request.breaking_changes.as_ref().map(serde_json::to_string).transpose().map_err(
                 |e| FlowplaneError::validation(format!("Invalid breaking_changes: {}", e)),
             )?;
+
+        // Use a transaction to atomically determine version and insert
+        // This prevents race conditions where concurrent aggregations get the same version
+        let mut tx = self.pool.begin().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to start transaction for schema creation".to_string(),
+        })?;
+
+        // Determine next version number within the transaction
+        let version_result = sqlx::query(
+            "SELECT COALESCE(MAX(version), 0) + 1 as next_version
+             FROM aggregated_api_schemas
+             WHERE team = $1 AND path = $2 AND http_method = $3",
+        )
+        .bind(&request.team)
+        .bind(&request.path)
+        .bind(&request.http_method)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to determine next version number".to_string(),
+        })?;
+
+        let version: i64 = version_result.get("next_version");
 
         let result = sqlx::query(
             "INSERT INTO aggregated_api_schemas (
@@ -165,7 +211,7 @@ impl AggregatedSchemaRepository {
         .bind(request.last_observed)
         .bind(now)
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, team = %request.team, "Failed to create aggregated schema");
@@ -177,6 +223,12 @@ impl AggregatedSchemaRepository {
 
         let id: i64 = result.get("id");
 
+        // Commit the transaction
+        tx.commit().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to commit transaction for schema creation".to_string(),
+        })?;
+
         tracing::info!(
             id = id,
             team = %request.team,
@@ -187,6 +239,125 @@ impl AggregatedSchemaRepository {
         );
 
         self.get_by_id(id).await
+    }
+
+    /// Create multiple aggregated schemas in a single transaction
+    ///
+    /// This is atomic: either all schemas are created or none are.
+    /// Used by session aggregation to ensure all-or-nothing semantics.
+    #[instrument(skip(self, requests), fields(request_count = requests.len()), name = "db_create_aggregated_schemas_batch")]
+    pub async fn create_batch(
+        &self,
+        requests: Vec<CreateAggregatedSchemaRequest>,
+    ) -> Result<Vec<i64>> {
+        if requests.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let now = chrono::Utc::now();
+
+        // Start a single transaction for all inserts
+        let mut tx = self.pool.begin().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to start transaction for batch schema creation".to_string(),
+        })?;
+
+        let mut created_ids = Vec::with_capacity(requests.len());
+
+        for request in requests {
+            let request_schema_json =
+                request.request_schema.as_ref().map(serde_json::to_string).transpose().map_err(
+                    |e| FlowplaneError::validation(format!("Invalid request_schema: {}", e)),
+                )?;
+
+            let response_schemas_json =
+                request.response_schemas.as_ref().map(serde_json::to_string).transpose().map_err(
+                    |e| FlowplaneError::validation(format!("Invalid response_schemas: {}", e)),
+                )?;
+
+            let breaking_changes_json =
+                request.breaking_changes.as_ref().map(serde_json::to_string).transpose().map_err(
+                    |e| FlowplaneError::validation(format!("Invalid breaking_changes: {}", e)),
+                )?;
+
+            // Determine next version number within the transaction
+            let version_result = sqlx::query(
+                "SELECT COALESCE(MAX(version), 0) + 1 as next_version
+                 FROM aggregated_api_schemas
+                 WHERE team = $1 AND path = $2 AND http_method = $3",
+            )
+            .bind(&request.team)
+            .bind(&request.path)
+            .bind(&request.http_method)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to determine next version number".to_string(),
+            })?;
+
+            let version: i64 = version_result.get("next_version");
+
+            let result = sqlx::query(
+                "INSERT INTO aggregated_api_schemas (
+                    team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                RETURNING id",
+            )
+            .bind(&request.team)
+            .bind(&request.path)
+            .bind(&request.http_method)
+            .bind(version)
+            .bind(request.previous_version_id)
+            .bind(&request_schema_json)
+            .bind(&response_schemas_json)
+            .bind(request.sample_count)
+            .bind(request.confidence_score)
+            .bind(&breaking_changes_json)
+            .bind(request.first_observed)
+            .bind(request.last_observed)
+            .bind(now)
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, team = %request.team, "Failed to create aggregated schema in batch");
+                FlowplaneError::Database {
+                    source: e,
+                    context: format!(
+                        "Failed to create aggregated schema for team '{}' path '{}'",
+                        request.team, request.path
+                    ),
+                }
+            })?;
+
+            let id: i64 = result.get("id");
+            created_ids.push(id);
+
+            tracing::debug!(
+                id = id,
+                team = %request.team,
+                path = %request.path,
+                method = %request.http_method,
+                version = version,
+                "Created aggregated schema in batch"
+            );
+        }
+
+        // Commit the transaction - all or nothing
+        tx.commit().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to commit transaction for batch schema creation".to_string(),
+        })?;
+
+        tracing::info!(
+            created_count = created_ids.len(),
+            "Successfully created batch of aggregated schemas"
+        );
+
+        Ok(created_ids)
     }
 
     /// Get aggregated schema by ID
@@ -216,6 +387,50 @@ impl AggregatedSchemaRepository {
                 id
             ))),
         }
+    }
+
+    /// Get multiple aggregated schemas by IDs
+    ///
+    /// Returns schemas ordered by path and http_method for consistent output.
+    /// Returns only the schemas that exist; caller should verify expected count.
+    #[instrument(skip(self), fields(ids_count = ids.len()), name = "db_get_aggregated_schemas_by_ids")]
+    pub async fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<AggregatedSchemaData>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build dynamic IN clause with positional placeholders
+        let placeholders: String = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!(
+            "SELECT id, team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+             FROM aggregated_api_schemas
+             WHERE id IN ({})
+             ORDER BY path, http_method",
+            placeholders
+        );
+
+        let mut query_builder = sqlx::query_as::<Sqlite, AggregatedSchemaRow>(&query);
+        for id in ids {
+            query_builder = query_builder.bind(id);
+        }
+
+        let rows = query_builder.fetch_all(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, ids_count = ids.len(), "Failed to get aggregated schemas by IDs");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to get aggregated schemas by IDs".to_string(),
+            }
+        })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
     }
 
     /// Get latest aggregated schema for a specific endpoint and team
@@ -340,26 +555,6 @@ impl AggregatedSchemaRepository {
         })?;
 
         rows.into_iter().map(|r| r.try_into()).collect()
-    }
-
-    /// Get next version number for an endpoint
-    async fn get_next_version(&self, team: &str, path: &str, http_method: &str) -> Result<i64> {
-        let result = sqlx::query(
-            "SELECT COALESCE(MAX(version), 0) + 1 as next_version
-             FROM aggregated_api_schemas
-             WHERE team = $1 AND path = $2 AND http_method = $3",
-        )
-        .bind(team)
-        .bind(path)
-        .bind(http_method)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| FlowplaneError::Database {
-            source: e,
-            context: "Failed to determine next version number".to_string(),
-        })?;
-
-        Ok(result.get("next_version"))
     }
 
     /// Get a specific version of a schema
@@ -636,5 +831,117 @@ mod tests {
             assert_eq!(schema.version, 2);
             assert_eq!(schema.sample_count, 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_returns_all_requested() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        // Create 3 schemas
+        let mut ids: Vec<i64> = Vec::new();
+        for path in ["/users", "/products", "/orders"] {
+            let request = CreateAggregatedSchemaRequest {
+                team: "test-team".to_string(),
+                path: path.to_string(),
+                http_method: "GET".to_string(),
+                request_schema: None,
+                response_schemas: Some(serde_json::json!({"type": "object"})),
+                sample_count: 10,
+                confidence_score: 0.9,
+                breaking_changes: None,
+                first_observed: now,
+                last_observed: now,
+                previous_version_id: None,
+            };
+            let schema = repo.create(request).await.unwrap();
+            ids.push(schema.id);
+        }
+
+        // Fetch all three
+        let result = repo.get_by_ids(&ids).await.unwrap();
+        assert_eq!(result.len(), 3);
+
+        // Fetch first two
+        let result = repo.get_by_ids(&ids[0..2]).await.unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_empty_returns_empty() {
+        let pool = setup_test_db().await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let result = repo.get_by_ids(&[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_orders_by_path() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        // Create schemas in non-alphabetical order
+        let mut ids: Vec<i64> = Vec::new();
+        for path in ["/zebra", "/apple", "/mango"] {
+            let request = CreateAggregatedSchemaRequest {
+                team: "test-team".to_string(),
+                path: path.to_string(),
+                http_method: "GET".to_string(),
+                request_schema: None,
+                response_schemas: None,
+                sample_count: 5,
+                confidence_score: 0.8,
+                breaking_changes: None,
+                first_observed: now,
+                last_observed: now,
+                previous_version_id: None,
+            };
+            let schema = repo.create(request).await.unwrap();
+            ids.push(schema.id);
+        }
+
+        // Fetch all and verify order
+        let result = repo.get_by_ids(&ids).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].path, "/apple");
+        assert_eq!(result[1].path, "/mango");
+        assert_eq!(result[2].path, "/zebra");
+    }
+
+    #[tokio::test]
+    async fn test_get_by_ids_partial_match() {
+        let pool = setup_test_db().await;
+        create_test_team(&pool, "test-team").await;
+        let repo = AggregatedSchemaRepository::new(pool);
+
+        let now = chrono::Utc::now();
+
+        let request = CreateAggregatedSchemaRequest {
+            team: "test-team".to_string(),
+            path: "/test".to_string(),
+            http_method: "GET".to_string(),
+            request_schema: None,
+            response_schemas: None,
+            sample_count: 5,
+            confidence_score: 0.8,
+            breaking_changes: None,
+            first_observed: now,
+            last_observed: now,
+            previous_version_id: None,
+        };
+
+        let schema = repo.create(request).await.unwrap();
+
+        // Request existing + non-existing ID
+        let result = repo.get_by_ids(&[schema.id, 99999]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, schema.id);
     }
 }

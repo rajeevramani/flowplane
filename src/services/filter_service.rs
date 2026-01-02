@@ -9,8 +9,8 @@ use tracing::{debug, error, info};
 use crate::{
     api::handlers::filters::{ClusterCreationConfig, ClusterMode},
     domain::{
-        AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId, RouteConfigId, RouteId,
-        VirtualHostId,
+        can_filter_type_attach_to, AttachmentPoint, FilterConfig, FilterId, FilterType, ListenerId,
+        RouteConfigId, RouteId, VirtualHostId,
     },
     errors::Error,
     observability::http_tracing::create_operation_span,
@@ -49,7 +49,7 @@ impl FilterService {
     pub async fn create_filter(
         &self,
         name: String,
-        filter_type: FilterType,
+        filter_type: String,
         description: Option<String>,
         config: FilterConfig,
         team: String,
@@ -58,7 +58,7 @@ impl FilterService {
 
         let mut span = create_operation_span("filter_service.create_filter", SpanKind::Internal);
         span.set_attribute(KeyValue::new("filter.name", name.clone()));
-        span.set_attribute(KeyValue::new("filter.type", filter_type.to_string()));
+        span.set_attribute(KeyValue::new("filter.type", filter_type.clone()));
         span.set_attribute(KeyValue::new("filter.team", team.clone()));
 
         let cx = opentelemetry::Context::current().with_span(span);
@@ -67,18 +67,32 @@ impl FilterService {
             let repository = self.repository()?;
 
             // Validate config matches type
-            match (&filter_type, &config) {
-                (FilterType::HeaderMutation, FilterConfig::HeaderMutation(_)) => {}
-                (FilterType::JwtAuth, FilterConfig::JwtAuth(_)) => {}
-                (FilterType::LocalRateLimit, FilterConfig::LocalRateLimit(_)) => {}
-                (FilterType::CustomResponse, FilterConfig::CustomResponse(_)) => {}
-                (FilterType::Mcp, FilterConfig::Mcp(_)) => {}
-                (FilterType::Cors, FilterConfig::Cors(_)) => {}
-                (FilterType::Compressor, FilterConfig::Compressor(_)) => {}
-                (FilterType::ExtAuthz, FilterConfig::ExtAuthz(_)) => {}
-                (FilterType::Rbac, FilterConfig::Rbac(_)) => {}
-                (FilterType::OAuth2, FilterConfig::OAuth2(_)) => {}
-                _ => return Err(Error::validation("Filter type and configuration do not match")),
+            // For custom filters, the type is embedded in the config
+            if config.is_custom() {
+                if config.filter_type_str() != filter_type {
+                    return Err(Error::validation(format!(
+                        "Filter type '{}' does not match config type '{}'",
+                        filter_type,
+                        config.filter_type_str()
+                    )));
+                }
+            } else {
+                // For built-in types, validate the match
+                match (filter_type.as_str(), &config) {
+                    ("header_mutation", FilterConfig::HeaderMutation(_)) => {}
+                    ("jwt_auth", FilterConfig::JwtAuth(_)) => {}
+                    ("local_rate_limit", FilterConfig::LocalRateLimit(_)) => {}
+                    ("custom_response", FilterConfig::CustomResponse(_)) => {}
+                    ("mcp", FilterConfig::Mcp(_)) => {}
+                    ("cors", FilterConfig::Cors(_)) => {}
+                    ("compressor", FilterConfig::Compressor(_)) => {}
+                    ("ext_authz", FilterConfig::ExtAuthz(_)) => {}
+                    ("rbac", FilterConfig::Rbac(_)) => {}
+                    ("oauth2", FilterConfig::OAuth2(_)) => {}
+                    _ => {
+                        return Err(Error::validation("Filter type and configuration do not match"))
+                    }
+                }
             }
 
             // Check if filter name already exists for this team
@@ -96,7 +110,7 @@ impl FilterService {
 
             let request = CreateFilterRequest {
                 name: name.clone(),
-                filter_type: filter_type.to_string(),
+                filter_type: filter_type.clone(),
                 description,
                 configuration,
                 team: team.clone(),
@@ -324,19 +338,9 @@ impl FilterService {
             // Verify filter exists and get its type
             let filter = repository.get_by_id(filter_id).await?;
 
-            // Validate filter type can attach to routes
-            let filter_type: FilterType =
-                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
-                    Error::internal(format!("Failed to parse filter type: {}", err))
-                })?;
-
-            if !filter_type.can_attach_to(AttachmentPoint::Route) {
-                return Err(Error::validation(format!(
-                    "Filter type '{}' cannot be attached to routes. Valid attachment points: {}",
-                    filter.filter_type,
-                    filter_type.allowed_attachment_points_display()
-                )));
-            }
+            // Validate filter type can attach to routes (supports both built-in and custom types)
+            can_filter_type_attach_to(&filter.filter_type, AttachmentPoint::Route)
+                .map_err(Error::validation)?;
 
             // Determine order (default: append to end using MAX + 1)
             let order = match order {
@@ -460,19 +464,9 @@ impl FilterService {
             // Verify filter exists and get its type
             let filter = repository.get_by_id(filter_id).await?;
 
-            // Validate filter type can attach to listeners
-            let filter_type: FilterType =
-                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
-                    Error::internal(format!("Failed to parse filter type: {}", err))
-                })?;
-
-            if !filter_type.can_attach_to(AttachmentPoint::Listener) {
-                return Err(Error::validation(format!(
-                    "Filter type '{}' cannot be attached to listeners. Valid attachment points: {}",
-                    filter.filter_type,
-                    filter_type.allowed_attachment_points_display()
-                )));
-            }
+            // Validate filter type can attach to listeners (supports both built-in and custom types)
+            can_filter_type_attach_to(&filter.filter_type, AttachmentPoint::Listener)
+                .map_err(Error::validation)?;
 
             // Determine order (default: append to end)
             let order = match order {
@@ -625,19 +619,10 @@ impl FilterService {
             // Verify filter exists and get its type
             let filter = filter_repo.get_by_id(filter_id).await?;
 
-            // Validate filter type can attach to routes
-            let filter_type: FilterType =
-                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
-                    Error::internal(format!("Failed to parse filter type: {}", err))
-                })?;
-
-            if !filter_type.can_attach_to(AttachmentPoint::Route) {
-                return Err(Error::validation(format!(
-                    "Filter type '{}' cannot be attached to virtual hosts. Valid attachment points: {}",
-                    filter.filter_type,
-                    filter_type.allowed_attachment_points_display()
-                )));
-            }
+            // Validate filter type can attach to routes (supports both built-in and custom types)
+            // Virtual hosts use Route attachment point
+            can_filter_type_attach_to(&filter.filter_type, AttachmentPoint::Route)
+                .map_err(Error::validation)?;
 
             // Determine order
             let order = match order {
@@ -743,19 +728,9 @@ impl FilterService {
             // Verify filter exists and get its type
             let filter = filter_repo.get_by_id(filter_id).await?;
 
-            // Validate filter type can attach to routes
-            let filter_type: FilterType =
-                serde_json::from_str(&format!("\"{}\"", filter.filter_type)).map_err(|err| {
-                    Error::internal(format!("Failed to parse filter type: {}", err))
-                })?;
-
-            if !filter_type.can_attach_to(AttachmentPoint::Route) {
-                return Err(Error::validation(format!(
-                    "Filter type '{}' cannot be attached to routes. Valid attachment points: {}",
-                    filter.filter_type,
-                    filter_type.allowed_attachment_points_display()
-                )));
-            }
+            // Validate filter type can attach to routes (supports both built-in and custom types)
+            can_filter_type_attach_to(&filter.filter_type, AttachmentPoint::Route)
+                .map_err(Error::validation)?;
 
             // Determine order
             let order = match order {
@@ -958,7 +933,7 @@ impl FilterService {
     pub async fn create_filter_with_cluster(
         &self,
         name: String,
-        filter_type: FilterType,
+        filter_type: String,
         description: Option<String>,
         config: FilterConfig,
         team: String,

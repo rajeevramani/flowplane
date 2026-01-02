@@ -4,6 +4,8 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
+![Flowplane Demo](docs/images/flowplane-demo.gif)
+
 ## What is Flowplane?
 
 Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API.
@@ -31,6 +33,9 @@ Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CO
 - **API Learning** - Infer API schemas from traffic via ExtProc and Access Logs
 - **Observability** - OpenTelemetry tracing, Prometheus metrics
 - **Security** - OAuth2, JWT, mTLS with Vault PKI integration
+
+### Import Openapi
+![Flowplane Demo](docs/images/import.gif)
 
 ## Requirements
 
@@ -134,6 +139,9 @@ curl --request GET \
 # Run Envoy
 envoy -c envoy.yaml
 ```
+
+#### Config from UI
+![Envoy Config](docs/images/export-envoy-config.gif)
 
 ### Create the first API
 
@@ -259,6 +267,7 @@ graph TD
 - [HTTP Filters](docs/filters.md)
 - [TLS](docs/tls.md)
 - [Secrets Management (SDS)](docs/secrets-sds.md)
+- [Learning Gateway](docs/learning-manual/README.md)
 
 ## Acknowledgments
 

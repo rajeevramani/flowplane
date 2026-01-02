@@ -14,8 +14,8 @@ use crate::{
     config::SimpleXdsConfig,
     services::{LearningSessionService, RouteHierarchySyncService, SecretEncryption},
     storage::{
-        AggregatedSchemaRepository, ClusterRepository, DbPool, FilterRepository,
-        ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
+        AggregatedSchemaRepository, ClusterRepository, CustomWasmFilterRepository, DbPool,
+        FilterRepository, ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
         RouteFilterRepository, RouteRepository, SecretRepository, VirtualHostFilterRepository,
         VirtualHostRepository,
     },
@@ -88,6 +88,8 @@ pub struct XdsState {
     pub secret_backend_registry: Option<SecretBackendRegistry>,
     /// Dynamic filter schema registry for schema-driven filter conversion
     pub filter_schema_registry: FilterSchemaRegistry,
+    /// Custom WASM filter repository for user-uploaded WASM filters
+    pub custom_wasm_filter_repository: Option<CustomWasmFilterRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -116,6 +118,7 @@ impl XdsState {
             encryption_service: None,
             secret_backend_registry: None,
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
+            custom_wasm_filter_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -136,6 +139,9 @@ impl XdsState {
         let route_filter_repository = RouteFilterRepository::new(pool.clone());
         // Sync services
         let route_hierarchy_sync_service = RouteHierarchySyncService::new(pool.clone());
+
+        // Custom WASM filter repository
+        let custom_wasm_filter_repository = CustomWasmFilterRepository::new(pool.clone());
 
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
@@ -185,6 +191,7 @@ impl XdsState {
             encryption_service,
             secret_backend_registry: None, // Initialized separately via set_secret_backend_registry
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
+            custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -198,6 +205,21 @@ impl XdsState {
     /// Get the secret backend registry
     pub fn get_secret_backend_registry(&self) -> Option<&SecretBackendRegistry> {
         self.secret_backend_registry.as_ref()
+    }
+
+    /// Set the filter schema registry for dynamic filter type support
+    ///
+    /// This allows custom filter schemas (e.g., WASM) to be loaded from disk
+    /// and used for xDS conversion.
+    pub fn set_filter_schema_registry(&mut self, registry: FilterSchemaRegistry) {
+        let count = registry.len();
+        self.filter_schema_registry = registry;
+        tracing::info!(schema_count = count, "Updated XdsState filter schema registry");
+    }
+
+    /// Get a reference to the filter schema registry
+    pub fn get_filter_schema_registry(&self) -> &FilterSchemaRegistry {
+        &self.filter_schema_registry
     }
 
     pub fn get_version(&self) -> String {

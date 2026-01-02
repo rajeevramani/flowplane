@@ -145,6 +145,28 @@ impl TryFrom<LearningSessionRow> for LearningSessionData {
     }
 }
 
+impl crate::api::handlers::TeamOwned for LearningSessionData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.id
+    }
+
+    fn resource_type() -> &'static str {
+        "Learning session"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "learning_sessions"
+    }
+
+    fn identifier_label() -> &'static str {
+        "ID"
+    }
+}
+
 /// Create learning session request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLearningSessionRequest {
@@ -382,6 +404,71 @@ impl LearningSessionRepository {
         rows.into_iter().map(|row| row.try_into()).collect()
     }
 
+    /// List all learning sessions across all teams (for admin users)
+    ///
+    /// This method bypasses team filtering and returns sessions from all teams.
+    /// Should only be used by users with admin:all scope.
+    #[instrument(skip(self), name = "db_list_all_learning_sessions")]
+    pub async fn list_all(
+        &self,
+        status_filter: Option<LearningSessionStatus>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<LearningSessionData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let (query, status_str) = match status_filter {
+            Some(status) => (
+                "SELECT id, team, route_pattern, cluster_name, http_methods, status,
+                        created_at, started_at, ends_at, completed_at,
+                        target_sample_count, current_sample_count,
+                        triggered_by, deployment_version, configuration_snapshot,
+                        error_message, updated_at
+                 FROM learning_sessions
+                 WHERE status = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2 OFFSET $3",
+                Some(status.to_string()),
+            ),
+            None => (
+                "SELECT id, team, route_pattern, cluster_name, http_methods, status,
+                        created_at, started_at, ends_at, completed_at,
+                        target_sample_count, current_sample_count,
+                        triggered_by, deployment_version, configuration_snapshot,
+                        error_message, updated_at
+                 FROM learning_sessions
+                 ORDER BY created_at DESC
+                 LIMIT $1 OFFSET $2",
+                None,
+            ),
+        };
+
+        let rows: Vec<LearningSessionRow> = if let Some(status) = status_str {
+            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+                .bind(status)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list all learning sessions");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list all learning sessions".to_string(),
+            }
+        })?;
+
+        rows.into_iter().map(|row| row.try_into()).collect()
+    }
+
     /// List all active learning sessions (for Access Log Service)
     #[instrument(skip(self), name = "db_list_active_learning_sessions")]
     pub async fn list_active(&self) -> Result<Vec<LearningSessionData>> {
@@ -492,6 +579,58 @@ impl LearningSessionRepository {
         }
 
         self.get_by_id(id).await
+    }
+
+    /// Atomically transition session status with conditional check
+    ///
+    /// This method uses a conditional UPDATE to prevent race conditions.
+    /// The transition only succeeds if the current status matches `from_status`.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if transition succeeded (rows affected = 1)
+    /// - `Ok(false)` if transition failed (status was already changed by another caller)
+    /// - `Err` if database error occurred
+    ///
+    /// This method is safe for concurrent calls - only one caller will succeed in
+    /// transitioning from a given status.
+    #[instrument(skip(self), fields(session_id = %id, from = %from_status, to = %to_status), name = "db_transition_session_status")]
+    pub async fn transition_status(
+        &self,
+        id: &str,
+        from_status: LearningSessionStatus,
+        to_status: LearningSessionStatus,
+    ) -> Result<bool> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            "UPDATE learning_sessions
+             SET status = $1, updated_at = $2
+             WHERE id = $3 AND status = $4",
+        )
+        .bind(to_status.to_string())
+        .bind(now)
+        .bind(id)
+        .bind(from_status.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                session_id = %id,
+                from_status = %from_status,
+                to_status = %to_status,
+                "Failed to transition session status"
+            );
+            FlowplaneError::Database {
+                source: e,
+                context: format!(
+                    "Failed to transition session '{}' from {} to {}",
+                    id, from_status, to_status
+                ),
+            }
+        })?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     /// Increment sample count

@@ -23,6 +23,11 @@ use crate::xds::XdsState;
 
 use super::{
     docs,
+    handlers::custom_wasm_filters::{
+        create_custom_wasm_filter_handler, delete_custom_wasm_filter_handler,
+        download_wasm_binary_handler, get_custom_wasm_filter_handler,
+        list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
+    },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
         get_secret_handler,
@@ -63,6 +68,7 @@ use super::{
         detach_filter_from_virtual_host_handler,
         detach_filter_handler,
         export_aggregated_schema_handler,
+        export_multiple_schemas_handler,
         generate_certificate_handler,
         get_aggregated_schema_handler,
         get_app_handler,
@@ -126,6 +132,7 @@ use super::{
         update_listener_handler,
         update_route_config_handler,
         update_secret_handler,
+        update_team_membership_scopes,
         update_token_handler,
         update_user,
     },
@@ -349,6 +356,13 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", put(update_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
+        // Custom WASM filter endpoints
+        .route("/api/v1/teams/{team}/custom-filters", get(list_custom_wasm_filters_handler))
+        .route("/api/v1/teams/{team}/custom-filters", post(create_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", get(get_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", put(update_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", delete(delete_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}/download", get(download_wasm_binary_handler))
         // Listener endpoints
         .route("/api/v1/listeners", get(list_listeners_handler))
         .route("/api/v1/listeners", post(create_listener_handler))
@@ -365,6 +379,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
         .route("/api/v1/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
+        .route("/api/v1/aggregated-schemas/export", post(export_multiple_schemas_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         // User management endpoints (admin only)
@@ -376,6 +391,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/users/{id}/teams", get(list_user_teams))
         .route("/api/v1/users/{id}/teams", post(add_team_membership))
         .route("/api/v1/users/{id}/teams/{team}", delete(remove_team_membership))
+        .route("/api/v1/users/{id}/teams/{team}", put(update_team_membership_scopes))
         // Admin team management endpoints (admin only)
         .route("/api/v1/admin/teams", get(admin_list_teams))
         .route("/api/v1/admin/teams", post(admin_create_team))

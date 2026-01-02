@@ -79,6 +79,7 @@ use crate::xds::{
         crate::api::handlers::users::list_user_teams,
         crate::api::handlers::users::add_team_membership,
         crate::api::handlers::users::remove_team_membership,
+        crate::api::handlers::users::update_team_membership_scopes,
         // Scope endpoints
         crate::api::handlers::scopes::list_scopes_handler,
         crate::api::handlers::scopes::list_all_scopes_handler,
@@ -130,7 +131,14 @@ use crate::xds::{
         crate::api::handlers::filters::configure_filter_handler,
         crate::api::handlers::filters::remove_filter_configuration_handler,
         crate::api::handlers::filters::list_filter_configurations_handler,
-        crate::api::handlers::filters::get_filter_status_handler
+        crate::api::handlers::filters::get_filter_status_handler,
+        // Custom WASM filter endpoints
+        crate::api::handlers::custom_wasm_filters::create_custom_wasm_filter_handler,
+        crate::api::handlers::custom_wasm_filters::list_custom_wasm_filters_handler,
+        crate::api::handlers::custom_wasm_filters::get_custom_wasm_filter_handler,
+        crate::api::handlers::custom_wasm_filters::update_custom_wasm_filter_handler,
+        crate::api::handlers::custom_wasm_filters::delete_custom_wasm_filter_handler,
+        crate::api::handlers::custom_wasm_filters::download_wasm_binary_handler
     ),
     components(
         schemas(
@@ -263,7 +271,13 @@ use crate::xds::{
             crate::api::handlers::filters::FilterConfigurationsResponse,
             crate::api::handlers::filters::FilterConfigurationItem,
             crate::api::handlers::filters::FilterStatusResponse,
-            crate::api::handlers::filters::ScopeType
+            crate::api::handlers::filters::ScopeType,
+            // Custom WASM filter schemas
+            crate::api::handlers::custom_wasm_filters::CreateCustomWasmFilterRequest,
+            crate::api::handlers::custom_wasm_filters::UpdateCustomWasmFilterRequest,
+            crate::api::handlers::custom_wasm_filters::CustomWasmFilterResponse,
+            crate::api::handlers::custom_wasm_filters::ListCustomWasmFiltersResponse,
+            crate::api::handlers::custom_wasm_filters::ListCustomFiltersQuery
         )
     ),
     tags(
@@ -273,6 +287,7 @@ use crate::xds::{
         (name = "Routes", description = "Manage route configurations, virtual hosts, and routing rules"),
         // Filters
         (name = "Filters", description = "Create, install, and configure HTTP filters on listeners, routes, and virtual hosts"),
+        (name = "Custom WASM Filters", description = "Upload and manage custom WebAssembly filters"),
         (name = "Secrets", description = "Manage TLS certificates, OAuth tokens, API keys, and proxy certificates"),
         // API Discovery & Learning
         (name = "API Discovery", description = "Import OpenAPI specs, observe traffic, and learn API schemas"),
@@ -726,6 +741,7 @@ mod tests {
         assert!(tag_names.contains(&"Routes"), "Missing 'Routes' tag");
         // Filters
         assert!(tag_names.contains(&"Filters"), "Missing 'Filters' tag");
+        assert!(tag_names.contains(&"Custom WASM Filters"), "Missing 'Custom WASM Filters' tag");
         assert!(tag_names.contains(&"Secrets"), "Missing 'Secrets' tag");
         // API Discovery & Learning
         assert!(tag_names.contains(&"API Discovery"), "Missing 'API Discovery' tag");
@@ -744,5 +760,52 @@ mod tests {
         let security_schemes = &components.security_schemes;
 
         assert!(security_schemes.contains_key("bearerAuth"), "Missing bearerAuth security scheme");
+    }
+
+    #[test]
+    fn openapi_includes_custom_wasm_filter_endpoints() {
+        let openapi = ApiDoc::openapi();
+        let paths = &openapi.paths.paths;
+
+        // Custom WASM filter endpoints (6)
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/custom-filters"),
+            "Missing GET/POST /api/v1/teams/{{team}}/custom-filters"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/custom-filters/{id}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/custom-filters/{{id}}"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/custom-filters/{id}/download"),
+            "Missing GET /api/v1/teams/{{team}}/custom-filters/{{id}}/download"
+        );
+    }
+
+    #[test]
+    fn openapi_includes_custom_wasm_filter_schemas() {
+        let openapi = ApiDoc::openapi();
+        let schemas = &openapi.components.as_ref().expect("components").schemas;
+
+        assert!(
+            schemas.contains_key("CreateCustomWasmFilterRequest"),
+            "Missing CreateCustomWasmFilterRequest schema"
+        );
+        assert!(
+            schemas.contains_key("UpdateCustomWasmFilterRequest"),
+            "Missing UpdateCustomWasmFilterRequest schema"
+        );
+        assert!(
+            schemas.contains_key("CustomWasmFilterResponse"),
+            "Missing CustomWasmFilterResponse schema"
+        );
+        assert!(
+            schemas.contains_key("ListCustomWasmFiltersResponse"),
+            "Missing ListCustomWasmFiltersResponse schema"
+        );
+        assert!(
+            schemas.contains_key("ListCustomFiltersQuery"),
+            "Missing ListCustomFiltersQuery schema"
+        );
     }
 }

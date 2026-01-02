@@ -249,21 +249,36 @@ impl LearningSessionService {
     }
 
     /// Complete a learning session (active → completing → completed)
+    ///
+    /// Uses atomic state transition to prevent race conditions when multiple
+    /// callers try to complete the same session concurrently. Only the first
+    /// caller to successfully transition from Active → Completing will proceed;
+    /// subsequent callers will return Ok(None) indicating the session was
+    /// already being completed.
     #[instrument(skip(self), fields(session_id = %session_id), name = "complete_learning_session")]
     async fn complete_session(&self, session_id: &str) -> Result<LearningSessionData> {
-        // First, transition to 'completing' state
-        let update_completing = UpdateLearningSessionRequest {
-            status: Some(LearningSessionStatus::Completing),
-            started_at: None,
-            ends_at: None,
-            completed_at: None,
-            current_sample_count: None,
-            error_message: None,
-        };
+        // Atomically transition to 'completing' state using conditional UPDATE
+        // This prevents race conditions - only one caller can win this transition
+        let transitioned = self
+            .repository
+            .transition_status(
+                session_id,
+                LearningSessionStatus::Active,
+                LearningSessionStatus::Completing,
+            )
+            .await?;
 
-        self.repository.update(session_id, update_completing).await?;
+        if !transitioned {
+            // Another caller already started completing this session
+            warn!(
+                session_id = %session_id,
+                "Session completion race detected - another process is already completing this session"
+            );
+            // Return the current session state
+            return self.repository.get_by_id(session_id).await;
+        }
 
-        info!(session_id = %session_id, "Session transitioning: active → completing");
+        info!(session_id = %session_id, "Session transitioning: active → completing (won race)");
 
         // Unregister from Access Log Service
         if let Some(access_log_service) = &self.access_log_service {
@@ -366,6 +381,7 @@ impl LearningSessionService {
     }
 
     /// Mark a session as failed with an error message
+    #[instrument(skip(self), fields(session_id = %session_id), name = "fail_learning_session")]
     pub async fn fail_session(
         &self,
         session_id: &str,
@@ -390,6 +406,24 @@ impl LearningSessionService {
         // Unregister from ExtProc Service
         if let Some(ext_proc_service) = &self.ext_proc_service {
             ext_proc_service.remove_session(session_id).await;
+        }
+
+        // Trigger LDS update to remove access log configuration
+        if let Some(weak_state) = &self.xds_state {
+            if let Some(xds_state) = weak_state.upgrade() {
+                if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to refresh listeners after session failure"
+                    );
+                } else {
+                    info!(
+                        session_id = %session_id,
+                        "Triggered LDS update to remove access log configuration after failure"
+                    );
+                }
+            }
         }
 
         error!(

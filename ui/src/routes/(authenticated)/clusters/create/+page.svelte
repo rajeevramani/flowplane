@@ -1,16 +1,17 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
-	import { Plus, Trash2, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-svelte';
+	import { Plus, Trash2, ChevronDown, ChevronUp } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type {
 		HealthCheckRequest,
 		CircuitBreakersRequest,
 		OutlierDetectionRequest
 	} from '$lib/api/types';
-	import Button from '$lib/components/Button.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import ClusterConfigEditor from '$lib/components/ClusterConfigEditor.svelte';
+	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
+	import { validateRequired, validateIdentifier, runValidators } from '$lib/utils/validators';
 
 	interface EndpointFormState {
 		id: string;
@@ -125,12 +126,14 @@
 		formState.endpoints = formState.endpoints.filter((_, i) => i !== index);
 	}
 
-	// Validate form
+	// Validate form using reusable validators
 	function validateForm(): string | null {
-		if (!formState.name) return 'Cluster name is required';
-		if (!/^[a-z0-9-]+$/.test(formState.name))
-			return 'Name must be lowercase alphanumeric with dashes';
-		if (!formState.serviceName) return 'Service name is required';
+		const basicError = runValidators([
+			() => validateRequired(formState.name, 'Cluster name'),
+			() => validateIdentifier(formState.name, 'Cluster name'),
+			() => validateRequired(formState.serviceName, 'Service name')
+		]);
+		if (basicError) return basicError;
 
 		const validEndpoints = formState.endpoints.filter(ep => ep.host && ep.host.trim() !== '');
 		if (validEndpoints.length === 0) return 'At least one endpoint is required';
@@ -216,31 +219,15 @@
 
 		<!-- Tab Content -->
 		{#if activeTab === 'configuration'}
-			<!-- Header -->
-			<div class="mb-8">
-				<div class="flex items-center gap-4 mb-4">
-					<button
-						onclick={handleCancel}
-						class="text-blue-600 hover:text-blue-800 transition-colors"
-						title="Back to list"
-					>
-						<ArrowLeft class="w-6 h-6" />
-					</button>
-					<div>
-						<h1 class="text-3xl font-bold text-gray-900">Create Cluster</h1>
-						<p class="text-sm text-gray-600 mt-1">
-							Define a new backend service cluster
-						</p>
-					</div>
-				</div>
-			</div>
+			<!-- Page Header with Back Button -->
+			<PageHeader
+				title="Create Cluster"
+				subtitle="Define a new backend service cluster"
+				onBack={handleCancel}
+			/>
 
 			<!-- Error Message -->
-			{#if error}
-				<div class="mb-6 bg-red-50 border border-red-200 rounded-md p-4">
-					<p class="text-sm text-red-800">{error}</p>
-				</div>
-			{/if}
+			<ErrorAlert message={error} />
 
 			<!-- Basic Information -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -473,14 +460,13 @@
 			</div>
 
 			<!-- Action Buttons -->
-			<div class="sticky bottom-0 bg-white border-t border-gray-200 p-4 -mx-8 flex justify-end gap-3">
-				<Button onclick={handleCancel} variant="secondary" disabled={isSubmitting}>
-					Cancel
-				</Button>
-				<Button onclick={handleSubmit} variant="primary" disabled={isSubmitting}>
-					{isSubmitting ? 'Creating...' : 'Create Cluster'}
-				</Button>
-			</div>
+			<FormActions
+				{isSubmitting}
+				submitLabel="Create Cluster"
+				submittingLabel="Creating..."
+				onSubmit={handleSubmit}
+				onCancel={handleCancel}
+			/>
 		{:else}
 			<!-- JSON Tab -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

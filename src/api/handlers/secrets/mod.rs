@@ -18,42 +18,18 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        routes::ApiState,
+    },
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::SecretSpec,
     errors::Error,
     storage::CreateSecretRequest as DbCreateSecretRequest,
     storage::UpdateSecretRequest as DbUpdateSecretRequest,
 };
-
-/// Verify that a secret belongs to one of the user's teams.
-/// Returns error if not authorized (to avoid leaking existence).
-fn verify_secret_access(secret_team: &str, team_scopes: &[String]) -> Result<(), ApiError> {
-    // Admin or empty scopes can access everything
-    if team_scopes.is_empty() {
-        return Ok(());
-    }
-
-    if team_scopes.contains(&secret_team.to_string()) {
-        Ok(())
-    } else {
-        // Record cross-team access attempt
-        if let Some(from_team) = team_scopes.first() {
-            tokio::spawn({
-                let from = from_team.clone();
-                let to = secret_team.to_string();
-                async move {
-                    crate::observability::metrics::record_cross_team_access_attempt(
-                        &from, &to, "secrets",
-                    )
-                    .await;
-                }
-            });
-        }
-        Err(ApiError::NotFound("Secret not found".to_string()))
-    }
-}
 
 // === Handler Implementations ===
 
@@ -223,10 +199,11 @@ pub async fn list_secrets_handler(
     // Authorization: require secrets:read scope
     require_resource_access(&context, "secrets", "read", Some(&team))?;
 
-    // Verify team access
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
-    verify_secret_access(&team, &team_scopes)?;
+    // Verify team access - user must have access to the requested team
+    let team_scopes = get_effective_team_scopes(&context);
+    if !team_scopes.is_empty() && !team_scopes.contains(&team) {
+        return Err(ApiError::NotFound("Team not found".to_string()));
+    }
 
     let repo = state
         .xds_state
@@ -273,11 +250,6 @@ pub async fn get_secret_handler(
     // Authorization: require secrets:read scope
     require_resource_access(&context, "secrets", "read", Some(&path.team))?;
 
-    // Verify team access
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
-    verify_secret_access(&path.team, &team_scopes)?;
-
     let repo = state
         .xds_state
         .secret_repository
@@ -288,7 +260,11 @@ pub async fn get_secret_handler(
         ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id))
     })?;
 
-    // Verify the secret belongs to the specified team
+    // Verify team access using unified verifier
+    let team_scopes = get_effective_team_scopes(&context);
+    let secret = verify_team_access(secret, &team_scopes).await?;
+
+    // Verify the secret belongs to the specified team (URL consistency)
     if secret.team != path.team {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }
@@ -325,11 +301,6 @@ pub async fn update_secret_handler(
     // Authorization: require secrets:write scope
     require_resource_access(&context, "secrets", "write", Some(&path.team))?;
 
-    // Verify team access
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
-    verify_secret_access(&path.team, &team_scopes)?;
-
     let repo = state
         .xds_state
         .secret_repository
@@ -341,7 +312,11 @@ pub async fn update_secret_handler(
         ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id))
     })?;
 
-    // Verify the secret belongs to the specified team
+    // Verify team access using unified verifier
+    let team_scopes = get_effective_team_scopes(&context);
+    let existing = verify_team_access(existing, &team_scopes).await?;
+
+    // Verify the secret belongs to the specified team (URL consistency)
     if existing.team != path.team {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }
@@ -405,11 +380,6 @@ pub async fn delete_secret_handler(
     // Authorization: require secrets:write scope
     require_resource_access(&context, "secrets", "write", Some(&path.team))?;
 
-    // Verify team access
-    let team_scopes =
-        if has_admin_bypass(&context) { Vec::new() } else { extract_team_scopes(&context) };
-    verify_secret_access(&path.team, &team_scopes)?;
-
     let repo = state
         .xds_state
         .secret_repository
@@ -421,7 +391,11 @@ pub async fn delete_secret_handler(
         ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id))
     })?;
 
-    // Verify the secret belongs to the specified team
+    // Verify team access using unified verifier
+    let team_scopes = get_effective_team_scopes(&context);
+    let existing = verify_team_access(existing, &team_scopes).await?;
+
+    // Verify the secret belongs to the specified team (URL consistency)
     if existing.team != path.team {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }

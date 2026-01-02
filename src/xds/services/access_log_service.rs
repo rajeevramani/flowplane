@@ -191,20 +191,25 @@ impl FlowplaneAccessLogService {
     /// * `method` - The HTTP method
     ///
     /// # Returns
-    /// The session ID if matched, None otherwise
+    /// Tuple of (session_id, team) if matched, None otherwise.
+    /// Returns both values atomically to prevent race conditions where
+    /// a session could be removed between checking match and extracting team.
     #[allow(dead_code)] // Will be used in stream processing with real Envoy
-    async fn find_matching_session(&self, path: &str, method: &str) -> Option<String> {
+    async fn find_matching_session(&self, path: &str, method: &str) -> Option<(String, String)> {
         let sessions = self.learning_sessions.read().await;
 
         for session in sessions.iter() {
             if session.matches_path(path) && session.matches_method(method) {
                 debug!(
                     session_id = %session.id,
+                    team = %session.team,
                     path = %path,
                     method = %method,
                     "Access log matched learning session"
                 );
-                return Some(session.id.clone());
+                // Return both session_id and team atomically to prevent race condition
+                // where session could be removed between this call and team extraction
+                return Some((session.id.clone(), session.team.clone()));
             }
         }
 
@@ -566,16 +571,18 @@ impl AccessLogService for FlowplaneAccessLogService {
                         for http_entry in &http_logs.log_entry {
                             // Extract path and method for matching
                             let (path, method) = if let Some(request) = &http_entry.request {
+                                // Map Envoy's RequestMethod enum to HTTP method string
+                                // See: envoy/config/core/v3/base.proto - RequestMethod enum
                                 let method_str = match request.request_method {
                                     1 => "GET",
-                                    2 => "POST",
-                                    3 => "PUT",
-                                    4 => "DELETE",
-                                    5 => "PATCH",
-                                    6 => "HEAD",
+                                    2 => "HEAD",
+                                    3 => "POST",
+                                    4 => "PUT",
+                                    5 => "DELETE",
+                                    6 => "CONNECT",
                                     7 => "OPTIONS",
                                     8 => "TRACE",
-                                    9 => "CONNECT",
+                                    9 => "PATCH",
                                     _ => "UNKNOWN",
                                 };
                                 (request.path.as_str(), method_str)
@@ -584,24 +591,17 @@ impl AccessLogService for FlowplaneAccessLogService {
                             };
 
                             // Check if this entry matches any active learning session
-                            if let Some(session_id) = self.find_matching_session(path, method).await
+                            // Returns both session_id and team atomically to prevent race condition
+                            if let Some((session_id, team)) =
+                                self.find_matching_session(path, method).await
                             {
                                 debug!(
                                     session_id = %session_id,
+                                    team = %team,
                                     path = %path,
                                     method = %method,
                                     "Access log matched learning session, processing entry"
                                 );
-
-                                // Find the session to extract team for attribution
-                                let team = {
-                                    let sessions = self.learning_sessions.read().await;
-                                    sessions
-                                        .iter()
-                                        .find(|s| s.id == session_id)
-                                        .map(|s| s.team.clone())
-                                        .unwrap_or_else(|| "".to_string())
-                                };
 
                                 // Process and queue the entry
                                 let processed_entry = Self::process_http_log_entry(
@@ -759,7 +759,7 @@ mod tests {
         service.add_session(session1).await;
         service.add_session(session2).await;
 
-        // Verify sessions exist by checking matches
+        // Verify sessions exist by checking matches (extract session_id from tuple)
         assert!(service.find_matching_session("/api/users", "POST").await.is_some());
         assert!(service.find_matching_session("/admin/dashboard", "GET").await.is_some());
 
@@ -770,7 +770,11 @@ mod tests {
         assert!(service.find_matching_session("/api/users", "POST").await.is_none());
 
         // Verify session-2 still exists
-        assert!(service.find_matching_session("/admin/dashboard", "GET").await.is_some());
+        let result = service.find_matching_session("/admin/dashboard", "GET").await;
+        assert!(result.is_some());
+        let (session_id, team) = result.unwrap();
+        assert_eq!(session_id, "session-2");
+        assert_eq!(team, "team-b");
     }
 
     #[tokio::test]
@@ -789,12 +793,12 @@ mod tests {
 
         service.add_session(session).await;
 
-        // Test matching cases
+        // Test matching cases - now returns (session_id, team) tuple
         let result = service.find_matching_session("/api/v1/users/123", "GET").await;
-        assert_eq!(result, Some("test-session".to_string()));
+        assert_eq!(result, Some(("test-session".to_string(), "test-team".to_string())));
 
         let result = service.find_matching_session("/api/v1/posts/456", "POST").await;
-        assert_eq!(result, Some("test-session".to_string()));
+        assert_eq!(result, Some(("test-session".to_string(), "test-team".to_string())));
 
         // Test non-matching cases
         let result = service.find_matching_session("/api/v1/users/123", "DELETE").await;
@@ -932,16 +936,15 @@ mod tests {
             ..Default::default()
         };
 
-        // Check if it matches
-        let session_id = service.find_matching_session("/api/users/123", "GET").await;
-        assert_eq!(session_id, Some("test-session".to_string()));
+        // Check if it matches - returns (session_id, team) tuple
+        let result = service.find_matching_session("/api/users/123", "GET").await;
+        assert_eq!(result, Some(("test-session".to_string(), "test-team".to_string())));
+
+        let (session_id, team) = result.unwrap();
 
         // Process and queue
-        let processed = FlowplaneAccessLogService::process_http_log_entry(
-            &http_entry,
-            session_id.unwrap(),
-            "test-team".to_string(),
-        );
+        let processed =
+            FlowplaneAccessLogService::process_http_log_entry(&http_entry, session_id, team);
         service.log_queue_tx.send(processed).unwrap();
 
         // Verify it's in the queue
@@ -989,13 +992,13 @@ mod tests {
         };
         service.add_session(session).await;
 
-        // GET should match
+        // GET should match - returns (session_id, team) tuple
         let result = service.find_matching_session("/api/users", "GET").await;
-        assert_eq!(result, Some("test-session".to_string()));
+        assert_eq!(result, Some(("test-session".to_string(), "test-team".to_string())));
 
         // POST should match
         let result = service.find_matching_session("/api/users", "POST").await;
-        assert_eq!(result, Some("test-session".to_string()));
+        assert_eq!(result, Some(("test-session".to_string(), "test-team".to_string())));
 
         // DELETE should not match
         let result = service.find_matching_session("/api/users", "DELETE").await;
@@ -1023,9 +1026,47 @@ mod tests {
         };
         service.add_session(session2).await;
 
-        // Should match the first one added (session-1)
+        // Should match the first one added (session-1) - returns (session_id, team) tuple
         let result = service.find_matching_session("/api/users/123", "GET").await;
-        assert_eq!(result, Some("session-1".to_string()));
+        assert_eq!(result, Some(("session-1".to_string(), "team-a".to_string())));
+    }
+
+    /// Test that find_matching_session returns both session_id and team atomically
+    /// to prevent race conditions where a session could be removed between
+    /// checking the match and extracting the team.
+    ///
+    /// Previously, two separate read locks were acquired:
+    /// 1. find_matching_session() -> session_id
+    /// 2. Another read lock to get team from session_id
+    ///
+    /// A race condition could occur if remove_session() was called between these
+    /// two operations, resulting in an empty team string which violates team isolation.
+    ///
+    /// The fix returns (session_id, team) atomically in a single lock acquisition.
+    #[tokio::test]
+    async fn test_find_matching_session_returns_team_atomically() {
+        let (service, _rx) = FlowplaneAccessLogService::new();
+
+        let session = LearningSession {
+            id: "atomic-test-session".to_string(),
+            team: "secure-team".to_string(),
+            route_patterns: vec![Regex::new(r"^/secure/.*").unwrap()],
+            methods: None,
+        };
+        service.add_session(session).await;
+
+        // Verify we get both session_id AND team in a single call
+        let result = service.find_matching_session("/secure/resource", "GET").await;
+        assert!(result.is_some());
+
+        let (session_id, team) = result.unwrap();
+
+        // Both values must be non-empty and correct
+        assert_eq!(session_id, "atomic-test-session");
+        assert_eq!(team, "secure-team");
+
+        // Team must never be empty when session matches
+        assert!(!team.is_empty(), "Team must never be empty when session matches");
     }
 
     #[test]

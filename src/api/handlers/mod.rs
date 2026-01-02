@@ -5,25 +5,29 @@ pub mod audit_log;
 pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
+pub mod custom_wasm_filters;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod openapi_import;
+pub mod openapi_utils;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
 pub mod scopes;
 pub mod secrets;
 pub mod stats;
+pub mod team_access;
 pub mod teams;
 pub mod users;
 
 // Re-export handler functions for backward compatibility
 pub use aggregated_schemas::{
     compare_aggregated_schemas_handler, export_aggregated_schema_handler,
-    get_aggregated_schema_handler, list_aggregated_schemas_handler,
+    export_multiple_schemas_handler, get_aggregated_schema_handler,
+    list_aggregated_schemas_handler,
 };
 pub use audit_log::list_audit_logs;
 pub use auth::{
@@ -35,6 +39,11 @@ pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
     update_cluster_handler,
+};
+pub use custom_wasm_filters::{
+    create_custom_wasm_filter_handler, delete_custom_wasm_filter_handler,
+    download_wasm_binary_handler, get_custom_wasm_filter_handler, list_custom_wasm_filters_handler,
+    update_custom_wasm_filter_handler,
 };
 pub use filters::{
     attach_filter_handler, attach_filter_to_listener_handler, configure_filter_handler,
@@ -81,8 +90,11 @@ pub use teams::{
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
-    remove_team_membership, update_user,
+    remove_team_membership, update_team_membership_scopes, update_user,
 };
+
+// Re-export team access utilities for use across handlers
+pub use team_access::{get_effective_team_scopes, verify_team_access, TeamOwned};
 
 // Re-export hierarchy handlers for route hierarchy filter attachment
 pub use hierarchy::{
@@ -94,8 +106,8 @@ pub use hierarchy::{
 
 // Re-export DTOs for OpenAPI docs
 pub use aggregated_schemas::{
-    AggregatedSchemaResponse, CompareSchemaQuery, ExportSchemaQuery, ListAggregatedSchemasQuery,
-    OpenApiExportResponse, SchemaComparisonResponse,
+    AggregatedSchemaResponse, CompareSchemaQuery, ExportMultipleSchemasRequest, ExportSchemaQuery,
+    ListAggregatedSchemasQuery, OpenApiExportResponse, SchemaComparisonResponse,
 };
 pub use clusters::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
@@ -122,6 +134,12 @@ pub use teams::{
     MtlsStatusResponse,
 };
 pub use users::ListUsersResponse;
+
+// Custom WASM filter DTOs
+pub use custom_wasm_filters::{
+    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
+    ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+};
 
 // Hierarchy DTOs for route hierarchy filter attachment
 pub use hierarchy::{

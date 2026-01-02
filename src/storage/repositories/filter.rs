@@ -97,6 +97,24 @@ impl From<FilterRow> for FilterData {
     }
 }
 
+impl crate::api::handlers::TeamOwned for FilterData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "Filter"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "filters"
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateFilterRequest {
     pub name: String,

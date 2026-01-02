@@ -183,6 +183,11 @@ domain_id!(
     SecretId
 );
 
+domain_id!(
+    /// Unique identifier for a custom WASM filter definition
+    CustomWasmFilterId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -389,6 +389,51 @@ impl std::str::FromStr for FilterType {
     }
 }
 
+/// Check if a filter type string can attach to a given attachment point.
+///
+/// This handles both built-in filter types (with known attachment rules)
+/// and custom filter types (which default to allowing Route and Listener attachment).
+///
+/// Returns Ok(()) if attachment is allowed, or Err with a descriptive message if not.
+pub fn can_filter_type_attach_to(
+    filter_type_str: &str,
+    attachment_point: AttachmentPoint,
+) -> Result<(), String> {
+    // Try to parse as a built-in type
+    if let Ok(filter_type) = filter_type_str.parse::<FilterType>() {
+        if filter_type.can_attach_to(attachment_point) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Filter type '{}' cannot be attached to {}. Valid attachment points: {}",
+            filter_type_str,
+            attachment_point,
+            filter_type.allowed_attachment_points_display()
+        ));
+    }
+
+    // Custom filter types (wasm, lua, etc.) - allow Route and Listener by default
+    // Cluster attachment is not supported for custom HTTP filters
+    match attachment_point {
+        AttachmentPoint::Route | AttachmentPoint::Listener => Ok(()),
+        AttachmentPoint::Cluster => {
+            Err(format!("Custom filter type '{}' cannot be attached to clusters", filter_type_str))
+        }
+    }
+}
+
+/// Get the allowed attachment points for a filter type string.
+///
+/// Returns the attachment points for built-in types, or Route + Listener for custom types.
+pub fn get_filter_type_attachment_points(filter_type_str: &str) -> Vec<AttachmentPoint> {
+    if let Ok(filter_type) = filter_type_str.parse::<FilterType>() {
+        filter_type.allowed_attachment_points()
+    } else {
+        // Custom types default to Route + Listener
+        vec![AttachmentPoint::Route, AttachmentPoint::Listener]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct HeaderMutationEntry {
     pub key: String,
@@ -409,9 +454,27 @@ pub struct HeaderMutationFilterConfig {
     pub response_headers_to_remove: Vec<String>,
 }
 
-/// Envelope for all filter configurations (extensible for future filter types)
+/// Configuration for custom/dynamic filter types loaded from schema registry.
+///
+/// This allows creating filters from YAML schema definitions without
+/// requiring compile-time Rust code.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "type", content = "config", rename_all = "snake_case")]
+pub struct CustomFilterConfig {
+    /// The filter type name (e.g., "wasm", "lua")
+    /// Must match a schema in the filter-schemas directory
+    #[serde(rename = "type")]
+    pub filter_type: String,
+    /// The filter configuration as JSON
+    /// Validated against the schema's config_schema
+    pub config: serde_json::Value,
+}
+
+/// Envelope for all filter configurations (extensible for future filter types)
+///
+/// This enum uses custom Serialize/Deserialize implementations to support both
+/// built-in filter types (with typed configs) and custom/dynamic filter types
+/// (with arbitrary JSON configs loaded from schema registry).
+#[derive(Debug, Clone, ToSchema)]
 pub enum FilterConfig {
     HeaderMutation(HeaderMutationFilterConfig),
     JwtAuth(JwtAuthenticationConfig),
@@ -428,23 +491,243 @@ pub enum FilterConfig {
     /// Role-based access control filter configuration
     Rbac(RbacConfig),
     /// OAuth2 authentication filter configuration
-    #[serde(rename = "oauth2")]
     OAuth2(OAuth2Config),
+    /// Custom/dynamic filter loaded from schema registry
+    /// Used for filter types defined in filter-schemas/custom/
+    Custom(CustomFilterConfig),
+}
+
+// Custom serializer that produces {"type": "...", "config": {...}} format
+// and handles both built-in and custom filter types
+impl Serialize for FilterConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(2))?;
+
+        match self {
+            FilterConfig::HeaderMutation(config) => {
+                map.serialize_entry("type", "header_mutation")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::JwtAuth(config) => {
+                map.serialize_entry("type", "jwt_auth")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::LocalRateLimit(config) => {
+                map.serialize_entry("type", "local_rate_limit")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::CustomResponse(config) => {
+                map.serialize_entry("type", "custom_response")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::Mcp(config) => {
+                map.serialize_entry("type", "mcp")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::Cors(config) => {
+                map.serialize_entry("type", "cors")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::Compressor(config) => {
+                map.serialize_entry("type", "compressor")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::ExtAuthz(config) => {
+                map.serialize_entry("type", "ext_authz")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::Rbac(config) => {
+                map.serialize_entry("type", "rbac")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::OAuth2(config) => {
+                map.serialize_entry("type", "oauth2")?;
+                map.serialize_entry("config", config)?;
+            }
+            FilterConfig::Custom(custom) => {
+                // For custom filters, use the dynamic type name from CustomFilterConfig
+                map.serialize_entry("type", &custom.filter_type)?;
+                map.serialize_entry("config", &custom.config)?;
+            }
+        }
+
+        map.end()
+    }
+}
+
+// Custom deserializer that falls back to Custom for unknown types
+impl<'de> serde::Deserialize<'de> for FilterConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        // First, deserialize to a raw Value
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        // Extract the type field
+        let filter_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| D::Error::missing_field("type"))?;
+
+        // Try to match known types
+        match filter_type {
+            "header_mutation" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: HeaderMutationFilterConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::HeaderMutation(inner))
+            }
+            "jwt_auth" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: JwtAuthenticationConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::JwtAuth(inner))
+            }
+            "local_rate_limit" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: LocalRateLimitConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::LocalRateLimit(inner))
+            }
+            "custom_response" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: CustomResponseConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::CustomResponse(inner))
+            }
+            "mcp" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: McpFilterConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::Mcp(inner))
+            }
+            "cors" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: CorsConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::Cors(inner))
+            }
+            "compressor" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: CompressorConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::Compressor(inner))
+            }
+            "ext_authz" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: ExtAuthzConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::ExtAuthz(inner))
+            }
+            "rbac" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: RbacConfig =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::Rbac(inner))
+            }
+            "oauth2" => {
+                let config =
+                    value.get("config").ok_or_else(|| D::Error::missing_field("config"))?;
+                let inner: OAuth2Config =
+                    serde_json::from_value(config.clone()).map_err(D::Error::custom)?;
+                Ok(FilterConfig::OAuth2(inner))
+            }
+            // Unknown type - treat as custom/dynamic filter
+            unknown_type => {
+                let config = value
+                    .get("config")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                Ok(FilterConfig::Custom(CustomFilterConfig {
+                    filter_type: unknown_type.to_string(),
+                    config,
+                }))
+            }
+        }
+    }
 }
 
 impl FilterConfig {
-    pub fn filter_type(&self) -> FilterType {
+    /// Returns the filter type as a string.
+    ///
+    /// This works for both built-in and custom filter types.
+    /// For storage and API responses, prefer this over `filter_type()`.
+    pub fn filter_type_str(&self) -> String {
         match self {
-            FilterConfig::HeaderMutation(_) => FilterType::HeaderMutation,
-            FilterConfig::JwtAuth(_) => FilterType::JwtAuth,
-            FilterConfig::LocalRateLimit(_) => FilterType::LocalRateLimit,
-            FilterConfig::CustomResponse(_) => FilterType::CustomResponse,
-            FilterConfig::Mcp(_) => FilterType::Mcp,
-            FilterConfig::Cors(_) => FilterType::Cors,
-            FilterConfig::Compressor(_) => FilterType::Compressor,
-            FilterConfig::ExtAuthz(_) => FilterType::ExtAuthz,
-            FilterConfig::Rbac(_) => FilterType::Rbac,
-            FilterConfig::OAuth2(_) => FilterType::OAuth2,
+            FilterConfig::HeaderMutation(_) => "header_mutation".to_string(),
+            FilterConfig::JwtAuth(_) => "jwt_auth".to_string(),
+            FilterConfig::LocalRateLimit(_) => "local_rate_limit".to_string(),
+            FilterConfig::CustomResponse(_) => "custom_response".to_string(),
+            FilterConfig::Mcp(_) => "mcp".to_string(),
+            FilterConfig::Cors(_) => "cors".to_string(),
+            FilterConfig::Compressor(_) => "compressor".to_string(),
+            FilterConfig::ExtAuthz(_) => "ext_authz".to_string(),
+            FilterConfig::Rbac(_) => "rbac".to_string(),
+            FilterConfig::OAuth2(_) => "oauth2".to_string(),
+            FilterConfig::Custom(c) => c.filter_type.clone(),
+        }
+    }
+
+    /// Returns the FilterType enum for built-in filter types.
+    ///
+    /// For custom filters, this returns None since they don't have
+    /// a corresponding FilterType variant.
+    pub fn try_filter_type(&self) -> Option<FilterType> {
+        match self {
+            FilterConfig::HeaderMutation(_) => Some(FilterType::HeaderMutation),
+            FilterConfig::JwtAuth(_) => Some(FilterType::JwtAuth),
+            FilterConfig::LocalRateLimit(_) => Some(FilterType::LocalRateLimit),
+            FilterConfig::CustomResponse(_) => Some(FilterType::CustomResponse),
+            FilterConfig::Mcp(_) => Some(FilterType::Mcp),
+            FilterConfig::Cors(_) => Some(FilterType::Cors),
+            FilterConfig::Compressor(_) => Some(FilterType::Compressor),
+            FilterConfig::ExtAuthz(_) => Some(FilterType::ExtAuthz),
+            FilterConfig::Rbac(_) => Some(FilterType::Rbac),
+            FilterConfig::OAuth2(_) => Some(FilterType::OAuth2),
+            FilterConfig::Custom(_) => None,
+        }
+    }
+
+    /// Returns the FilterType enum for built-in filter types.
+    ///
+    /// # Panics
+    /// Panics if called on a Custom filter. Use `try_filter_type()` or
+    /// `filter_type_str()` for custom-safe access.
+    pub fn filter_type(&self) -> FilterType {
+        self.try_filter_type().expect(
+            "filter_type() called on Custom filter - use try_filter_type() or filter_type_str()",
+        )
+    }
+
+    /// Returns true if this is a custom/dynamic filter type.
+    pub fn is_custom(&self) -> bool {
+        matches!(self, FilterConfig::Custom(_))
+    }
+
+    /// Returns the raw JSON config for custom filters.
+    ///
+    /// Returns None for built-in filter types.
+    pub fn custom_config(&self) -> Option<&serde_json::Value> {
+        match self {
+            FilterConfig::Custom(c) => Some(&c.config),
+            _ => None,
         }
     }
 }
@@ -474,7 +757,7 @@ mod tests {
 
         let req = result.unwrap();
         assert_eq!(req.name, "test-filter");
-        assert_eq!(req.filter_type, FilterType::HeaderMutation);
+        assert_eq!(req.filter_type, "header_mutation");
         assert_eq!(req.team, "test-team");
 
         match req.config {
@@ -1069,5 +1352,115 @@ mod tests {
         // Display and FromStr consistency
         assert_eq!(ft.to_string(), "oauth2");
         assert_eq!("oauth2".parse::<FilterType>().unwrap(), FilterType::OAuth2);
+    }
+
+    #[test]
+    fn test_custom_filter_deserialization() {
+        // Test that unknown filter types are parsed as Custom
+        let json = r#"{
+            "type": "wasm",
+            "config": {
+                "name": "add_header",
+                "vm_config": {
+                    "runtime": "envoy.wasm.runtime.v8",
+                    "code": {
+                        "local": {
+                            "filename": "/path/to/filter.wasm"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let result: Result<FilterConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "Should parse custom filter: {:?}", result.err());
+
+        let config = result.unwrap();
+        assert!(config.is_custom(), "Should be a custom filter");
+        assert_eq!(config.filter_type_str(), "wasm");
+
+        if let FilterConfig::Custom(custom) = config {
+            assert_eq!(custom.filter_type, "wasm");
+            assert!(custom.config.get("name").is_some());
+            assert!(custom.config.get("vm_config").is_some());
+        } else {
+            panic!("Expected Custom filter config");
+        }
+    }
+
+    #[test]
+    fn test_custom_filter_methods() {
+        let custom = FilterConfig::Custom(CustomFilterConfig {
+            filter_type: "lua".to_string(),
+            config: serde_json::json!({
+                "inline_code": "function envoy_on_request(handle) end"
+            }),
+        });
+
+        assert!(custom.is_custom());
+        assert_eq!(custom.filter_type_str(), "lua");
+        assert!(custom.try_filter_type().is_none());
+        assert!(custom.custom_config().is_some());
+    }
+
+    #[test]
+    fn test_custom_filter_serialization_roundtrip() {
+        // Test that custom filters can be serialized and deserialized correctly
+        let original = FilterConfig::Custom(CustomFilterConfig {
+            filter_type: "wasm".to_string(),
+            config: serde_json::json!({
+                "name": "add_header",
+                "vm_config": {
+                    "runtime": "envoy.wasm.runtime.v8",
+                    "code": {
+                        "local": {
+                            "filename": "/path/to/filter.wasm"
+                        }
+                    }
+                }
+            }),
+        });
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&original).expect("Should serialize custom filter");
+
+        // Verify the JSON structure uses the dynamic type name, not "custom"
+        assert!(json.contains(r#""type":"wasm""#), "JSON should have type=wasm: {}", json);
+        assert!(json.contains(r#""config":"#), "JSON should have config field: {}", json);
+        assert!(!json.contains(r#""type":"custom""#), "JSON should NOT have type=custom: {}", json);
+
+        // Deserialize back
+        let parsed: FilterConfig = serde_json::from_str(&json).expect("Should deserialize");
+
+        // Verify round-trip
+        assert!(parsed.is_custom());
+        assert_eq!(parsed.filter_type_str(), "wasm");
+
+        if let FilterConfig::Custom(custom) = parsed {
+            assert_eq!(custom.filter_type, "wasm");
+            assert_eq!(custom.config["name"], "add_header");
+            assert_eq!(custom.config["vm_config"]["runtime"], "envoy.wasm.runtime.v8");
+        } else {
+            panic!("Expected Custom filter after round-trip");
+        }
+    }
+
+    #[test]
+    fn test_custom_filter_lua_serialization_roundtrip() {
+        // Test another custom filter type to ensure it's not hardcoded to "wasm"
+        let original = FilterConfig::Custom(CustomFilterConfig {
+            filter_type: "lua".to_string(),
+            config: serde_json::json!({
+                "inline_code": "function envoy_on_request(handle) handle:headers():add('x-lua', 'processed') end"
+            }),
+        });
+
+        let json = serde_json::to_string(&original).expect("Should serialize lua filter");
+
+        // Verify the JSON uses "lua" not "custom" or "wasm"
+        assert!(json.contains(r#""type":"lua""#), "JSON should have type=lua: {}", json);
+
+        let parsed: FilterConfig = serde_json::from_str(&json).expect("Should deserialize");
+        assert_eq!(parsed.filter_type_str(), "lua");
     }
 }

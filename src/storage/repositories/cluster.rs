@@ -57,6 +57,24 @@ impl From<ClusterRow> for ClusterData {
     }
 }
 
+impl crate::api::handlers::TeamOwned for ClusterData {
+    fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "Cluster"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "clusters"
+    }
+}
+
 /// Create cluster request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateClusterRequest {

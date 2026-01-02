@@ -223,6 +223,14 @@ impl MetricsRecorder {
         counter!("access_log_schemas_dropped_total", &labels).increment(1);
     }
 
+    /// Record entry processed without request_id (body merge not possible)
+    /// This helps operators identify misconfigured Envoy setups missing x-request-id
+    pub fn record_missing_request_id(&self, session_id: &str) {
+        counter!("access_log_missing_request_id_total").increment(1);
+        let labels = [("session_id", session_id.to_string())];
+        counter!("access_log_missing_request_id_total", &labels).increment(1);
+    }
+
     /// Update processor queue depth gauge
     pub fn update_processor_queue_depth(&self, queue_type: &str, depth: usize) {
         let labels = [("queue_type", queue_type.to_string())];
@@ -616,6 +624,14 @@ pub async fn update_processor_workers(count: usize) {
 pub async fn record_processor_entry_duration(duration: f64) {
     if let Some(metrics) = get_metrics().await {
         metrics.record_processor_entry_duration(duration);
+    }
+}
+
+/// Record entry processed without request_id via the global recorder
+/// This helps operators identify misconfigured Envoy setups missing x-request-id
+pub async fn record_missing_request_id(session_id: &str) {
+    if let Some(metrics) = get_metrics().await {
+        metrics.record_missing_request_id(session_id);
     }
 }
 
