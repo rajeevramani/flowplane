@@ -238,23 +238,64 @@ curl http://localhost:10000/get
 
 ```mermaid
 graph TD
-    Client[DevOps / Developer] -->|REST / UI| API[API Server :8080]
-    API -->|Persist| DB[(SQLite/PostgreSQL)]
-    DB -.->|Query| XDS[xDS Server :50051]
+    User[User / CI/CD] -->|REST / UI| API[API Server]
 
-    subgraph Control Plane
+    subgraph "Flowplane Control Plane"
+        direction TB
+
         API
-        XDS
-        ALS[Access Log Service]
-        ExtProc[External Processor]
+
+        subgraph "Core xDS Engine"
+            XDS[xDS Server]
+            State[xDS State Cache]
+            SecretReg[Secret Backend Registry]
+            FilterReg[Filter Registry]
+        end
+
+        subgraph "Learning Engine"
+            ALS[Access Log Service]
+            ExtProc[External Processor]
+            Worker[Access Log Processor]
+            SchemaAgg[Schema Aggregator]
+            SessionMgr[Learning Session Service]
+        end
+
+        API -->|Read/Write| DB[(Database)]
+
+        %% State Sync Flow
+        State -->|Poll/Refresh| DB
+        XDS -->|Read| State
+
+        %% Secret Flow
+        SecretReg -->|Fetch| ExtSecrets
+        State -.->|Resolve| SecretReg
+
+        %% Learning Flow
+        ALS -->|Stream| SessionMgr
+        ExtProc -->|Stream| SessionMgr
+        SessionMgr -->|Batch| Worker
+        Worker -->|Infer| SchemaAgg
+        SchemaAgg -->|Persist| DB
     end
 
-    Envoy[Envoy Proxy] -->|gRPC xDS| XDS
-    Envoy -->|Access Logs| ALS
-    Envoy -->|Request/Response| ExtProc
-    ALS -->|Schema Inference| DB
-    ExtProc -->|Body Capture| DB
+    subgraph "Data Plane"
+        Envoy[Envoy Proxy]
+    end
 
+    %% External Dependencies
+    ExtSecrets[External Secrets\n Vault / AWS / GCP]
+    PKI[Vault PKI]
+
+    %% Flows
+    Envoy -->|gRPC ADS/xDS| XDS
+    Envoy -->|gRPC ALS| ALS
+    Envoy -->|gRPC ExtProc| ExtProc
+
+    %% Security
+    XDS -.->|mTLS Auth| PKI
+    Envoy -.->|mTLS Identity| PKI
+
+    %% Traffic
     Envoy -->|Traffic| Upstream[Upstream Services]
 ```
 
