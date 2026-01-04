@@ -34,8 +34,11 @@ Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CO
 - **Observability** - OpenTelemetry tracing, Prometheus metrics
 - **Security** - OAuth2, JWT, mTLS with Vault PKI integration
 
-### Import Openapi
-![Flowplane Demo](docs/images/import.gif)
+### Import OpenApi
+![Import OpenAppi](docs/images/import.gif)
+
+### API Learning
+![Learning API shape through requests](docs/images/learning-session.gif)
 
 ## Requirements
 
