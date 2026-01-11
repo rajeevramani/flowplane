@@ -1,0 +1,15 @@
+# Base network and volume configuration
+# Provides shared network for all Flowplane services
+#
+# Usage:
+#   docker-compose -f docker-compose-base.yml up -d
+#
+# This file defines the shared infrastructure used by all other compose files.
+
+networks:
+  flowplane-network:
+    external: true
+
+volumes:
+  flowplane_data:
+    driver: local

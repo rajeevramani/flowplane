@@ -235,6 +235,31 @@ impl RouteRepository {
         Ok(count)
     }
 
+    /// List all routes for a team (joins through virtual_host and route_config).
+    #[instrument(skip(self), fields(team = %team), name = "db_list_routes_by_team")]
+    pub async fn list_by_team(&self, team: &str) -> Result<Vec<RouteData>> {
+        let rows = sqlx::query_as::<Sqlite, RouteRow>(
+            "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
+             FROM routes r \
+             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
+             INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
+             WHERE rc.team = $1 \
+             ORDER BY r.name"
+        )
+        .bind(team)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, "Failed to list routes by team");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to list routes for team '{}'", team),
+            }
+        })?;
+
+        rows.into_iter().map(RouteData::try_from).collect()
+    }
+
     /// Update a route.
     #[instrument(skip(self, request), fields(id = %id), name = "db_update_route")]
     pub async fn update(&self, id: &RouteId, request: UpdateRouteRequest) -> Result<RouteData> {

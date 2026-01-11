@@ -1,0 +1,166 @@
+//! Request and response types for MCP tools API
+
+use crate::domain::mcp::SchemaSource;
+use crate::domain::{McpToolCategory, McpToolSourceType};
+use crate::storage::McpToolData;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+
+/// Query parameters for listing MCP tools
+#[derive(Debug, Clone, Deserialize, ToSchema, IntoParams, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpToolsQuery {
+    /// Filter by category (control_plane or gateway_api)
+    #[serde(default)]
+    pub category: Option<McpToolCategory>,
+
+    /// Filter by enabled status
+    #[serde(default)]
+    pub enabled: Option<bool>,
+
+    /// Search by tool name (case-insensitive partial match)
+    #[serde(default)]
+    pub search: Option<String>,
+
+    /// Maximum number of tools to return
+    #[serde(default)]
+    pub limit: Option<i64>,
+
+    /// Offset for pagination
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// MCP tool response DTO
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolResponse {
+    /// Unique identifier for the tool
+    pub id: String,
+
+    /// Team that owns this tool
+    pub team: String,
+
+    /// Tool name (e.g., "api_getUser", "create_cluster")
+    pub name: String,
+
+    /// Human-readable description of what the tool does
+    pub description: Option<String>,
+
+    /// Category: control_plane or gateway_api
+    pub category: McpToolCategory,
+
+    /// Source type: builtin, openapi, learned, or manual
+    pub source_type: McpToolSourceType,
+
+    /// JSON Schema for tool input parameters
+    pub input_schema: serde_json::Value,
+
+    /// JSON Schema for expected output (optional)
+    pub output_schema: Option<serde_json::Value>,
+
+    /// Reference to learned schema if enriched from learning (optional)
+    pub learned_schema_id: Option<i64>,
+
+    /// Source of the schema information (optional)
+    pub schema_source: Option<SchemaSource>,
+
+    /// Route ID for gateway_api tools (required for gateway_api category)
+    pub route_id: Option<String>,
+
+    /// HTTP method for gateway_api tools (GET, POST, PUT, DELETE, etc.)
+    pub http_method: Option<String>,
+
+    /// HTTP path pattern for gateway_api tools
+    pub http_path: Option<String>,
+
+    /// Target cluster name for gateway_api tools
+    pub cluster_name: Option<String>,
+
+    /// Envoy listener port for execution
+    pub listener_port: Option<i64>,
+
+    /// Whether this tool is enabled (true) or disabled (false)
+    pub enabled: bool,
+
+    /// Confidence score (1.0 for OpenAPI, 0.0-1.0 for learned)
+    pub confidence: Option<f64>,
+
+    /// Timestamp when the tool was created
+    pub created_at: chrono::DateTime<chrono::Utc>,
+
+    /// Timestamp when the tool was last updated
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<McpToolData> for McpToolResponse {
+    fn from(data: McpToolData) -> Self {
+        Self {
+            id: data.id.to_string(),
+            team: data.team,
+            name: data.name,
+            description: data.description,
+            category: data.category,
+            source_type: data.source_type,
+            input_schema: data.input_schema,
+            output_schema: data.output_schema,
+            learned_schema_id: data.learned_schema_id,
+            schema_source: data.schema_source.and_then(|s| s.parse().ok()),
+            route_id: data.route_id.map(|id| id.to_string()),
+            http_method: data.http_method,
+            http_path: data.http_path,
+            cluster_name: data.cluster_name,
+            listener_port: data.listener_port,
+            enabled: data.enabled,
+            confidence: data.confidence,
+            created_at: data.created_at,
+            updated_at: data.updated_at,
+        }
+    }
+}
+
+/// Paginated response for listing MCP tools
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMcpToolsResponse {
+    /// List of MCP tools
+    pub tools: Vec<McpToolResponse>,
+
+    /// Total count of tools matching the query
+    pub total: i64,
+
+    /// Limit used for pagination
+    pub limit: i64,
+
+    /// Offset used for pagination
+    pub offset: i64,
+}
+
+/// Request body for updating an MCP tool
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMcpToolBody {
+    /// Tool name (e.g., "api_getUser")
+    pub name: Option<String>,
+
+    /// Human-readable description
+    pub description: Option<String>,
+
+    /// Category: control_plane or gateway_api
+    pub category: Option<McpToolCategory>,
+
+    /// HTTP method for gateway_api tools (GET, POST, PUT, DELETE, etc.)
+    pub http_method: Option<String>,
+
+    /// HTTP path pattern for gateway_api tools
+    pub http_path: Option<String>,
+
+    /// JSON Schema for tool input parameters
+    pub input_schema: Option<serde_json::Value>,
+
+    /// JSON Schema for expected output (optional)
+    pub output_schema: Option<serde_json::Value>,
+
+    /// Whether this tool is enabled
+    pub enabled: Option<bool>,
+}

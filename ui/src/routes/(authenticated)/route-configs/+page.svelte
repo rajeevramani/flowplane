@@ -2,11 +2,12 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { Plus, FileUp, Edit, Trash2, Server, Globe, Filter } from 'lucide-svelte';
-	import type { RouteResponse, ClusterResponse, ListenerResponse, ImportSummary, FilterResponse } from '$lib/api/types';
+	import { Plus, FileUp, Edit, Trash2, Server, Globe, Filter, Bot, ChevronDown, ChevronRight } from 'lucide-svelte';
+	import type { RouteResponse, ClusterResponse, ListenerResponse, ImportSummary, FilterResponse, McpTool, VirtualHostSummary, RouteSummary, McpStatus, EnableMcpRequest } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import { McpBadge, McpEnableModal } from '$lib/components/mcp';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -22,6 +23,21 @@
 	// Filter counts per route (loaded lazily)
 	let routeFilterCounts = $state<Map<string, number>>(new Map());
 	let loadingFilters = $state(false);
+
+	// MCP tools data
+	let mcpTools = $state<McpTool[]>([]);
+	let loadingMcpTools = $state(false);
+
+	// Expanded route configs (for showing virtual hosts and routes)
+	let expandedConfigs = $state<Set<string>>(new Set());
+	let virtualHostsMap = $state<Map<string, VirtualHostSummary[]>>(new Map());
+	let routesMap = $state<Map<string, RouteSummary[]>>(new Map()); // Key: configName_vhName
+
+	// MCP Enable Modal state
+	let showMcpModal = $state(false);
+	let selectedRoute = $state<{ id: string; path: string; method: string } | null>(null);
+	let mcpStatus = $state<McpStatus | null>(null);
+	let mcpModalLoading = $state(false);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -56,6 +72,9 @@
 
 			// Load filter counts for all routes (non-blocking)
 			loadFilterCounts(routesData);
+
+			// Load MCP tools (non-blocking)
+			loadMcpTools();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
@@ -97,6 +116,53 @@
 			loadingFilters = false;
 		}
 	}
+
+	// Load MCP tools for the team
+	async function loadMcpTools() {
+		if (!currentTeam) return;
+
+		loadingMcpTools = true;
+		try {
+			const response = await apiClient.listMcpTools(currentTeam);
+			mcpTools = response.tools;
+		} catch (e) {
+			console.error('Failed to load MCP tools:', e);
+			mcpTools = [];
+		} finally {
+			loadingMcpTools = false;
+		}
+	}
+
+	// Get MCP tools associated with routes in a given route config
+	function getMcpToolsForConfig(config: RouteResponse): McpTool[] {
+		// MCP tools have httpPath, match against routes in this config
+		const routePaths = new Set<string>();
+		const routeConfig = config.config as any;
+		const virtualHosts = routeConfig?.virtualHosts || [];
+
+		for (const vh of virtualHosts) {
+			for (const route of vh.routes || []) {
+				const pathObj = route.match?.path;
+				const path = pathObj?.template || pathObj?.value;
+				if (path) {
+					routePaths.add(path);
+				}
+			}
+		}
+
+		return mcpTools.filter(tool => {
+			if (!tool.httpPath) return false;
+			return routePaths.has(tool.httpPath);
+		});
+	}
+
+	// MCP Stats
+	let mcpStats = $derived({
+		totalTools: mcpTools.length,
+		enabledTools: mcpTools.filter(t => t.enabled).length,
+		gatewayApiTools: mcpTools.filter(t => t.category === 'gateway_api').length,
+		learnedSchemas: mcpTools.filter(t => t.schemaSource === 'learned').length
+	});
 
 	// Calculate stats
 	let stats = $derived({
@@ -196,6 +262,91 @@
 	function handleImport() {
 		goto('/imports/create');
 	}
+
+	// Toggle route config expansion
+	async function toggleConfigExpansion(configName: string) {
+		const isExpanded = expandedConfigs.has(configName);
+		if (isExpanded) {
+			expandedConfigs.delete(configName);
+			expandedConfigs = new Set(expandedConfigs);
+		} else {
+			expandedConfigs.add(configName);
+			expandedConfigs = new Set(expandedConfigs);
+
+			// Load virtual hosts if not already loaded
+			if (!virtualHostsMap.has(configName)) {
+				try {
+					const vhosts = await apiClient.listVirtualHosts(configName);
+					virtualHostsMap.set(configName, vhosts);
+					virtualHostsMap = new Map(virtualHostsMap);
+				} catch (err) {
+					console.error('Failed to load virtual hosts:', err);
+				}
+			}
+		}
+	}
+
+	// Toggle virtual host expansion
+	async function toggleVirtualHostExpansion(configName: string, vhName: string) {
+		const key = `${configName}_${vhName}`;
+		const isExpanded = routesMap.has(key);
+
+		if (isExpanded) {
+			routesMap.delete(key);
+			routesMap = new Map(routesMap);
+		} else {
+			try {
+				const routes = await apiClient.listRoutesInVirtualHost(configName, vhName);
+				routesMap.set(key, routes);
+				routesMap = new Map(routesMap);
+			} catch (err) {
+				console.error('Failed to load routes:', err);
+			}
+		}
+	}
+
+	// Open MCP Enable Modal
+	async function handleEnableMcp(routeId: string, path: string, method: string) {
+		selectedRoute = { id: routeId, path, method };
+		mcpModalLoading = true;
+		showMcpModal = true;
+
+		try {
+			mcpStatus = await apiClient.getMcpStatus(currentTeam, routeId);
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to load MCP status';
+			showMcpModal = false;
+		} finally {
+			mcpModalLoading = false;
+		}
+	}
+
+	// Handle MCP enable request
+	async function handleMcpEnable(request: EnableMcpRequest) {
+		if (!selectedRoute) return;
+
+		mcpModalLoading = true;
+		try {
+			await apiClient.enableMcp(currentTeam, selectedRoute.id, request);
+			showMcpModal = false;
+			selectedRoute = null;
+			mcpStatus = null;
+
+			// Reload MCP tools
+			await loadMcpTools();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to enable MCP';
+		} finally {
+			mcpModalLoading = false;
+		}
+	}
+
+	// Close MCP modal
+	function handleMcpModalClose() {
+		showMcpModal = false;
+		selectedRoute = null;
+		mcpStatus = null;
+	}
 </script>
 
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
@@ -220,11 +371,11 @@
 	</div>
 
 	<!-- Stats Cards -->
-	<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+	<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-sm font-medium text-gray-600">Total Configurations</p>
+					<p class="text-sm font-medium text-gray-600">Configurations</p>
 					<p class="text-2xl font-bold text-gray-900">{stats.totalConfigs}</p>
 				</div>
 				<div class="p-3 bg-blue-100 rounded-lg">
@@ -260,11 +411,36 @@
 		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-sm font-medium text-gray-600">Active Listeners</p>
+					<p class="text-sm font-medium text-gray-600">Listeners</p>
 					<p class="text-2xl font-bold text-gray-900">{stats.activeListeners}</p>
 				</div>
 				<div class="p-3 bg-orange-100 rounded-lg">
 					<Server class="h-6 w-6 text-orange-600" />
+				</div>
+			</div>
+		</div>
+
+		<!-- MCP Stats -->
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">MCP Tools</p>
+					<p class="text-2xl font-bold text-gray-900">{mcpStats.totalTools}</p>
+				</div>
+				<div class="p-3 bg-indigo-100 rounded-lg">
+					<Bot class="h-6 w-6 text-indigo-600" />
+				</div>
+			</div>
+		</div>
+
+		<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-gray-600">MCP Enabled</p>
+					<p class="text-2xl font-bold text-emerald-600">{mcpStats.enabledTools}</p>
+				</div>
+				<div class="p-3 bg-emerald-100 rounded-lg">
+					<Bot class="h-6 w-6 text-emerald-600" />
 				</div>
 			</div>
 		</div>
@@ -340,10 +516,10 @@
 							Filters
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-							Source
+							MCP
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-							Created
+							Source
 						</th>
 						<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Actions
@@ -356,10 +532,27 @@
 						{@const domains = getDomainList(config)}
 						{@const source = getSourceType(config)}
 						{@const filterCount = routeFilterCounts.get(config.name)}
+						{@const configMcpTools = getMcpToolsForConfig(config)}
+						{@const enabledMcpCount = configMcpTools.filter(t => t.enabled).length}
+						{@const isExpanded = expandedConfigs.has(config.name)}
+						{@const virtualHosts = virtualHostsMap.get(config.name) || []}
+
+						<!-- Main route config row -->
 						<tr class="hover:bg-gray-50 transition-colors">
-							<!-- Configuration Name -->
+							<!-- Configuration Name with expand button -->
 							<td class="px-6 py-4">
-								<div class="flex flex-col">
+								<div class="flex items-center gap-2">
+									<button
+										onclick={() => toggleConfigExpansion(config.name)}
+										class="p-1 hover:bg-gray-200 rounded transition-colors"
+										title={isExpanded ? 'Collapse' : 'Expand to view routes'}
+									>
+										{#if isExpanded}
+											<ChevronDown class="h-4 w-4 text-gray-600" />
+										{:else}
+											<ChevronRight class="h-4 w-4 text-gray-600" />
+										{/if}
+									</button>
 									<span class="text-sm font-medium text-gray-900">{config.name}</span>
 								</div>
 							</td>
@@ -417,6 +610,30 @@
 								{/if}
 							</td>
 
+							<!-- MCP -->
+							<td class="px-6 py-4">
+								{#if loadingMcpTools}
+									<span class="text-xs text-gray-400">Loading...</span>
+								{:else if configMcpTools.length > 0}
+									<a
+										href="/mcp-tools"
+										class="inline-flex items-center gap-2"
+										title="View MCP tools for this configuration"
+									>
+										{#if enabledMcpCount > 0}
+											<McpBadge status="enabled" />
+										{:else}
+											<McpBadge status="ready" />
+										{/if}
+										<span class="text-xs text-gray-500">
+											{enabledMcpCount}/{configMcpTools.length}
+										</span>
+									</a>
+								{:else}
+									<span class="text-xs text-gray-400">-</span>
+								{/if}
+							</td>
+
 							<!-- Source -->
 							<td class="px-6 py-4">
 								{#if source.type === 'import'}
@@ -424,11 +641,6 @@
 								{:else}
 									<Badge variant="gray">{source.name}</Badge>
 								{/if}
-							</td>
-
-							<!-- Created -->
-							<td class="px-6 py-4">
-								<span class="text-sm text-gray-500">-</span>
 							</td>
 
 							<!-- Actions -->
@@ -451,6 +663,79 @@
 								</div>
 							</td>
 						</tr>
+
+						<!-- Expanded virtual hosts and routes -->
+						{#if isExpanded}
+							{#each virtualHosts as vhost}
+								{@const vhKey = `${config.name}_${vhost.name}`}
+								{@const vhRoutes = routesMap.get(vhKey) || []}
+								{@const vhExpanded = routesMap.has(vhKey)}
+
+								<!-- Virtual Host row -->
+								<tr class="bg-blue-50">
+									<td colspan="8" class="px-6 py-3">
+										<div class="flex items-center gap-3">
+											<button
+												onclick={() => toggleVirtualHostExpansion(config.name, vhost.name)}
+												class="p-1 hover:bg-blue-100 rounded transition-colors"
+												title={vhExpanded ? 'Collapse' : 'Expand to view individual routes'}
+											>
+												{#if vhExpanded}
+													<ChevronDown class="h-4 w-4 text-blue-600" />
+												{:else}
+													<ChevronRight class="h-4 w-4 text-blue-600" />
+												{/if}
+											</button>
+											<div class="flex items-center gap-4">
+												<span class="text-sm font-medium text-blue-900">Virtual Host: {vhost.name}</span>
+												<div class="flex gap-2">
+													<Badge variant="blue" size="sm">{vhost.routeCount} routes</Badge>
+													{#each vhost.domains as domain}
+														<Badge variant="gray" size="sm">{domain}</Badge>
+													{/each}
+												</div>
+											</div>
+										</div>
+									</td>
+								</tr>
+
+								<!-- Individual routes -->
+								{#if vhExpanded}
+									{#each vhRoutes as route}
+										{@const routeMcpTool = mcpTools.find(t => t.routeId === route.id)}
+										<tr class="bg-gray-50">
+											<td colspan="8" class="px-6 py-2">
+												<div class="flex items-center justify-between pl-12">
+													<div class="flex items-center gap-4">
+														<Badge variant="gray" size="sm">{route.matchType}</Badge>
+														<span class="text-sm font-mono text-gray-700">{route.pathPattern}</span>
+														<span class="text-xs text-gray-500">{route.name}</span>
+													</div>
+													<div class="flex items-center gap-2">
+														{#if routeMcpTool}
+															{#if routeMcpTool.enabled}
+																<McpBadge status="enabled" />
+															{:else}
+																<McpBadge status="ready" />
+															{/if}
+														{:else}
+															<Button
+																variant="secondary"
+																size="sm"
+																onclick={() => handleEnableMcp(route.id, route.pathPattern, route.matchType)}
+															>
+																<Bot class="h-3 w-3 mr-1" />
+																Enable MCP
+															</Button>
+														{/if}
+													</div>
+												</div>
+											</td>
+										</tr>
+									{/each}
+								{/if}
+							{/each}
+						{/if}
 					{/each}
 				</tbody>
 			</table>
@@ -464,3 +749,16 @@
 		{/if}
 	{/if}
 </div>
+
+<!-- MCP Enable Modal -->
+{#if showMcpModal && selectedRoute && mcpStatus}
+	<McpEnableModal
+		show={showMcpModal}
+		status={mcpStatus}
+		routePath={selectedRoute.path}
+		routeMethod={selectedRoute.method}
+		onClose={handleMcpModalClose}
+		onEnable={handleMcpEnable}
+		loading={mcpModalLoading}
+	/>
+{/if}

@@ -17,7 +17,8 @@
 		Lock,
 		BookOpen,
 		FileCode,
-		Puzzle
+		Puzzle,
+		Bot
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -252,6 +253,16 @@
 				>
 					<FileCode class="h-5 w-5" />
 					Discovered Schemas
+				</a>
+				<a
+					href="/mcp-tools"
+					class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+						{isActive('/mcp-tools')
+						? 'bg-blue-600 text-white'
+						: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+				>
+					<Bot class="h-5 w-5" />
+					MCP Tools
 				</a>
 			</div>
 		</div>

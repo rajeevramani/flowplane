@@ -188,6 +188,16 @@ domain_id!(
     CustomWasmFilterId
 );
 
+domain_id!(
+    /// Unique identifier for an MCP tool definition
+    McpToolId
+);
+
+domain_id!(
+    /// Unique identifier for route metadata (OpenAPI metadata for routes)
+    RouteMetadataId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

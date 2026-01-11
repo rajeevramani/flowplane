@@ -23,20 +23,24 @@ use sha2::{Digest, Sha256};
 use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
+use std::collections::HashMap;
+
 use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::{
         authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
         models::AuthContext,
     },
-    domain::RouteConfigId,
-    openapi::{build_gateway_plan, GatewayOptions},
+    domain::{RouteConfigId, RouteMetadataSourceType},
+    openapi::{build_gateway_plan, GatewayOptions, RouteMetadataEntry},
     storage::{
         repositories::{
             cluster_references::ClusterReferencesRepository,
             import_metadata::{
                 CreateImportMetadataRequest, ImportMetadataData, ImportMetadataRepository,
             },
+            route::RouteRepository,
+            route_metadata::{CreateRouteMetadataRequest, RouteMetadataRepository},
         },
         CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRepositoryRequest,
     },
@@ -318,6 +322,12 @@ pub async fn import_openapi_handler(
         None
     };
 
+    // Create route metadata from OpenAPI operation metadata
+    // This happens after route hierarchy sync so routes are in the database
+    if !plan.route_metadata.is_empty() {
+        create_route_metadata_from_plan(&db_pool, &params.team, &plan.route_metadata).await?;
+    }
+
     // Trigger xDS refresh
     state.xds_state.refresh_routes_from_repository().await.map_err(ApiError::from)?;
 
@@ -535,6 +545,96 @@ pub async fn delete_import_handler(
 }
 
 // === Helper Functions ===
+
+/// Create route_metadata records from OpenAPI operation metadata
+///
+/// This function looks up routes by name (created during hierarchy sync) and
+/// creates corresponding metadata records with OpenAPI operation information.
+async fn create_route_metadata_from_plan(
+    db_pool: &crate::storage::DbPool,
+    team: &str,
+    route_metadata_map: &HashMap<String, RouteMetadataEntry>,
+) -> std::result::Result<usize, ApiError> {
+    let route_repo = RouteRepository::new(db_pool.clone());
+    let route_metadata_repo = RouteMetadataRepository::new(db_pool.clone());
+
+    let mut created_count = 0;
+
+    // Get all routes for this team to match by name
+    let routes = route_repo.list_by_team(team).await.map_err(|e| {
+        ApiError::Internal(format!("Failed to list routes for team '{}': {}", team, e))
+    })?;
+
+    for (route_name, metadata_entry) in route_metadata_map {
+        // Find the route with this name
+        let route = routes.iter().find(|r| r.name == *route_name);
+
+        if let Some(route) = route {
+            // Check if metadata already exists for this route
+            let existing = route_metadata_repo.get_by_route_id(&route.id).await.map_err(|e| {
+                ApiError::Internal(format!("Failed to check existing metadata: {}", e))
+            })?;
+
+            if existing.is_some() {
+                tracing::debug!(
+                    route_id = %route.id,
+                    route_name = %route_name,
+                    "Route metadata already exists, skipping"
+                );
+                continue;
+            }
+
+            // Create the route metadata record
+            let create_request = CreateRouteMetadataRequest {
+                route_id: route.id.clone(),
+                operation_id: metadata_entry.operation_id.clone(),
+                summary: metadata_entry.summary.clone(),
+                description: metadata_entry.description.clone(),
+                tags: metadata_entry.tags.clone(),
+                http_method: Some(metadata_entry.http_method.clone()),
+                request_body_schema: metadata_entry.request_body_schema.clone(),
+                response_schemas: metadata_entry.response_schemas.clone(),
+                learning_schema_id: None,
+                enriched_from_learning: false,
+                source_type: RouteMetadataSourceType::Openapi,
+                confidence: Some(1.0), // OpenAPI metadata has highest confidence
+            };
+
+            match route_metadata_repo.create(create_request).await {
+                Ok(_) => {
+                    created_count += 1;
+                    tracing::info!(
+                        route_id = %route.id,
+                        route_name = %route_name,
+                        operation_id = ?metadata_entry.operation_id,
+                        "Created route metadata from OpenAPI"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        route_id = %route.id,
+                        route_name = %route_name,
+                        error = %e,
+                        "Failed to create route metadata, continuing"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!(
+                route_name = %route_name,
+                "Route not found for metadata entry, may not have been synced yet"
+            );
+        }
+    }
+
+    tracing::info!(
+        team = %team,
+        metadata_count = created_count,
+        "Created route metadata records from OpenAPI import"
+    );
+
+    Ok(created_count)
+}
 
 async fn materialize_clusters(
     xds_state: &XdsState,

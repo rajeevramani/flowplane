@@ -1401,6 +1401,12 @@ export interface FilterStatusResponse {
 // Learning Session Types
 // ============================================================================
 
+/** Learned schema information for MCP badge display */
+export interface LearnedSchemaInfo {
+	confidenceScore: number;
+	sampleCount: number;
+}
+
 /** Learning session status */
 export type LearningSessionStatus =
 	| 'pending'
@@ -1580,4 +1586,142 @@ export interface UpdateCustomWasmFilterRequest {
 export interface ListCustomWasmFiltersResponse {
 	items: CustomWasmFilterResponse[];
 	total: number;
+}
+
+// ============================================================================
+// MCP (Model Context Protocol) Types
+// ============================================================================
+
+/** MCP Tool category */
+export type McpToolCategory = 'control_plane' | 'gateway_api';
+
+/** MCP Tool source type */
+export type McpToolSourceType = 'builtin' | 'openapi' | 'learned' | 'manual';
+
+/** MCP Schema source type */
+export type McpSchemaSource = 'openapi' | 'learned' | 'manual' | 'mixed';
+
+/** MCP Tool response from API */
+export interface McpTool {
+	id: string;
+	name: string;
+	description: string | null;
+	category: McpToolCategory;
+	sourceType: McpToolSourceType;
+	enabled: boolean;
+	confidence: number | null;
+	httpMethod: string | null;
+	httpPath: string | null;
+	clusterName: string | null;
+	listenerPort: number | null;
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown> | null;
+	schemaSource: McpSchemaSource | null;
+	routeId: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Response for listing MCP tools */
+export interface ListMcpToolsResponse {
+	tools: McpTool[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+/** OpenAPI schema information for MCP status */
+export interface OpenApiSchemaInfo {
+	hasInputSchema: boolean;
+	hasOutputSchema: boolean;
+}
+
+/** Learned schema information for MCP status */
+export interface LearnedSchemaInfo {
+	available: boolean;
+	schemaId: number;
+	confidenceScore: number;
+	sampleCount: number;
+	hasRequestSchema: boolean;
+	hasResponseSchemas: boolean;
+	responseStatusCodes: string[];
+	lastObserved: string;
+}
+
+/** Metadata information for MCP status */
+export interface McpMetadataInfo {
+	operationId: string | null;
+	summary: string | null;
+	description: string | null;
+	tags: string | null;
+}
+
+/** MCP Status response for a route */
+export interface McpStatus {
+	ready: boolean;
+	enabled: boolean;
+	missingFields: string[];
+	schemaSources: {
+		openapi: OpenApiSchemaInfo | null;
+		learned: LearnedSchemaInfo | null;
+	};
+	recommendedSource: string;
+	metadata: McpMetadataInfo | null;
+	toolName: string | null;
+}
+
+/** Request to enable MCP on a route */
+export interface EnableMcpRequest {
+	toolName?: string;
+	description?: string;
+	schemaSource?: McpSchemaSource;
+	summary?: string;
+	httpMethod?: string;
+}
+
+/** Response after enabling MCP */
+export interface EnableMcpResponse {
+	success: boolean;
+	tool: McpTool;
+}
+
+/** Response for disable/refresh operations */
+export interface McpOperationResponse {
+	success: boolean;
+	message: string;
+}
+
+/** Request for bulk MCP operations */
+export interface BulkMcpRequest {
+	routeIds: string[];
+}
+
+/** Response for bulk MCP operations */
+export interface BulkMcpResponse {
+	success: boolean;
+	enabledCount: number;
+	disabledCount: number;
+	failedCount: number;
+	failures: { routeId: string; reason: string }[];
+}
+
+/** Query parameters for listing MCP tools */
+export interface ListMcpToolsQuery {
+	category?: McpToolCategory;
+	enabled?: boolean;
+	search?: string;
+	limit?: number;
+	offset?: number;
+}
+
+/** Request to update an MCP tool */
+export interface UpdateMcpToolRequest {
+	name?: string;
+	description?: string;
+	category?: McpToolCategory;
+	httpMethod?: string;
+	httpPath?: string;
+	inputSchema?: Record<string, unknown>;
+	outputSchema?: Record<string, unknown> | null;
+	enabled?: boolean;
 }

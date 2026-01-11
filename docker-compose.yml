@@ -1,7 +1,22 @@
+# Flowplane Control Plane - Basic Configuration
+#
+# Usage:
+#   docker-compose up -d
+#   make up
+#
+# Access:
+#   - API:     http://localhost:8080/api/v1/
+#   - UI:      http://localhost:8080/
+#   - Swagger: http://localhost:8080/swagger-ui/
+#   - xDS:     localhost:50051
+
 services:
   # Flowplane Control Plane
   control-plane:
-    image: ghcr.io/rajeevramani/flowplane:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flowplane:latest
     container_name: flowplane-control-plane
     environment:
       # Database configuration (SQLite)
@@ -24,13 +39,13 @@ services:
       FLOWPLANE_SECRET_ENCRYPTION_KEY: "d2t71S8xKUQqhaWbj1VofrH/Z8Dq4qR+hAcgXpP6Udg="
 
       # Vault integration
-      VAULT_ADDR: "http://vault:8200"
+      VAULT_ADDR: "http://flowplane-vault:8200"
       VAULT_TOKEN: "flowplane-dev-token"
     ports:
       - "8080:8080"   # HTTP API
       - "50051:50051" # xDS gRPC
-      - "50052:50052"  
-      - "50053:50053"  
+      - "50052:50052" # Access Log Service
+      - "50053:50053" # External Processor
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
       interval: 30s
@@ -39,8 +54,14 @@ services:
       start_period: 10s
     volumes:
       - flowplane_data:/app/data
+    networks:
+      - flowplane-network
     restart: unless-stopped
 
 volumes:
   flowplane_data:
     driver: local
+
+networks:
+  flowplane-network:
+    external: true

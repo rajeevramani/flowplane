@@ -45,6 +45,8 @@ use super::{
         attach_filter_to_virtual_host_handler,
         bootstrap_initialize_handler,
         bootstrap_status_handler,
+        bulk_disable_mcp_handler,
+        bulk_enable_mcp_handler,
         change_password_handler,
         compare_aggregated_schemas_handler,
         // Install/Configure redesign handlers
@@ -67,6 +69,8 @@ use super::{
         detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler,
         detach_filter_handler,
+        disable_mcp_handler,
+        enable_mcp_handler,
         export_aggregated_schema_handler,
         export_multiple_schemas_handler,
         generate_certificate_handler,
@@ -79,6 +83,9 @@ use super::{
         get_filter_type_handler,
         get_learning_session_handler,
         get_listener_handler,
+        get_mcp_status_handler,
+        // MCP tools and route enablement handlers
+        get_mcp_tool_handler,
         get_mtls_status_handler,
         get_route_config_handler,
         get_session_info_handler,
@@ -104,6 +111,7 @@ use super::{
         list_learning_sessions_handler,
         list_listener_filters_handler,
         list_listeners_handler,
+        list_mcp_tools_handler,
         list_route_configs_handler,
         list_route_filters_handler,
         list_route_flows_handler,
@@ -119,6 +127,7 @@ use super::{
         list_virtual_hosts_handler,
         login_handler,
         logout_handler,
+        refresh_mcp_schema_handler,
         reload_filter_schemas_handler,
         remove_filter_configuration_handler,
         remove_team_membership,
@@ -130,6 +139,7 @@ use super::{
         update_cluster_handler,
         update_filter_handler,
         update_listener_handler,
+        update_mcp_tool_handler,
         update_route_config_handler,
         update_secret_handler,
         update_team_membership_scopes,
@@ -413,6 +423,20 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
+        // MCP protocol endpoint (HTTP transport)
+        .route("/api/v1/mcp", post(crate::mcp::mcp_http_handler))
+        // MCP tools management endpoints
+        .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
+        .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))
+        .route("/api/v1/teams/{team}/mcp/tools/{name}", patch(update_mcp_tool_handler))
+        // MCP route enablement endpoints
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/status", get(get_mcp_status_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/enable", post(enable_mcp_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/disable", post(disable_mcp_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/refresh", post(refresh_mcp_schema_handler))
+        // MCP bulk operations
+        .route("/api/v1/teams/{team}/mcp/bulk-enable", post(bulk_enable_mcp_handler))
+        .route("/api/v1/teams/{team}/mcp/bulk-disable", post(bulk_disable_mcp_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)

@@ -1,0 +1,31 @@
+# Standalone httpbin service for API testing
+# Can be composed with any other docker-compose configuration
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose-httpbin.yml up -d
+#
+# Or via Make:
+#   make up HTTPBIN=1
+#
+# Access:
+#   - httpbin: http://localhost:8000
+
+services:
+  httpbin:
+    image: kennethreitz/httpbin:latest
+    container_name: flowplane-httpbin
+    ports:
+      - "8000:80"
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/get"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  flowplane-network:
+    external: true

@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use openapiv3::{OpenAPI, ReferenceOr, Server};
+use openapiv3::{OpenAPI, Operation, ReferenceOr, Server};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value as JsonValue};
 use utoipa::ToSchema;
@@ -39,6 +39,27 @@ pub struct GatewayOptions {
     pub listener_mode: ListenerMode,
 }
 
+/// Metadata extracted from an OpenAPI operation for a route
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteMetadataEntry {
+    /// Route name (used to link metadata to routes after sync)
+    pub route_name: String,
+    /// OpenAPI operationId
+    pub operation_id: Option<String>,
+    /// Short summary of the operation
+    pub summary: Option<String>,
+    /// Full description of the operation
+    pub description: Option<String>,
+    /// Tags from OpenAPI spec
+    pub tags: Option<Vec<String>>,
+    /// HTTP method (GET, POST, etc.)
+    pub http_method: String,
+    /// Request body JSON Schema
+    pub request_body_schema: Option<serde_json::Value>,
+    /// Response schemas keyed by status code
+    pub response_schemas: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct GatewayPlan {
     pub cluster_requests: Vec<CreateClusterRequest>,
@@ -46,6 +67,8 @@ pub struct GatewayPlan {
     pub listener_request: Option<CreateListenerRequest>,
     pub default_virtual_host: Option<VirtualHostConfig>,
     pub summary: GatewaySummary,
+    /// Metadata entries for each route, keyed by route name
+    pub route_metadata: HashMap<String, RouteMetadataEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -112,6 +135,7 @@ pub fn build_gateway_plan(
     let global_filters = parse_global_filters(&openapi)?;
 
     let mut route_rules: Vec<RouteRule> = Vec::new();
+    let mut route_metadata: HashMap<String, RouteMetadataEntry> = HashMap::new();
 
     for (path_template, item) in openapi.paths.paths.iter() {
         let path_item = match item {
@@ -123,23 +147,33 @@ pub fn build_gateway_plan(
 
         let effective_path = combine_base_path(primary_server, path_template);
 
-        // Extract HTTP operations from the path item
-        let operations: [(&str, bool); 8] = [
-            ("GET", path_item.get.is_some()),
-            ("POST", path_item.post.is_some()),
-            ("PUT", path_item.put.is_some()),
-            ("DELETE", path_item.delete.is_some()),
-            ("PATCH", path_item.patch.is_some()),
-            ("HEAD", path_item.head.is_some()),
-            ("OPTIONS", path_item.options.is_some()),
-            ("TRACE", path_item.trace.is_some()),
+        // Extract HTTP operations from the path item with their Operation objects
+        let operations: [(&str, Option<&Operation>); 8] = [
+            ("GET", path_item.get.as_ref()),
+            ("POST", path_item.post.as_ref()),
+            ("PUT", path_item.put.as_ref()),
+            ("DELETE", path_item.delete.as_ref()),
+            ("PATCH", path_item.patch.as_ref()),
+            ("HEAD", path_item.head.as_ref()),
+            ("OPTIONS", path_item.options.as_ref()),
+            ("TRACE", path_item.trace.as_ref()),
         ];
 
         // Create a route for each HTTP method defined in the OpenAPI spec
-        for (method, has_operation) in operations {
-            if has_operation {
+        for (method, maybe_operation) in operations {
+            if let Some(operation) = maybe_operation {
                 // Include HTTP method in route name for uniqueness
                 let route_name = route_name_for_path_method(&options.name, &effective_path, method);
+
+                // Extract metadata from the OpenAPI operation
+                let metadata_entry = extract_operation_metadata(
+                    &route_name,
+                    &effective_path,
+                    method,
+                    operation,
+                    &openapi,
+                );
+                route_metadata.insert(route_name.clone(), metadata_entry);
 
                 // Create :method header matcher for HTTP method matching
                 let headers = Some(vec![HeaderMatchConfig {
@@ -212,6 +246,7 @@ pub fn build_gateway_plan(
             listener_request: None,
             default_virtual_host: Some(virtual_host),
             summary,
+            route_metadata,
         })
     } else {
         // When creating a new listener, we create both the route config and listener
@@ -273,6 +308,7 @@ pub fn build_gateway_plan(
             listener_request: Some(listener_request),
             default_virtual_host: None,
             summary,
+            route_metadata,
         })
     }
 }
@@ -287,6 +323,154 @@ pub fn parse_global_filters(openapi: &OpenAPI) -> Result<Vec<HttpFilterConfigEnt
         })
     } else {
         Ok(Vec::new())
+    }
+}
+
+/// Extract metadata from an OpenAPI operation for MCP tool generation
+pub fn extract_operation_metadata(
+    route_name: &str,
+    _path: &str,
+    method: &str,
+    operation: &Operation,
+    openapi: &OpenAPI,
+) -> RouteMetadataEntry {
+    RouteMetadataEntry {
+        route_name: route_name.to_string(),
+        operation_id: operation.operation_id.clone(),
+        summary: operation.summary.clone(),
+        description: operation.description.clone(),
+        tags: if operation.tags.is_empty() { None } else { Some(operation.tags.clone()) },
+        http_method: method.to_uppercase(),
+        request_body_schema: extract_request_body_schema(operation, openapi),
+        response_schemas: extract_response_schemas(operation, openapi),
+    }
+}
+
+/// Extract request body JSON Schema from OpenAPI requestBody
+fn extract_request_body_schema(
+    operation: &Operation,
+    openapi: &OpenAPI,
+) -> Option<serde_json::Value> {
+    let request_body = operation.request_body.as_ref()?;
+
+    // Resolve reference if needed
+    let resolved_body = match request_body {
+        ReferenceOr::Reference { reference } => {
+            // Try to resolve from components
+            let ref_name = reference.strip_prefix("#/components/requestBodies/")?;
+            openapi.components.as_ref()?.request_bodies.get(ref_name)?.as_item()
+        }
+        ReferenceOr::Item(item) => Some(item),
+    }?;
+
+    // Get JSON content type schema
+    let media_type = resolved_body
+        .content
+        .get("application/json")
+        .or_else(|| resolved_body.content.get("*/*"))
+        .or_else(|| resolved_body.content.values().next())?;
+
+    let schema = media_type.schema.as_ref()?;
+
+    // Convert OpenAPI schema to JSON value
+    resolve_schema_to_json(schema, openapi)
+}
+
+/// Extract response schemas keyed by status code
+fn extract_response_schemas(operation: &Operation, openapi: &OpenAPI) -> Option<serde_json::Value> {
+    let mut schemas: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+    for (status_code, response_ref) in operation.responses.responses.iter() {
+        let status_key = match status_code {
+            openapiv3::StatusCode::Code(code) => code.to_string(),
+            openapiv3::StatusCode::Range(range) => format!("{}XX", range),
+        };
+
+        let response = match response_ref {
+            ReferenceOr::Reference { reference } => {
+                // Try to resolve from components
+                if let Some(ref_name) = reference.strip_prefix("#/components/responses/") {
+                    openapi
+                        .components
+                        .as_ref()
+                        .and_then(|c| c.responses.get(ref_name))
+                        .and_then(|r| r.as_item())
+                } else {
+                    None
+                }
+            }
+            ReferenceOr::Item(item) => Some(item),
+        };
+
+        if let Some(resp) = response {
+            // Get JSON content type schema
+            if let Some(media_type) = resp
+                .content
+                .get("application/json")
+                .or_else(|| resp.content.get("*/*"))
+                .or_else(|| resp.content.values().next())
+            {
+                if let Some(schema) = media_type.schema.as_ref() {
+                    if let Some(json_schema) = resolve_schema_to_json(schema, openapi) {
+                        schemas.insert(status_key, json_schema);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check default response
+    if let Some(default_ref) = &operation.responses.default {
+        let response = match default_ref {
+            ReferenceOr::Reference { reference } => {
+                if let Some(ref_name) = reference.strip_prefix("#/components/responses/") {
+                    openapi
+                        .components
+                        .as_ref()
+                        .and_then(|c| c.responses.get(ref_name))
+                        .and_then(|r| r.as_item())
+                } else {
+                    None
+                }
+            }
+            ReferenceOr::Item(item) => Some(item),
+        };
+
+        if let Some(resp) = response {
+            if let Some(media_type) = resp.content.get("application/json") {
+                if let Some(schema) = media_type.schema.as_ref() {
+                    if let Some(json_schema) = resolve_schema_to_json(schema, openapi) {
+                        schemas.insert("default".to_string(), json_schema);
+                    }
+                }
+            }
+        }
+    }
+
+    if schemas.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(schemas))
+    }
+}
+
+/// Resolve an OpenAPI schema reference to a JSON value
+fn resolve_schema_to_json(
+    schema_ref: &ReferenceOr<openapiv3::Schema>,
+    _openapi: &OpenAPI, // Kept for future full resolution support
+) -> Option<serde_json::Value> {
+    match schema_ref {
+        ReferenceOr::Reference { reference } => {
+            // For references, just store the reference string and resolve later if needed
+            // This avoids infinite recursion for circular references
+            Some(serde_json::json!({
+                "$ref": reference
+            }))
+        }
+        ReferenceOr::Item(schema) => {
+            // Convert the schema to JSON
+            serde_json::to_value(schema).ok()
+        }
     }
 }
 

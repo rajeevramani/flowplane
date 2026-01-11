@@ -96,7 +96,18 @@ import type {
 	CustomWasmFilterResponse,
 	CreateCustomWasmFilterRequest,
 	UpdateCustomWasmFilterRequest,
-	ListCustomWasmFiltersResponse
+	ListCustomWasmFiltersResponse,
+	// MCP types
+	ListMcpToolsResponse,
+	ListMcpToolsQuery,
+	McpTool,
+	UpdateMcpToolRequest,
+	McpStatus,
+	EnableMcpRequest,
+	EnableMcpResponse,
+	McpOperationResponse,
+	BulkMcpRequest,
+	BulkMcpResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -259,6 +270,17 @@ class ApiClient {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'DELETE',
 			headers: this.getHeaders(true), // Include CSRF
+			credentials: 'include',
+		});
+
+		return this.handleResponse<T>(response);
+	}
+
+	async patch<T>(path: string, body: unknown): Promise<T> {
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'PATCH',
+			headers: this.getHeaders(true), // Include CSRF
+			body: JSON.stringify(body),
 			credentials: 'include',
 		});
 
@@ -1170,6 +1192,109 @@ class ApiClient {
 		}
 
 		return response.blob();
+	}
+
+	// ============================================================================
+	// MCP (Model Context Protocol) API
+	// ============================================================================
+
+	/**
+	 * List MCP tools for a team.
+	 * Supports filtering by category, enabled status, and search.
+	 */
+	async listMcpTools(team: string, query?: ListMcpToolsQuery): Promise<ListMcpToolsResponse> {
+		const params = new URLSearchParams();
+		if (query?.category) params.append('category', query.category);
+		if (query?.enabled !== undefined) params.append('enabled', String(query.enabled));
+		if (query?.search) params.append('search', query.search);
+		if (query?.limit) params.append('limit', String(query.limit));
+		if (query?.offset) params.append('offset', String(query.offset));
+
+		const queryString = params.toString();
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/mcp/tools${queryString ? `?${queryString}` : ''}`;
+		return this.get<ListMcpToolsResponse>(path);
+	}
+
+	/**
+	 * Get a specific MCP tool by name.
+	 */
+	async getMcpTool(team: string, name: string): Promise<McpTool> {
+		return this.get<McpTool>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/tools/${encodeURIComponent(name)}`
+		);
+	}
+
+	/**
+	 * Update an MCP tool (enable/disable or update description).
+	 */
+	async updateMcpTool(team: string, name: string, request: UpdateMcpToolRequest): Promise<McpTool> {
+		return this.patch<McpTool>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/tools/${encodeURIComponent(name)}`,
+			request
+		);
+	}
+
+	/**
+	 * Get MCP status for a route.
+	 * Returns readiness, schema sources, and metadata.
+	 */
+	async getMcpStatus(team: string, routeId: string): Promise<McpStatus> {
+		return this.get<McpStatus>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/status`
+		);
+	}
+
+	/**
+	 * Enable MCP on a route.
+	 * Creates an MCP tool for the route with optional configuration.
+	 */
+	async enableMcp(team: string, routeId: string, request?: EnableMcpRequest): Promise<EnableMcpResponse> {
+		return this.post<EnableMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/enable`,
+			request || {}
+		);
+	}
+
+	/**
+	 * Disable MCP on a route.
+	 * Removes the MCP tool for the route.
+	 */
+	async disableMcp(team: string, routeId: string): Promise<McpOperationResponse> {
+		return this.post<McpOperationResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/disable`,
+			{}
+		);
+	}
+
+	/**
+	 * Refresh MCP schema for a route.
+	 * Re-generates the input/output schemas from the latest metadata.
+	 */
+	async refreshMcpSchema(team: string, routeId: string): Promise<McpOperationResponse> {
+		return this.post<McpOperationResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/refresh`,
+			{}
+		);
+	}
+
+	/**
+	 * Bulk enable MCP on multiple routes.
+	 */
+	async bulkEnableMcp(team: string, request: BulkMcpRequest): Promise<BulkMcpResponse> {
+		return this.post<BulkMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/bulk-enable`,
+			request
+		);
+	}
+
+	/**
+	 * Bulk disable MCP on multiple routes.
+	 */
+	async bulkDisableMcp(team: string, request: BulkMcpRequest): Promise<BulkMcpResponse> {
+		return this.post<BulkMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/bulk-disable`,
+			request
+		);
 	}
 }
 

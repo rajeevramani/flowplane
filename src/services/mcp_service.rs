@@ -1,0 +1,834 @@
+//! MCP enablement service
+//!
+//! This service provides business logic for enabling/disabling MCP on routes,
+//! checking readiness status, and managing MCP tool definitions.
+
+use crate::domain::{RouteConfigId, RouteId, RouteMetadataSourceType};
+use crate::errors::FlowplaneError;
+use crate::mcp::error::McpError;
+use crate::mcp::gateway::GatewayToolGenerator;
+use crate::storage::repositories::aggregated_schema::AggregatedSchemaRepository;
+use crate::storage::repositories::listener::ListenerRepository;
+use crate::storage::repositories::listener_route_config::ListenerRouteConfigRepository;
+use crate::storage::repositories::mcp_tool::{
+    McpToolData, McpToolRepository, UpdateMcpToolRequest,
+};
+use crate::storage::repositories::route::RouteRepository;
+use crate::storage::repositories::route_config::RouteConfigRepository;
+use crate::storage::repositories::route_metadata::{
+    RouteMetadataData, RouteMetadataRepository, UpdateRouteMetadataRequest,
+};
+use crate::storage::repositories::virtual_host::VirtualHostRepository;
+use crate::storage::DbPool;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tracing::instrument;
+
+/// MCP service for managing MCP enablement on routes
+pub struct McpService {
+    route_repo: RouteRepository,
+    route_metadata_repo: RouteMetadataRepository,
+    virtual_host_repo: VirtualHostRepository,
+    route_config_repo: RouteConfigRepository,
+    mcp_tool_repo: McpToolRepository,
+    aggregated_schema_repo: AggregatedSchemaRepository,
+    listener_repo: ListenerRepository,
+    listener_route_config_repo: ListenerRouteConfigRepository,
+    gateway_tool_generator: GatewayToolGenerator,
+}
+
+/// MCP status response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStatusResponse {
+    /// Whether the route is ready for MCP enablement
+    pub ready: bool,
+    /// Whether MCP is currently enabled on the route
+    pub enabled: bool,
+    /// List of missing required fields
+    pub missing_fields: Vec<String>,
+    /// The tool name if MCP is enabled
+    pub tool_name: Option<String>,
+    /// Recommended source for schema information
+    pub recommended_source: String,
+}
+
+/// Request to enable MCP on a route
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnableMcpRequest {
+    /// Optional custom tool name
+    pub tool_name: Option<String>,
+    /// Optional custom description
+    pub description: Option<String>,
+    /// Optional schema source identifier
+    pub schema_source: Option<String>,
+    /// Summary for the route (used to create metadata if missing)
+    pub summary: Option<String>,
+    /// HTTP method for the route (used to create metadata if missing)
+    pub http_method: Option<String>,
+}
+
+/// Result of refreshing schema from learning module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshSchemaResult {
+    /// Whether the refresh was successful
+    pub success: bool,
+    /// Message describing the result
+    pub message: String,
+}
+
+/// MCP service error types
+#[derive(Debug, thiserror::Error)]
+pub enum McpServiceError {
+    #[error("Not found: {0}")]
+    NotFound(String),
+    #[error("Validation error: {0}")]
+    Validation(String),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl From<FlowplaneError> for McpServiceError {
+    fn from(err: FlowplaneError) -> Self {
+        match err {
+            FlowplaneError::NotFound { resource_type, id } => {
+                McpServiceError::NotFound(format!("{} with ID '{}' not found", resource_type, id))
+            }
+            FlowplaneError::Validation { message, .. } => McpServiceError::Validation(message),
+            FlowplaneError::Database { source, context } => {
+                tracing::error!(error = %source, context = %context, "Database error in MCP service");
+                McpServiceError::Database(source)
+            }
+            _ => McpServiceError::Internal(err.to_string()),
+        }
+    }
+}
+
+impl From<McpError> for McpServiceError {
+    fn from(err: McpError) -> Self {
+        McpServiceError::Internal(err.to_string())
+    }
+}
+
+impl McpService {
+    /// Create a new MCP service
+    pub fn new(db_pool: Arc<DbPool>) -> Self {
+        let route_repo = RouteRepository::new((*db_pool).clone());
+        let route_metadata_repo = RouteMetadataRepository::new((*db_pool).clone());
+        let virtual_host_repo = VirtualHostRepository::new((*db_pool).clone());
+        let route_config_repo = RouteConfigRepository::new((*db_pool).clone());
+        let mcp_tool_repo = McpToolRepository::new((*db_pool).clone());
+        let aggregated_schema_repo = AggregatedSchemaRepository::new((*db_pool).clone());
+        let listener_repo = ListenerRepository::new((*db_pool).clone());
+        let listener_route_config_repo = ListenerRouteConfigRepository::new((*db_pool).clone());
+        let gateway_tool_generator = GatewayToolGenerator::new();
+
+        Self {
+            route_repo,
+            route_metadata_repo,
+            virtual_host_repo,
+            route_config_repo,
+            mcp_tool_repo,
+            aggregated_schema_repo,
+            listener_repo,
+            listener_route_config_repo,
+            gateway_tool_generator,
+        }
+    }
+
+    /// Get MCP status for a route
+    #[instrument(skip(self), fields(team = %team, route_id = %route_id))]
+    pub async fn get_status(
+        &self,
+        team: &str,
+        route_id: &str,
+    ) -> std::result::Result<McpStatusResponse, McpServiceError> {
+        let route_id = RouteId::from_string(route_id.to_string());
+
+        // Get the route
+        let route = self.route_repo.get_by_id(&route_id).await?;
+
+        // Verify team access via virtual host and route config
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if let Some(route_team) = &route_config.team {
+            if route_team != team {
+                return Err(McpServiceError::NotFound(format!(
+                    "Route '{}' not found in team '{}'",
+                    route_id, team
+                )));
+            }
+        }
+
+        // Check if MCP tool already exists
+        let existing_tool = self.mcp_tool_repo.get_by_route_id(&route_id).await?;
+
+        // Get metadata if it exists
+        let metadata = self.route_metadata_repo.get_by_route_id(&route_id).await?;
+
+        // Check missing fields
+        let missing_fields = self.check_missing_fields(&metadata);
+        let ready = missing_fields.is_empty();
+
+        // Determine recommended source
+        let recommended_source =
+            if metadata.is_some() { "metadata".to_string() } else { "learning".to_string() };
+
+        Ok(McpStatusResponse {
+            ready,
+            enabled: existing_tool.is_some(),
+            missing_fields,
+            tool_name: existing_tool.as_ref().map(|t| t.name.clone()),
+            recommended_source,
+        })
+    }
+
+    /// Enable MCP on a route with enrichment chain
+    ///
+    /// Enrichment priority:
+    /// 1. Existing route_metadata (from OpenAPI import)
+    /// 2. Learning session data (from aggregated_api_schemas if confidence >= 0.8)
+    /// 3. User-provided data from request
+    /// 4. Auto-generated fallback
+    #[instrument(skip(self, request), fields(team = %team, route_id = %route_id))]
+    pub async fn enable(
+        &self,
+        team: &str,
+        route_id: &str,
+        request: EnableMcpRequest,
+    ) -> std::result::Result<McpToolData, McpServiceError> {
+        let route_id = RouteId::from_string(route_id.to_string());
+
+        // Get the route and verify team access
+        let route = self.route_repo.get_by_id(&route_id).await?;
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if let Some(route_team) = &route_config.team {
+            if route_team != team {
+                return Err(McpServiceError::NotFound(format!(
+                    "Route '{}' not found in team '{}'",
+                    route_id, team
+                )));
+            }
+        }
+
+        // Get or create metadata using enrichment chain
+        let metadata = match self.route_metadata_repo.get_by_route_id(&route_id).await? {
+            Some(mut existing) => {
+                // Check if existing metadata has missing required fields
+                let missing = self.check_missing_fields(&Some(existing.clone()));
+
+                if missing.is_empty() {
+                    tracing::info!(
+                        route_id = %route_id,
+                        source_type = ?existing.source_type,
+                        "Using existing route metadata"
+                    );
+                    existing
+                } else {
+                    // Fill in missing fields from request or auto-generate
+                    tracing::info!(
+                        route_id = %route_id,
+                        missing_fields = ?missing,
+                        "Existing metadata incomplete, filling missing fields"
+                    );
+
+                    let http_method = existing
+                        .http_method
+                        .as_deref()
+                        .or(request.http_method.as_deref())
+                        .unwrap_or("GET");
+
+                    let update_request = UpdateRouteMetadataRequest {
+                        operation_id: if existing.operation_id.is_none() {
+                            Some(request.tool_name.clone().or_else(|| {
+                                let method = http_method.to_lowercase();
+                                let path_parts: Vec<&str> = route
+                                    .path_pattern
+                                    .split('/')
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.trim_matches('{').trim_matches('}'))
+                                    .collect();
+                                Some(format!("{}_{}", method, path_parts.join("_")))
+                            }))
+                        } else {
+                            None
+                        },
+                        summary: if existing.summary.is_none() {
+                            Some(request.summary.clone().or_else(|| {
+                                Some(format!(
+                                    "{} {}",
+                                    http_method.to_uppercase(),
+                                    route.path_pattern
+                                ))
+                            }))
+                        } else {
+                            None
+                        },
+                        description: if existing.description.is_none() {
+                            Some(request.description.clone().or_else(|| {
+                                Some(format!("API endpoint for {}", route.path_pattern))
+                            }))
+                        } else {
+                            None
+                        },
+                        tags: None,
+                        http_method: if existing.http_method.is_none() {
+                            Some(Some(http_method.to_string()))
+                        } else {
+                            None
+                        },
+                        request_body_schema: None,
+                        response_schemas: None,
+                        learning_schema_id: None,
+                        enriched_from_learning: None,
+                        source_type: None,
+                        confidence: None,
+                    };
+
+                    // Update the metadata with missing fields
+                    match self.route_metadata_repo.update(&existing.id, update_request).await {
+                        Ok(updated) => {
+                            existing = updated;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                route_id = %route_id,
+                                error = %e,
+                                "Failed to update incomplete metadata, using as-is"
+                            );
+                        }
+                    }
+                    existing
+                }
+            }
+            None => {
+                // Try to enrich from learning session first
+                let http_method = request.http_method.as_deref().unwrap_or("GET");
+                let learned_schema =
+                    self.try_enrich_from_learning(team, &route.path_pattern, http_method).await;
+
+                // Build metadata from enrichment or fallback
+                let (
+                    operation_id,
+                    summary,
+                    description,
+                    request_body_schema,
+                    response_schemas,
+                    learning_schema_id,
+                    enriched_from_learning,
+                    source_type,
+                    confidence,
+                ) = if let Some(schema) = learned_schema {
+                    tracing::info!(
+                        route_id = %route_id,
+                        schema_id = schema.id,
+                        confidence = schema.confidence_score,
+                        "Enriching metadata from learning session"
+                    );
+                    (
+                        request.tool_name.clone().unwrap_or_else(|| {
+                            let method = http_method.to_lowercase();
+                            let path_parts: Vec<&str> = route
+                                .path_pattern
+                                .split('/')
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.trim_matches('{').trim_matches('}'))
+                                .collect();
+                            format!("{}_{}", method, path_parts.join("_"))
+                        }),
+                        request.summary.clone().or_else(|| {
+                            Some(format!(
+                                "{} {} (learned)",
+                                http_method.to_uppercase(),
+                                route.path_pattern
+                            ))
+                        }),
+                        request.description.clone().or_else(|| {
+                            Some(format!(
+                                "API endpoint for {} (schema learned from traffic)",
+                                route.path_pattern
+                            ))
+                        }),
+                        schema.request_schema.clone(),
+                        schema.response_schemas.clone(),
+                        Some(schema.id),
+                        true,
+                        RouteMetadataSourceType::Learned,
+                        schema.confidence_score,
+                    )
+                } else {
+                    tracing::info!(
+                        route_id = %route_id,
+                        "No learning data available, using manual metadata"
+                    );
+                    // Fallback to manual generation
+                    let operation_id = request.tool_name.clone().unwrap_or_else(|| {
+                        let method = http_method.to_lowercase();
+                        let path_parts: Vec<&str> = route
+                            .path_pattern
+                            .split('/')
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.trim_matches('{').trim_matches('}'))
+                            .collect();
+                        format!("{}_{}", method, path_parts.join("_"))
+                    });
+
+                    let summary = request.summary.clone().or_else(|| {
+                        Some(format!("{} {}", http_method.to_uppercase(), route.path_pattern))
+                    });
+
+                    let description = request
+                        .description
+                        .clone()
+                        .or_else(|| Some(format!("API endpoint for {}", route.path_pattern)));
+
+                    (
+                        operation_id,
+                        summary,
+                        description,
+                        None,
+                        None,
+                        None,
+                        false,
+                        RouteMetadataSourceType::Manual,
+                        1.0,
+                    )
+                };
+
+                let create_request =
+                    crate::storage::repositories::route_metadata::CreateRouteMetadataRequest {
+                        route_id: route_id.clone(),
+                        operation_id: Some(operation_id),
+                        summary,
+                        description,
+                        tags: None,
+                        http_method: Some(http_method.to_string()),
+                        request_body_schema,
+                        response_schemas,
+                        learning_schema_id,
+                        enriched_from_learning,
+                        source_type,
+                        confidence: Some(confidence),
+                    };
+
+                tracing::info!(
+                    route_id = %route_id,
+                    source_type = ?create_request.source_type,
+                    "Creating route metadata for MCP enablement"
+                );
+
+                self.route_metadata_repo.create(create_request).await.map_err(|e| {
+                    McpServiceError::Internal(format!("Failed to create route metadata: {}", e))
+                })?
+            }
+        };
+
+        // Validate metadata completeness (should always pass now since we create complete metadata)
+        let missing_fields = self.check_missing_fields(&Some(metadata.clone()));
+        if !missing_fields.is_empty() {
+            return Err(McpServiceError::Validation(format!(
+                "Route metadata incomplete. Missing fields: {}",
+                missing_fields.join(", ")
+            )));
+        }
+
+        // Check if tool already exists
+        if let Some(existing_tool) = self.mcp_tool_repo.get_by_route_id(&route_id).await? {
+            // Update existing tool to enabled
+            let update_request = UpdateMcpToolRequest {
+                enabled: Some(true),
+                name: request.tool_name,
+                description: request.description.map(Some),
+                schema_source: request.schema_source.map(Some),
+                category: None,
+                source_type: None,
+                input_schema: None,
+                output_schema: None,
+                learned_schema_id: None,
+                route_id: None,
+                http_method: None,
+                http_path: None,
+                cluster_name: None,
+                listener_port: None,
+                confidence: None,
+            };
+            return Ok(self.mcp_tool_repo.update(&existing_tool.id, update_request).await?);
+        }
+
+        // Get listener port dynamically from the route config's associated listeners
+        let listener_port =
+            self.get_listener_port_for_route_config(&virtual_host.route_config_id).await?;
+
+        // Generate tool using GatewayToolGenerator
+        let mut tool_request =
+            self.gateway_tool_generator.generate_tool(&route, &metadata, listener_port, team)?;
+
+        // Apply custom overrides from request
+        if let Some(tool_name) = request.tool_name {
+            tool_request.name = tool_name;
+        }
+        if let Some(description) = request.description {
+            tool_request.description = Some(description);
+        }
+        if let Some(schema_source) = request.schema_source {
+            tool_request.schema_source = Some(schema_source);
+        }
+
+        // Create the MCP tool
+        let tool = self.mcp_tool_repo.create(tool_request).await?;
+
+        tracing::info!(
+            tool_id = %tool.id,
+            tool_name = %tool.name,
+            route_id = %route_id,
+            team = %team,
+            "MCP enabled on route"
+        );
+
+        Ok(tool)
+    }
+
+    /// Disable MCP on a route (soft disable)
+    #[instrument(skip(self), fields(team = %team, route_id = %route_id))]
+    pub async fn disable(
+        &self,
+        team: &str,
+        route_id: &str,
+    ) -> std::result::Result<(), McpServiceError> {
+        let route_id = RouteId::from_string(route_id.to_string());
+
+        // Get the route and verify team access
+        let route = self.route_repo.get_by_id(&route_id).await?;
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if let Some(route_team) = &route_config.team {
+            if route_team != team {
+                return Err(McpServiceError::NotFound(format!(
+                    "Route '{}' not found in team '{}'",
+                    route_id, team
+                )));
+            }
+        }
+
+        // Find the MCP tool
+        let tool = self.mcp_tool_repo.get_by_route_id(&route_id).await?.ok_or_else(|| {
+            McpServiceError::NotFound(format!("MCP tool not found for route '{}'", route_id))
+        })?;
+
+        // Soft disable by setting enabled = false
+        self.mcp_tool_repo.set_enabled(&tool.id, false).await?;
+
+        tracing::info!(
+            tool_id = %tool.id,
+            route_id = %route_id,
+            team = %team,
+            "MCP disabled on route"
+        );
+
+        Ok(())
+    }
+
+    /// Refresh schema from learning module
+    #[instrument(skip(self), fields(team = %team, route_id = %route_id))]
+    pub async fn refresh_schema(
+        &self,
+        team: &str,
+        route_id: &str,
+    ) -> std::result::Result<RefreshSchemaResult, McpServiceError> {
+        let route_id = RouteId::from_string(route_id.to_string());
+
+        // Get the route and verify team access
+        let route = self.route_repo.get_by_id(&route_id).await?;
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if let Some(route_team) = &route_config.team {
+            if route_team != team {
+                return Err(McpServiceError::NotFound(format!(
+                    "Route '{}' not found in team '{}'",
+                    route_id, team
+                )));
+            }
+        }
+
+        // Get existing metadata
+        let metadata = match self.route_metadata_repo.get_by_route_id(&route_id).await? {
+            Some(m) => m,
+            None => {
+                return Ok(RefreshSchemaResult {
+                    success: false,
+                    message: "No route metadata exists. Enable MCP first to create metadata."
+                        .to_string(),
+                });
+            }
+        };
+
+        // Extract HTTP method (default to GET)
+        let http_method = metadata.http_method.as_deref().unwrap_or("GET");
+
+        // Get the route path pattern
+        let path_pattern = route.path_pattern.as_str();
+
+        // Query aggregated schema from learning module
+        let aggregated_schema =
+            self.aggregated_schema_repo.get_latest(team, path_pattern, http_method).await.map_err(
+                |e| McpServiceError::Internal(format!("Failed to query aggregated schema: {}", e)),
+            )?;
+
+        match aggregated_schema {
+            Some(schema) if schema.confidence_score >= 0.8 => {
+                // Update route metadata with learned schema
+                let update_request = UpdateRouteMetadataRequest {
+                    operation_id: None,
+                    summary: None,
+                    description: None,
+                    tags: None,
+                    http_method: None,
+                    request_body_schema: Some(schema.request_schema.clone()),
+                    response_schemas: Some(schema.response_schemas.clone()),
+                    learning_schema_id: Some(Some(schema.id)),
+                    enriched_from_learning: Some(true),
+                    source_type: Some(RouteMetadataSourceType::Learned),
+                    confidence: Some(Some(schema.confidence_score)),
+                };
+
+                self.route_metadata_repo.update(&metadata.id, update_request).await.map_err(
+                    |e| McpServiceError::Internal(format!("Failed to update metadata: {}", e)),
+                )?;
+
+                tracing::info!(
+                    route_id = %route_id,
+                    schema_id = schema.id,
+                    confidence = schema.confidence_score,
+                    sample_count = schema.sample_count,
+                    "Refreshed schema from learning module"
+                );
+
+                Ok(RefreshSchemaResult {
+                    success: true,
+                    message: format!(
+                        "Schema updated from learning module (confidence: {:.0}%, {} samples)",
+                        schema.confidence_score * 100.0,
+                        schema.sample_count
+                    ),
+                })
+            }
+            Some(schema) => Ok(RefreshSchemaResult {
+                success: false,
+                message: format!(
+                    "Schema found but confidence too low ({:.0}% < 80%). Collect more samples.",
+                    schema.confidence_score * 100.0
+                ),
+            }),
+            None => Ok(RefreshSchemaResult {
+                success: false,
+                message: "No learned schema found. Start a learning session to collect samples."
+                    .to_string(),
+            }),
+        }
+    }
+
+    /// Get listener port for a route config
+    async fn get_listener_port_for_route_config(
+        &self,
+        route_config_id: &RouteConfigId,
+    ) -> std::result::Result<i32, McpServiceError> {
+        // Get listener IDs associated with this route config
+        let listener_ids = self
+            .listener_route_config_repo
+            .list_listener_ids_by_route_config(route_config_id)
+            .await
+            .map_err(|e| McpServiceError::Internal(format!("Failed to get listeners: {}", e)))?;
+
+        // Get the first listener's port (or default to 10000)
+        if let Some(listener_id) = listener_ids.first() {
+            match self.listener_repo.get_by_id(listener_id).await {
+                Ok(listener) => {
+                    let port = listener.port.unwrap_or(10000) as i32;
+                    return Ok(port);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        listener_id = %listener_id,
+                        error = %e,
+                        "Failed to get listener, using default port"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                route_config_id = %route_config_id,
+                "No listeners found for route config, using default port 10000"
+            );
+        }
+
+        Ok(10000)
+    }
+
+    /// Check which required fields are missing from metadata
+    fn check_missing_fields(&self, metadata: &Option<RouteMetadataData>) -> Vec<String> {
+        let mut missing = Vec::new();
+
+        match metadata {
+            None => {
+                missing.push("metadata".to_string());
+                missing.push("operation_id".to_string());
+                missing.push("summary".to_string());
+                missing.push("description".to_string());
+            }
+            Some(meta) => {
+                if meta.operation_id.is_none() {
+                    missing.push("operation_id".to_string());
+                }
+                if meta.summary.is_none() {
+                    missing.push("summary".to_string());
+                }
+                if meta.description.is_none() {
+                    missing.push("description".to_string());
+                }
+            }
+        }
+
+        missing
+    }
+
+    /// Try to enrich metadata from learning session data
+    ///
+    /// Queries the aggregated_api_schemas table for learned schemas matching
+    /// the team, path, and HTTP method. Returns the schema if confidence >= 0.8.
+    async fn try_enrich_from_learning(
+        &self,
+        team: &str,
+        path_pattern: &str,
+        http_method: &str,
+    ) -> Option<crate::storage::repositories::aggregated_schema::AggregatedSchemaData> {
+        match self.aggregated_schema_repo.get_latest(team, path_pattern, http_method).await {
+            Ok(Some(schema)) if schema.confidence_score >= 0.8 => {
+                tracing::debug!(
+                    team = %team,
+                    path = %path_pattern,
+                    method = %http_method,
+                    confidence = schema.confidence_score,
+                    sample_count = schema.sample_count,
+                    "Found learned schema with sufficient confidence"
+                );
+                Some(schema)
+            }
+            Ok(Some(schema)) => {
+                tracing::debug!(
+                    team = %team,
+                    path = %path_pattern,
+                    method = %http_method,
+                    confidence = schema.confidence_score,
+                    "Found learned schema but confidence too low (< 0.8)"
+                );
+                None
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    team = %team,
+                    path = %path_pattern,
+                    method = %http_method,
+                    "No learned schema found for route"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    team = %team,
+                    path = %path_pattern,
+                    method = %http_method,
+                    error = %e,
+                    "Failed to query learned schema"
+                );
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::RouteMetadataSourceType;
+
+    async fn create_test_service() -> McpService {
+        // Create a minimal in-memory pool for tests
+        let pool =
+            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create test pool");
+        McpService::new(Arc::new(pool))
+    }
+
+    #[tokio::test]
+    async fn test_check_missing_fields_no_metadata() {
+        let service = create_test_service().await;
+        let missing = service.check_missing_fields(&None);
+
+        assert_eq!(missing.len(), 4);
+        assert!(missing.contains(&"metadata".to_string()));
+        assert!(missing.contains(&"operation_id".to_string()));
+        assert!(missing.contains(&"summary".to_string()));
+        assert!(missing.contains(&"description".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_check_missing_fields_incomplete_metadata() {
+        let service = create_test_service().await;
+
+        let metadata = RouteMetadataData {
+            id: crate::domain::RouteMetadataId::new(),
+            route_id: RouteId::new(),
+            operation_id: Some("test_op".to_string()),
+            summary: None,
+            description: None,
+            tags: None,
+            http_method: Some("GET".to_string()),
+            request_body_schema: None,
+            response_schemas: None,
+            learning_schema_id: None,
+            enriched_from_learning: false,
+            source_type: RouteMetadataSourceType::Manual,
+            confidence: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let missing = service.check_missing_fields(&Some(metadata));
+
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&"summary".to_string()));
+        assert!(missing.contains(&"description".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_check_missing_fields_complete_metadata() {
+        let service = create_test_service().await;
+
+        let metadata = RouteMetadataData {
+            id: crate::domain::RouteMetadataId::new(),
+            route_id: RouteId::new(),
+            operation_id: Some("test_op".to_string()),
+            summary: Some("Test operation".to_string()),
+            description: Some("Test description".to_string()),
+            tags: None,
+            http_method: Some("GET".to_string()),
+            request_body_schema: None,
+            response_schemas: None,
+            learning_schema_id: None,
+            enriched_from_learning: false,
+            source_type: RouteMetadataSourceType::Manual,
+            confidence: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let missing = service.check_missing_fields(&Some(metadata));
+
+        assert_eq!(missing.len(), 0);
+    }
+}

@@ -10,7 +10,7 @@ use tracing::{info, instrument};
 use crate::{
     domain::{
         validate_wasm_binary, AttachmentPoint, CustomWasmFilterId, EnvoyFilterMetadata,
-        FilterCapabilities, FilterSchemaDefinition, PerRouteBehavior, SchemaSource,
+        FilterCapabilities, FilterSchemaDefinition, FilterSchemaSource, PerRouteBehavior,
     },
     errors::{FlowplaneError, Result},
     storage::{
@@ -294,7 +294,7 @@ impl CustomWasmFilterService {
             per_route_config_schema: data.per_route_config_schema.clone(),
             proto_mapping: HashMap::new(),
             ui_hints: None, // TODO: Parse ui_hints from data.ui_hints
-            source: SchemaSource::Custom,
+            source: FilterSchemaSource::Custom,
             is_implemented: true,
         }
     }
