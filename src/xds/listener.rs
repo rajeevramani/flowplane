@@ -257,6 +257,10 @@ impl FilterConfig {
                         .as_ref()
                         .map(build_tracing)
                         .transpose()?,
+                    // Enable request ID generation for correlation between access logs and ExtProc
+                    generate_request_id: Some(BoolValue { value: true }),
+                    // Include request ID in response headers for debugging
+                    always_set_request_id_in_response: true,
                     ..Default::default()
                 };
 

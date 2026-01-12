@@ -392,7 +392,13 @@ impl FlowplaneAccessLogService {
             trace_context,
         ) = if let Some(request) = &entry.request {
             let method = request.request_method;
-            let path = request.path.clone();
+            // Use x-envoy-original-path if available (for path-rewritten requests)
+            // Fall back to request.path which may be the rewritten path
+            let path = request
+                .request_headers
+                .get("x-envoy-original-path")
+                .cloned()
+                .unwrap_or_else(|| request.path.clone());
 
             // Extract limited headers (first 20 headers to avoid excessive memory)
             // Note: Actual header structure will be validated with real Envoy
@@ -585,17 +591,32 @@ impl AccessLogService for FlowplaneAccessLogService {
                                     9 => "PATCH",
                                     _ => "UNKNOWN",
                                 };
-                                (request.path.as_str(), method_str)
+                                // Use x-envoy-original-path if available (for path-rewritten requests)
+                                // Fall back to request.path which may be the rewritten path
+                                let path = request
+                                    .request_headers
+                                    .get("x-envoy-original-path")
+                                    .map(|s| s.as_str())
+                                    .unwrap_or(request.path.as_str());
+                                (path, method_str)
                             } else {
                                 continue; // Skip entries without request data
                             };
+
+                            // Log received path and method for debugging
+                            info!(
+                                path = %path,
+                                method = %method,
+                                session_count = session_count,
+                                "Access log entry received, checking for session match"
+                            );
 
                             // Check if this entry matches any active learning session
                             // Returns both session_id and team atomically to prevent race condition
                             if let Some((session_id, team)) =
                                 self.find_matching_session(path, method).await
                             {
-                                debug!(
+                                info!(
                                     session_id = %session_id,
                                     team = %team,
                                     path = %path,
@@ -643,6 +664,13 @@ impl AccessLogService for FlowplaneAccessLogService {
                                         );
                                     }
                                 }
+                            } else {
+                                // No matching session - log for debugging
+                                info!(
+                                    path = %path,
+                                    method = %method,
+                                    "No matching learning session for access log entry"
+                                );
                             }
                         }
                     }

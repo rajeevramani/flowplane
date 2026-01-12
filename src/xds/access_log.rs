@@ -91,6 +91,7 @@ impl LearningSessionAccessLogConfig {
                 "content-length".to_string(),
                 "user-agent".to_string(),
                 "x-request-id".to_string(),
+                "x-envoy-original-path".to_string(), // Original path before rewriting
             ],
             additional_response_headers_to_log: vec![
                 "content-type".to_string(),
