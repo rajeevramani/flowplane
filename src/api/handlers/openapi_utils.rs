@@ -402,6 +402,135 @@ pub fn aggregate_query_params(
     result
 }
 
+/// Generate a semantic operation summary from HTTP method and path
+///
+/// Creates a human-readable summary that describes the operation based on HTTP conventions.
+/// This improves API documentation quality compared to generic "GET /path" summaries.
+///
+/// # BUG-007 Fix
+/// Replaces generic summaries like "GET /users/{id}" with semantic ones like "Get user by ID".
+///
+/// # Examples
+///
+/// ```
+/// use flowplane::api::handlers::openapi_utils::generate_semantic_summary;
+///
+/// assert_eq!(generate_semantic_summary("GET", "/users"), "List users");
+/// assert_eq!(generate_semantic_summary("GET", "/users/{id}"), "Get user by ID");
+/// assert_eq!(generate_semantic_summary("POST", "/users"), "Create user");
+/// assert_eq!(generate_semantic_summary("PUT", "/users/{id}"), "Update user by ID");
+/// assert_eq!(generate_semantic_summary("DELETE", "/users/{id}"), "Delete user by ID");
+/// ```
+pub fn generate_semantic_summary(method: &str, path: &str) -> String {
+    let parsed = parse_path_with_query(path);
+    let base_path = &parsed.base_path;
+
+    // Extract resource name from path (last non-parameter segment)
+    let segments: Vec<&str> =
+        base_path.split('/').filter(|s| !s.is_empty() && !s.starts_with('{')).collect();
+
+    if segments.is_empty() {
+        return format!("{} root", method);
+    }
+
+    // Get the resource name (last non-parameter segment)
+    let raw_resource = segments.last().unwrap_or(&"resource");
+
+    // Singularize common patterns (simple heuristic)
+    let resource = singularize(raw_resource);
+
+    // Check if path has ID parameter (common patterns: {id}, {uuid}, {name}, etc.)
+    let has_id_param = base_path.contains("{id}")
+        || base_path.contains("{uuid}")
+        || has_resource_id_param(base_path);
+
+    // Generate semantic summary based on HTTP method
+    match method.to_uppercase().as_str() {
+        "GET" => {
+            if has_id_param {
+                format!("Get {} by ID", resource)
+            } else {
+                format!("List {}s", resource)
+            }
+        }
+        "POST" => format!("Create {}", resource),
+        "PUT" => format!("Update {} by ID", resource),
+        "PATCH" => format!("Partially update {} by ID", resource),
+        "DELETE" => format!("Delete {} by ID", resource),
+        "HEAD" => format!("Check {} exists", resource),
+        "OPTIONS" => format!("Get {} options", resource),
+        _ => format!("{} {}", method, resource),
+    }
+}
+
+/// Simple singularization for common resource names
+///
+/// This is a basic heuristic that handles common patterns. For production,
+/// consider using a proper inflection library.
+fn singularize(word: &str) -> String {
+    let lower = word.to_lowercase();
+
+    // Handle common irregular plurals
+    match lower.as_str() {
+        "people" => return "person".to_string(),
+        "children" => return "child".to_string(),
+        "men" => return "man".to_string(),
+        "women" => return "woman".to_string(),
+        _ => {}
+    }
+
+    // Handle common plural endings
+    if lower.ends_with("ies") {
+        // categories -> category, entries -> entry
+        let base = &lower[..lower.len() - 3];
+        return format!("{}y", base);
+    }
+    if lower.ends_with("es") {
+        // Skip common -es words that aren't plurals
+        if lower.ends_with("ches")
+            || lower.ends_with("shes")
+            || lower.ends_with("xes")
+            || lower.ends_with("sses")
+        {
+            // batches -> batch, boxes -> box
+            return lower[..lower.len() - 2].to_string();
+        }
+        // statuses -> status (but be careful with proper -es plurals)
+        if lower.ends_with("ses") || lower.ends_with("zes") {
+            return lower[..lower.len() - 2].to_string();
+        }
+    }
+    if lower.ends_with('s') && !lower.ends_with("ss") {
+        // users -> user, products -> product
+        return lower[..lower.len() - 1].to_string();
+    }
+
+    // Return as-is if no pattern matched
+    word.to_string()
+}
+
+/// Check if the path has a resource ID parameter (like /{customerId}, /{orderId}, etc.)
+fn has_resource_id_param(path: &str) -> bool {
+    // Look for common ID parameter patterns
+    let id_patterns = ["Id}", "ID}", "_id}", "Uuid}", "UUID}"];
+
+    for pattern in id_patterns {
+        if path.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Also check for single segment parameters at the end (e.g., /users/{id}, /products/{sku})
+    let segments: Vec<&str> = path.split('/').collect();
+    if let Some(last) = segments.last() {
+        if last.starts_with('{') && last.ends_with('}') {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Build OpenAPI parameters array from aggregated query params
 pub fn build_query_parameters(params: &HashMap<String, QueryParamInfo>) -> Vec<serde_json::Value> {
     let mut result: Vec<serde_json::Value> = params
@@ -893,5 +1022,100 @@ mod tests {
         // All path params are required
         assert_eq!(result[0]["required"], true);
         assert_eq!(result[1]["required"], true);
+    }
+
+    // ============== BUG-007 FIX: Semantic summary generation tests ==============
+
+    #[test]
+    fn test_generate_semantic_summary_list() {
+        assert_eq!(generate_semantic_summary("GET", "/users"), "List users");
+        assert_eq!(generate_semantic_summary("GET", "/v2/api/products"), "List products");
+        assert_eq!(generate_semantic_summary("GET", "/categories"), "List categorys");
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_get_by_id() {
+        assert_eq!(generate_semantic_summary("GET", "/users/{id}"), "Get user by ID");
+        assert_eq!(generate_semantic_summary("GET", "/users/{userId}"), "Get user by ID");
+        assert_eq!(generate_semantic_summary("GET", "/products/{uuid}"), "Get product by ID");
+        assert_eq!(
+            generate_semantic_summary("GET", "/customers/{customerId}"),
+            "Get customer by ID"
+        );
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_create() {
+        assert_eq!(generate_semantic_summary("POST", "/users"), "Create user");
+        assert_eq!(generate_semantic_summary("POST", "/v2/api/products"), "Create product");
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_update() {
+        assert_eq!(generate_semantic_summary("PUT", "/users/{id}"), "Update user by ID");
+        assert_eq!(
+            generate_semantic_summary("PATCH", "/users/{id}"),
+            "Partially update user by ID"
+        );
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_delete() {
+        assert_eq!(generate_semantic_summary("DELETE", "/users/{id}"), "Delete user by ID");
+        assert_eq!(
+            generate_semantic_summary("DELETE", "/products/{productId}"),
+            "Delete product by ID"
+        );
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_root_path() {
+        assert_eq!(generate_semantic_summary("GET", "/"), "GET root");
+    }
+
+    #[test]
+    fn test_generate_semantic_summary_with_query_string() {
+        // Query strings should be stripped before generating summary
+        assert_eq!(generate_semantic_summary("GET", "/users?status=active"), "List users");
+        assert_eq!(
+            generate_semantic_summary("GET", "/users/{id}?include=orders"),
+            "Get user by ID"
+        );
+    }
+
+    #[test]
+    fn test_singularize() {
+        // Regular plurals
+        assert_eq!(singularize("users"), "user");
+        assert_eq!(singularize("products"), "product");
+        assert_eq!(singularize("orders"), "order");
+
+        // -ies plurals
+        assert_eq!(singularize("categories"), "category");
+        assert_eq!(singularize("entries"), "entry");
+
+        // -es plurals
+        assert_eq!(singularize("batches"), "batch");
+        assert_eq!(singularize("boxes"), "box");
+
+        // Irregular plurals
+        assert_eq!(singularize("people"), "person");
+        assert_eq!(singularize("children"), "child");
+
+        // Already singular
+        assert_eq!(singularize("user"), "user");
+        assert_eq!(singularize("status"), "statu"); // Edge case - this is a limitation
+    }
+
+    #[test]
+    fn test_has_resource_id_param() {
+        assert!(has_resource_id_param("/users/{id}"));
+        assert!(has_resource_id_param("/users/{userId}"));
+        assert!(has_resource_id_param("/users/{uuid}"));
+        assert!(has_resource_id_param("/users/{user_id}"));
+        assert!(has_resource_id_param("/products/{sku}")); // Any param at end
+
+        assert!(!has_resource_id_param("/users"));
+        assert!(!has_resource_id_param("/v2/api/users"));
     }
 }

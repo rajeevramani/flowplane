@@ -1,15 +1,98 @@
-/// Envoy Access Log Service gRPC implementation
+//! Envoy Access Log Service gRPC implementation
+//!
+//! This service implements the AccessLogService interface to receive HTTP access logs
+//! from Envoy proxies. It is designed to filter logs for active learning sessions only
+//! and queue them for background processing.
+//!
+//! Key responsibilities:
+//! - Receive StreamAccessLogsMessage from Envoy
+//! - Parse HttpLogEntry for request/response details
+//! - Filter logs based on active learning session route patterns
+//! - Queue valid entries for background processing (in-memory only, no persistence)
+//! - Return StreamAccessLogsResponse acknowledgments
+
+// BUG-001 FIX: Header filtering for infrastructure headers.
+// These prefixes and exact matches identify headers that should be excluded from
+// learned API schemas as they are infrastructure-specific and not part of the API contract.
+
+/// Header name prefixes that indicate infrastructure headers (case-insensitive).
+const INFRASTRUCTURE_HEADER_PREFIXES: &[&str] = &[
+    "x-envoy-",     // Envoy proxy headers
+    "x-forwarded-", // Proxy forwarding headers
+    "x-b3-",        // Zipkin distributed tracing
+    "x-trace-",     // Generic trace headers
+    "x-amzn-",      // AWS-specific headers
+    "x-request-id", // Often used for correlation but infrastructure-specific
+];
+
+/// Exact header names that are infrastructure-specific (case-insensitive)
+const INFRASTRUCTURE_HEADER_EXACT: &[&str] = &[
+    "server",
+    "date",
+    "connection",
+    "transfer-encoding",
+    "via",
+    "keep-alive",
+    "traceparent",
+    "tracestate",
+    "content-length", // Auto-calculated, not part of API schema
+];
+
+/// Check if a header should be included in the API schema
 ///
-/// This service implements the AccessLogService interface to receive HTTP access logs
-/// from Envoy proxies. It is designed to filter logs for active learning sessions only
-/// and queue them for background processing.
+/// Returns `true` if the header is an application header (should be included),
+/// `false` if it's an infrastructure header (should be filtered out).
 ///
-/// Key responsibilities:
-/// - Receive StreamAccessLogsMessage from Envoy
-/// - Parse HttpLogEntry for request/response details
-/// - Filter logs based on active learning session route patterns
-/// - Queue valid entries for background processing (in-memory only, no persistence)
-/// - Return StreamAccessLogsResponse acknowledgments
+/// # BUG-001 Fix
+/// This function filters out infrastructure headers that are injected by proxies
+/// like Envoy, load balancers, and distributed tracing systems. Including these
+/// in learned API schemas leads to incorrect MCP tool definitions.
+///
+/// # Examples
+/// ```
+/// assert!(should_include_header("authorization"));
+/// assert!(should_include_header("x-api-key"));
+/// assert!(!should_include_header("x-envoy-original-path"));
+/// assert!(!should_include_header("x-forwarded-for"));
+/// ```
+pub fn should_include_header(header_name: &str) -> bool {
+    let lower = header_name.to_lowercase();
+
+    // Check prefix matches
+    for prefix in INFRASTRUCTURE_HEADER_PREFIXES {
+        if lower.starts_with(prefix) {
+            return false;
+        }
+    }
+
+    // Check exact matches
+    for exact in INFRASTRUCTURE_HEADER_EXACT {
+        if lower == *exact {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Filter infrastructure headers from a headers map
+///
+/// Returns a new vector containing only application headers, with infrastructure
+/// headers removed. Limited to first 20 headers to avoid excessive memory usage.
+///
+/// # BUG-001 Fix
+/// This prevents infrastructure headers from being included in learned API schemas.
+pub fn filter_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(key, _)| should_include_header(key))
+        .take(20) // Limit to 20 headers to avoid excessive memory
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 use async_trait::async_trait;
 use envoy_types::pb::envoy::data::accesslog::v3::{HttpAccessLogEntry, TcpAccessLogEntry};
 use envoy_types::pb::envoy::service::accesslog::v3::{
@@ -1263,5 +1346,98 @@ mod tests {
 
         // Verify no trace context since header was missing
         assert!(processed.trace_context.is_none());
+    }
+
+    // ============== BUG-001 FIX: Header filtering tests ==============
+
+    #[test]
+    fn test_should_include_header_envoy_headers() {
+        // Envoy-specific headers should be filtered out
+        assert!(!should_include_header("x-envoy-original-path"));
+        assert!(!should_include_header("X-Envoy-Expected-Rq-Timeout-Ms"));
+        assert!(!should_include_header("x-envoy-upstream-service-time"));
+    }
+
+    #[test]
+    fn test_should_include_header_forwarded_headers() {
+        // Proxy forwarding headers should be filtered out
+        assert!(!should_include_header("x-forwarded-for"));
+        assert!(!should_include_header("x-forwarded-host"));
+        assert!(!should_include_header("X-Forwarded-Proto"));
+    }
+
+    #[test]
+    fn test_should_include_header_tracing_headers() {
+        // Distributed tracing headers should be filtered out
+        assert!(!should_include_header("x-b3-traceid"));
+        assert!(!should_include_header("x-b3-spanid"));
+        assert!(!should_include_header("traceparent"));
+        assert!(!should_include_header("tracestate"));
+    }
+
+    #[test]
+    fn test_should_include_header_infrastructure_exact() {
+        // Infrastructure headers (exact match) should be filtered out
+        assert!(!should_include_header("server"));
+        assert!(!should_include_header("date"));
+        assert!(!should_include_header("connection"));
+        assert!(!should_include_header("transfer-encoding"));
+        assert!(!should_include_header("via"));
+        assert!(!should_include_header("content-length"));
+    }
+
+    #[test]
+    fn test_should_include_header_application_headers() {
+        // Application headers should be included
+        assert!(should_include_header("authorization"));
+        assert!(should_include_header("x-api-key"));
+        assert!(should_include_header("content-type"));
+        assert!(should_include_header("accept"));
+        assert!(should_include_header("x-custom-header"));
+        assert!(should_include_header("user-agent"));
+    }
+
+    #[test]
+    fn test_filter_headers() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("authorization".to_string(), "Bearer token".to_string());
+        headers.insert("x-api-key".to_string(), "api-key-123".to_string());
+        headers.insert("x-envoy-original-path".to_string(), "/original".to_string());
+        headers.insert("x-forwarded-for".to_string(), "10.0.0.1".to_string());
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        headers.insert("server".to_string(), "nginx".to_string());
+        headers.insert("traceparent".to_string(), "00-trace-span-01".to_string());
+
+        let filtered = filter_headers(&headers);
+
+        // Should only include application headers
+        assert_eq!(filtered.len(), 3);
+        assert!(filtered.iter().any(|(k, _)| k == "authorization"));
+        assert!(filtered.iter().any(|(k, _)| k == "x-api-key"));
+        assert!(filtered.iter().any(|(k, _)| k == "content-type"));
+
+        // Infrastructure headers should be filtered out
+        assert!(!filtered.iter().any(|(k, _)| k == "x-envoy-original-path"));
+        assert!(!filtered.iter().any(|(k, _)| k == "x-forwarded-for"));
+        assert!(!filtered.iter().any(|(k, _)| k == "server"));
+        assert!(!filtered.iter().any(|(k, _)| k == "traceparent"));
+    }
+
+    #[test]
+    fn test_filter_headers_empty() {
+        let headers = std::collections::HashMap::new();
+        let filtered = filter_headers(&headers);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_headers_all_infrastructure() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("x-envoy-peer-metadata".to_string(), "metadata".to_string());
+        headers.insert("x-forwarded-proto".to_string(), "https".to_string());
+        headers.insert("date".to_string(), "Mon, 01 Jan 2024 00:00:00 GMT".to_string());
+
+        let filtered = filter_headers(&headers);
+        assert!(filtered.is_empty(), "All infrastructure headers should be filtered");
     }
 }
