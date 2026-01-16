@@ -18,6 +18,7 @@ pub mod openapi_utils;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
+pub mod route_views;
 pub mod scopes;
 pub mod secrets;
 pub mod stats;
@@ -82,6 +83,7 @@ pub use route_configs::{
     create_route_config_handler, delete_route_config_handler, get_route_config_handler,
     list_route_configs_handler, update_route_config_handler,
 };
+pub use route_views::{get_route_stats_handler, list_route_views_handler};
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
 pub use secrets::{
     create_secret_handler, delete_secret_handler, get_secret_handler, list_secrets_handler,

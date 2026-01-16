@@ -88,6 +88,7 @@ use super::{
         get_mcp_tool_handler,
         get_mtls_status_handler,
         get_route_config_handler,
+        get_route_stats_handler,
         get_session_info_handler,
         get_stats_cluster_handler,
         get_stats_clusters_handler,
@@ -117,6 +118,7 @@ use super::{
         list_route_flows_handler,
         list_route_rule_filters_handler,
         list_route_rules_handler,
+        list_route_views_handler,
         list_scopes_handler,
         list_secrets_handler,
         list_teams_handler,
@@ -267,6 +269,9 @@ pub fn build_router_with_registry(
         .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
         .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
         .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
+        // Route views endpoints (UI flattened view)
+        .route("/api/v1/route-views", get(list_route_views_handler))
+        .route("/api/v1/route-views/stats", get(get_route_stats_handler))
         // Filter endpoints
         .route("/api/v1/filters", get(list_filters_handler))
         .route("/api/v1/filters", post(create_filter_handler))

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Plus, Trash2, ChevronDown, ChevronUp, Filter, X } from 'lucide-svelte';
 	import type { VirtualHostDefinition, RouteRuleDefinition, FilterResponse, HierarchyLevel } from '$lib/api/types';
+	import { RouteFilterSection } from '$lib/components/route-config';
 
 	interface Props {
 		virtualHost: VirtualHostFormState;
@@ -11,6 +12,7 @@
 		availableClusters: string[];
 		// Hierarchical filter props
 		routeConfigName: string;
+		configLevelFilters?: FilterResponse[];
 		virtualHostFilters?: FilterResponse[];
 		routeFilters?: Map<string, FilterResponse[]>; // routeName -> filters
 		onAddVirtualHostFilter?: (virtualHostName: string) => void;
@@ -54,6 +56,7 @@
 		onRemove,
 		availableClusters,
 		routeConfigName,
+		configLevelFilters = [],
 		virtualHostFilters = [],
 		routeFilters = new Map(),
 		onAddVirtualHostFilter,
@@ -65,6 +68,7 @@
 	let isExpanded = $state(true);
 	let newDomain = $state('');
 	let expandedRoutes = $state<Set<string>>(new Set());
+	let routeFiltersExpanded = $state<Set<string>>(new Set());
 
 	// Placeholder text with curly braces for template examples
 	const templatePlaceholder = '/users/{user_id}';
@@ -201,6 +205,23 @@
 			expandedRoutes.add(routeId);
 		}
 		expandedRoutes = new Set(expandedRoutes); // Trigger reactivity
+	}
+
+	// Toggle route filters expansion
+	function toggleRouteFiltersExpanded(routeId: string) {
+		if (routeFiltersExpanded.has(routeId)) {
+			routeFiltersExpanded.delete(routeId);
+		} else {
+			routeFiltersExpanded.add(routeId);
+		}
+		routeFiltersExpanded = new Set(routeFiltersExpanded);
+	}
+
+	// Get inherited filters for a route (combines config-level + VH-level)
+	function getInheritedFiltersForRoute(): FilterResponse[] {
+		const configFilters = configLevelFilters || [];
+		const vhFilters = virtualHostFilters || [];
+		return [...configFilters, ...vhFilters];
 	}
 
 	// Retry policy presets
@@ -464,6 +485,7 @@
 						{#each virtualHost.routes as route}
 							{@const routeFilterList = routeFilters.get(route.name) ?? []}
 							{@const hasRouteFilters = routeFilterList.length > 0}
+							{@const totalFilters = (routeFilterList.length) + (getInheritedFiltersForRoute().length)}
 							<div class="border {hasRouteFilters ? 'border-amber-200 bg-amber-50/50' : 'border-gray-200 bg-gray-50'} rounded-md p-3">
 								<div class="flex items-center justify-between mb-3">
 									<span class="text-sm font-medium text-gray-900">
@@ -576,42 +598,42 @@
 									</div>
 								</div>
 
-								<!-- Route Filters (inline) -->
-								{#if hasRouteFilters && onAddRouteFilter}
-									<div class="border-t border-amber-200 pt-3 mt-3">
-										<div class="flex items-center justify-between mb-2">
-											<div class="flex items-center gap-2">
-												<Filter class="w-3.5 h-3.5 text-amber-600" />
-												<span class="text-xs font-medium text-amber-800">Route Filters</span>
-												<span class="text-xs text-amber-600">(apply only to this route)</span>
-											</div>
-											<button
-												onclick={() => onAddRouteFilter?.(virtualHost.name, route.name)}
-												class="text-xs text-amber-600 hover:text-amber-800 hover:bg-amber-100 px-2 py-1 rounded transition-colors"
-											>
-												<Plus class="h-3 w-3 inline mr-1" />
-												Add
-											</button>
-										</div>
-										<div class="flex flex-wrap gap-2">
-											{#each routeFilterList as routeFilter}
-												<span class="inline-flex items-center gap-2 px-2.5 py-1.5 bg-white rounded border border-amber-200 text-sm group">
-													<span class="text-gray-700">{routeFilter.name}</span>
-													<span class="px-1.5 py-0.5 text-xs rounded {getFilterTypeBadgeColor(routeFilter.filterType)}">
-														{getFilterTypeLabel(routeFilter.filterType)}
-													</span>
-													<button
-														onclick={() => onDetachRouteFilter?.(virtualHost.name, route.name, routeFilter.id)}
-														class="text-gray-400 hover:text-red-500 transition-colors"
-														title="Detach"
-													>
-														<X class="w-3.5 h-3.5" />
-													</button>
+								<!-- Route Filters Section (Collapsible) -->
+								<div class="border-t border-gray-200 pt-3 mt-3">
+									<button
+										onclick={() => toggleRouteFiltersExpanded(route.id)}
+										class="w-full flex items-center justify-between text-left py-1"
+									>
+										<div class="flex items-center gap-2">
+											<Filter class="h-4 w-4 text-amber-600" />
+											<span class="text-sm font-medium text-amber-800">Route Filters</span>
+											{#if totalFilters > 0}
+												<span class="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-700">
+													{totalFilters}
 												</span>
-											{/each}
+											{/if}
 										</div>
-									</div>
-								{/if}
+										{#if routeFiltersExpanded.has(route.id)}
+											<ChevronUp class="h-4 w-4 text-gray-500" />
+										{:else}
+											<ChevronDown class="h-4 w-4 text-gray-500" />
+										{/if}
+									</button>
+
+									{#if routeFiltersExpanded.has(route.id)}
+										<div class="mt-3 pl-4 border-l-2 border-amber-200">
+											<RouteFilterSection
+												{routeConfigName}
+												virtualHostName={virtualHost.name}
+												routeName={route.name}
+												directFilters={routeFilterList}
+												inheritedFilters={getInheritedFiltersForRoute()}
+												onAddFilter={() => onAddRouteFilter?.(virtualHost.name, route.name)}
+												onRemoveFilter={(filterId) => onDetachRouteFilter?.(virtualHost.name, route.name, filterId)}
+											/>
+										</div>
+									{/if}
+								</div>
 
 								<!-- Advanced Settings (Collapsible) -->
 								{#if expandedRoutes.has(route.id)}

@@ -552,4 +552,72 @@ impl RouteConfigRepository {
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }
+
+    /// Count all route configs for a team.
+    #[instrument(skip(self), fields(team = %team), name = "db_count_route_configs_by_team")]
+    pub async fn count_by_team(&self, team: &str) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar::<Sqlite, i64>(
+            "SELECT COUNT(*) FROM route_configs WHERE team = $1",
+        )
+        .bind(team)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, "Failed to count route configs by team");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count route configs for team '{}'", team),
+            }
+        })?;
+
+        Ok(count)
+    }
+
+    /// Count all route configs for multiple teams (supports admin bypass).
+    ///
+    /// If `teams` is empty, counts ALL route configs across all teams (admin bypass).
+    #[instrument(skip(self), fields(teams = ?teams.len()), name = "db_count_route_configs_by_teams")]
+    pub async fn count_by_teams(&self, teams: &[String]) -> Result<i64> {
+        // Single team: use existing optimized method
+        if teams.len() == 1 {
+            return self.count_by_team(&teams[0]).await;
+        }
+
+        // Admin bypass: empty teams = count all route configs
+        if teams.is_empty() {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM route_configs")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to count all route configs (admin bypass)");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: "Failed to count all route configs".to_string(),
+                    }
+                })?;
+            return Ok(count);
+        }
+
+        // Build IN clause for team filtering
+        let placeholders: Vec<String> = (1..=teams.len()).map(|i| format!("${}", i)).collect();
+        let query_str = format!(
+            "SELECT COUNT(*) FROM route_configs WHERE team IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        for team in teams {
+            query = query.bind(team);
+        }
+
+        let count: i64 = query.fetch_one(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, teams = ?teams, "Failed to count route configs by teams");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count route configs for teams {:?}", teams),
+            }
+        })?;
+
+        Ok(count)
+    }
 }

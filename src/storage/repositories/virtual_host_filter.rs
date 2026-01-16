@@ -104,6 +104,58 @@ impl VirtualHostFilterRepository {
         })
     }
 
+    /// Attach or update a filter on a virtual host (upsert).
+    /// If the filter is already attached, updates its settings.
+    /// If not attached, creates a new attachment with the given settings.
+    #[instrument(skip(self, settings), fields(vh_id = %virtual_host_id, filter_id = %filter_id, order = order), name = "db_upsert_filter_to_vh")]
+    pub async fn upsert(
+        &self,
+        virtual_host_id: &VirtualHostId,
+        filter_id: &FilterId,
+        order: i32,
+        settings: Option<serde_json::Value>,
+    ) -> Result<VirtualHostFilterData> {
+        let now = Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
+
+        // Use INSERT OR REPLACE (SQLite UPSERT)
+        sqlx::query(
+            "INSERT INTO virtual_host_filters (virtual_host_id, filter_id, filter_order, created_at, settings) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT(virtual_host_id, filter_id) DO UPDATE SET \
+             settings = excluded.settings"
+        )
+        .bind(virtual_host_id.as_str())
+        .bind(filter_id.as_str())
+        .bind(order)
+        .bind(now)
+        .bind(&settings_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, vh_id = %virtual_host_id, filter_id = %filter_id, "Failed to upsert filter to virtual host");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to configure filter '{}' on virtual host '{}'", filter_id, virtual_host_id),
+            }
+        })?;
+
+        tracing::info!(
+            vh_id = %virtual_host_id,
+            filter_id = %filter_id,
+            order = order,
+            "Configured filter on virtual host"
+        );
+
+        Ok(VirtualHostFilterData {
+            virtual_host_id: virtual_host_id.clone(),
+            filter_id: filter_id.clone(),
+            filter_order: order,
+            created_at: now,
+            settings,
+        })
+    }
+
     /// Detach a filter from a virtual host.
     #[instrument(skip(self), fields(vh_id = %virtual_host_id, filter_id = %filter_id), name = "db_detach_filter_from_vh")]
     pub async fn detach(

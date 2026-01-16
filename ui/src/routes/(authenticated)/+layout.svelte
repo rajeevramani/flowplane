@@ -56,33 +56,42 @@
 	});
 
 	async function loadResourceCounts() {
-		try {
-			const [routes, clusters, listeners, filters, imports, secrets] = await Promise.all([
-				apiClient.listRouteConfigs(),
-				apiClient.listClusters(),
-				apiClient.listListeners(),
-				apiClient.listFilters(),
+		// Helper to safely call an API and return empty array on failure
+		async function safeCall<T>(call: () => Promise<T[]>): Promise<T[]> {
+			try {
+				return await call();
+			} catch {
+				return [];
+			}
+		}
+
+		const [routes, clusters, listeners, filters, imports, secrets] = await Promise.all([
+			safeCall(() => apiClient.listRouteConfigs()),
+			safeCall(() => apiClient.listClusters()),
+			safeCall(() => apiClient.listListeners()),
+			safeCall(() => apiClient.listFilters()),
+			safeCall(() =>
 				sessionInfo?.isAdmin
 					? apiClient.listAllImports()
 					: currentTeam
 						? apiClient.listImports(currentTeam)
-						: Promise.resolve([]),
+						: Promise.resolve([])
+			),
+			safeCall(() =>
 				currentTeam
 					? apiClient.listSecrets(currentTeam)
 					: Promise.resolve([])
-			]);
+			)
+		]);
 
-			resourceCounts = {
-				routeConfigs: routes.length,
-				clusters: clusters.length,
-				listeners: listeners.length,
-				filters: filters.length,
-				imports: imports.length,
-				secrets: secrets.length
-			};
-		} catch (error) {
-			console.error('Failed to load resource counts:', error);
-		}
+		resourceCounts = {
+			routeConfigs: routes.length,
+			clusters: clusters.length,
+			listeners: listeners.length,
+			filters: filters.length,
+			imports: imports.length,
+			secrets: secrets.length
+		};
 	}
 
 	function handleTeamChange(team: string) {

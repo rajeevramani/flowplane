@@ -482,6 +482,74 @@ impl McpToolRepository {
         Ok(())
     }
 
+    /// Count enabled MCP tools for a team.
+    #[instrument(skip(self), fields(team = %team), name = "db_count_enabled_mcp_tools_by_team")]
+    pub async fn count_enabled_by_team(&self, team: &str) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM mcp_tools WHERE team = $1 AND enabled = 1",
+        )
+        .bind(team)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, "Failed to count enabled MCP tools by team");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count enabled MCP tools for team '{}'", team),
+            }
+        })?;
+
+        Ok(count)
+    }
+
+    /// Count enabled MCP tools for multiple teams (supports admin bypass).
+    ///
+    /// If `teams` is empty, counts ALL enabled MCP tools across all teams (admin bypass).
+    #[instrument(skip(self), fields(teams = ?teams.len()), name = "db_count_enabled_mcp_tools_by_teams")]
+    pub async fn count_enabled_by_teams(&self, teams: &[String]) -> Result<i64> {
+        // Single team: use existing optimized method
+        if teams.len() == 1 {
+            return self.count_enabled_by_team(&teams[0]).await;
+        }
+
+        // Admin bypass: empty teams = count all enabled MCP tools
+        if teams.is_empty() {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mcp_tools WHERE enabled = 1")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to count all enabled MCP tools (admin bypass)");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: "Failed to count all enabled MCP tools".to_string(),
+                    }
+                })?;
+            return Ok(count);
+        }
+
+        // Build IN clause for team filtering
+        let placeholders: Vec<String> = (1..=teams.len()).map(|i| format!("${}", i)).collect();
+        let query_str = format!(
+            "SELECT COUNT(*) FROM mcp_tools WHERE team IN ({}) AND enabled = 1",
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        for team in teams {
+            query = query.bind(team);
+        }
+
+        let count: i64 = query.fetch_one(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, teams = ?teams, "Failed to count enabled MCP tools by teams");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count enabled MCP tools for teams {:?}", teams),
+            }
+        })?;
+
+        Ok(count)
+    }
+
     /// Set enabled status for an MCP tool
     #[instrument(skip(self), fields(mcp_tool_id = %id, enabled = enabled), name = "db_set_mcp_tool_enabled")]
     pub async fn set_enabled(&self, id: &McpToolId, enabled: bool) -> Result<()> {

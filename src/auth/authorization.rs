@@ -513,6 +513,20 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return Some("routes");
         }
 
+        // Special case: /api/v1/route-views/* uses "routes" resource
+        // This endpoint provides flattened route views for UI consumption
+        // but uses the same authorization scope as route-configs
+        if parts[2] == "route-views" {
+            return Some("routes");
+        }
+
+        // Special case: /api/v1/filter-types/* uses "filters" resource
+        // Filter types are metadata about available filter schemas
+        // and share the same authorization scope as filters management
+        if parts[2] == "filter-types" {
+            return Some("filters");
+        }
+
         Some(parts[2])
     } else {
         None
@@ -951,6 +965,23 @@ mod tests {
         // route-configs API path maps to "routes" scope
         assert_eq!(resource_from_path("/api/v1/route-configs"), Some("routes"));
         assert_eq!(resource_from_path("/api/v1/route-configs/123"), Some("routes"));
+
+        // route-views API path also maps to "routes" scope
+        assert_eq!(resource_from_path("/api/v1/route-views"), Some("routes"));
+        assert_eq!(resource_from_path("/api/v1/route-views/stats"), Some("routes"));
+
+        // filter-types API path maps to "filters" scope
+        assert_eq!(
+            resource_from_path("/api/v1/filter-types"),
+            Some("filters"),
+            "filter-types list endpoint should map to filters resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/filter-types/header_mutation"),
+            Some("filters"),
+            "filter-types detail endpoint should map to filters resource"
+        );
+
         assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
         assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
         assert_eq!(resource_from_path("/api/v1/api-definitions"), Some("api-definitions"));

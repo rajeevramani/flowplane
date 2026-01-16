@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
+	import { listRouteViews } from '$lib/api/route-views';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { Plus, ChevronDown, ChevronUp, ArrowLeft, Filter } from 'lucide-svelte';
-	import type { ClusterResponse, RouteResponse, CreateRouteBody, FilterResponse, HierarchicalFilterContext } from '$lib/api/types';
+	import { Plus, ChevronDown, ChevronUp, ArrowLeft, Filter, Zap } from 'lucide-svelte';
+	import type { ClusterResponse, RouteResponse, CreateRouteBody, FilterResponse, HierarchicalFilterContext, McpStatus, McpSchemaSource, EnableMcpRequest } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import VirtualHostEditor, {
 		type VirtualHostFormState,
@@ -43,6 +44,21 @@
 	let virtualHostFiltersMap = $state<Map<string, FilterResponse[]>>(new Map());
 	let routeFiltersMap = $state<Map<string, Map<string, FilterResponse[]>>>(new Map()); // vhName -> (routeName -> filters)
 	let currentFilterContext = $state<HierarchicalFilterContext | null>(null);
+
+	// MCP configuration state
+	let mcpExpanded = $state(false);
+	let mcpStatus = $state<McpStatus | null>(null);
+	let isLoadingMcp = $state(false);
+	let mcpError = $state<string | null>(null);
+	let isSavingMcp = $state(false);
+	let routeIds = $state<string[]>([]);
+	let mcpEnabledCount = $state(0);
+
+	// MCP form state
+	let mcpEnabled = $state(false);
+	let mcpToolName = $state('');
+	let mcpDescription = $state('');
+	let mcpSchemaSource = $state<McpSchemaSource>('openapi');
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -83,8 +99,9 @@
 			// Parse config into form state
 			formState = parseRouteConfigToForm(config);
 
-			// Load filters (separate from main data load to not block UI)
+			// Load filters and MCP status (separate from main data load to not block UI)
 			loadFilters();
+			loadMcpStatus();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load configuration';
 		} finally {
@@ -127,6 +144,62 @@
 			availableFilters = [];
 		} finally {
 			isLoadingFilters = false;
+		}
+	}
+
+	async function loadMcpStatus() {
+		if (!configId || !currentTeam) {
+			console.warn('loadMcpStatus called without configId or team');
+			return;
+		}
+
+		isLoadingMcp = true;
+		mcpError = null;
+
+		try {
+			// Fetch all route IDs for this route config using route-views API
+			const routeViewsResponse = await listRouteViews({
+				routeConfig: configId,
+				pageSize: 100 // Get up to 100 routes
+			});
+
+			routeIds = routeViewsResponse.items.map(item => item.routeId);
+
+			if (routeIds.length === 0) {
+				mcpError = 'No routes found for this configuration';
+				mcpStatus = null;
+				mcpEnabled = false;
+				mcpEnabledCount = 0;
+				return;
+			}
+
+			// Count how many routes have MCP enabled
+			mcpEnabledCount = routeViewsResponse.items.filter(item => item.mcpEnabled).length;
+
+			// Get MCP status from the first route
+			const status = await apiClient.getMcpStatus(currentTeam, routeIds[0]);
+			mcpStatus = status;
+
+			// Set enabled if any routes have MCP enabled
+			mcpEnabled = mcpEnabledCount > 0;
+			mcpToolName = status.toolName || '';
+			mcpDescription = status.metadata?.description || status.metadata?.summary || '';
+			mcpSchemaSource = (status.recommendedSource as McpSchemaSource) || 'openapi';
+
+			console.debug('Loaded MCP status:', {
+				routeCount: routeIds.length,
+				mcpEnabledCount,
+				status
+			});
+		} catch (e) {
+			// MCP may not be available for this route - that's okay
+			mcpError = e instanceof Error ? e.message : 'Failed to load MCP status';
+			console.debug('MCP not available:', e);
+			mcpStatus = null;
+			mcpEnabled = false;
+			mcpEnabledCount = 0;
+		} finally {
+			isLoadingMcp = false;
 		}
 	}
 
@@ -200,6 +273,11 @@
 			routeConfigName: configId!,
 			virtualHostName
 		};
+		console.debug('Opening VH filter modal:', {
+			context: currentFilterContext,
+			availableFiltersCount: availableFilters.length,
+			attachedFilterIds: attachedFilterIds()
+		});
 		showFilterModal = true;
 	}
 
@@ -238,6 +316,11 @@
 			virtualHostName,
 			routeName
 		};
+		console.debug('Opening route filter modal:', {
+			context: currentFilterContext,
+			availableFiltersCount: availableFilters.length,
+			attachedFilterIds: attachedFilterIds()
+		});
 		showFilterModal = true;
 	}
 
@@ -518,7 +601,68 @@
 			level: 'route_config',
 			routeConfigName: configId!
 		};
+		console.debug('Opening filter modal:', {
+			context: currentFilterContext,
+			availableFiltersCount: availableFilters.length,
+			attachedFilterIds: attachedFilterIds(),
+			availableFilterTypes: availableFilters.map(f => f.filterType)
+		});
 		showFilterModal = true;
+	}
+
+	// MCP handlers
+	async function handleToggleMcp() {
+		if (!currentTeam || routeIds.length === 0) {
+			mcpError = 'No routes found to toggle MCP';
+			return;
+		}
+
+		mcpError = null;
+		isSavingMcp = true;
+
+		try {
+			if (mcpEnabled) {
+				// Disable MCP on all routes
+				await apiClient.bulkDisableMcp(currentTeam, { routeIds });
+				mcpEnabled = false;
+				mcpEnabledCount = 0;
+			} else {
+				// Enable MCP on all routes (tool names and metadata are auto-generated)
+				await apiClient.bulkEnableMcp(currentTeam, { routeIds });
+				mcpEnabled = true;
+				mcpEnabledCount = routeIds.length;
+			}
+
+			// Reload MCP status to get updated state
+			await loadMcpStatus();
+		} catch (e) {
+			mcpError = e instanceof Error ? e.message : 'Failed to toggle MCP';
+			console.error('Failed to toggle MCP:', e);
+		} finally {
+			isSavingMcp = false;
+		}
+	}
+
+	async function handleSaveMcpConfig() {
+		if (!currentTeam || !mcpEnabled || routeIds.length === 0) return;
+
+		mcpError = null;
+		isSavingMcp = true;
+
+		try {
+			// Update MCP configuration by disabling and re-enabling
+			// Note: Tool names and metadata are auto-generated from route metadata
+			await apiClient.bulkDisableMcp(currentTeam, { routeIds });
+			await apiClient.bulkEnableMcp(currentTeam, { routeIds });
+
+			// Reload MCP status to get updated state
+			await loadMcpStatus();
+		} catch (e) {
+			mcpError = e instanceof Error ? e.message : 'Failed to save MCP configuration';
+			console.error('Failed to save MCP configuration:', e);
+		} finally {
+			isSavingMcp = false;
+		}
 	}
 </script>
 
@@ -643,6 +787,7 @@
 								onRemove={() => handleRemoveVirtualHost(index)}
 								{availableClusters}
 								routeConfigName={configId || ''}
+								configLevelFilters={attachedFilters}
 								virtualHostFilters={virtualHostFiltersMap.get(vh.name) || []}
 								routeFilters={routeFiltersMap.get(vh.name) || new Map()}
 								onAddVirtualHostFilter={handleOpenVirtualHostFilterModal}
@@ -731,6 +876,133 @@
 								<strong>Note:</strong> Configured filters set per-route behavior for all routes in this configuration.
 								For virtual-host-specific or route-specific filters, use the filter sections within each virtual host or route.
 							</div>
+						</div>
+					{/if}
+				</div>
+
+				<!-- MCP Tool Configuration (Collapsible) -->
+				<div class="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
+					<button
+						onclick={() => (mcpExpanded = !mcpExpanded)}
+						class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+					>
+						<div class="flex items-center gap-3">
+							<Zap class="w-5 h-5 text-gray-500" />
+							<div class="text-left">
+								<h2 class="text-lg font-semibold text-gray-900">MCP Tool Configuration</h2>
+								<p class="text-sm text-gray-600">
+									Enable AI assistant integration for routes in this configuration
+								</p>
+							</div>
+							{#if routeIds.length > 0 && mcpEnabledCount > 0}
+								<span class="ml-2 px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-100 text-emerald-800">
+									{mcpEnabledCount} of {routeIds.length} enabled
+								</span>
+							{/if}
+						</div>
+						{#if mcpExpanded}
+							<ChevronUp class="w-5 h-5 text-gray-500" />
+						{:else}
+							<ChevronDown class="w-5 h-5 text-gray-500" />
+						{/if}
+					</button>
+					{#if mcpExpanded}
+						<div class="px-6 pb-6 border-l-4 border-gray-200 ml-6">
+							{#if isLoadingMcp}
+								<div class="flex items-center gap-2 text-sm text-gray-600 py-4">
+									<div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+									Loading MCP status...
+								</div>
+							{:else}
+								{#if mcpError}
+									<div class="mb-4 bg-amber-50 border border-amber-200 rounded-md p-3">
+										<p class="text-sm text-amber-800">{mcpError}</p>
+									</div>
+								{/if}
+
+								<!-- Enable/Disable Toggle -->
+								<div class="mb-6 flex items-center justify-between">
+									<div>
+										<label class="block text-sm font-medium text-gray-700 mb-1">
+											MCP Tool Status
+										</label>
+										<p class="text-xs text-gray-500">
+											{#if routeIds.length === 0}
+												No routes found in this configuration
+											{:else if mcpEnabled}
+												{mcpEnabledCount} of {routeIds.length} routes exposed as MCP tools
+											{:else}
+												Enable to expose all {routeIds.length} routes to AI assistants
+											{/if}
+										</p>
+									</div>
+									<button
+										onclick={handleToggleMcp}
+										disabled={isSavingMcp || routeIds.length === 0}
+										class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 {mcpEnabled
+											? 'bg-emerald-600'
+											: 'bg-gray-200'} {isSavingMcp || routeIds.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
+									>
+										<span
+											class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform {mcpEnabled
+												? 'translate-x-6'
+												: 'translate-x-1'}"
+										></span>
+									</button>
+								</div>
+
+								{#if mcpEnabled}
+									<div class="space-y-4">
+										<!-- Info about MCP Tools -->
+										<div class="bg-blue-50 border border-blue-200 rounded-md p-4">
+											<h3 class="text-sm font-medium text-blue-900 mb-2">MCP Tools Created</h3>
+											<p class="text-sm text-blue-800">
+												{mcpEnabledCount} route{mcpEnabledCount !== 1 ? 's are' : ' is'} now exposed as MCP tool{mcpEnabledCount !== 1 ? 's' : ''}.
+												Tool names and schemas are automatically generated from route metadata and OpenAPI specifications.
+											</p>
+											{#if mcpToolName}
+												<p class="text-xs text-blue-700 mt-2">
+													Example tool name: <code class="bg-blue-100 px-1 py-0.5 rounded">{mcpToolName}</code>
+												</p>
+											{/if}
+										</div>
+
+										<!-- Schema Source Info -->
+										{#if mcpStatus}
+											<div>
+												<label class="block text-sm font-medium text-gray-700 mb-2">
+													Schema Information
+												</label>
+												<div class="space-y-2 text-sm text-gray-600">
+													{#if mcpStatus.schemaSources?.openapi?.hasInputSchema}
+														<div class="flex items-center gap-2">
+															<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+															<span>OpenAPI schema available</span>
+														</div>
+													{/if}
+													{#if mcpStatus.schemaSources?.learned?.available}
+														<div class="flex items-center gap-2">
+															<span class="w-2 h-2 rounded-full bg-blue-500"></span>
+															<span>Learned schema available ({mcpStatus.schemaSources.learned.sampleCount} samples)</span>
+														</div>
+													{/if}
+													{#if mcpStatus.recommendedSource}
+														<p class="text-xs text-gray-500 mt-2">
+															Recommended source: <span class="font-medium">{mcpStatus.recommendedSource}</span>
+														</p>
+													{/if}
+												</div>
+											</div>
+										{/if}
+									</div>
+								{/if}
+
+								<div class="mt-4 bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-800">
+									<strong>Note:</strong> MCP (Model Context Protocol) allows AI assistants like Claude to
+									call your APIs directly. The route must have proper metadata (operation ID, description)
+									or learned schemas for best results.
+								</div>
+							{/if}
 						</div>
 					{/if}
 				</div>

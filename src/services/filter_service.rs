@@ -349,10 +349,10 @@ impl FilterService {
             };
 
             let mut db_span =
-                create_operation_span("db.route_config_filters.insert", SpanKind::Client);
-            db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
+                create_operation_span("db.route_config_filters.upsert", SpanKind::Client);
+            db_span.set_attribute(KeyValue::new("db.operation", "UPSERT"));
             db_span.set_attribute(KeyValue::new("db.table", "route_config_filters"));
-            repository.attach_to_route_config(route_config_id, filter_id, order, settings).await?;
+            repository.upsert_to_route_config(route_config_id, filter_id, order, settings).await?;
             drop(db_span);
 
             info!(
@@ -630,7 +630,7 @@ impl FilterService {
                 None => vh_filter_repo.get_next_order(virtual_host_id).await?,
             };
 
-            vh_filter_repo.attach(virtual_host_id, filter_id, order, settings).await?;
+            vh_filter_repo.upsert(virtual_host_id, filter_id, order, settings).await?;
 
             info!(
                 virtual_host_id = %virtual_host_id,
@@ -738,7 +738,7 @@ impl FilterService {
                 None => route_filter_repo.get_next_order(route_id).await?,
             };
 
-            route_filter_repo.attach(route_id, filter_id, order, settings).await?;
+            route_filter_repo.upsert(route_id, filter_id, order, settings).await?;
 
             info!(
                 route_id = %route_id,

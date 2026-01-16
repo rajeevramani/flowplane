@@ -76,7 +76,9 @@ pub use proxy_certificate::{
     SqlxProxyCertificateRepository,
 };
 pub use reporting::{ReportingRepository, RouteFlowRow};
-pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
+pub use route::{
+    CreateRouteRequest, RouteData, RouteRepository, RouteWithRelatedData, UpdateRouteRequest,
+};
 pub use route_config::{
     CreateRouteConfigRequest, RouteConfigData, RouteConfigRepository, UpdateRouteConfigRequest,
 };

@@ -22,6 +22,7 @@
 pub mod cluster;
 pub mod listener;
 pub mod route;
+pub mod route_view;
 
 // Re-export main DTO types
 pub use cluster::{
@@ -37,4 +38,7 @@ pub use route::{
     HeaderMatchDefinitionDto, PathMatchDefinitionDto, QueryParameterMatchDefinitionDto,
     RouteActionDefinitionDto, RouteDefinitionDto, RouteMatchDefinitionDto, RouteResponseDto,
     RouteRuleDefinitionDto, VirtualHostDefinitionDto, WeightedClusterDefinitionDto,
+};
+pub use route_view::{
+    PaginationDto, RouteListQueryParams, RouteListResponseDto, RouteListStatsDto, RouteListViewDto,
 };

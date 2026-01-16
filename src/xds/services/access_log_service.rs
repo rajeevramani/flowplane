@@ -50,6 +50,7 @@ const INFRASTRUCTURE_HEADER_EXACT: &[&str] = &[
 ///
 /// # Examples
 /// ```
+/// use flowplane::xds::services::access_log_service::should_include_header;
 /// assert!(should_include_header("authorization"));
 /// assert!(should_include_header("x-api-key"));
 /// assert!(!should_include_header("x-envoy-original-path"));
