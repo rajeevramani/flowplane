@@ -6,3 +6,5 @@ export { default as McpToolCard } from './McpToolCard.svelte';
 export { default as ToolDetailModal } from './ToolDetailModal.svelte';
 export { default as EditToolModal } from './EditToolModal.svelte';
 export { default as McpQuickToggle } from './McpQuickToggle.svelte';
+export { default as ApplyLearnedSchemaButton } from './ApplyLearnedSchemaButton.svelte';
+export { default as ApplyLearnedSchemaModal } from './ApplyLearnedSchemaModal.svelte';

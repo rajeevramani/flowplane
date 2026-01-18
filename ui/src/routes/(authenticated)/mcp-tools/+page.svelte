@@ -2,11 +2,11 @@
 	import { apiClient } from '$lib/api/client';
 	import { onMount } from 'svelte';
 	import { Bot, Search, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-svelte';
-	import type { McpTool, McpToolCategory } from '$lib/api/types';
+	import type { McpTool, McpToolCategory, LearnedSchemaAvailability } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
-	import { McpToolCard, ToolDetailModal, EditToolModal } from '$lib/components/mcp';
+	import { McpToolCard, ToolDetailModal, EditToolModal, ApplyLearnedSchemaModal } from '$lib/components/mcp';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -24,6 +24,11 @@
 	let selectedToolForModal = $state<McpTool | null>(null);
 	let isDetailModalOpen = $state(false);
 	let isEditModalOpen = $state(false);
+	let isApplyLearnedModalOpen = $state(false);
+
+	// Apply learned schema state
+	let learnedSchemaAvailability = $state<LearnedSchemaAvailability | null>(null);
+	let learnedSchemaAvailabilityMap = $state<Map<string, LearnedSchemaAvailability>>(new Map());
 
 	// Helper to check if a tool has incomplete information
 	function isToolIncomplete(tool: McpTool): boolean {
@@ -59,11 +64,37 @@
 		try {
 			const response = await apiClient.listMcpTools(currentTeam);
 			tools = response.tools;
+
+			// Load learned schema availability for tools with routeIds
+			await loadLearnedSchemaAvailability();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load MCP tools';
 		} finally {
 			isLoading = false;
 		}
+	}
+
+	// Load learned schema availability for all tools with route IDs
+	async function loadLearnedSchemaAvailability() {
+		const newMap = new Map<string, LearnedSchemaAvailability>();
+
+		// Check each tool that has a routeId
+		const checks = tools
+			.filter(tool => tool.routeId)
+			.map(async (tool) => {
+				try {
+					const availability = await apiClient.checkLearnedSchema(currentTeam, tool.routeId!);
+					if (availability.available) {
+						newMap.set(tool.id, availability);
+					}
+				} catch (e) {
+					// Silently ignore errors for individual checks
+					console.error(`Failed to check learned schema for ${tool.name}:`, e);
+				}
+			});
+
+		await Promise.all(checks);
+		learnedSchemaAvailabilityMap = newMap;
 	}
 
 	// Filtered tools
@@ -119,6 +150,36 @@
 		selectedToolForModal = tool;
 		isDetailModalOpen = false;
 		isEditModalOpen = true;
+	}
+
+	// Open apply learned schema modal
+	async function handleApplyLearnedSchema(tool: McpTool) {
+		if (!tool.routeId) return;
+
+		selectedToolForModal = tool;
+		isDetailModalOpen = false;
+
+		try {
+			// Fetch fresh availability data
+			learnedSchemaAvailability = await apiClient.checkLearnedSchema(currentTeam, tool.routeId);
+			isApplyLearnedModalOpen = true;
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to check learned schema availability';
+		}
+	}
+
+	// Confirm apply learned schema
+	async function handleConfirmApplyLearned(force: boolean) {
+		if (!selectedToolForModal?.routeId) return;
+
+		try {
+			await apiClient.applyLearnedSchema(currentTeam, selectedToolForModal.routeId, force);
+			isApplyLearnedModalOpen = false;
+			await loadTools(); // Reload to get updated tool
+			error = null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to apply learned schema';
+		}
 	}
 
 	// Save tool changes - only update editable metadata fields
@@ -279,7 +340,12 @@
 		<!-- Tools Grid -->
 		<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 			{#each filteredTools as tool (tool.id)}
-				<McpToolCard {tool} onToggle={() => handleToggle(tool)} onView={() => handleViewTool(tool)} />
+				<McpToolCard
+					{tool}
+					onToggle={() => handleToggle(tool)}
+					onView={() => handleViewTool(tool)}
+					hasLearnedSchemaAvailable={learnedSchemaAvailabilityMap.has(tool.id)}
+				/>
 			{/each}
 		</div>
 
@@ -300,6 +366,10 @@
 	tool={selectedToolForModal}
 	onClose={() => (isDetailModalOpen = false)}
 	onEdit={handleEditTool}
+	onApplyLearned={selectedToolForModal && learnedSchemaAvailabilityMap.has(selectedToolForModal.id)
+		? () => handleApplyLearnedSchema(selectedToolForModal!)
+		: undefined}
+	hasLearnedSchemaAvailable={selectedToolForModal ? learnedSchemaAvailabilityMap.has(selectedToolForModal.id) : false}
 />
 
 <!-- Edit Tool Modal -->
@@ -308,4 +378,15 @@
 	tool={selectedToolForModal}
 	onClose={() => (isEditModalOpen = false)}
 	onSave={handleSaveTool}
+/>
+
+<!-- Apply Learned Schema Modal -->
+<ApplyLearnedSchemaModal
+	show={isApplyLearnedModalOpen}
+	tool={selectedToolForModal}
+	learnedSchema={learnedSchemaAvailability?.schema || null}
+	currentSource={learnedSchemaAvailability?.currentSource || 'manual'}
+	requiresForce={learnedSchemaAvailability?.requiresForce || false}
+	onConfirm={handleConfirmApplyLearned}
+	onCancel={() => (isApplyLearnedModalOpen = false)}
 />

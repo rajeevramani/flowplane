@@ -194,3 +194,131 @@ pub async fn update_mcp_tool_handler(
 
     Ok(Json(McpToolResponse::from(updated)))
 }
+
+// === Learned Schema Handlers ===
+
+pub use types::{
+    ApplyLearnedSchemaRequest, ApplyLearnedSchemaResponse, CheckLearnedSchemaResponse,
+    LearnedSchemaInfoResponse,
+};
+
+use std::sync::Arc;
+
+use crate::domain::RouteId;
+use crate::services::{McpService, McpServiceError};
+
+/// Get the database pool from ApiState
+fn get_db_pool(state: &ApiState) -> Result<Arc<sqlx::SqlitePool>, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("Database not available".to_string()))?;
+    Ok(Arc::new(cluster_repo.pool().clone()))
+}
+
+/// Convert McpServiceError to ApiError
+fn to_api_error(e: McpServiceError) -> ApiError {
+    match e {
+        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
+        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
+        McpServiceError::Database(e) => ApiError::Internal(format!("Database error: {}", e)),
+        McpServiceError::Internal(msg) => ApiError::Internal(msg),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/teams/{team}/mcp/routes/{route_id}/learned-schema",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("route_id" = String, Path, description = "Route ID"),
+    ),
+    responses(
+        (status = 200, description = "Learned schema availability", body = CheckLearnedSchemaResponse),
+        (status = 403, description = "Forbidden - insufficient permissions"),
+        (status = 404, description = "Route not found"),
+    ),
+    tag = "MCP Tools"
+)]
+#[instrument(skip(state), fields(team = %team, route_id = %route_id, user_id = ?context.user_id))]
+pub async fn check_learned_schema_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((team, route_id)): Path<(String, String)>,
+) -> Result<Json<CheckLearnedSchemaResponse>, ApiError> {
+    // Authorization: require mcp:read scope
+    require_resource_access(&context, "mcp", "read", Some(&team))?;
+
+    let db_pool = get_db_pool(&state)?;
+    let mcp_service = McpService::new(db_pool);
+    let route_id = RouteId::from_string(route_id);
+
+    let availability = mcp_service
+        .check_learned_schema_availability(&team, &route_id)
+        .await
+        .map_err(to_api_error)?;
+
+    Ok(Json(CheckLearnedSchemaResponse {
+        available: availability.available,
+        schema: availability.schema.map(|s| LearnedSchemaInfoResponse {
+            id: s.id,
+            confidence: s.confidence,
+            sample_count: s.sample_count,
+            version: s.version,
+            last_observed: s.last_observed.to_rfc3339(),
+        }),
+        current_source: availability.current_source.to_string(),
+        can_apply: availability.can_apply,
+        requires_force: availability.requires_force,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/teams/{team}/mcp/routes/{route_id}/apply-learned",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("route_id" = String, Path, description = "Route ID"),
+    ),
+    request_body = ApplyLearnedSchemaRequest,
+    responses(
+        (status = 200, description = "Learned schema applied", body = ApplyLearnedSchemaResponse),
+        (status = 400, description = "Validation error - MCP not enabled or low confidence"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
+        (status = 404, description = "Route or learned schema not found"),
+        (status = 409, description = "Conflict - requires force to override OpenAPI"),
+    ),
+    tag = "MCP Tools"
+)]
+#[instrument(skip(state, payload), fields(team = %team, route_id = %route_id, user_id = ?context.user_id))]
+pub async fn apply_learned_schema_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((team, route_id)): Path<(String, String)>,
+    Json(payload): Json<ApplyLearnedSchemaRequest>,
+) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
+    // Authorization: require mcp:write scope
+    require_resource_access(&context, "mcp", "write", Some(&team))?;
+
+    let db_pool = get_db_pool(&state)?;
+    let mcp_service = McpService::new(db_pool);
+    let route_id = RouteId::from_string(route_id);
+    let force = payload.force.unwrap_or(false);
+
+    let result =
+        mcp_service.apply_learned_schema(&team, &route_id, force).await.map_err(|e| match &e {
+            McpServiceError::Validation(msg) if msg.contains("force=true") => {
+                ApiError::Conflict(msg.clone())
+            }
+            _ => to_api_error(e),
+        })?;
+
+    Ok(Json(ApplyLearnedSchemaResponse {
+        success: true,
+        previous_source: result.previous_source.to_string(),
+        learned_schema_id: result.learned_schema_id,
+        confidence: result.confidence,
+        sample_count: result.sample_count,
+    }))
+}

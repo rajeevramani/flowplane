@@ -76,6 +76,51 @@ pub struct RefreshSchemaResult {
     pub message: String,
 }
 
+/// Result of applying learned schema to a route's MCP metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyLearnedSchemaResponse {
+    /// Updated route metadata
+    pub metadata: RouteMetadataData,
+    /// Previous source type before applying
+    pub previous_source: RouteMetadataSourceType,
+    /// ID of the learned schema that was applied
+    pub learned_schema_id: i64,
+    /// Confidence score of the learned schema
+    pub confidence: f64,
+    /// Number of samples used to learn the schema
+    pub sample_count: i64,
+}
+
+/// Information about a learned schema's availability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearnedSchemaAvailability {
+    /// Whether a learned schema is available
+    pub available: bool,
+    /// The learned schema info if available
+    pub schema: Option<LearnedSchemaInfo>,
+    /// Current source type of the route metadata
+    pub current_source: RouteMetadataSourceType,
+    /// Whether the learned schema can be applied (confidence >= 0.8)
+    pub can_apply: bool,
+    /// Whether force flag is required (current source is OpenAPI)
+    pub requires_force: bool,
+}
+
+/// Information about a learned schema
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearnedSchemaInfo {
+    /// Schema ID
+    pub id: i64,
+    /// Confidence score (0.0 to 1.0)
+    pub confidence: f64,
+    /// Number of samples used to learn the schema
+    pub sample_count: i64,
+    /// Schema version
+    pub version: i64,
+    /// When the schema was last observed
+    pub last_observed: chrono::DateTime<chrono::Utc>,
+}
+
 /// MCP service error types
 #[derive(Debug, thiserror::Error)]
 pub enum McpServiceError {
@@ -749,6 +794,184 @@ impl McpService {
                 None
             }
         }
+    }
+
+    /// Check if a learned schema is available for a route
+    ///
+    /// Returns information about the learned schema availability, including
+    /// whether it can be applied and if force flag is required.
+    #[tracing::instrument(skip(self), fields(team = %team, route_id = %route_id))]
+    pub async fn check_learned_schema_availability(
+        &self,
+        team: &str,
+        route_id: &RouteId,
+    ) -> Result<LearnedSchemaAvailability, McpServiceError> {
+        // Get the route (returns Result<RouteData>, not Option)
+        let route = self.route_repo.get_by_id(route_id).await?;
+
+        // Navigate through virtual_host to get route_config for team verification
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if route_config.team.as_deref() != Some(team) {
+            return Err(McpServiceError::NotFound(format!("Route {} not found", route_id)));
+        }
+
+        // Get metadata to check current source (returns Result<Option<RouteMetadataData>>)
+        let metadata = self.route_metadata_repo.get_by_route_id(route_id).await?;
+        let current_source =
+            metadata.as_ref().map(|m| m.source_type).unwrap_or(RouteMetadataSourceType::Manual);
+
+        // Query for learned schema
+        let http_method = metadata
+            .as_ref()
+            .and_then(|m| m.http_method.clone())
+            .unwrap_or_else(|| "GET".to_string());
+
+        let learned_schema = self
+            .aggregated_schema_repo
+            .get_latest(team, &route.path_pattern, &http_method)
+            .await
+            .ok()
+            .flatten();
+
+        match learned_schema {
+            Some(schema) => {
+                let can_apply = schema.confidence_score >= 0.8;
+                let requires_force = current_source == RouteMetadataSourceType::Openapi;
+
+                Ok(LearnedSchemaAvailability {
+                    available: true,
+                    schema: Some(LearnedSchemaInfo {
+                        id: schema.id,
+                        confidence: schema.confidence_score,
+                        sample_count: schema.sample_count,
+                        version: schema.version,
+                        last_observed: schema.last_observed,
+                    }),
+                    current_source,
+                    can_apply,
+                    requires_force,
+                })
+            }
+            None => Ok(LearnedSchemaAvailability {
+                available: false,
+                schema: None,
+                current_source,
+                can_apply: false,
+                requires_force: false,
+            }),
+        }
+    }
+
+    /// Apply a learned schema to a route's MCP metadata
+    ///
+    /// # Arguments
+    /// * `team` - Team identifier
+    /// * `route_id` - Route to update
+    /// * `force` - If true, override even if source_type is "openapi"
+    ///
+    /// # Returns
+    /// Updated metadata or error
+    #[tracing::instrument(skip(self), fields(team = %team, route_id = %route_id, force = %force))]
+    pub async fn apply_learned_schema(
+        &self,
+        team: &str,
+        route_id: &RouteId,
+        force: bool,
+    ) -> Result<ApplyLearnedSchemaResponse, McpServiceError> {
+        // Get the route (returns Result<RouteData>, not Option)
+        let route = self.route_repo.get_by_id(route_id).await?;
+
+        // Navigate through virtual_host to get route_config for team verification
+        let virtual_host = self.virtual_host_repo.get_by_id(&route.virtual_host_id).await?;
+        let route_config = self.route_config_repo.get_by_id(&virtual_host.route_config_id).await?;
+
+        if route_config.team.as_deref() != Some(team) {
+            return Err(McpServiceError::NotFound(format!("Route {} not found", route_id)));
+        }
+
+        // Get existing metadata (must exist - route must be MCP enabled)
+        // Returns Result<Option<RouteMetadataData>>
+        let existing_metadata =
+            self.route_metadata_repo.get_by_route_id(route_id).await?.ok_or_else(|| {
+                McpServiceError::Validation(
+                    "MCP is not enabled for this route. Enable MCP first.".to_string(),
+                )
+            })?;
+
+        let previous_source = existing_metadata.source_type;
+
+        // Check if force is required
+        if previous_source == RouteMetadataSourceType::Openapi && !force {
+            return Err(McpServiceError::Validation(
+                "Route has OpenAPI-sourced metadata. Use force=true to override.".to_string(),
+            ));
+        }
+
+        // Get learned schema
+        let http_method =
+            existing_metadata.http_method.clone().unwrap_or_else(|| "GET".to_string());
+
+        let learned_schema = self
+            .aggregated_schema_repo
+            .get_latest(team, &route.path_pattern, &http_method)
+            .await?
+            .ok_or_else(|| {
+                McpServiceError::NotFound(format!(
+                    "No learned schema available for {} {}",
+                    http_method, route.path_pattern
+                ))
+            })?;
+
+        // Check confidence threshold
+        if learned_schema.confidence_score < 0.8 {
+            return Err(McpServiceError::Validation(format!(
+                "Learned schema confidence ({:.0}%) is below required threshold (80%)",
+                learned_schema.confidence_score * 100.0
+            )));
+        }
+
+        // Update metadata with learned schema
+        let update_request = UpdateRouteMetadataRequest {
+            operation_id: None, // Keep existing
+            summary: Some(Some(format!(
+                "{} {} (learned)",
+                http_method.to_uppercase(),
+                route.path_pattern
+            ))),
+            description: Some(Some(format!(
+                "API endpoint for {} (schema learned from {} samples)",
+                route.path_pattern, learned_schema.sample_count
+            ))),
+            tags: None,
+            http_method: None, // Keep existing
+            request_body_schema: Some(learned_schema.request_schema.clone()),
+            response_schemas: Some(learned_schema.response_schemas.clone()),
+            learning_schema_id: Some(Some(learned_schema.id)),
+            enriched_from_learning: Some(true),
+            source_type: Some(RouteMetadataSourceType::Learned),
+            confidence: Some(Some(learned_schema.confidence_score)),
+        };
+
+        let updated_metadata =
+            self.route_metadata_repo.update(&existing_metadata.id, update_request).await?;
+
+        tracing::info!(
+            route_id = %route_id,
+            previous_source = ?previous_source,
+            schema_id = learned_schema.id,
+            confidence = learned_schema.confidence_score,
+            "Applied learned schema to route metadata"
+        );
+
+        Ok(ApplyLearnedSchemaResponse {
+            metadata: updated_metadata,
+            previous_source,
+            learned_schema_id: learned_schema.id,
+            confidence: learned_schema.confidence_score,
+            sample_count: learned_schema.sample_count,
+        })
     }
 }
 

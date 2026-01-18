@@ -164,3 +164,74 @@ pub struct UpdateMcpToolBody {
     /// Whether this tool is enabled
     pub enabled: Option<bool>,
 }
+
+// === Learned Schema Types ===
+
+/// Request body for applying learned schema to a route
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyLearnedSchemaRequest {
+    /// Force override even if current source is OpenAPI
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
+/// Response for applying learned schema
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyLearnedSchemaResponse {
+    /// Whether the operation was successful
+    pub success: bool,
+
+    /// Previous source type before applying
+    pub previous_source: String,
+
+    /// ID of the learned schema that was applied
+    pub learned_schema_id: i64,
+
+    /// Confidence score of the applied schema
+    pub confidence: f64,
+
+    /// Number of samples used to learn the schema
+    pub sample_count: i64,
+}
+
+/// Response for checking learned schema availability
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckLearnedSchemaResponse {
+    /// Whether a learned schema is available
+    pub available: bool,
+
+    /// Learned schema information if available
+    pub schema: Option<LearnedSchemaInfoResponse>,
+
+    /// Current source type of the route metadata
+    pub current_source: String,
+
+    /// Whether the learned schema can be applied (confidence >= 0.8)
+    pub can_apply: bool,
+
+    /// Whether force flag is required (current source is OpenAPI)
+    pub requires_force: bool,
+}
+
+/// Information about a learned schema
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnedSchemaInfoResponse {
+    /// Schema ID
+    pub id: i64,
+
+    /// Confidence score (0.0 to 1.0)
+    pub confidence: f64,
+
+    /// Number of samples used to learn the schema
+    pub sample_count: i64,
+
+    /// Schema version
+    pub version: i64,
+
+    /// When the schema was last observed (ISO 8601 format)
+    pub last_observed: String,
+}

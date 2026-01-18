@@ -1725,3 +1725,40 @@ export interface UpdateMcpToolRequest {
 	outputSchema?: Record<string, unknown> | null;
 	enabled?: boolean;
 }
+
+/** Learned schema information for apply flow */
+export interface LearnedSchemaInfo {
+	id: number;
+	confidence: number;
+	sampleCount: number;
+	version: number;
+	lastObserved: string;
+}
+
+/** Learned schema availability check response */
+export interface LearnedSchemaAvailability {
+	available: boolean;
+	schema: LearnedSchemaInfo | null;
+	currentSource: 'openapi' | 'learned' | 'manual';
+	canApply: boolean;
+	requiresForce: boolean;
+}
+
+/** Request to apply learned schema */
+export interface ApplyLearnedSchemaRequest {
+	force?: boolean;
+}
+
+/** Response after applying learned schema */
+export interface ApplyLearnedSchemaResponse {
+	success: boolean;
+	metadata: RouteMetadata;
+	previousSource: string;
+	learnedSchema: LearnedSchemaInfo;
+}
+
+/** Route metadata (simplified version for apply response) */
+export interface RouteMetadata {
+	routeId: string;
+	schemaSource: McpSchemaSource;
+}

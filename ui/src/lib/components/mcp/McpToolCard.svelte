@@ -2,15 +2,16 @@
 	import type { McpTool } from '$lib/api/types';
 	import Badge from '../Badge.svelte';
 	import SchemaPreview from './SchemaPreview.svelte';
-	import { FileText, Database, Terminal, Settings, Code, AlertCircle, Eye } from 'lucide-svelte';
+	import { FileText, Database, Terminal, Settings, Code, AlertCircle, Eye, Sparkles } from 'lucide-svelte';
 
 	interface Props {
 		tool: McpTool;
 		onToggle: () => void;
 		onView: () => void;
+		hasLearnedSchemaAvailable?: boolean;
 	}
 
-	let { tool, onToggle, onView }: Props = $props();
+	let { tool, onToggle, onView, hasLearnedSchemaAvailable = false }: Props = $props();
 
 	let expanded = $state(false);
 
@@ -55,6 +56,10 @@
 	{#if isIncomplete}
 		<div class="absolute top-3 right-3">
 			<AlertCircle class="w-5 h-5 text-amber-600" />
+		</div>
+	{:else if hasLearnedSchemaAvailable}
+		<div class="absolute top-3 right-3" title="Learned schema available">
+			<Sparkles class="w-5 h-5 text-purple-600" />
 		</div>
 	{/if}
 

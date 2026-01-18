@@ -107,7 +107,10 @@ import type {
 	EnableMcpResponse,
 	McpOperationResponse,
 	BulkMcpRequest,
-	BulkMcpResponse
+	BulkMcpResponse,
+	LearnedSchemaAvailability,
+	ApplyLearnedSchemaRequest,
+	ApplyLearnedSchemaResponse
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -1293,6 +1296,32 @@ class ApiClient {
 	async bulkDisableMcp(team: string, request: BulkMcpRequest): Promise<BulkMcpResponse> {
 		return this.post<BulkMcpResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/mcp/bulk-disable`,
+			request
+		);
+	}
+
+	/**
+	 * Check if a learned schema is available for a route.
+	 * Returns availability status, schema info, and whether force is required to override.
+	 */
+	async checkLearnedSchema(team: string, routeId: string): Promise<LearnedSchemaAvailability> {
+		return this.get<LearnedSchemaAvailability>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/learned-schema/availability`
+		);
+	}
+
+	/**
+	 * Apply a learned schema to a route's MCP tool.
+	 * If the route currently uses OpenAPI, force=true must be set to override.
+	 */
+	async applyLearnedSchema(
+		team: string,
+		routeId: string,
+		force?: boolean
+	): Promise<ApplyLearnedSchemaResponse> {
+		const request: ApplyLearnedSchemaRequest = force ? { force } : {};
+		return this.post<ApplyLearnedSchemaResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/learned-schema/apply`,
 			request
 		);
 	}

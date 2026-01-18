@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { X, Code, FileJson, AlertCircle, Edit } from 'lucide-svelte';
+	import { X, Code, FileJson, AlertCircle, Edit, Sparkles } from 'lucide-svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import type { McpTool } from '$lib/api/types';
@@ -9,9 +9,11 @@
 		tool: McpTool | null;
 		onClose: () => void;
 		onEdit: (tool: McpTool) => void;
+		onApplyLearned?: () => void;
+		hasLearnedSchemaAvailable?: boolean;
 	}
 
-	let { show, tool, onClose, onEdit }: Props = $props();
+	let { show, tool, onClose, onEdit, onApplyLearned, hasLearnedSchemaAvailable = false }: Props = $props();
 
 	// Check if the tool has incomplete information
 	let hasIncompleteInfo = $derived(
@@ -173,13 +175,23 @@
 
 			<!-- Footer -->
 			<div
-				class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end gap-3 z-10"
+				class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-between gap-3 z-10"
 			>
-				<Button variant="primary" onclick={handleEdit}>
-					<Edit class="w-4 h-4 mr-2" />
-					Edit Tool
-				</Button>
-				<Button variant="ghost" onclick={onClose}> Close </Button>
+				<div>
+					{#if hasLearnedSchemaAvailable && onApplyLearned}
+						<Button variant="secondary" onclick={onApplyLearned}>
+							<Sparkles class="w-4 h-4 mr-2" />
+							Apply Learned Schema
+						</Button>
+					{/if}
+				</div>
+				<div class="flex gap-3">
+					<Button variant="primary" onclick={handleEdit}>
+						<Edit class="w-4 h-4 mr-2" />
+						Edit Tool
+					</Button>
+					<Button variant="ghost" onclick={onClose}> Close </Button>
+				</div>
 			</div>
 		</div>
 	</div>

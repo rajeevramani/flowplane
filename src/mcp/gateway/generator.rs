@@ -54,7 +54,7 @@ impl GatewayToolGenerator {
                 crate::domain::RouteMetadataSourceType::Learned => McpToolSourceType::Learned,
             },
             input_schema,
-            output_schema: None,
+            output_schema: metadata.response_schemas.clone(),
             learned_schema_id: metadata.learning_schema_id,
             schema_source: None,
             route_id: Some(route.id.clone()),
@@ -353,5 +353,59 @@ mod tests {
         let schema = generator.build_path_params_schema(&[]);
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["properties"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_generate_tool_with_response_schemas() {
+        let generator = GatewayToolGenerator::new();
+
+        let route = create_test_route("/users/{id}");
+        let mut metadata = create_test_metadata(
+            Some("getUser".to_string()),
+            Some("Get user by ID".to_string()),
+            Some("GET".to_string()),
+        );
+
+        // Set response schemas
+        let response_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "email": { "type": "string" }
+            },
+            "required": ["id", "name", "email"]
+        });
+        metadata.response_schemas = Some(response_schema.clone());
+
+        let tool = generator
+            .generate_tool(&route, &metadata, 8080, "test-team")
+            .expect("Failed to generate tool");
+
+        // Verify output_schema is populated with response_schemas
+        assert!(tool.output_schema.is_some());
+        assert_eq!(tool.output_schema.unwrap(), response_schema);
+    }
+
+    #[test]
+    fn test_generate_tool_without_response_schemas() {
+        let generator = GatewayToolGenerator::new();
+
+        let route = create_test_route("/users/{id}");
+        let metadata = create_test_metadata(
+            Some("getUser".to_string()),
+            Some("Get user by ID".to_string()),
+            Some("GET".to_string()),
+        );
+
+        // Ensure response_schemas is None (already set by create_test_metadata)
+        assert!(metadata.response_schemas.is_none());
+
+        let tool = generator
+            .generate_tool(&route, &metadata, 8080, "test-team")
+            .expect("Failed to generate tool");
+
+        // Verify output_schema is None when metadata has no response_schemas
+        assert!(tool.output_schema.is_none());
     }
 }

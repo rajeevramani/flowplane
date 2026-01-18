@@ -39,6 +39,7 @@ use super::{
         admin_get_team,
         admin_list_teams,
         admin_update_team,
+        apply_learned_schema_handler,
         attach_filter_handler,
         attach_filter_to_listener_handler,
         attach_filter_to_route_rule_handler,
@@ -48,6 +49,7 @@ use super::{
         bulk_disable_mcp_handler,
         bulk_enable_mcp_handler,
         change_password_handler,
+        check_learned_schema_handler,
         compare_aggregated_schemas_handler,
         // Install/Configure redesign handlers
         configure_filter_handler,
@@ -442,6 +444,9 @@ pub fn build_router_with_registry(
         // MCP bulk operations
         .route("/api/v1/teams/{team}/mcp/bulk-enable", post(bulk_enable_mcp_handler))
         .route("/api/v1/teams/{team}/mcp/bulk-disable", post(bulk_disable_mcp_handler))
+        // MCP learned schema operations
+        .route("/api/v1/teams/{team}/mcp/routes/{route_id}/learned-schema", get(check_learned_schema_handler))
+        .route("/api/v1/teams/{team}/mcp/routes/{route_id}/apply-learned", post(apply_learned_schema_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)

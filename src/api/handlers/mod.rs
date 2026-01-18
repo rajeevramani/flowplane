@@ -72,7 +72,10 @@ pub use mcp_routes::{
     BulkMcpDisableResponse, BulkMcpEnableRequest, BulkMcpEnableResponse, EnableMcpRequestBody,
     McpStatusResponse, RefreshSchemaResponse,
 };
-pub use mcp_tools::{get_mcp_tool_handler, list_mcp_tools_handler, update_mcp_tool_handler};
+pub use mcp_tools::{
+    apply_learned_schema_handler, check_learned_schema_handler, get_mcp_tool_handler,
+    list_mcp_tools_handler, update_mcp_tool_handler,
+};
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
