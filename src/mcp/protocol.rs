@@ -1,6 +1,6 @@
 //! MCP Protocol Types
 //!
-//! JSON-RPC 2.0 and MCP message types based on MCP specification (version 2024-11-05).
+//! JSON-RPC 2.0 and MCP message types based on MCP specification (version 2025-11-25).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -105,6 +105,12 @@ pub struct Capabilities {
     pub tools: Option<ToolCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourceCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<PromptsCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logging: Option<LoggingCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<ExperimentalCapabilities>,
 }
 
 /// Backward compatibility aliases
@@ -129,6 +135,22 @@ pub struct ResourceCapabilities {
 
 /// Backward compatibility alias
 pub type ResourcesCapability = ResourceCapabilities;
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_changed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct LoggingCapability {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ExperimentalCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sse: Option<bool>,
+}
 
 /// MCP Tool Definition
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -217,6 +239,72 @@ pub struct ResourceContent {
     pub blob: Option<String>,
 }
 
+// -----------------------------------------------------------------------------
+// Prompts API Types
+// -----------------------------------------------------------------------------
+
+/// MCP Prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Prompt {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Vec<PromptArgument>>,
+}
+
+/// Prompt argument definition
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptArgument {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
+/// Prompts list response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PromptsListResult {
+    pub prompts: Vec<Prompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Prompt get request parameters
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PromptGetParams {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+}
+
+/// Prompt get response
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PromptGetResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub messages: Vec<PromptMessage>,
+}
+
+/// Prompt message in a prompt template
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "role", rename_all = "lowercase")]
+pub enum PromptMessage {
+    User { content: PromptContent },
+    Assistant { content: PromptContent },
+}
+
+/// Prompt content (text or image)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum PromptContent {
+    Text { text: String },
+    Image { data: String, mime_type: String },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,7 +349,7 @@ mod tests {
     #[test]
     fn test_initialize_request_deserialization() {
         let json = r#"{
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-11-25",
             "capabilities": {},
             "clientInfo": {
                 "name": "test-client",
@@ -270,7 +358,7 @@ mod tests {
         }"#;
 
         let request: InitializeRequest = serde_json::from_str(json).expect("Failed to deserialize");
-        assert_eq!(request.protocol_version, "2024-11-05");
+        assert_eq!(request.protocol_version, "2025-11-25");
         assert_eq!(request.client_info.name, "test-client");
         assert_eq!(request.client_info.version, "1.0.0");
     }

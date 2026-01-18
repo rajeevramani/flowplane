@@ -58,11 +58,11 @@ fn extract_team(query: &McpHttpQuery, context: &AuthContext) -> Result<String, S
 /// Check if auth context has required scope for the given method
 fn check_authorization(method: &str, context: &AuthContext) -> Result<(), String> {
     match method {
-        // No scope required for initialization
-        "initialize" | "initialized" => Ok(()),
+        // No scope required for initialization and ping
+        "initialize" | "initialized" | "ping" => Ok(()),
 
         // Read operations
-        "tools/list" | "resources/list" => {
+        "tools/list" | "resources/list" | "prompts/list" => {
             if context.has_scope("mcp:read") || context.has_scope("admin:all") {
                 Ok(())
             } else {
@@ -71,7 +71,7 @@ fn check_authorization(method: &str, context: &AuthContext) -> Result<(), String
         }
 
         // Execute operations
-        "tools/call" => {
+        "tools/call" | "prompts/get" => {
             if context.has_scope("mcp:execute") || context.has_scope("admin:all") {
                 Ok(())
             } else {
@@ -85,6 +85,15 @@ fn check_authorization(method: &str, context: &AuthContext) -> Result<(), String
                 Ok(())
             } else {
                 Err(format!("Missing required scope 'cp:read' for method '{}'", method))
+            }
+        }
+
+        // Logging operations
+        "logging/setLevel" => {
+            if context.has_scope("mcp:read") || context.has_scope("admin:all") {
+                Ok(())
+            } else {
+                Err(format!("Missing required scope 'mcp:read' for method '{}'", method))
             }
         }
 

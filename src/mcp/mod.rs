@@ -2,17 +2,34 @@
 //!
 //! Provides stdio-based and HTTP-based MCP server for Flowplane control plane operations.
 
+pub mod connection;
 pub mod error;
 pub mod gateway;
 pub mod handler;
 pub mod http;
+pub mod logging;
+pub mod notifications;
+pub mod progress;
+pub mod prompts;
 pub mod protocol;
+pub mod resources;
 pub mod server;
+pub mod sse;
 pub mod tools;
 
+pub use connection::{
+    create_connection_manager, ConnectionId, ConnectionManager, SharedConnectionManager,
+};
 pub use error::McpError;
 pub use gateway::{GatewayExecutor, GatewayToolGenerator};
 pub use handler::McpHandler;
 pub use http::mcp_http_handler;
+pub use logging::{create_mcp_logger, McpLogger, SetLogLevelParams, SharedMcpLogger};
+pub use notifications::{
+    LogLevel, LogNotification, NotificationMessage, ProgressNotification, ProgressToken,
+};
+pub use progress::{create_progress_tracker, ProgressTracker, SharedProgressTracker};
 pub use protocol::*;
+pub use resources::{list_resources, read_resource, ResourceType, ResourceUri};
 pub use server::McpStdioServer;
+pub use sse::mcp_sse_handler;

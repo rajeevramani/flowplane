@@ -8,7 +8,9 @@ use std::sync::Arc;
 use tracing::{debug, error};
 
 use crate::mcp::error::McpError;
+use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
+use crate::mcp::resources;
 use crate::mcp::tools;
 
 pub struct McpHandler {
@@ -38,6 +40,7 @@ impl McpHandler {
         let response = match request.method.as_str() {
             "initialize" => self.handle_initialize(request.id.clone(), request.params).await,
             "initialized" => self.handle_initialized(request.id.clone()).await,
+            "ping" => self.handle_ping(request.id.clone()).await,
             "tools/list" => {
                 if !self.initialized {
                     self.error_response(request.id.clone(), McpError::NotInitialized)
@@ -64,6 +67,27 @@ impl McpHandler {
                     self.error_response(request.id.clone(), McpError::NotInitialized)
                 } else {
                     self.handle_resources_read(request.id.clone(), request.params).await
+                }
+            }
+            "prompts/list" => {
+                if !self.initialized {
+                    self.error_response(request.id.clone(), McpError::NotInitialized)
+                } else {
+                    self.handle_prompts_list(request.id.clone()).await
+                }
+            }
+            "prompts/get" => {
+                if !self.initialized {
+                    self.error_response(request.id.clone(), McpError::NotInitialized)
+                } else {
+                    self.handle_prompts_get(request.id.clone(), request.params).await
+                }
+            }
+            "logging/setLevel" => {
+                if !self.initialized {
+                    self.error_response(request.id.clone(), McpError::NotInitialized)
+                } else {
+                    self.handle_logging_set_level(request.id.clone(), request.params).await
                 }
             }
             _ => self.method_not_found(request.id.clone(), &request.method),
@@ -100,13 +124,16 @@ impl McpHandler {
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: "2024-11-05".to_string(),
+            protocol_version: "2025-11-25".to_string(),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
                     subscribe: Some(false),
                     list_changed: Some(false),
                 }),
+                prompts: Some(PromptsCapability { list_changed: Some(false) }),
+                logging: Some(LoggingCapability {}),
+                experimental: Some(ExperimentalCapabilities { sse: Some(true) }),
             },
             server_info: ServerInfo {
                 name: "flowplane-mcp".to_string(),
@@ -204,17 +231,22 @@ impl McpHandler {
     }
 
     async fn handle_resources_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
-        debug!("Listing available resources");
+        debug!(team = %self.team, "Listing available resources");
 
-        let resources = vec![];
-
-        let result = ResourcesListResult { resources, next_cursor: None };
-
-        match serde_json::to_value(result) {
-            Ok(value) => {
-                JsonRpcResponse { jsonrpc: "2.0".to_string(), id, result: Some(value), error: None }
+        match resources::list_resources(&self.db_pool, &self.team).await {
+            Ok(result) => match serde_json::to_value(result) {
+                Ok(value) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(e) => self.error_response(id, McpError::SerializationError(e)),
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to list resources");
+                self.error_response(id, e)
             }
-            Err(e) => self.error_response(id, McpError::SerializationError(e)),
         }
     }
 
@@ -232,7 +264,106 @@ impl McpHandler {
 
         debug!(uri = %params.uri, "Reading resource");
 
-        self.error_response(id, McpError::ResourceNotFound(params.uri))
+        match resources::read_resource(&self.db_pool, &params.uri).await {
+            Ok(contents) => {
+                let result = ResourceReadResult { contents: vec![contents] };
+                match serde_json::to_value(result) {
+                    Ok(value) => JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id,
+                        result: Some(value),
+                        error: None,
+                    },
+                    Err(e) => self.error_response(id, McpError::SerializationError(e)),
+                }
+            }
+            Err(e) => {
+                error!(error = %e, uri = %params.uri, "Failed to read resource");
+                self.error_response(id, e)
+            }
+        }
+    }
+
+    async fn handle_ping(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
+        debug!("Received ping request");
+
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: Some(serde_json::json!({})),
+            error: None,
+        }
+    }
+
+    async fn handle_prompts_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
+        debug!("Listing available prompts");
+
+        let prompts = crate::mcp::prompts::get_all_prompts();
+        let result = PromptsListResult { prompts, next_cursor: None };
+
+        match serde_json::to_value(result) {
+            Ok(value) => {
+                JsonRpcResponse { jsonrpc: "2.0".to_string(), id, result: Some(value), error: None }
+            }
+            Err(e) => self.error_response(id, McpError::SerializationError(e)),
+        }
+    }
+
+    async fn handle_prompts_get(&self, id: Option<JsonRpcId>, params: Value) -> JsonRpcResponse {
+        let params: PromptGetParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(error = %e, "Failed to parse prompt get params");
+                return self.error_response(
+                    id,
+                    McpError::InvalidParams(format!("Failed to parse prompt get params: {}", e)),
+                );
+            }
+        };
+
+        debug!(prompt_name = %params.name, "Getting prompt");
+
+        match crate::mcp::prompts::get_prompt(&params.name, params.arguments) {
+            Ok(result) => match serde_json::to_value(result) {
+                Ok(value) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(e) => self.error_response(id, McpError::SerializationError(e)),
+            },
+            Err(e) => self.error_response(id, e),
+        }
+    }
+
+    async fn handle_logging_set_level(
+        &self,
+        id: Option<JsonRpcId>,
+        params: Value,
+    ) -> JsonRpcResponse {
+        let params: SetLogLevelParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(error = %e, "Failed to parse logging set level params");
+                return self.error_response(
+                    id,
+                    McpError::InvalidParams(format!("Failed to parse logging params: {}", e)),
+                );
+            }
+        };
+
+        debug!(level = ?params.level, "Setting log level");
+
+        // Note: Actual log level filtering is done at the connection manager level
+        // This handler acknowledges the request; SSE integration applies the level
+
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: Some(serde_json::json!({})),
+            error: None,
+        }
     }
 
     fn method_not_found(&self, id: Option<JsonRpcId>, method: &str) -> JsonRpcResponse {
@@ -290,7 +421,7 @@ mod tests {
             id: Some(JsonRpcId::Number(1)),
             method: "initialize".to_string(),
             params: serde_json::json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "test-client",
@@ -352,7 +483,7 @@ mod tests {
             id: Some(JsonRpcId::Number(1)),
             method: "initialize".to_string(),
             params: serde_json::json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "test-client",

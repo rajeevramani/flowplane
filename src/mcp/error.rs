@@ -40,6 +40,12 @@ pub enum McpError {
 
     #[error("Not initialized")]
     NotInitialized,
+
+    #[error("Connection limit ({limit}) exceeded for team: {team}")]
+    ConnectionLimitExceeded { team: String, limit: usize },
+
+    #[error("Prompt not found: {0}")]
+    PromptNotFound(String),
 }
 
 impl McpError {
@@ -56,7 +62,9 @@ impl McpError {
             | McpError::GatewayError(_)
             | McpError::DatabaseError(_)
             | McpError::SerializationError(_)
-            | McpError::IoError(_) => error_codes::INTERNAL_ERROR,
+            | McpError::IoError(_)
+            | McpError::ConnectionLimitExceeded { .. } => error_codes::INTERNAL_ERROR,
+            McpError::PromptNotFound(_) => error_codes::METHOD_NOT_FOUND,
         }
     }
 

@@ -386,8 +386,13 @@ mod tests {
         let pool = create_test_pool().await;
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
-        let api_state =
-            ApiState { xds_state: state.clone(), filter_schema_registry: None, stats_cache };
+        let mcp_connection_manager = crate::mcp::create_connection_manager();
+        let api_state = ApiState {
+            xds_state: state.clone(),
+            filter_schema_registry: None,
+            stats_cache,
+            mcp_connection_manager,
+        };
         (state, api_state)
     }
 
