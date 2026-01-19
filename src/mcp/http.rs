@@ -231,9 +231,23 @@ pub async fn mcp_http_handler(
         }
     };
 
-    // Create session for this client (keyed by auth token)
-    let session_id = SessionId::from_token(context.token_id.as_str());
-    let _ = state.mcp_session_manager.get_or_create_for_team(&session_id, &team);
+    // Check if this request is linked to an existing SSE connection
+    let has_valid_sse_connection =
+        connection_id.as_ref().map(|id| state.mcp_connection_manager.exists(id)).unwrap_or(false);
+
+    // Only create HTTP session if NOT linked to an SSE connection
+    // This prevents duplicate entries when using SSE + HTTP flow
+    let session_id = if !has_valid_sse_connection {
+        let sid = SessionId::from_token(context.token_id.as_str());
+        let _ = state.mcp_session_manager.get_or_create_for_team(&sid, &team);
+        Some(sid)
+    } else {
+        debug!(
+            connection_id = ?connection_id,
+            "Skipping HTTP session creation - using SSE connection"
+        );
+        None
+    };
 
     // For initialize requests, capture client info
     let is_initialize = request.method == "initialize";
@@ -248,7 +262,7 @@ pub async fn mcp_http_handler(
     let mut handler = McpHandler::new(db_pool, team.clone());
     let response = handler.handle_request(request).await;
 
-    // On successful initialize, update session and SSE connection metadata
+    // On successful initialize, update metadata
     if is_initialize && response.error.is_none() {
         if let Some(params) = &init_params {
             // Extract negotiated protocol version from response
@@ -260,20 +274,28 @@ pub async fn mcp_http_handler(
                 .unwrap_or(&params.protocol_version)
                 .to_string();
 
-            // Update HTTP session metadata
-            state.mcp_session_manager.mark_initialized_with_team(
-                &session_id,
-                protocol_version.clone(),
-                params.client_info.clone(),
-                Some(team),
-            );
-
-            // Also update SSE connection if present
+            // Update SSE connection if linked
             if let Some(conn_id) = &connection_id {
-                state
-                    .mcp_connection_manager
-                    .set_client_metadata(conn_id, params.client_info.clone(), protocol_version)
-                    .await;
+                if has_valid_sse_connection {
+                    state
+                        .mcp_connection_manager
+                        .set_client_metadata(
+                            conn_id,
+                            params.client_info.clone(),
+                            protocol_version.clone(),
+                        )
+                        .await;
+                }
+            }
+
+            // Update HTTP session if created (HTTP-only flow)
+            if let Some(sid) = &session_id {
+                state.mcp_session_manager.mark_initialized_with_team(
+                    sid,
+                    protocol_version,
+                    params.client_info.clone(),
+                    Some(team),
+                );
             }
         }
     }
