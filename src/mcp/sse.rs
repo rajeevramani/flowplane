@@ -71,7 +71,8 @@ pub struct SseQuery {
 }
 
 /// SSE heartbeat interval in seconds
-const HEARTBEAT_INTERVAL_SECS: u64 = 30;
+/// Shorter interval allows faster detection of client disconnects
+const HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 /// Extract team name from query or auth context
 fn extract_team(query: &SseQuery, context: &AuthContext) -> Result<String, String> {
