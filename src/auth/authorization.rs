@@ -499,6 +499,13 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return Some(sub_resource);
         }
 
+        // Special case: /api/v1/mcp - MCP endpoints implement method-level authorization
+        // The HTTP method is always POST (JSON-RPC), but the actual operation is in the request body.
+        // The mcp_http_handler has its own comprehensive authorization based on the method field.
+        if parts[2] == "mcp" {
+            return None;
+        }
+
         // Special case: /api/v1/openapi/* routes use "openapi-import" resource
         // The scope naming convention uses "openapi-import" (e.g., team:X:openapi-import:write)
         // but the URL structure is /api/v1/openapi/import, /api/v1/openapi/imports, etc.
@@ -1051,6 +1058,25 @@ mod tests {
             resource_from_path("/api/v1/teams/eng/stats/overview"),
             Some("stats"),
             "team-scoped stats sub-path should return stats"
+        );
+
+        // MCP endpoints use method-level authorization (JSON-RPC style)
+        // The HTTP method is always POST but the actual operation is in the request body
+        // The handler implements its own authorization based on the JSON-RPC method field
+        assert_eq!(
+            resource_from_path("/api/v1/mcp"),
+            None,
+            "MCP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/sse"),
+            None,
+            "MCP SSE endpoint should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/connections"),
+            None,
+            "MCP connections endpoint should bypass resource-level auth"
         );
 
         // OpenAPI import routes should map to "openapi-import" resource

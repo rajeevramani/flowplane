@@ -8,3 +8,4 @@ export { default as EditToolModal } from './EditToolModal.svelte';
 export { default as McpQuickToggle } from './McpQuickToggle.svelte';
 export { default as ApplyLearnedSchemaButton } from './ApplyLearnedSchemaButton.svelte';
 export { default as ApplyLearnedSchemaModal } from './ApplyLearnedSchemaModal.svelte';
+export { default as McpConnectionStatus } from './McpConnectionStatus.svelte';

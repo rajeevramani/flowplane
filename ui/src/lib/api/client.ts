@@ -1306,7 +1306,7 @@ class ApiClient {
 	 */
 	async checkLearnedSchema(team: string, routeId: string): Promise<LearnedSchemaAvailability> {
 		return this.get<LearnedSchemaAvailability>(
-			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/learned-schema/availability`
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/routes/${encodeURIComponent(routeId)}/learned-schema`
 		);
 	}
 
@@ -1321,10 +1321,126 @@ class ApiClient {
 	): Promise<ApplyLearnedSchemaResponse> {
 		const request: ApplyLearnedSchemaRequest = force ? { force } : {};
 		return this.post<ApplyLearnedSchemaResponse>(
-			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/learned-schema/apply`,
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/routes/${encodeURIComponent(routeId)}/apply-learned`,
 			request
 		);
 	}
+
+	// ============================================================================
+	// MCP Protocol Server Communication
+	// ============================================================================
+
+	/**
+	 * Ping the MCP server to check connectivity and measure latency.
+	 * Sends a JSON-RPC 2.0 ping request to the MCP endpoint.
+	 */
+	async pingMcpServer(team: string): Promise<{ success: boolean; latencyMs: number; error?: string }> {
+		const start = Date.now();
+
+		try {
+			const response = await fetch(`${API_BASE}/api/v1/mcp?team=${encodeURIComponent(team)}`, {
+				method: 'POST',
+				headers: this.getHeaders(true),
+				credentials: 'include',
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: crypto.randomUUID(),
+					method: 'ping',
+					params: {}
+				})
+			});
+
+			const latencyMs = Date.now() - start;
+
+			if (!response.ok) {
+				return {
+					success: false,
+					latencyMs,
+					error: `HTTP ${response.status}: ${response.statusText}`
+				};
+			}
+
+			const data = await response.json();
+
+			if (data.error) {
+				return {
+					success: false,
+					latencyMs,
+					error: data.error.message || 'Unknown error'
+				};
+			}
+
+			return {
+				success: true,
+				latencyMs
+			};
+		} catch (error) {
+			const latencyMs = Date.now() - start;
+			return {
+				success: false,
+				latencyMs,
+				error: error instanceof Error ? error.message : 'Network error'
+			};
+		}
+	}
+
+	/**
+	 * List active MCP/SSE connections for a team
+	 *
+	 * @param team - Team identifier
+	 * @returns List of active connections with metadata
+	 */
+	async listMcpConnections(
+		team: string
+	): Promise<{ connections: McpConnectionInfo[]; totalCount: number }> {
+		const response = await fetch(
+			`${API_BASE}/api/v1/mcp/connections?team=${encodeURIComponent(team)}`,
+			{
+				method: 'GET',
+				headers: this.getHeaders(true),
+				credentials: 'include'
+			}
+		);
+
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+			throw new Error(error.message || `HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		return response.json();
+	}
+}
+
+/**
+ * MCP Client information (captured during initialize)
+ */
+export interface McpClientInfo {
+	name: string;
+	version: string;
+}
+
+/**
+ * Type of MCP connection
+ */
+export type McpConnectionType = 'sse' | 'http';
+
+/**
+ * MCP Connection information
+ */
+export interface McpConnectionInfo {
+	connectionId: string;
+	team: string;
+	createdAt: string;
+	lastActivity: string;
+	logLevel: string;
+	/** Client information (name, version) if available */
+	clientInfo?: McpClientInfo;
+	/** Negotiated protocol version if initialized */
+	protocolVersion?: string;
+	/** Whether the connection has completed initialization */
+	initialized: boolean;
+	/** Type of connection (sse for streaming, http for stateless) */
+	connectionType: McpConnectionType;
 }
 
 // Export singleton instance

@@ -158,6 +158,7 @@ pub struct ApiState {
     pub filter_schema_registry: Option<SharedFilterSchemaRegistry>,
     pub stats_cache: Arc<StatsCache>,
     pub mcp_connection_manager: crate::mcp::SharedConnectionManager,
+    pub mcp_session_manager: crate::mcp::SharedSessionManager,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -227,11 +228,15 @@ pub fn build_router_with_registry(
     // Create MCP connection manager for SSE streaming
     let mcp_connection_manager = crate::mcp::create_connection_manager();
 
+    // Create MCP session manager for HTTP-only connections
+    let mcp_session_manager = crate::mcp::create_session_manager();
+
     let api_state = ApiState {
         xds_state: state.clone(),
         filter_schema_registry,
         stats_cache,
         mcp_connection_manager,
+        mcp_session_manager,
     };
 
     let cluster_repo = match &state.cluster_repository {
@@ -442,6 +447,7 @@ pub fn build_router_with_registry(
         // MCP protocol endpoints (HTTP and SSE transport)
         .route("/api/v1/mcp", post(crate::mcp::mcp_http_handler))
         .route("/api/v1/mcp/sse", get(crate::mcp::mcp_sse_handler))
+        .route("/api/v1/mcp/connections", get(crate::mcp::list_connections_handler))
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))

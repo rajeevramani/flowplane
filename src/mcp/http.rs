@@ -4,6 +4,7 @@
 
 use axum::{
     extract::{Query, State},
+    http::HeaderMap,
     Extension, Json,
 };
 use serde::Deserialize;
@@ -12,9 +13,16 @@ use tracing::{debug, error};
 
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
+use crate::mcp::connection::ConnectionId;
 use crate::mcp::handler::McpHandler;
-use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{
+    error_codes, InitializeParams, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+};
+use crate::mcp::session::SessionId;
 use crate::storage::DbPool;
+
+/// Header name for MCP connection ID linking HTTP requests to SSE connections
+const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
 
 /// Query parameters for MCP HTTP endpoint
 #[derive(Debug, Deserialize)]
@@ -128,6 +136,10 @@ fn get_db_pool(state: &ApiState) -> Result<DbPool, String> {
 /// 2. Token scopes (team:{name}:*)
 /// 3. Admin users must provide team via query parameter
 ///
+/// # Headers
+/// - `Mcp-Connection-Id`: Optional. When provided, links this HTTP request to an SSE connection.
+///   On successful `initialize`, client metadata will be stored for the connection.
+///
 /// # Authorization
 /// - `initialize`, `initialized` - No scope required
 /// - `tools/list`, `resources/list` - Require `mcp:read`
@@ -149,6 +161,7 @@ fn get_db_pool(state: &ApiState) -> Result<DbPool, String> {
 pub async fn mcp_http_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    headers: HeaderMap,
     Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Json<JsonRpcResponse> {
@@ -158,6 +171,12 @@ pub async fn mcp_http_handler(
         token_name = %context.token_name,
         "Received MCP HTTP request"
     );
+
+    // Extract optional connection ID from header
+    let connection_id = headers
+        .get(MCP_CONNECTION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| ConnectionId::new(s.to_string()));
 
     // Extract team from query or context
     let team = match extract_team(&query, &context) {
@@ -212,9 +231,52 @@ pub async fn mcp_http_handler(
         }
     };
 
+    // Create session for this client (keyed by auth token)
+    let session_id = SessionId::from_token(context.token_id.as_str());
+    let _ = state.mcp_session_manager.get_or_create_for_team(&session_id, &team);
+
+    // For initialize requests, capture client info
+    let is_initialize = request.method == "initialize";
+    let init_params = if is_initialize {
+        // Parse initialize params to extract client info
+        serde_json::from_value::<InitializeParams>(request.params.clone()).ok()
+    } else {
+        None
+    };
+
     // Create MCP handler and process request
-    let mut handler = McpHandler::new(db_pool, team);
+    let mut handler = McpHandler::new(db_pool, team.clone());
     let response = handler.handle_request(request).await;
+
+    // On successful initialize, update session and SSE connection metadata
+    if is_initialize && response.error.is_none() {
+        if let Some(params) = &init_params {
+            // Extract negotiated protocol version from response
+            let protocol_version = response
+                .result
+                .as_ref()
+                .and_then(|r| r.get("protocolVersion"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&params.protocol_version)
+                .to_string();
+
+            // Update HTTP session metadata
+            state.mcp_session_manager.mark_initialized_with_team(
+                &session_id,
+                protocol_version.clone(),
+                params.client_info.clone(),
+                Some(team),
+            );
+
+            // Also update SSE connection if present
+            if let Some(conn_id) = &connection_id {
+                state
+                    .mcp_connection_manager
+                    .set_client_metadata(conn_id, params.client_info.clone(), protocol_version)
+                    .await;
+            }
+        }
+    }
 
     debug!(
         method = ?response.id,

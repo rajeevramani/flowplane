@@ -2,14 +2,16 @@
 //!
 //! Manages active SSE connections with per-team limits and message broadcasting.
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, warn};
 
 use crate::mcp::error::McpError;
 use crate::mcp::notifications::{LogLevel, NotificationMessage};
+use crate::mcp::protocol::{ClientInfo, ConnectionInfo, ConnectionType};
 
 /// Maximum connections per team
 const MAX_CONNECTIONS_PER_TEAM: usize = 10;
@@ -47,6 +49,16 @@ pub struct Connection {
     pub team: String,
     /// Minimum log level for this connection
     pub min_log_level: LogLevel,
+    /// Timestamp when connection was established
+    pub created_at: DateTime<Utc>,
+    /// Last activity timestamp (updated on message send)
+    pub last_activity: Arc<RwLock<DateTime<Utc>>>,
+    /// Client information (name, version) captured during initialize
+    pub client_info: Arc<RwLock<Option<ClientInfo>>>,
+    /// Negotiated protocol version
+    pub protocol_version: Arc<RwLock<Option<String>>>,
+    /// Whether the connection has completed initialization
+    pub initialized: Arc<RwLock<bool>>,
 }
 
 /// Connection manager for SSE streaming
@@ -95,8 +107,18 @@ impl ConnectionManager {
         // Create bounded channel
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
 
-        // Create connection
-        let connection = Connection { sender, team: team.clone(), min_log_level: LogLevel::Info };
+        // Create connection with timestamp tracking
+        let now = Utc::now();
+        let connection = Connection {
+            sender,
+            team: team.clone(),
+            min_log_level: LogLevel::Info,
+            created_at: now,
+            last_activity: Arc::new(RwLock::new(now)),
+            client_info: Arc::new(RwLock::new(None)),
+            protocol_version: Arc::new(RwLock::new(None)),
+            initialized: Arc::new(RwLock::new(false)),
+        };
 
         // Insert connection
         self.connections.insert(connection_id.clone(), connection);
@@ -225,6 +247,117 @@ impl ConnectionManager {
     /// Get team for a connection
     pub fn get_team(&self, connection_id: &ConnectionId) -> Option<String> {
         self.connections.get(connection_id).map(|c| c.team.clone())
+    }
+
+    /// List all connections for a specific team
+    ///
+    /// Returns connection information including timestamps, log levels, and client metadata.
+    pub fn list_team_connections(&self, team: &str) -> Vec<ConnectionInfo> {
+        self.connections
+            .iter()
+            .filter(|entry| entry.team == team)
+            .map(|entry| {
+                let last_activity = entry
+                    .last_activity
+                    .try_read()
+                    .map(|guard| guard.to_rfc3339())
+                    .unwrap_or_else(|_| entry.created_at.to_rfc3339());
+
+                let client_info = entry.client_info.try_read().ok().and_then(|guard| guard.clone());
+
+                let protocol_version =
+                    entry.protocol_version.try_read().ok().and_then(|guard| guard.clone());
+
+                let initialized = entry.initialized.try_read().map(|guard| *guard).unwrap_or(false);
+
+                ConnectionInfo {
+                    connection_id: entry.key().as_str().to_string(),
+                    team: entry.team.clone(),
+                    created_at: entry.created_at.to_rfc3339(),
+                    last_activity,
+                    log_level: format!("{:?}", entry.min_log_level).to_lowercase(),
+                    client_info,
+                    protocol_version,
+                    initialized,
+                    connection_type: ConnectionType::Sse,
+                }
+            })
+            .collect()
+    }
+
+    /// List all connections (admin only)
+    ///
+    /// Returns all connections across all teams including client metadata.
+    pub fn list_all_connections(&self) -> Vec<ConnectionInfo> {
+        self.connections
+            .iter()
+            .map(|entry| {
+                let last_activity = entry
+                    .last_activity
+                    .try_read()
+                    .map(|guard| guard.to_rfc3339())
+                    .unwrap_or_else(|_| entry.created_at.to_rfc3339());
+
+                let client_info = entry.client_info.try_read().ok().and_then(|guard| guard.clone());
+
+                let protocol_version =
+                    entry.protocol_version.try_read().ok().and_then(|guard| guard.clone());
+
+                let initialized = entry.initialized.try_read().map(|guard| *guard).unwrap_or(false);
+
+                ConnectionInfo {
+                    connection_id: entry.key().as_str().to_string(),
+                    team: entry.team.clone(),
+                    created_at: entry.created_at.to_rfc3339(),
+                    last_activity,
+                    log_level: format!("{:?}", entry.min_log_level).to_lowercase(),
+                    client_info,
+                    protocol_version,
+                    initialized,
+                    connection_type: ConnectionType::Sse,
+                }
+            })
+            .collect()
+    }
+
+    /// Update the last activity timestamp for a connection
+    ///
+    /// Call this when a message is sent to update activity tracking.
+    pub async fn update_last_activity(&self, connection_id: &ConnectionId) {
+        if let Some(conn) = self.connections.get(connection_id) {
+            let mut guard = conn.last_activity.write().await;
+            *guard = Utc::now();
+        }
+    }
+
+    /// Set client metadata for a connection after initialize handshake
+    ///
+    /// Called when the client sends an initialize request to store client info
+    /// and negotiated protocol version.
+    pub async fn set_client_metadata(
+        &self,
+        connection_id: &ConnectionId,
+        client_info: ClientInfo,
+        protocol_version: String,
+    ) {
+        if let Some(conn) = self.connections.get(connection_id) {
+            let mut client_guard = conn.client_info.write().await;
+            *client_guard = Some(client_info.clone());
+
+            let mut version_guard = conn.protocol_version.write().await;
+            *version_guard = Some(protocol_version.clone());
+
+            let mut init_guard = conn.initialized.write().await;
+            *init_guard = true;
+
+            debug!(
+                connection_id = %connection_id,
+                client_name = %client_info.name,
+                client_version = %client_info.version,
+                protocol_version = %protocol_version,
+                "Set client metadata for connection"
+            );
+        }
     }
 }
 

@@ -312,11 +312,13 @@ mod tests {
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
         let mcp_connection_manager = crate::mcp::create_connection_manager();
+        let mcp_session_manager = crate::mcp::create_session_manager();
         ApiState {
             xds_state: Arc::new(state),
             filter_schema_registry: None,
             stats_cache,
             mcp_connection_manager,
+            mcp_session_manager,
         }
     }
 

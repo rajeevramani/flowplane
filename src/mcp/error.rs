@@ -46,6 +46,9 @@ pub enum McpError {
 
     #[error("Prompt not found: {0}")]
     PromptNotFound(String),
+
+    #[error("Unsupported protocol version '{client}'. Supported versions: {}", supported.join(", "))]
+    UnsupportedProtocolVersion { client: String, supported: Vec<String> },
 }
 
 impl McpError {
@@ -65,12 +68,20 @@ impl McpError {
             | McpError::IoError(_)
             | McpError::ConnectionLimitExceeded { .. } => error_codes::INTERNAL_ERROR,
             McpError::PromptNotFound(_) => error_codes::METHOD_NOT_FOUND,
+            McpError::UnsupportedProtocolVersion { .. } => error_codes::INVALID_REQUEST,
         }
     }
 
     /// Convert to JsonRpcError
     pub fn to_json_rpc_error(&self) -> JsonRpcError {
-        JsonRpcError { code: self.error_code(), message: self.to_string(), data: None }
+        let data = match self {
+            McpError::UnsupportedProtocolVersion { supported, .. } => {
+                Some(serde_json::json!({ "supportedVersions": supported }))
+            }
+            _ => None,
+        };
+
+        JsonRpcError { code: self.error_code(), message: self.to_string(), data }
     }
 }
 

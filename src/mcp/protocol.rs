@@ -5,6 +5,14 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Supported MCP protocol versions (oldest to newest)
+pub const SUPPORTED_VERSIONS: &[&str] = &[
+    "2024-11-05", // Initial stable release
+    "2025-03-26", // Added streamable HTTP
+    "2025-06-18", // Claude Desktop current
+    "2025-11-25", // Latest spec
+];
+
 /// JSON-RPC 2.0 Request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct JsonRpcRequest {
@@ -26,7 +34,7 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
 #[serde(untagged)]
 pub enum JsonRpcId {
     Number(i64),
@@ -303,6 +311,56 @@ pub enum PromptMessage {
 pub enum PromptContent {
     Text { text: String },
     Image { data: String, mime_type: String },
+}
+
+// -----------------------------------------------------------------------------
+// MCP Connections API Types
+// -----------------------------------------------------------------------------
+
+/// Type of MCP connection/session
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionType {
+    /// SSE streaming connection
+    Sse,
+    /// HTTP-only session (stateless)
+    Http,
+}
+
+/// Connection information for listing active MCP connections and sessions
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionInfo {
+    /// Unique connection identifier
+    pub connection_id: String,
+    /// Team the connection belongs to
+    pub team: String,
+    /// ISO 8601 timestamp when connection was established
+    pub created_at: String,
+    /// ISO 8601 timestamp of last activity
+    pub last_activity: String,
+    /// Current log level filter for this connection
+    pub log_level: String,
+    /// Client information (name, version) if available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<ClientInfo>,
+    /// Negotiated protocol version if initialized
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    /// Whether the connection has completed initialization
+    pub initialized: bool,
+    /// Type of connection (sse or http)
+    pub connection_type: ConnectionType,
+}
+
+/// Response for connections list request
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionsListResult {
+    /// List of active connections
+    pub connections: Vec<ConnectionInfo>,
+    /// Total number of connections for the team
+    pub total_count: usize,
 }
 
 #[cfg(test)]

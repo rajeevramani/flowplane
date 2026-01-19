@@ -22,6 +22,7 @@ tonic-reflection = "0.14.0"
 prost = "0.14.0"
 prost-types = "0.14.0"
 tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = "0.7"
 
 # Configuration and state management
 serde = { version = "1.0.226", features = ["derive"] }

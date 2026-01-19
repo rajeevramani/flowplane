@@ -13,6 +13,24 @@ use crate::mcp::protocol::*;
 use crate::mcp::resources;
 use crate::mcp::tools;
 
+/// Negotiate MCP protocol version
+///
+/// Finds the highest version we support that is <= client's version.
+/// This ensures backward compatibility while preventing clients from
+/// requesting features we don't support.
+fn negotiate_version(client_version: &str) -> Result<String, McpError> {
+    // Find highest version we support that's <= client's version
+    let negotiated = SUPPORTED_VERSIONS.iter().rev().find(|&&v| v <= client_version).copied();
+
+    match negotiated {
+        Some(v) => Ok(v.to_string()),
+        None => Err(McpError::UnsupportedProtocolVersion {
+            client: client_version.to_string(),
+            supported: SUPPORTED_VERSIONS.iter().map(|s| s.to_string()).collect(),
+        }),
+    }
+}
+
 pub struct McpHandler {
     #[allow(dead_code)]
     db_pool: Arc<SqlitePool>,
@@ -37,57 +55,41 @@ impl McpHandler {
             "Handling MCP request"
         );
 
+        // Note: For stateless HTTP transport, we don't enforce initialization checks.
+        // Each HTTP request creates a new handler, so session state isn't preserved.
+        // Authentication via bearer token provides the security boundary instead.
         let response = match request.method.as_str() {
             "initialize" => self.handle_initialize(request.id.clone(), request.params).await,
             "initialized" => self.handle_initialized(request.id.clone()).await,
             "ping" => self.handle_ping(request.id.clone()).await,
-            "tools/list" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_tools_list(request.id.clone()).await
-                }
-            }
-            "tools/call" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_tools_call(request.id.clone(), request.params).await
-                }
-            }
-            "resources/list" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_resources_list(request.id.clone()).await
-                }
-            }
+            "tools/list" => self.handle_tools_list(request.id.clone()).await,
+            "tools/call" => self.handle_tools_call(request.id.clone(), request.params).await,
+            "resources/list" => self.handle_resources_list(request.id.clone()).await,
             "resources/read" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_resources_read(request.id.clone(), request.params).await
-                }
+                self.handle_resources_read(request.id.clone(), request.params).await
             }
-            "prompts/list" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_prompts_list(request.id.clone()).await
-                }
-            }
-            "prompts/get" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_prompts_get(request.id.clone(), request.params).await
-                }
-            }
+            "prompts/list" => self.handle_prompts_list(request.id.clone()).await,
+            "prompts/get" => self.handle_prompts_get(request.id.clone(), request.params).await,
             "logging/setLevel" => {
-                if !self.initialized {
-                    self.error_response(request.id.clone(), McpError::NotInitialized)
-                } else {
-                    self.handle_logging_set_level(request.id.clone(), request.params).await
+                self.handle_logging_set_level(request.id.clone(), request.params).await
+            }
+            "notifications/initialized" => {
+                // Client acknowledgment - just return empty success
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                }
+            }
+            "notifications/cancelled" => {
+                // Client cancelled a request - acknowledge it
+                debug!("Received cancellation notification");
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: request.id.clone(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
                 }
             }
             _ => self.method_not_found(request.id.clone(), &request.method),
@@ -121,10 +123,35 @@ impl McpHandler {
             "Received initialize request"
         );
 
+        // Negotiate protocol version with strict validation
+        let client_version = if params.protocol_version.is_empty() {
+            "2024-11-05" // Default to oldest supported version for backwards compatibility
+        } else {
+            &params.protocol_version
+        };
+
+        let negotiated_version = match negotiate_version(client_version) {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    client_version = %client_version,
+                    error = %e,
+                    "Protocol version negotiation failed"
+                );
+                return self.error_response(id, e);
+            }
+        };
+
+        debug!(
+            client_version = %client_version,
+            negotiated_version = %negotiated_version,
+            "Protocol version negotiated"
+        );
+
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: "2025-11-25".to_string(),
+            protocol_version: negotiated_version,
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
@@ -133,7 +160,7 @@ impl McpHandler {
                 }),
                 prompts: Some(PromptsCapability { list_changed: Some(false) }),
                 logging: Some(LoggingCapability {}),
-                experimental: Some(ExperimentalCapabilities { sse: Some(true) }),
+                experimental: None,
             },
             server_info: ServerInfo {
                 name: "flowplane-mcp".to_string(),
@@ -457,7 +484,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_not_initialized() {
+    async fn test_tools_list_without_initialize() {
+        // For stateless HTTP transport, tools/list should work without initialize
         let mut handler = create_test_handler().await;
 
         let request = JsonRpcRequest {
@@ -469,8 +497,9 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.result.is_none());
-        assert!(response.error.is_some());
+        // Should succeed without initialization for HTTP transport
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
     }
 
     #[tokio::test]
@@ -505,5 +534,178 @@ mod tests {
 
         assert!(response.error.is_none());
         assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn test_version_negotiation_exact_match() {
+        // Test exact match with a supported version
+        let result = negotiate_version("2025-11-25");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2025-11-25");
+    }
+
+    #[test]
+    fn test_version_negotiation_newer_client() {
+        // Client has newer version than we support - should get our newest
+        let result = negotiate_version("2026-01-01");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2025-11-25");
+    }
+
+    #[test]
+    fn test_version_negotiation_older_client() {
+        // Client has older supported version - should get their version
+        let result = negotiate_version("2025-03-26");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2025-03-26");
+    }
+
+    #[test]
+    fn test_version_negotiation_oldest_supported() {
+        // Client requests oldest supported version
+        let result = negotiate_version("2024-11-05");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2024-11-05");
+    }
+
+    #[test]
+    fn test_version_negotiation_failure() {
+        // Client has version older than any we support
+        let result = negotiate_version("2024-01-01");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            McpError::UnsupportedProtocolVersion { client, supported } => {
+                assert_eq!(client, "2024-01-01");
+                assert_eq!(supported.len(), 4);
+                assert!(supported.contains(&"2024-11-05".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
+                assert!(supported.contains(&"2025-06-18".to_string()));
+                assert!(supported.contains(&"2025-11-25".to_string()));
+            }
+            _ => panic!("Expected UnsupportedProtocolVersion error"),
+        }
+    }
+
+    #[test]
+    fn test_unsupported_version_error_message() {
+        let result = negotiate_version("2023-12-31");
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("2023-12-31"));
+        assert!(message.contains("2024-11-05"));
+        assert!(message.contains("2025-11-25"));
+    }
+
+    #[test]
+    fn test_unsupported_version_json_rpc_error() {
+        let result = negotiate_version("2020-01-01");
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        let json_rpc_error = error.to_json_rpc_error();
+
+        assert_eq!(json_rpc_error.code, error_codes::INVALID_REQUEST);
+        assert!(json_rpc_error.message.contains("Unsupported protocol version"));
+
+        // Verify the data field contains supportedVersions
+        assert!(json_rpc_error.data.is_some());
+        let data = json_rpc_error.data.unwrap();
+        assert!(data.get("supportedVersions").is_some());
+
+        let supported = data["supportedVersions"].as_array().unwrap();
+        assert_eq!(supported.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_unsupported_version() {
+        let mut handler = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2023-01-01",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(error.message.contains("Unsupported protocol version"));
+        assert!(error.data.is_some());
+
+        // Handler should not be initialized after failed negotiation
+        assert!(!handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_supported_version() {
+        let mut handler = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-06-18");
+        assert!(handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_newer_version() {
+        let mut handler = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2026-12-31",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "future-client",
+                    "version": "2.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        // Should negotiate down to our newest supported version
+        assert_eq!(result["protocolVersion"], "2025-11-25");
+        assert!(handler.initialized);
     }
 }

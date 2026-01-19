@@ -3,10 +3,11 @@
 	import { onMount } from 'svelte';
 	import { Bot, Search, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-svelte';
 	import type { McpTool, McpToolCategory, LearnedSchemaAvailability } from '$lib/api/types';
+	import type { McpConnectionStatus as McpConnectionStatusType } from '$lib/types/mcp';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
-	import { McpToolCard, ToolDetailModal, EditToolModal, ApplyLearnedSchemaModal } from '$lib/components/mcp';
+	import { McpToolCard, ToolDetailModal, EditToolModal, ApplyLearnedSchemaModal, McpConnectionStatus } from '$lib/components/mcp';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -14,6 +15,11 @@
 
 	// Data
 	let tools = $state<McpTool[]>([]);
+
+	// Connection status state
+	let connectionStatus = $state<McpConnectionStatusType>({
+		connected: false
+	});
 
 	// Filter state
 	let searchQuery = $state('');
@@ -46,6 +52,7 @@
 		if (currentTeam && currentTeam !== value) {
 			currentTeam = value;
 			loadTools();
+			checkConnectionStatus();
 		} else {
 			currentTeam = value;
 		}
@@ -53,6 +60,7 @@
 
 	onMount(async () => {
 		await loadTools();
+		await checkConnectionStatus();
 	});
 
 	async function loadTools() {
@@ -71,6 +79,39 @@
 			error = e instanceof Error ? e.message : 'Failed to load MCP tools';
 		} finally {
 			isLoading = false;
+		}
+	}
+
+	// Check MCP server connection status
+	async function checkConnectionStatus() {
+		if (!currentTeam) return;
+
+		try {
+			const pingResult = await apiClient.pingMcpServer(currentTeam);
+
+			if (pingResult.success) {
+				connectionStatus = {
+					connected: true,
+					serverInfo: {
+						name: 'flowplane',
+						version: '1.0.0'
+					},
+					protocolVersion: '2024-11-05',
+					lastPing: new Date()
+				};
+			} else {
+				connectionStatus = {
+					connected: false,
+					lastPing: new Date(),
+					error: pingResult.error || 'Connection failed'
+				};
+			}
+		} catch (e) {
+			connectionStatus = {
+				connected: false,
+				lastPing: new Date(),
+				error: e instanceof Error ? e.message : 'Failed to ping MCP server'
+			};
 		}
 	}
 
@@ -216,14 +257,17 @@
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8">
-		<div class="flex items-center gap-3">
-			<Bot class="h-8 w-8 text-blue-600" />
-			<div>
-				<h1 class="text-3xl font-bold text-gray-900">MCP Tools</h1>
-				<p class="mt-1 text-sm text-gray-600">
-					Manage Model Context Protocol tools for the <span class="font-medium">{currentTeam}</span> team
-				</p>
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<Bot class="h-8 w-8 text-blue-600" />
+				<div>
+					<h1 class="text-3xl font-bold text-gray-900">MCP Tools</h1>
+					<p class="mt-1 text-sm text-gray-600">
+						Manage Model Context Protocol tools for the <span class="font-medium">{currentTeam}</span> team
+					</p>
+				</div>
 			</div>
+			<McpConnectionStatus status={connectionStatus} onRefresh={checkConnectionStatus} />
 		</div>
 		<!-- Inline stats badges -->
 		<div class="mt-4 flex items-center gap-4 text-sm flex-wrap">

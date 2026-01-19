@@ -5,10 +5,13 @@
 
 use axum::{
     extract::{Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::header::HeaderName,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     Extension,
 };
-use futures::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -73,6 +76,9 @@ fn format_sse_event(message: &NotificationMessage, event_id: u64) -> Result<Even
     Ok(Event::default().id(event_id.to_string()).event(event_type).data(data))
 }
 
+/// Custom header name for MCP connection ID
+const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
+
 /// GET /api/v1/mcp/sse
 ///
 /// Establishes an SSE connection for streaming MCP notifications.
@@ -82,6 +88,10 @@ fn format_sse_event(message: &NotificationMessage, event_id: u64) -> Result<Even
 ///
 /// # Query Parameters
 /// - `team`: Optional team name. Required for admin users.
+///
+/// # Response Headers
+/// - `Mcp-Connection-Id`: The unique identifier for this SSE connection. Use this when
+///   sending requests to `/api/v1/mcp` to associate them with this SSE session.
 ///
 /// # Events
 /// - `message`: JSON-RPC response messages
@@ -104,7 +114,7 @@ pub async fn mcp_sse_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Query(query): Query<SseQuery>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
+) -> Result<impl IntoResponse, axum::response::Response> {
     let connection_manager = state.mcp_connection_manager.clone();
     // Extract team
     let team = match extract_team(&query, &context) {
@@ -144,6 +154,9 @@ pub async fn mcp_sse_handler(
         "SSE connection established"
     );
 
+    // Store connection ID for header before moving
+    let connection_id_str = connection_id.to_string();
+
     // Create stream from receiver
     let receiver_stream = ReceiverStream::new(receiver);
 
@@ -171,7 +184,9 @@ pub async fn mcp_sse_handler(
         info!(connection_id = %conn_id_clone, "SSE connection closed");
     });
 
-    Ok(sse)
+    // Return SSE response with Mcp-Connection-Id header
+    let header_name = HeaderName::from_static(MCP_CONNECTION_ID_HEADER);
+    Ok(([(header_name, connection_id_str)], sse))
 }
 
 /// Create an error response for SSE endpoint
