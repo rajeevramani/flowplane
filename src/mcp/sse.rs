@@ -14,9 +14,11 @@ use axum::{
 };
 use serde::Deserialize;
 use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt};
 use tracing::{error, info};
 
 use crate::api::routes::ApiState;
@@ -25,6 +27,42 @@ use crate::mcp::connection::{ConnectionId, ConnectionManager};
 use crate::mcp::error::McpError;
 use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
+use crate::mcp::SharedConnectionManager;
+
+/// Stream wrapper that cleans up the connection when dropped
+///
+/// This ensures that when the SSE stream ends (client disconnects),
+/// the connection is properly unregistered from the connection manager.
+struct CleanupStream<S> {
+    inner: S,
+    connection_manager: SharedConnectionManager,
+    connection_id: ConnectionId,
+}
+
+impl<S> CleanupStream<S> {
+    fn new(
+        inner: S,
+        connection_manager: SharedConnectionManager,
+        connection_id: ConnectionId,
+    ) -> Self {
+        Self { inner, connection_manager, connection_id }
+    }
+}
+
+impl<S: Stream + Unpin> Stream for CleanupStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> Drop for CleanupStream<S> {
+    fn drop(&mut self) {
+        info!(connection_id = %self.connection_id, "SSE connection closed, cleaning up");
+        self.connection_manager.unregister(&self.connection_id);
+    }
+}
 
 /// Query parameters for SSE endpoint
 #[derive(Debug, Deserialize)]
@@ -169,20 +207,13 @@ pub async fn mcp_sse_handler(
         format_sse_event(&message, event_id)
     });
 
+    // Wrap with cleanup stream to unregister connection when client disconnects
+    let cleanup_stream = CleanupStream::new(event_stream, connection_manager, connection_id);
+
     // Create SSE response with keepalive
-    let sse = Sse::new(event_stream).keep_alive(
+    let sse = Sse::new(cleanup_stream).keep_alive(
         KeepAlive::new().interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).text("ping"),
     );
-
-    // Spawn cleanup task when connection drops
-    let manager_clone = connection_manager.clone();
-    let conn_id_clone = connection_id.clone();
-    tokio::spawn(async move {
-        // Wait for stream to end (this happens when client disconnects)
-        tokio::time::sleep(Duration::from_secs(86400 * 365)).await; // Effectively forever
-        manager_clone.unregister(&conn_id_clone);
-        info!(connection_id = %conn_id_clone, "SSE connection closed");
-    });
 
     // Return SSE response with Mcp-Connection-Id header
     let header_name = HeaderName::from_static(MCP_CONNECTION_ID_HEADER);
