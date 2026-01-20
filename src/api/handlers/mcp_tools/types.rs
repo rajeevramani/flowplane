@@ -155,6 +155,12 @@ pub struct UpdateMcpToolBody {
     /// HTTP path pattern for gateway_api tools
     pub http_path: Option<String>,
 
+    /// Envoy listener port for gateway_api tool execution
+    pub listener_port: Option<i64>,
+
+    /// Target cluster name for gateway_api tools
+    pub cluster_name: Option<String>,
+
     /// JSON Schema for tool input parameters
     pub input_schema: Option<serde_json::Value>,
 

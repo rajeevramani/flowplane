@@ -58,6 +58,12 @@
 		{ id: 'custom-filters', label: 'Custom Filters', href: '/custom-filters', icon: Puzzle }
 	];
 
+	// MCP navigation items
+	const mcpItems = [
+		{ id: 'mcp-tools', label: 'MCP Tools', href: '/mcp-tools', icon: Bot },
+		{ id: 'mcp-connections', label: 'MCP Connections', href: '/mcp-connections', icon: Cable }
+	];
+
 	// Admin navigation items
 	const adminItems = [
 		{ id: 'users', label: 'Users', href: '/admin/users', icon: Users },
@@ -255,26 +261,27 @@
 					<FileCode class="h-5 w-5" />
 					Discovered Schemas
 				</a>
-				<a
-					href="/mcp-tools"
-					class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
-						{isActive('/mcp-tools')
-						? 'bg-blue-600 text-white'
-						: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
-				>
-					<Bot class="h-5 w-5" />
-					MCP Tools
-				</a>
-				<a
-					href="/mcp-connections"
-					class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
-						{isActive('/mcp-connections')
-						? 'bg-blue-600 text-white'
-						: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
-				>
-					<Cable class="h-5 w-5" />
-					MCP Connections
-				</a>
+			</div>
+		</div>
+
+		<!-- MCP Section -->
+		<div class="px-3 mb-4">
+			<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+				MCP
+			</h3>
+			<div class="space-y-1">
+				{#each mcpItems as item}
+					<a
+						href={item.href}
+						class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+							{isActive(item.href)
+							? 'bg-blue-600 text-white'
+							: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+					>
+						<svelte:component this={item.icon} class="h-5 w-5" />
+						{item.label}
+					</a>
+				{/each}
 			</div>
 		</div>
 

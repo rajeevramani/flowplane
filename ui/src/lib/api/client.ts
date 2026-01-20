@@ -1338,7 +1338,7 @@ class ApiClient {
 		const start = Date.now();
 
 		try {
-			const response = await fetch(`${API_BASE}/api/v1/mcp?team=${encodeURIComponent(team)}`, {
+			const response = await fetch(`${API_BASE}/api/v1/mcp/cp?team=${encodeURIComponent(team)}`, {
 				method: 'POST',
 				headers: this.getHeaders(true),
 				credentials: 'include',
@@ -1394,7 +1394,7 @@ class ApiClient {
 		team: string
 	): Promise<{ connections: McpConnectionInfo[]; totalCount: number }> {
 		const response = await fetch(
-			`${API_BASE}/api/v1/mcp/connections?team=${encodeURIComponent(team)}`,
+			`${API_BASE}/api/v1/mcp/cp/connections?team=${encodeURIComponent(team)}`,
 			{
 				method: 'GET',
 				headers: this.getHeaders(true),

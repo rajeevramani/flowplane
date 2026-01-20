@@ -46,13 +46,13 @@ fn extract_team(query: &ConnectionsQuery, context: &AuthContext) -> Result<Strin
     Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
-/// GET /api/v1/mcp/connections
+/// GET /api/v1/mcp/cp/connections
 ///
-/// List active MCP connections and sessions for a team.
+/// List active MCP Control Plane connections and sessions for a team.
 ///
 /// This endpoint returns both:
-/// - **SSE connections**: Real-time streaming connections established via `/api/v1/mcp/sse`
-/// - **HTTP sessions**: Stateless HTTP-only sessions from clients using `/api/v1/mcp`
+/// - **SSE connections**: Real-time streaming connections established via `/api/v1/mcp/cp/sse`
+/// - **HTTP sessions**: Stateless HTTP-only sessions from clients using `/api/v1/mcp/cp`
 ///
 /// # Authentication
 /// Requires a valid bearer token with `mcp:read` scope.
@@ -65,7 +65,7 @@ fn extract_team(query: &ConnectionsQuery, context: &AuthContext) -> Result<Strin
 /// protocol version, initialization status, and connection type.
 #[utoipa::path(
     get,
-    path = "/api/v1/mcp/connections",
+    path = "/api/v1/mcp/cp/connections",
     params(
         ("team" = Option<String>, Query, description = "Team name (required for admin users)")
     ),

@@ -1064,19 +1064,24 @@ mod tests {
         // The HTTP method is always POST but the actual operation is in the request body
         // The handler implements its own authorization based on the JSON-RPC method field
         assert_eq!(
-            resource_from_path("/api/v1/mcp"),
+            resource_from_path("/api/v1/mcp/cp"),
             None,
-            "MCP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
+            "MCP CP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
         );
         assert_eq!(
-            resource_from_path("/api/v1/mcp/sse"),
+            resource_from_path("/api/v1/mcp/cp/sse"),
             None,
-            "MCP SSE endpoint should bypass resource-level auth"
+            "MCP CP SSE endpoint should bypass resource-level auth"
         );
         assert_eq!(
-            resource_from_path("/api/v1/mcp/connections"),
+            resource_from_path("/api/v1/mcp/cp/connections"),
             None,
-            "MCP connections endpoint should bypass resource-level auth"
+            "MCP CP connections endpoint should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/api"),
+            None,
+            "MCP API tools endpoint should bypass resource-level auth"
         );
 
         // OpenAPI import routes should map to "openapi-import" resource

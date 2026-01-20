@@ -642,9 +642,55 @@ impl McpService {
                     confidence: Some(Some(schema.confidence_score)),
                 };
 
-                self.route_metadata_repo.update(&metadata.id, update_request).await.map_err(
-                    |e| McpServiceError::Internal(format!("Failed to update metadata: {}", e)),
-                )?;
+                let updated_metadata =
+                    self.route_metadata_repo.update(&metadata.id, update_request).await.map_err(
+                        |e| McpServiceError::Internal(format!("Failed to update metadata: {}", e)),
+                    )?;
+
+                // Also regenerate the MCP tool with the new schemas
+                if let Some(existing_tool) = self.mcp_tool_repo.get_by_route_id(&route_id).await? {
+                    // Get listener port to regenerate the tool
+                    let listener_port = self
+                        .get_listener_port_for_route_config(&virtual_host.route_config_id)
+                        .await?;
+
+                    // Generate new tool with updated metadata
+                    let new_tool_request = self.gateway_tool_generator.generate_tool(
+                        &route,
+                        &updated_metadata,
+                        listener_port,
+                        team,
+                    )?;
+
+                    // Update the existing tool with new schemas
+                    let tool_update =
+                        crate::storage::repositories::mcp_tool::UpdateMcpToolRequest {
+                            name: None,
+                            description: None,
+                            schema_source: Some(new_tool_request.schema_source),
+                            category: None,
+                            source_type: Some(new_tool_request.source_type),
+                            input_schema: Some(new_tool_request.input_schema),
+                            output_schema: Some(new_tool_request.output_schema),
+                            learned_schema_id: Some(new_tool_request.learned_schema_id),
+                            route_id: None,
+                            http_method: None,
+                            http_path: None,
+                            cluster_name: None,
+                            listener_port: None,
+                            enabled: None, // Keep existing enabled state
+                            confidence: Some(new_tool_request.confidence),
+                        };
+
+                    self.mcp_tool_repo.update(&existing_tool.id, tool_update).await.map_err(
+                        |e| McpServiceError::Internal(format!("Failed to update MCP tool: {}", e)),
+                    )?;
+
+                    tracing::info!(
+                        tool_id = %existing_tool.id,
+                        "MCP tool regenerated with new learned schemas"
+                    );
+                }
 
                 tracing::info!(
                     route_id = %route_id,

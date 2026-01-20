@@ -2,6 +2,7 @@
 //!
 //! Provides stdio-based and HTTP-based MCP server for Flowplane control plane operations.
 
+pub mod api_handler;
 pub mod cancellation;
 pub mod connection;
 pub mod connections_api;
@@ -9,6 +10,7 @@ pub mod error;
 pub mod gateway;
 pub mod handler;
 pub mod http;
+pub mod http_api;
 pub mod logging;
 pub mod notifications;
 pub mod progress;
@@ -20,6 +22,7 @@ pub mod session;
 pub mod sse;
 pub mod tools;
 
+pub use api_handler::McpApiHandler;
 pub use cancellation::{
     create_cancellation_manager, CancellationManager, SharedCancellationManager,
 };
@@ -31,6 +34,7 @@ pub use error::McpError;
 pub use gateway::{GatewayExecutor, GatewayToolGenerator};
 pub use handler::McpHandler;
 pub use http::mcp_http_handler;
+pub use http_api::mcp_api_http_handler;
 pub use logging::{create_mcp_logger, McpLogger, SetLogLevelParams, SharedMcpLogger};
 pub use notifications::{
     LogLevel, LogNotification, NotificationMessage, ProgressNotification, ProgressToken,

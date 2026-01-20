@@ -184,8 +184,8 @@ pub async fn update_mcp_tool_handler(
         route_id: None,
         http_method: payload.http_method.map(Some),
         http_path: payload.http_path.map(Some),
-        cluster_name: None,
-        listener_port: None,
+        cluster_name: payload.cluster_name.map(Some),
+        listener_port: payload.listener_port.map(Some),
         enabled: payload.enabled,
         confidence: None,
     };

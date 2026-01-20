@@ -123,9 +123,9 @@ fn get_db_pool(state: &ApiState) -> Result<DbPool, String> {
     Ok(cluster_repo.pool().clone())
 }
 
-/// POST /api/v1/mcp
+/// POST /api/v1/mcp/cp
 ///
-/// HTTP endpoint for MCP protocol. Accepts JSON-RPC 2.0 requests and returns responses.
+/// HTTP endpoint for MCP Control Plane (CP) tools. Accepts JSON-RPC 2.0 requests and returns responses.
 ///
 /// # Authentication
 /// Requires a valid bearer token with appropriate scopes.
@@ -147,7 +147,7 @@ fn get_db_pool(state: &ApiState) -> Result<DbPool, String> {
 /// - `resources/read` - Require `cp:read`
 #[utoipa::path(
     post,
-    path = "/api/v1/mcp",
+    path = "/api/v1/mcp/cp",
     request_body = JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = JsonRpcResponse),

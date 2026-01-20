@@ -96,6 +96,23 @@
 			</div>
 		{/if}
 
+		<!-- Cluster and Port Info -->
+		{#if tool.clusterName || tool.listenerPort}
+			<div class="flex flex-wrap gap-2 text-xs">
+				{#if tool.clusterName}
+					<div class="flex items-center gap-1 bg-gray-100 text-gray-600 px-2 py-1 rounded">
+						<Database class="w-3 h-3" />
+						<span class="truncate max-w-[120px]" title={tool.clusterName}>{tool.clusterName}</span>
+					</div>
+				{/if}
+				{#if tool.listenerPort}
+					<div class="flex items-center gap-1 bg-gray-100 text-gray-600 px-2 py-1 rounded">
+						<span>Port: {tool.listenerPort}</span>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<!-- Source badges -->
 		<div class="flex flex-wrap gap-2">
 			<Badge variant="gray" size="sm">{tool.sourceType}</Badge>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { X, Code, FileJson, AlertCircle, Edit, Sparkles } from 'lucide-svelte';
+	import { X, Code, FileJson, AlertCircle, Edit, Sparkles, Database, Server } from 'lucide-svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import type { McpTool } from '$lib/api/types';
@@ -130,6 +130,33 @@
 								: tool.category}
 					</Badge>
 				</div>
+
+				<!-- Execution Details (Cluster and Port) -->
+				{#if tool.clusterName || tool.listenerPort}
+					<div>
+						<h3 class="text-sm font-medium text-gray-500 mb-2">Execution Details</h3>
+						<div class="bg-gray-50 rounded-lg p-3 space-y-2">
+							{#if tool.clusterName}
+								<div class="flex items-center gap-2">
+									<Database class="w-4 h-4 text-gray-500" />
+									<span class="text-sm text-gray-600 font-medium w-20">Cluster:</span>
+									<code class="text-sm text-gray-900 bg-white px-2 py-1 rounded border flex-1 truncate">
+										{tool.clusterName}
+									</code>
+								</div>
+							{/if}
+							{#if tool.listenerPort}
+								<div class="flex items-center gap-2">
+									<Server class="w-4 h-4 text-gray-500" />
+									<span class="text-sm text-gray-600 font-medium w-20">Port:</span>
+									<code class="text-sm text-gray-900 bg-white px-2 py-1 rounded border">
+										{tool.listenerPort}
+									</code>
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
 
 				<div>
 					<h3 class="text-sm font-medium text-gray-500 mb-2">Description</h3>

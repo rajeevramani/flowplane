@@ -56,7 +56,11 @@ impl GatewayToolGenerator {
             input_schema,
             output_schema: metadata.response_schemas.clone(),
             learned_schema_id: metadata.learning_schema_id,
-            schema_source: None,
+            schema_source: Some(match metadata.source_type {
+                crate::domain::RouteMetadataSourceType::Openapi => "openapi".to_string(),
+                crate::domain::RouteMetadataSourceType::Manual => "manual".to_string(),
+                crate::domain::RouteMetadataSourceType::Learned => "learned".to_string(),
+            }),
             route_id: Some(route.id.clone()),
             http_method: metadata.http_method.clone(),
             http_path: Some(route.path_pattern.clone()),
@@ -150,13 +154,13 @@ impl GatewayToolGenerator {
     }
 
     /// Build schema from path params only (fallback)
+    /// Returns null when there are no path parameters, indicating no input is required.
+    /// This is more semantically correct than returning an empty object schema.
     fn build_path_params_schema(&self, params: &[String]) -> serde_json::Value {
         if params.is_empty() {
-            return serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            });
+            // Return null to indicate no input schema is required
+            // This prevents showing empty {} schemas for simple endpoints like GET /users
+            return serde_json::Value::Null;
         }
 
         let mut properties = serde_json::Map::new();
@@ -351,8 +355,8 @@ mod tests {
         let generator = GatewayToolGenerator::new();
 
         let schema = generator.build_path_params_schema(&[]);
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["properties"], serde_json::json!({}));
+        // When no path parameters exist, return null to indicate no input required
+        assert!(schema.is_null());
     }
 
     #[test]

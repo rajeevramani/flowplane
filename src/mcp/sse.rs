@@ -118,9 +118,9 @@ fn format_sse_event(message: &NotificationMessage, event_id: u64) -> Result<Even
 /// Custom header name for MCP connection ID
 const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
 
-/// GET /api/v1/mcp/sse
+/// GET /api/v1/mcp/cp/sse
 ///
-/// Establishes an SSE connection for streaming MCP notifications.
+/// Establishes an SSE connection for streaming MCP Control Plane notifications.
 ///
 /// # Authentication
 /// Requires a valid bearer token with `mcp:read` scope.
@@ -130,7 +130,7 @@ const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
 ///
 /// # Response Headers
 /// - `Mcp-Connection-Id`: The unique identifier for this SSE connection. Use this when
-///   sending requests to `/api/v1/mcp` to associate them with this SSE session.
+///   sending requests to `/api/v1/mcp/cp` to associate them with this SSE session.
 ///
 /// # Events
 /// - `message`: JSON-RPC response messages
@@ -139,7 +139,7 @@ const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
 /// - `ping`: Heartbeat events (every 30 seconds)
 #[utoipa::path(
     get,
-    path = "/api/v1/mcp/sse",
+    path = "/api/v1/mcp/cp/sse",
     responses(
         (status = 200, description = "SSE stream established"),
         (status = 400, description = "Invalid request (missing team)"),
