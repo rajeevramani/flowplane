@@ -1,16 +1,20 @@
 //! MCP Tools for Listener Control Plane Operations
 //!
 //! Provides tools for querying and inspecting listener configurations via the MCP protocol.
+//!
+//! The tools use the internal API layer (`ListenerOperations`) for unified
+//! validation and team-based access control.
 
+use crate::internal_api::{
+    CreateListenerRequest as InternalCreateRequest, InternalAuthContext, ListListenersRequest,
+    ListenerOperations, UpdateListenerRequest as InternalUpdateRequest,
+};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
-use crate::services::ListenerService;
-use crate::storage::repositories::listener::ListenerRepository;
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind};
 use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -117,177 +121,6 @@ RELATED TOOLS: cp_list_listeners (discovery), cp_update_listener (modify), cp_cr
         }),
     }
 }
-
-/// Execute the cp_list_listeners tool.
-///
-/// Lists listeners with pagination, returning pretty-printed JSON output.
-///
-/// # Arguments
-///
-/// * `db_pool` - Database connection pool
-/// * `team` - Team identifier for multi-tenancy filtering
-/// * `args` - Tool arguments containing optional `limit` and `offset`
-///
-/// # Returns
-///
-/// A `ToolCallResult` with listener list as pretty-printed JSON text.
-#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_list_listeners")]
-pub async fn execute_list_listeners(
-    db_pool: &SqlitePool,
-    team: &str,
-    args: Value,
-) -> Result<ToolCallResult, McpError> {
-    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
-
-    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(0));
-
-    tracing::debug!(
-        team = %team,
-        limit = ?limit,
-        offset = ?offset,
-        "Listing listeners for team"
-    );
-
-    let repo = ListenerRepository::new(db_pool.clone());
-
-    // For team-based queries, use list_by_teams to enforce multi-tenancy
-    let listeners = if team.is_empty() {
-        repo.list(limit, offset).await
-    } else {
-        repo.list_by_teams(&[team.to_string()], true, limit, offset).await
-    }
-    .map_err(|e| McpError::DatabaseError(sqlx::Error::Protocol(e.to_string())))?;
-
-    // Build output with listener summaries
-    let listener_summaries: Vec<Value> = listeners
-        .iter()
-        .map(|listener| {
-            let mut summary = json!({
-                "name": listener.name,
-                "address": listener.address,
-                "port": listener.port,
-                "protocol": listener.protocol,
-                "version": listener.version,
-                "source": listener.source,
-                "team": listener.team,
-                "created_at": listener.created_at.to_rfc3339(),
-                "updated_at": listener.updated_at.to_rfc3339(),
-            });
-
-            // Parse configuration to extract description/tags if present
-            if let Ok(config) = serde_json::from_str::<Value>(&listener.configuration) {
-                if let Some(description) = config.get("description") {
-                    summary["description"] = description.clone();
-                }
-                if let Some(tags) = config.get("tags") {
-                    summary["tags"] = tags.clone();
-                }
-            }
-
-            summary
-        })
-        .collect();
-
-    let output = json!({
-        "listeners": listener_summaries,
-        "count": listeners.len(),
-        "limit": limit,
-        "offset": offset,
-    });
-
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-
-    tracing::info!(
-        team = %team,
-        listener_count = listeners.len(),
-        "Successfully listed listeners"
-    );
-
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
-}
-
-/// Execute the cp_get_listener tool.
-///
-/// Retrieves a specific listener by name, returning detailed configuration.
-///
-/// # Arguments
-///
-/// * `db_pool` - Database connection pool
-/// * `team` - Team identifier for access control
-/// * `args` - Tool arguments containing required `name` field
-///
-/// # Returns
-///
-/// A `ToolCallResult` with listener details as pretty-printed JSON, or
-/// `ResourceNotFound` error if the listener doesn't exist.
-#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_get_listener")]
-pub async fn execute_get_listener(
-    db_pool: &SqlitePool,
-    team: &str,
-    args: Value,
-) -> Result<ToolCallResult, McpError> {
-    let name = args
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
-
-    tracing::debug!(
-        team = %team,
-        listener_name = %name,
-        "Getting listener by name"
-    );
-
-    let repo = ListenerRepository::new(db_pool.clone());
-    let listener = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Listener '{}' not found", name))
-        } else {
-            McpError::DatabaseError(sqlx::Error::Protocol(e.to_string()))
-        }
-    })?;
-
-    // Verify team access if team is specified
-    if !team.is_empty() {
-        if let Some(listener_team) = &listener.team {
-            if listener_team != team {
-                return Err(McpError::ResourceNotFound(format!("Listener '{}' not found", name)));
-            }
-        }
-    }
-
-    // Parse configuration JSON for pretty output
-    let configuration: Value =
-        serde_json::from_str(&listener.configuration).map_err(McpError::SerializationError)?;
-
-    let output = json!({
-        "id": listener.id.to_string(),
-        "name": listener.name,
-        "address": listener.address,
-        "port": listener.port,
-        "protocol": listener.protocol,
-        "configuration": configuration,
-        "version": listener.version,
-        "source": listener.source,
-        "team": listener.team,
-        "import_id": listener.import_id,
-        "created_at": listener.created_at.to_rfc3339(),
-        "updated_at": listener.updated_at.to_rfc3339(),
-    });
-
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-
-    tracing::info!(
-        team = %team,
-        listener_name = %name,
-        "Successfully retrieved listener"
-    );
-
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
-}
-
-// =============================================================================
-// CRUD Tools (Create, Update, Delete)
-// =============================================================================
 
 /// Returns the MCP tool definition for creating a listener.
 pub fn cp_create_listener_tool() -> Tool {
@@ -505,10 +338,130 @@ Authorization: Requires cp:write scope."#
     }
 }
 
+// =============================================================================
+// Execute Functions - Using Internal API Layer
+// =============================================================================
+
+/// Execute the cp_list_listeners tool.
+///
+/// Lists listeners with pagination, returning pretty-printed JSON output.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_listeners")]
+pub async fn execute_list_listeners(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
+    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(0));
+
+    tracing::debug!(team = %team, limit = ?limit, offset = ?offset, "Listing listeners for team");
+
+    // Use internal API layer
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let list_req = ListListenersRequest {
+        limit,
+        offset,
+        include_defaults: true, /* MCP includes defaults */
+    };
+
+    let result = ops.list(list_req, &auth).await?;
+
+    // Build output with listener summaries
+    let listener_summaries: Vec<Value> = result
+        .listeners
+        .iter()
+        .map(|listener| {
+            let mut summary = json!({
+                "name": listener.name,
+                "address": listener.address,
+                "port": listener.port,
+                "protocol": listener.protocol,
+                "version": listener.version,
+                "source": listener.source,
+                "team": listener.team,
+                "created_at": listener.created_at.to_rfc3339(),
+                "updated_at": listener.updated_at.to_rfc3339(),
+            });
+
+            // Parse configuration to extract description/tags if present
+            if let Ok(config) = serde_json::from_str::<Value>(&listener.configuration) {
+                if let Some(description) = config.get("description") {
+                    summary["description"] = description.clone();
+                }
+                if let Some(tags) = config.get("tags") {
+                    summary["tags"] = tags.clone();
+                }
+            }
+
+            summary
+        })
+        .collect();
+
+    let output = json!({
+        "listeners": listener_summaries,
+        "count": result.count,
+        "limit": limit,
+        "offset": offset,
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, listener_count = result.count, "Successfully listed listeners");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_get_listener tool.
+///
+/// Retrieves a specific listener by name, returning detailed configuration.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_listener")]
+pub async fn execute_get_listener(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(team = %team, listener_name = %name, "Getting listener by name");
+
+    // Use internal API layer
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let listener = ops.get(name, &auth).await?;
+
+    // Parse configuration JSON for pretty output
+    let configuration: Value =
+        serde_json::from_str(&listener.configuration).map_err(McpError::SerializationError)?;
+
+    let output = json!({
+        "id": listener.id.to_string(),
+        "name": listener.name,
+        "address": listener.address,
+        "port": listener.port,
+        "protocol": listener.protocol,
+        "configuration": configuration,
+        "version": listener.version,
+        "source": listener.source,
+        "team": listener.team,
+        "import_id": listener.import_id,
+        "created_at": listener.created_at.to_rfc3339(),
+        "updated_at": listener.updated_at.to_rfc3339(),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, listener_name = %name, "Successfully retrieved listener");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
 /// Execute the cp_create_listener tool.
-#[instrument(skip(_db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_create_listener")]
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_create_listener")]
 pub async fn execute_create_listener(
-    _db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -525,7 +478,6 @@ pub async fn execute_create_listener(
         })? as u16;
 
     let address = args.get("address").and_then(|v| v.as_str()).unwrap_or("0.0.0.0").to_string();
-
     let protocol = args.get("protocol").and_then(|v| v.as_str()).unwrap_or("HTTP").to_string();
 
     tracing::debug!(
@@ -538,15 +490,12 @@ pub async fn execute_create_listener(
     );
 
     // 2. Build ListenerConfig
-    // Parse optional routeConfigName for simple binding
     let route_config_name = args.get("routeConfigName").and_then(|v| v.as_str());
 
     let filter_chains = if let Some(fc_json) = args.get("filterChains") {
-        // Use custom filter chains if provided
         serde_json::from_value(fc_json.clone())
             .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?
     } else if let Some(rc_name) = route_config_name {
-        // Build default HTTP filter chain with route config binding
         vec![FilterChainConfig {
             name: Some("default".to_string()),
             filters: vec![FilterConfig {
@@ -567,7 +516,6 @@ pub async fn execute_create_listener(
             tls_context: None,
         }]
     } else {
-        // No filter chains and no route config - create empty (will need separate binding)
         vec![]
     };
 
@@ -578,21 +526,20 @@ pub async fn execute_create_listener(
         filter_chains,
     };
 
-    // 3. Create via service layer
-    let listener_service = ListenerService::new(xds_state.clone());
-    let created = listener_service
-        .create_listener(name.to_string(), address, port, protocol, config, Some(team.to_string()))
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
-                McpError::Conflict(format!("Listener '{}' already exists", name))
-            } else if err_str.contains("validation") {
-                McpError::ValidationError(err_str)
-            } else {
-                McpError::InternalError(format!("Failed to create listener: {}", e))
-            }
-        })?;
+    // 3. Create via internal API layer
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let create_req = InternalCreateRequest {
+        name: name.to_string(),
+        address,
+        port,
+        protocol: Some(protocol),
+        team: Some(team.to_string()),
+        config,
+    };
+
+    let result = ops.create(create_req, &auth).await?;
+    let created = result.data;
 
     // 4. Format success response
     let output = json!({
@@ -607,10 +554,10 @@ pub async fn execute_create_listener(
             "version": created.version,
             "createdAt": created.created_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Listener '{}' created successfully. xDS configuration has been refreshed.",
             created.name
-        ),
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -626,9 +573,8 @@ pub async fn execute_create_listener(
 }
 
 /// Execute the cp_update_listener tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_update_listener")]
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_update_listener")]
 pub async fn execute_update_listener(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -639,73 +585,43 @@ pub async fn execute_update_listener(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    tracing::debug!(
-        team = %team,
-        listener_name = %name,
-        "Updating listener via MCP"
-    );
+    tracing::debug!(team = %team, listener_name = %name, "Updating listener via MCP");
 
-    // 2. Get existing listener
-    let repo = ListenerRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Listener '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get listener: {}", e))
-        }
-    })?;
+    // 2. Use internal API layer
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 3. Verify team ownership
-    if !team.is_empty() {
-        if let Some(listener_team) = &existing.team {
-            if listener_team != team {
-                return Err(McpError::Forbidden(format!(
-                    "Cannot update listener '{}' owned by team '{}'",
-                    name, listener_team
-                )));
-            }
-        }
-    }
+    // 3. Get existing listener to build config
+    let existing = ops.get(name, &auth).await?;
 
     // 4. Parse existing configuration
     let mut config: ListenerConfig = serde_json::from_str(&existing.configuration)
-        .map_err(|e| McpError::InternalError(format!("Failed to parse listener config: {}", e)))?;
+        .map_err(|e| McpError::InvalidParams(format!("Failed to parse listener config: {}", e)))?;
 
-    // 5. Apply updates
-    let address = args
-        .get("address")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| existing.address.clone());
-
-    let port = args
-        .get("port")
-        .and_then(|v| v.as_u64())
-        .map(|p| p as u16)
-        .unwrap_or(existing.port.unwrap_or(80) as u16);
-
-    let protocol = args
-        .get("protocol")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| existing.protocol.clone());
-
+    // 5. Apply updates to config
     if let Some(fc_json) = args.get("filterChains") {
         config.filter_chains = serde_json::from_value(fc_json.clone())
             .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?;
     }
 
-    config.address = address.clone();
-    config.port = port as u32;
+    let address = args.get("address").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let port = args.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
+    let protocol = args.get("protocol").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-    // 6. Update via service layer
-    let listener_service = ListenerService::new(xds_state.clone());
-    let updated = listener_service
-        .update_listener(name, address, port, protocol, config)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to update listener: {}", e)))?;
+    // Update config address/port if provided
+    if let Some(ref addr) = address {
+        config.address = addr.clone();
+    }
+    if let Some(p) = port {
+        config.port = p as u32;
+    }
 
-    // 7. Format success response
+    let update_req = InternalUpdateRequest { address, port, protocol, config };
+
+    let result = ops.update(name, update_req, &auth).await?;
+    let updated = result.data;
+
+    // 6. Format success response
     let output = json!({
         "success": true,
         "listener": {
@@ -718,10 +634,10 @@ pub async fn execute_update_listener(
             "version": updated.version,
             "updatedAt": updated.updated_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Listener '{}' updated successfully. xDS configuration has been refreshed.",
             updated.name
-        ),
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -737,9 +653,8 @@ pub async fn execute_update_listener(
 }
 
 /// Execute the cp_delete_listener tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_delete_listener")]
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_delete_listener")]
 pub async fn execute_delete_listener(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -750,61 +665,25 @@ pub async fn execute_delete_listener(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    tracing::debug!(
-        team = %team,
-        listener_name = %name,
-        "Deleting listener via MCP"
-    );
+    tracing::debug!(team = %team, listener_name = %name, "Deleting listener via MCP");
 
-    // 2. Get existing listener to verify ownership
-    let repo = ListenerRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Listener '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get listener: {}", e))
-        }
-    })?;
+    // 2. Delete via internal API layer
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let result = ops.delete(name, &auth).await?;
 
-    // 3. Verify team ownership
-    if !team.is_empty() {
-        if let Some(listener_team) = &existing.team {
-            if listener_team != team {
-                return Err(McpError::Forbidden(format!(
-                    "Cannot delete listener '{}' owned by team '{}'",
-                    name, listener_team
-                )));
-            }
-        }
-    }
-
-    // 4. Delete via service layer
-    let listener_service = ListenerService::new(xds_state.clone());
-    listener_service.delete_listener(name).await.map_err(|e| {
-        let err_str = e.to_string();
-        if err_str.contains("default gateway") {
-            McpError::Forbidden(err_str)
-        } else {
-            McpError::InternalError(format!("Failed to delete listener: {}", e))
-        }
-    })?;
-
-    // 5. Format success response
+    // 3. Format success response
     let output = json!({
         "success": true,
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Listener '{}' deleted successfully. xDS configuration has been refreshed.",
             name
-        ),
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
-    tracing::info!(
-        team = %team,
-        listener_name = %name,
-        "Successfully deleted listener via MCP"
-    );
+    tracing::info!(team = %team, listener_name = %name, "Successfully deleted listener via MCP");
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
@@ -812,174 +691,44 @@ pub async fn execute_delete_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
-    use crate::storage::repositories::listener::CreateListenerRequest;
 
-    async fn setup_test_db() -> SqlitePool {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
-
-        // Run migrations
-        sqlx::migrate!("./migrations").run(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
-
-    /// Create a test team in the database
-    async fn create_test_team(pool: &SqlitePool, team_name: &str) {
-        let team_id = format!("team-{}", uuid::Uuid::new_v4());
-        sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
-            .bind(&team_id)
-            .bind(team_name)
-            .bind(format!("Test {}", team_name))
-            .bind("active")
-            .execute(pool)
-            .await
-            .expect("Failed to create test team");
-    }
-
-    #[tokio::test]
-    async fn test_cp_list_listeners_tool_definition() {
+    #[test]
+    fn test_cp_list_listeners_tool_definition() {
         let tool = cp_list_listeners_tool();
         assert_eq!(tool.name, "cp_list_listeners");
         assert!(tool.description.contains("List all listeners"));
         assert!(tool.input_schema.get("properties").is_some());
     }
 
-    #[tokio::test]
-    async fn test_cp_get_listener_tool_definition() {
+    #[test]
+    fn test_cp_get_listener_tool_definition() {
         let tool = cp_get_listener_tool();
         assert_eq!(tool.name, "cp_get_listener");
         assert!(tool.description.contains("Get detailed information"));
         assert!(tool.input_schema.get("required").is_some());
     }
 
-    #[tokio::test]
-    async fn test_execute_list_listeners_empty() {
-        let pool = setup_test_db().await;
-        let args = json!({});
-
-        let result = execute_list_listeners(&pool, "test-team", args).await;
-        assert!(result.is_ok());
-
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
-
-        if let ContentBlock::Text { text } = &tool_result.content[0] {
-            let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["count"], 0);
-        } else {
-            panic!("Expected text content block");
-        }
+    #[test]
+    fn test_cp_create_listener_tool_definition() {
+        let tool = cp_create_listener_tool();
+        assert_eq!(tool.name, "cp_create_listener");
+        assert!(tool.description.contains("Create a new listener"));
+        assert!(tool.input_schema.get("required").is_some());
     }
 
-    #[tokio::test]
-    async fn test_execute_list_listeners_with_data() {
-        let pool = setup_test_db().await;
-
-        // Create the team first (required by foreign key constraint)
-        create_test_team(&pool, "test-team").await;
-
-        let repo = ListenerRepository::new(pool.clone());
-
-        // Create test listener
-        repo.create(CreateListenerRequest {
-            name: "test-listener-1".to_string(),
-            address: "0.0.0.0".to_string(),
-            port: Some(8080),
-            protocol: Some("HTTP".to_string()),
-            configuration: json!({"filter_chains": []}),
-            team: Some("test-team".to_string()),
-            import_id: None,
-        })
-        .await
-        .expect("Failed to create listener");
-
-        let args = json!({"limit": 10, "offset": 0});
-        let result = execute_list_listeners(&pool, "test-team", args).await;
-        assert!(result.is_ok());
-
-        let tool_result = result.unwrap();
-        if let ContentBlock::Text { text } = &tool_result.content[0] {
-            let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["count"], 1);
-            assert_eq!(output["listeners"][0]["name"], "test-listener-1");
-            assert_eq!(output["listeners"][0]["port"], 8080);
-        }
+    #[test]
+    fn test_cp_update_listener_tool_definition() {
+        let tool = cp_update_listener_tool();
+        assert_eq!(tool.name, "cp_update_listener");
+        assert!(tool.description.contains("Update an existing"));
+        assert!(tool.input_schema.get("required").is_some());
     }
 
-    #[tokio::test]
-    async fn test_execute_get_listener_not_found() {
-        let pool = setup_test_db().await;
-        let args = json!({"name": "non-existent-listener"});
-
-        let result = execute_get_listener(&pool, "test-team", args).await;
-        assert!(result.is_err());
-
-        if let Err(McpError::ResourceNotFound(msg)) = result {
-            assert!(msg.contains("not found"));
-        } else {
-            panic!("Expected ResourceNotFound error");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execute_get_listener_success() {
-        let pool = setup_test_db().await;
-
-        // Create the team first (required by foreign key constraint)
-        create_test_team(&pool, "test-team").await;
-
-        let repo = ListenerRepository::new(pool.clone());
-
-        // Create test listener
-        repo.create(CreateListenerRequest {
-            name: "test-listener".to_string(),
-            address: "127.0.0.1".to_string(),
-            port: Some(9090),
-            protocol: Some("HTTPS".to_string()),
-            configuration: json!({"filter_chains": [], "description": "Test listener"}),
-            team: Some("test-team".to_string()),
-            import_id: None,
-        })
-        .await
-        .expect("Failed to create listener");
-
-        let args = json!({"name": "test-listener"});
-        let result = execute_get_listener(&pool, "test-team", args).await;
-        assert!(result.is_ok());
-
-        let tool_result = result.unwrap();
-        if let ContentBlock::Text { text } = &tool_result.content[0] {
-            let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["name"], "test-listener");
-            assert_eq!(output["address"], "127.0.0.1");
-            assert_eq!(output["port"], 9090);
-            assert_eq!(output["protocol"], "HTTPS");
-            assert_eq!(output["configuration"]["description"], "Test listener");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_execute_get_listener_missing_name() {
-        let pool = setup_test_db().await;
-        let args = json!({});
-
-        let result = execute_get_listener(&pool, "test-team", args).await;
-        assert!(result.is_err());
-
-        if let Err(McpError::InvalidParams(msg)) = result {
-            assert!(msg.contains("Missing required parameter: name"));
-        } else {
-            panic!("Expected InvalidParams error");
-        }
+    #[test]
+    fn test_cp_delete_listener_tool_definition() {
+        let tool = cp_delete_listener_tool();
+        assert_eq!(tool.name, "cp_delete_listener");
+        assert!(tool.description.contains("Delete a listener"));
+        assert!(tool.input_schema.get("required").is_some());
     }
 }

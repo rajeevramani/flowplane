@@ -255,18 +255,16 @@ impl McpHandler {
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
         let result = match params.name.as_str() {
-            // Read operations (non-cluster)
-            "cp_list_listeners" => {
-                tools::execute_list_listeners(&self.db_pool, &self.team, args).await
-            }
-            "cp_get_listener" => tools::execute_get_listener(&self.db_pool, &self.team, args).await,
+            // Read operations that only need db_pool (route table query)
             "cp_list_routes" => tools::execute_list_routes(&self.db_pool, &self.team, args).await,
-            "cp_list_filters" => tools::execute_list_filters(&self.db_pool, &self.team, args).await,
-            "cp_get_filter" => tools::execute_get_filter(&self.db_pool, &self.team, args).await,
-            // Cluster operations (use internal API layer, require xds_state)
-            "cp_list_clusters" | "cp_get_cluster" |
-            // Write operations (require xds_state)
-            "cp_create_cluster"
+            // Operations that require xds_state (internal API layer)
+            "cp_list_clusters"
+            | "cp_get_cluster"
+            | "cp_list_listeners"
+            | "cp_get_listener"
+            | "cp_list_filters"
+            | "cp_get_filter"
+            | "cp_create_cluster"
             | "cp_update_cluster"
             | "cp_delete_cluster"
             | "cp_create_listener"
@@ -284,8 +282,7 @@ impl McpHandler {
                         return self.error_response(
                             id,
                             McpError::InternalError(
-                                "Operation not available: xds_state not configured"
-                                    .to_string(),
+                                "Operation not available: xds_state not configured".to_string(),
                             ),
                         );
                     }
@@ -307,59 +304,45 @@ impl McpHandler {
                     "cp_delete_cluster" => {
                         tools::execute_delete_cluster(xds_state, &self.team, args).await
                     }
-                    // Listener CRUD
+                    // Listener operations (use internal API layer)
+                    "cp_list_listeners" => {
+                        tools::execute_list_listeners(xds_state, &self.team, args).await
+                    }
+                    "cp_get_listener" => {
+                        tools::execute_get_listener(xds_state, &self.team, args).await
+                    }
                     "cp_create_listener" => {
-                        tools::execute_create_listener(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_create_listener(xds_state, &self.team, args).await
                     }
                     "cp_update_listener" => {
-                        tools::execute_update_listener(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_update_listener(xds_state, &self.team, args).await
                     }
                     "cp_delete_listener" => {
-                        tools::execute_delete_listener(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_delete_listener(xds_state, &self.team, args).await
                     }
-                    // Route config CRUD
+                    // Route config CRUD (use internal API layer)
                     "cp_create_route_config" => {
-                        tools::execute_create_route_config(
-                            &self.db_pool,
-                            xds_state,
-                            &self.team,
-                            args,
-                        )
-                        .await
+                        tools::execute_create_route_config(xds_state, &self.team, args).await
                     }
                     "cp_update_route_config" => {
-                        tools::execute_update_route_config(
-                            &self.db_pool,
-                            xds_state,
-                            &self.team,
-                            args,
-                        )
-                        .await
+                        tools::execute_update_route_config(xds_state, &self.team, args).await
                     }
                     "cp_delete_route_config" => {
-                        tools::execute_delete_route_config(
-                            &self.db_pool,
-                            xds_state,
-                            &self.team,
-                            args,
-                        )
-                        .await
+                        tools::execute_delete_route_config(xds_state, &self.team, args).await
                     }
-                    // Filter CRUD
+                    // Filter operations (use internal API layer)
+                    "cp_list_filters" => {
+                        tools::execute_list_filters(xds_state, &self.team, args).await
+                    }
+                    "cp_get_filter" => tools::execute_get_filter(xds_state, &self.team, args).await,
                     "cp_create_filter" => {
-                        tools::execute_create_filter(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_create_filter(xds_state, &self.team, args).await
                     }
                     "cp_update_filter" => {
-                        tools::execute_update_filter(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_update_filter(xds_state, &self.team, args).await
                     }
                     "cp_delete_filter" => {
-                        tools::execute_delete_filter(&self.db_pool, xds_state, &self.team, args)
-                            .await
+                        tools::execute_delete_filter(xds_state, &self.team, args).await
                     }
                     _ => unreachable!(),
                 }

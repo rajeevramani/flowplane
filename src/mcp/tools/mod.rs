@@ -102,14 +102,10 @@ pub async fn execute_tool(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     match tool_name {
-        // Note: Cluster tools (cp_list_clusters, cp_get_cluster, cp_create_cluster,
-        // cp_update_cluster, cp_delete_cluster) are handled in handler.rs using
-        // the internal API layer with XdsState.
-        "cp_list_listeners" => execute_list_listeners(db_pool, team, args).await,
-        "cp_get_listener" => execute_get_listener(db_pool, team, args).await,
+        // Note: Cluster, Listener, and Filter tools are handled in handler.rs
+        // using the internal API layer with XdsState.
+        // Only cp_list_routes remains here as it queries the routes table directly.
         "cp_list_routes" => execute_list_routes(db_pool, team, args).await,
-        "cp_list_filters" => execute_list_filters(db_pool, team, args).await,
-        "cp_get_filter" => execute_get_filter(db_pool, team, args).await,
         _ => Err(McpError::ToolNotFound(format!("Unknown tool: {}", tool_name))),
     }
 }

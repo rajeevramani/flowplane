@@ -34,6 +34,10 @@ pub enum InternalError {
     #[error("{resource} '{id}' is in use by: {}", dependencies.join(", "))]
     InUse { resource: String, id: String, dependencies: Vec<String> },
 
+    /// General conflict error
+    #[error("Conflict: {message}")]
+    Conflict { message: String },
+
     /// Database operation failed
     #[error("Database error: {message}")]
     DatabaseError { message: String },
@@ -82,6 +86,11 @@ impl InternalError {
         Self::InUse { resource: resource.into(), id: id.into(), dependencies }
     }
 
+    /// Create a general conflict error
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::Conflict { message: message.into() }
+    }
+
     /// Create a database error
     pub fn database(message: impl Into<String>) -> Self {
         Self::DatabaseError { message: message.into() }
@@ -122,6 +131,7 @@ impl From<InternalError> for ApiError {
                 id,
                 dependencies.join(", ")
             )),
+            InternalError::Conflict { message } => ApiError::Conflict(message),
             InternalError::DatabaseError { message } => ApiError::Internal(message),
             InternalError::InternalError { message } => ApiError::Internal(message),
             InternalError::ServiceUnavailable { message } => ApiError::ServiceUnavailable(message),
@@ -153,6 +163,7 @@ impl From<InternalError> for McpError {
                 id,
                 dependencies.join(", ")
             )),
+            InternalError::Conflict { message } => McpError::Conflict(message),
             InternalError::DatabaseError { message } => McpError::InternalError(message),
             InternalError::InternalError { message } => McpError::InternalError(message),
             InternalError::ServiceUnavailable { message } => McpError::InternalError(message),

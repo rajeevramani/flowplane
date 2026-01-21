@@ -5,9 +5,9 @@ use std::convert::TryFrom;
 use serde_json::Value;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::error::ApiError,
     errors::Error,
-    storage::{ListenerData, ListenerRepository},
+    storage::ListenerData,
     xds::listener::{
         AccessLogConfig, FilterChainConfig, FilterConfig, FilterType, ListenerConfig,
         TlsContextConfig, TracingConfig,
@@ -20,18 +20,6 @@ use super::types::{
     ListenerFilterTypeInput, ListenerResponse, ListenerTlsContextInput, ListenerTracingInput,
     UpdateListenerBody,
 };
-
-/// Extract listener repository from API state
-pub(super) fn require_listener_repository(
-    state: &ApiState,
-) -> Result<ListenerRepository, ApiError> {
-    state
-        .xds_state
-        .listener_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Listener repository not configured"))
-}
 
 /// Convert database listener data to API response
 pub(super) fn listener_response_from_data(

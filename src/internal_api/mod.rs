@@ -13,9 +13,15 @@
 pub mod auth;
 pub mod clusters;
 pub mod error;
+pub mod filters;
+pub mod listeners;
+pub mod routes;
 pub mod types;
 
 pub use auth::InternalAuthContext;
 pub use clusters::ClusterOperations;
 pub use error::InternalError;
+pub use filters::FilterOperations;
+pub use listeners::ListenerOperations;
+pub use routes::RouteConfigOperations;
 pub use types::*;

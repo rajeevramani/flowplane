@@ -2,12 +2,12 @@
 //!
 //! Control Plane tools for managing routes.
 
-use crate::domain::RouteConfigId;
+use crate::internal_api::routes::transform_virtual_hosts_for_internal;
+use crate::internal_api::{
+    CreateRouteConfigRequest, InternalAuthContext, RouteConfigOperations, UpdateRouteConfigRequest,
+};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
-use crate::services::RouteService;
-use crate::storage::RouteConfigRepository;
-use crate::xds::route::RouteConfig;
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -76,6 +76,8 @@ RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"
 }
 
 /// Execute list routes operation
+/// Note: This queries the individual routes table directly for UI display,
+/// not route_configs. It needs direct db_pool access.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_list_routes")]
 pub async fn execute_list_routes(
     db_pool: &SqlitePool,
@@ -490,10 +492,9 @@ Authorization: Requires cp:write scope."#
     }
 }
 
-/// Execute the cp_create_route_config tool.
-#[instrument(skip(_db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_create_route_config")]
+/// Execute the cp_create_route_config tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_create_route_config")]
 pub async fn execute_create_route_config(
-    _db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -508,317 +509,68 @@ pub async fn execute_create_route_config(
         McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
     })?;
 
-    // 2. Summarize the configuration for storage
-    let (path_prefix, cluster_summary) = summarize_virtual_hosts(virtual_hosts);
+    tracing::debug!(
+        team = %team,
+        route_config_name = %name,
+        "Creating route config via MCP"
+    );
 
-    // 3. Transform from MCP-friendly format to internal format
+    // 2. Transform from MCP-friendly format to internal format
     // MCP uses: {"type": "prefix", "value": "/api"}, {"type": "forward", "cluster": "x"}
     // Internal uses: {"Prefix": "/api"}, {"Cluster": {"name": "x"}}
     let transformed_virtual_hosts = transform_virtual_hosts_for_internal(virtual_hosts);
 
-    // 4. Build full configuration for xDS
+    // 3. Build full configuration for xDS
     let configuration = json!({
         "name": name,
         "virtual_hosts": transformed_virtual_hosts
     });
 
-    tracing::debug!(
-        team = %team,
-        route_config_name = %name,
-        path_prefix = %path_prefix,
-        cluster_summary = %cluster_summary,
-        "Creating route config via MCP"
-    );
+    // 4. Use internal API layer
+    let ops = RouteConfigOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 5. Create via service layer
-    let route_service = RouteService::new(xds_state.clone());
-    let created = route_service
-        .create_route(
-            name.to_string(),
-            path_prefix.clone(),
-            cluster_summary.clone(),
-            configuration.clone(),
-            Some(team.to_string()),
-        )
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
-                McpError::Conflict(format!("Route config '{}' already exists", name))
-            } else if err_str.contains("validation") {
-                McpError::ValidationError(err_str)
-            } else {
-                McpError::InternalError(format!("Failed to create route config: {}", e))
-            }
-        })?;
+    let req = CreateRouteConfigRequest {
+        name: name.to_string(),
+        team: if team.is_empty() { None } else { Some(team.to_string()) },
+        config: configuration,
+    };
 
-    // 6. Sync route hierarchy to normalized tables (virtual_hosts, routes)
-    // This is needed for the UI to display routes correctly
-    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
-        // Parse the stored configuration back to RouteConfig
-        let xds_config: RouteConfig =
-            serde_json::from_value(configuration.clone()).map_err(|e| {
-                McpError::InternalError(format!("Failed to parse route config for sync: {}", e))
-            })?;
+    let result = ops.create(req, &auth).await?;
 
-        let route_config_id = RouteConfigId::from_string(created.id.to_string());
-        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
-            tracing::error!(
-                error = %err,
-                route_config_id = %created.id,
-                "Failed to sync route hierarchy after MCP creation"
-            );
-            // Continue anyway - the route config was created, hierarchy sync is optional
-        }
-    }
-
-    // 7. Format success response
+    // 5. Format success response
     let output = json!({
         "success": true,
         "routeConfig": {
-            "id": created.id.to_string(),
-            "name": created.name,
-            "pathPrefix": created.path_prefix,
-            "clusterTargets": created.cluster_name,
-            "team": created.team,
-            "version": created.version,
-            "createdAt": created.created_at.to_rfc3339(),
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "pathPrefix": result.data.path_prefix,
+            "clusterTargets": result.data.cluster_name,
+            "team": result.data.team,
+            "version": result.data.version,
+            "createdAt": result.data.created_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Route config '{}' created successfully. xDS configuration has been refreshed.",
-            created.name
-        ),
+            result.data.name
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
-        route_config_name = %created.name,
-        route_config_id = %created.id,
+        route_config_name = %result.data.name,
+        route_config_id = %result.data.id,
         "Successfully created route config via MCP"
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
-/// Helper function to summarize virtual hosts for storage.
-fn summarize_virtual_hosts(virtual_hosts: &Value) -> (String, String) {
-    let mut paths = Vec::new();
-    let mut clusters = std::collections::HashSet::new();
-
-    if let Some(hosts) = virtual_hosts.as_array() {
-        for host in hosts {
-            if let Some(routes) = host.get("routes").and_then(|r| r.as_array()) {
-                for route in routes {
-                    // Extract path
-                    if let Some(path) = route.get("match").and_then(|m| m.get("path")) {
-                        if let Some(value) = path.get("value").and_then(|v| v.as_str()) {
-                            paths.push(value.to_string());
-                        } else if let Some(template) = path.get("template").and_then(|t| t.as_str())
-                        {
-                            paths.push(template.to_string());
-                        }
-                    }
-
-                    // Extract cluster
-                    if let Some(action) = route.get("action") {
-                        if let Some(cluster) = action.get("cluster").and_then(|c| c.as_str()) {
-                            clusters.insert(cluster.to_string());
-                        }
-                        if let Some(weighted) = action.get("clusters").and_then(|c| c.as_array()) {
-                            for wc in weighted {
-                                if let Some(name) = wc.get("name").and_then(|n| n.as_str()) {
-                                    clusters.insert(name.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let path_prefix = paths.first().cloned().unwrap_or_else(|| "/".to_string());
-    let cluster_summary = if clusters.is_empty() {
-        "none".to_string()
-    } else {
-        clusters.into_iter().collect::<Vec<_>>().join(", ")
-    };
-
-    (path_prefix, cluster_summary)
-}
-
-/// Transform virtual hosts from MCP-friendly format to internal format.
-///
-/// MCP schema uses:
-/// - path: `{"type": "prefix", "value": "/api"}`
-/// - action: `{"type": "forward", "cluster": "x", "prefixRewrite": "/y"}`
-///
-/// Internal format uses Rust enum serialization:
-/// - path: `{"Prefix": "/api"}`
-/// - action: `{"Cluster": {"name": "x", "prefix_rewrite": "/y"}}`
-fn transform_virtual_hosts_for_internal(virtual_hosts: &Value) -> Value {
-    let Some(hosts) = virtual_hosts.as_array() else {
-        return virtual_hosts.clone();
-    };
-
-    let transformed_hosts: Vec<Value> = hosts
-        .iter()
-        .map(|host| {
-            let mut new_host = host.clone();
-            if let Some(routes) = host.get("routes").and_then(|r| r.as_array()) {
-                let transformed_routes: Vec<Value> = routes.iter().map(transform_route).collect();
-                new_host["routes"] = json!(transformed_routes);
-            }
-            new_host
-        })
-        .collect();
-
-    json!(transformed_hosts)
-}
-
-/// Transform a single route from MCP format to internal format.
-fn transform_route(route: &Value) -> Value {
-    let mut new_route = serde_json::Map::new();
-
-    // Copy name if present
-    if let Some(name) = route.get("name") {
-        new_route.insert("name".to_string(), name.clone());
-    }
-
-    // Transform match.path
-    if let Some(match_obj) = route.get("match") {
-        let mut new_match = serde_json::Map::new();
-
-        if let Some(path) = match_obj.get("path") {
-            new_match.insert("path".to_string(), transform_path(path));
-        }
-
-        // Copy headers if present
-        if let Some(headers) = match_obj.get("headers") {
-            new_match.insert("headers".to_string(), headers.clone());
-        }
-
-        // Copy query_parameters if present
-        if let Some(qp) = match_obj.get("query_parameters") {
-            new_match.insert("query_parameters".to_string(), qp.clone());
-        }
-
-        new_route.insert("match".to_string(), json!(new_match));
-    }
-
-    // Transform action
-    if let Some(action) = route.get("action") {
-        new_route.insert("action".to_string(), transform_action(action));
-    }
-
-    // Copy typed_per_filter_config if present
-    if let Some(tpfc) = route.get("typed_per_filter_config") {
-        new_route.insert("typed_per_filter_config".to_string(), tpfc.clone());
-    }
-
-    json!(new_route)
-}
-
-/// Transform path from MCP format to internal enum format.
-/// `{"type": "prefix", "value": "/api"}` → `{"Prefix": "/api"}`
-fn transform_path(path: &Value) -> Value {
-    let path_type = path.get("type").and_then(|t| t.as_str()).unwrap_or("prefix");
-
-    match path_type {
-        "prefix" => {
-            let value = path.get("value").and_then(|v| v.as_str()).unwrap_or("/");
-            json!({"Prefix": value})
-        }
-        "exact" => {
-            let value = path.get("value").and_then(|v| v.as_str()).unwrap_or("/");
-            json!({"Exact": value})
-        }
-        "regex" => {
-            let value = path.get("value").and_then(|v| v.as_str()).unwrap_or(".*");
-            json!({"Regex": value})
-        }
-        "template" => {
-            let value = path
-                .get("template")
-                .or_else(|| path.get("value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("/");
-            json!({"Template": value})
-        }
-        _ => {
-            // If already in internal format (e.g., {"Prefix": "/api"}), pass through
-            path.clone()
-        }
-    }
-}
-
-/// Transform action from MCP format to internal enum format.
-/// `{"type": "forward", "cluster": "x"}` → `{"Cluster": {"name": "x"}}`
-fn transform_action(action: &Value) -> Value {
-    let action_type = action.get("type").and_then(|t| t.as_str()).unwrap_or("forward");
-
-    match action_type {
-        "forward" => {
-            let mut cluster_obj = serde_json::Map::new();
-
-            if let Some(cluster) = action.get("cluster").and_then(|c| c.as_str()) {
-                cluster_obj.insert("name".to_string(), json!(cluster));
-            }
-            if let Some(timeout) = action.get("timeoutSeconds").and_then(|t| t.as_u64()) {
-                cluster_obj.insert("timeout".to_string(), json!(timeout));
-            }
-            if let Some(prefix_rewrite) = action.get("prefixRewrite").and_then(|p| p.as_str()) {
-                cluster_obj.insert("prefix_rewrite".to_string(), json!(prefix_rewrite));
-            }
-            if let Some(path_rewrite) = action.get("pathTemplateRewrite").and_then(|p| p.as_str()) {
-                cluster_obj.insert("path_template_rewrite".to_string(), json!(path_rewrite));
-            }
-            if let Some(retry) = action.get("retryPolicy") {
-                cluster_obj.insert("retry_policy".to_string(), retry.clone());
-            }
-
-            json!({"Cluster": cluster_obj})
-        }
-        "weighted" => {
-            let mut weighted_obj = serde_json::Map::new();
-
-            if let Some(clusters) = action.get("clusters").and_then(|c| c.as_array()) {
-                weighted_obj.insert("clusters".to_string(), json!(clusters));
-            }
-            if let Some(total_weight) = action.get("totalWeight").and_then(|t| t.as_u64()) {
-                weighted_obj.insert("total_weight".to_string(), json!(total_weight as u32));
-            }
-
-            json!({"WeightedClusters": weighted_obj})
-        }
-        "redirect" => {
-            let mut redirect_obj = serde_json::Map::new();
-
-            if let Some(host) = action.get("hostRedirect").and_then(|h| h.as_str()) {
-                redirect_obj.insert("host_redirect".to_string(), json!(host));
-            }
-            if let Some(path) = action.get("pathRedirect").and_then(|p| p.as_str()) {
-                redirect_obj.insert("path_redirect".to_string(), json!(path));
-            }
-            if let Some(code) = action.get("responseCode").and_then(|c| c.as_u64()) {
-                redirect_obj.insert("response_code".to_string(), json!(code as u32));
-            }
-
-            json!({"Redirect": redirect_obj})
-        }
-        _ => {
-            // If already in internal format, pass through
-            action.clone()
-        }
-    }
-}
-
-/// Execute the cp_update_route_config tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_update_route_config")]
+/// Execute the cp_update_route_config tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_update_route_config")]
 pub async fn execute_update_route_config(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -839,97 +591,56 @@ pub async fn execute_update_route_config(
         "Updating route config via MCP"
     );
 
-    // 2. Get existing route config
-    let repo = RouteConfigRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Route config '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get route config: {}", e))
-        }
-    })?;
-
-    // 3. Verify team ownership
-    if !team.is_empty() {
-        if let Some(route_team) = &existing.team {
-            if route_team != team {
-                return Err(McpError::Forbidden(format!(
-                    "Cannot update route config '{}' owned by team '{}'",
-                    name, route_team
-                )));
-            }
-        }
-    }
-
-    // 4. Summarize the new configuration
-    let (path_prefix, cluster_summary) = summarize_virtual_hosts(virtual_hosts);
-
-    // 5. Transform from MCP-friendly format to internal format
+    // 2. Transform from MCP-friendly format to internal format
     let transformed_virtual_hosts = transform_virtual_hosts_for_internal(virtual_hosts);
 
-    // 6. Build full configuration for xDS
+    // 3. Build full configuration for xDS
     let configuration = json!({
         "name": name,
         "virtual_hosts": transformed_virtual_hosts
     });
 
-    // 7. Update via service layer
-    let route_service = RouteService::new(xds_state.clone());
-    let updated = route_service
-        .update_route(name, path_prefix, cluster_summary, configuration.clone())
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to update route config: {}", e)))?;
+    // 4. Use internal API layer
+    let ops = RouteConfigOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 8. Sync route hierarchy to normalized tables (virtual_hosts, routes)
-    if let Some(ref sync_service) = xds_state.route_hierarchy_sync_service {
-        let xds_config: RouteConfig = serde_json::from_value(configuration).map_err(|e| {
-            McpError::InternalError(format!("Failed to parse route config for sync: {}", e))
-        })?;
+    let req = UpdateRouteConfigRequest { config: configuration };
 
-        let route_config_id = RouteConfigId::from_string(updated.id.to_string());
-        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
-            tracing::error!(
-                error = %err,
-                route_config_id = %updated.id,
-                "Failed to sync route hierarchy after MCP update"
-            );
-        }
-    }
+    let result = ops.update(name, req, &auth).await?;
 
-    // 9. Format success response
+    // 5. Format success response
     let output = json!({
         "success": true,
         "routeConfig": {
-            "id": updated.id.to_string(),
-            "name": updated.name,
-            "pathPrefix": updated.path_prefix,
-            "clusterTargets": updated.cluster_name,
-            "team": updated.team,
-            "version": updated.version,
-            "updatedAt": updated.updated_at.to_rfc3339(),
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "pathPrefix": result.data.path_prefix,
+            "clusterTargets": result.data.cluster_name,
+            "team": result.data.team,
+            "version": result.data.version,
+            "updatedAt": result.data.updated_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Route config '{}' updated successfully. xDS configuration has been refreshed.",
-            updated.name
-        ),
+            result.data.name
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
-        route_config_name = %updated.name,
-        route_config_id = %updated.id,
+        route_config_name = %result.data.name,
+        route_config_id = %result.data.id,
         "Successfully updated route config via MCP"
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
-/// Execute the cp_delete_route_config tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_delete_route_config")]
+/// Execute the cp_delete_route_config tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_delete_route_config")]
 pub async fn execute_delete_route_config(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -946,46 +657,19 @@ pub async fn execute_delete_route_config(
         "Deleting route config via MCP"
     );
 
-    // 2. Get existing route config to verify ownership
-    let repo = RouteConfigRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Route config '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get route config: {}", e))
-        }
-    })?;
+    // 2. Use internal API layer
+    let ops = RouteConfigOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 3. Verify team ownership
-    if !team.is_empty() {
-        if let Some(route_team) = &existing.team {
-            if route_team != team {
-                return Err(McpError::Forbidden(format!(
-                    "Cannot delete route config '{}' owned by team '{}'",
-                    name, route_team
-                )));
-            }
-        }
-    }
+    let result = ops.delete(name, &auth).await?;
 
-    // 4. Delete via service layer
-    let route_service = RouteService::new(xds_state.clone());
-    route_service.delete_route(name).await.map_err(|e| {
-        let err_str = e.to_string();
-        if err_str.contains("default gateway") {
-            McpError::Forbidden(err_str)
-        } else {
-            McpError::InternalError(format!("Failed to delete route config: {}", e))
-        }
-    })?;
-
-    // 5. Format success response
+    // 3. Format success response
     let output = json!({
         "success": true,
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Route config '{}' deleted successfully. xDS configuration has been refreshed.",
             name
-        ),
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -997,4 +681,42 @@ pub async fn execute_delete_route_config(
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cp_list_routes_tool_definition() {
+        let tool = cp_list_routes_tool();
+        assert_eq!(tool.name, "cp_list_routes");
+        assert!(tool.description.contains("routes"));
+    }
+
+    #[test]
+    fn test_cp_create_route_config_tool_definition() {
+        let tool = cp_create_route_config_tool();
+        assert_eq!(tool.name, "cp_create_route_config");
+        assert!(tool.description.contains("Create"));
+
+        // Check required fields in schema
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+        assert!(required.contains(&json!("virtualHosts")));
+    }
+
+    #[test]
+    fn test_cp_update_route_config_tool_definition() {
+        let tool = cp_update_route_config_tool();
+        assert_eq!(tool.name, "cp_update_route_config");
+        assert!(tool.description.contains("Update"));
+    }
+
+    #[test]
+    fn test_cp_delete_route_config_tool_definition() {
+        let tool = cp_delete_route_config_tool();
+        assert_eq!(tool.name, "cp_delete_route_config");
+        assert!(tool.description.contains("Delete"));
+    }
 }

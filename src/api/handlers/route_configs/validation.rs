@@ -5,10 +5,7 @@ use prost::Message;
 use serde_json::Value;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    errors::Error,
-    openapi::strip_gateway_tags,
-    storage::{RouteConfigData, RouteConfigRepository},
+    api::error::ApiError, errors::Error, openapi::strip_gateway_tags, storage::RouteConfigData,
     xds::route::RouteConfig as XdsRouteConfig,
 };
 
@@ -16,18 +13,6 @@ use super::types::{
     PathMatchDefinition, RouteActionDefinition, RouteConfigDefinition, RouteConfigResponse,
     RouteMatchDefinition,
 };
-
-/// Extract route config repository from API state
-pub(super) fn require_route_config_repository(
-    state: &ApiState,
-) -> Result<RouteConfigRepository, ApiError> {
-    state
-        .xds_state
-        .route_config_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Route config repository not configured"))
-}
 
 /// Convert database route config data to API response
 pub(super) fn route_config_response_from_data(
@@ -62,39 +47,6 @@ pub(super) fn route_config_response_from_data(
         route_order: data.route_order,
         config,
     })
-}
-
-/// Extract summary information from route config definition for display
-pub(super) fn summarize_route_config(definition: &RouteConfigDefinition) -> (String, String) {
-    let path_prefix = definition
-        .virtual_hosts
-        .iter()
-        .flat_map(|vh| vh.routes.iter())
-        .map(|route| match &route.r#match.path {
-            PathMatchDefinition::Exact { value } | PathMatchDefinition::Prefix { value } => {
-                value.clone()
-            }
-            PathMatchDefinition::Regex { value } => format!("regex:{}", value),
-            PathMatchDefinition::Template { template } => format!("template:{}", template),
-        })
-        .next()
-        .unwrap_or_else(|| "*".to_string());
-
-    let cluster_summary = definition
-        .virtual_hosts
-        .iter()
-        .flat_map(|vh| vh.routes.iter())
-        .map(|route| match &route.action {
-            RouteActionDefinition::Forward { cluster, .. } => cluster.clone(),
-            RouteActionDefinition::Weighted { clusters, .. } => {
-                clusters.first().map(|cluster| cluster.name.clone()).unwrap_or_default()
-            }
-            RouteActionDefinition::Redirect { .. } => "__redirect__".to_string(),
-        })
-        .next()
-        .unwrap_or_else(|| "unknown".to_string());
-
-    (path_prefix, cluster_summary)
 }
 
 /// Validate XDS route configuration by attempting Envoy conversion

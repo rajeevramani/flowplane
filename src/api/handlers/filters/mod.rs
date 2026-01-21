@@ -1,7 +1,8 @@
 //! Filter configuration HTTP handlers
 //!
-//! This module provides CRUD operations for filters through the REST API,
-//! with validation, team isolation, and XDS state synchronization.
+//! This module provides CRUD operations for filters through the REST API.
+//! Basic CRUD operations are delegated to the internal API layer (FilterOperations)
+//! which provides unified validation, access control, and XDS state synchronization.
 
 mod filter_types;
 mod types;
@@ -37,6 +38,12 @@ use crate::{
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::{FilterId, ListenerId, RouteConfigId},
+    internal_api::auth::InternalAuthContext,
+    internal_api::filters::FilterOperations,
+    internal_api::types::{
+        ListFiltersRequest as InternalListFiltersRequest,
+        UpdateFilterRequest as InternalUpdateFilterRequest,
+    },
     services::FilterService,
 };
 
@@ -110,18 +117,23 @@ pub async fn list_filters_handler(
 ) -> Result<Json<Vec<FilterResponse>>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    // Admin users see all filters, regular users see only their team's filters
-    let team_scopes = get_effective_team_scopes(&context);
+    // Create internal API request
+    let internal_request = InternalListFiltersRequest {
+        limit: params.limit,
+        offset: params.offset,
+        filter_type: None,
+        include_defaults: true,
+    };
+
+    // Delegate to internal API layer for team-scoped listing
+    let ops = FilterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.list(internal_request, &auth).await?;
+
+    // Build responses with attachment counts (REST-specific enhancement)
     let repository = require_filter_repository(&state)?;
-
-    let filters = repository
-        .list_by_teams(&team_scopes, params.limit, params.offset)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Build responses with attachment counts
-    let mut responses = Vec::with_capacity(filters.len());
-    for filter_data in filters {
+    let mut responses = Vec::with_capacity(result.filters.len());
+    for filter_data in result.filters {
         let filter_id = filter_data.id.clone();
         let attachment_count = repository.count_attachments(&filter_id).await.ok(); // Ignore errors, return None for count
         let response = filter_response_from_data_with_count(filter_data, attachment_count)?;
@@ -207,14 +219,10 @@ pub async fn get_filter_handler(
 ) -> Result<Json<FilterResponse>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
 
-    let team_scopes = get_effective_team_scopes(&context);
-    let repository = require_filter_repository(&state)?;
-
-    let filter_id = FilterId::from_string(id);
-    let filter = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-
-    // Verify access to this filter
-    let filter = verify_team_access(filter, &team_scopes).await?;
+    // Delegate to internal API layer (includes team access verification)
+    let ops = FilterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let filter = ops.get(&id, &auth).await?;
 
     let response = filter_response_from_data(filter)?;
 
@@ -243,39 +251,25 @@ pub async fn update_filter_handler(
     Path(id): Path<String>,
     Json(payload): Json<UpdateFilterRequest>,
 ) -> Result<Json<FilterResponse>, ApiError> {
+    // REST-specific validation
     validate_update_filter_request(&payload)?;
 
-    let team_scopes = get_effective_team_scopes(&context);
-    let repository = require_filter_repository(&state)?;
+    // Verify user has write access (general scope check)
+    require_resource_access(&context, "filters", "write", None)?;
 
-    let filter_id = FilterId::from_string(id);
+    // Create internal API request
+    let internal_request = InternalUpdateFilterRequest {
+        name: payload.name.clone(),
+        description: payload.description.clone(),
+        config: payload.config.clone(),
+    };
 
-    // Get existing filter and verify access
-    let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let existing = verify_team_access(existing, &team_scopes).await?;
+    // Delegate to internal API layer (includes team access verification)
+    let ops = FilterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.update(&id, internal_request, &auth).await?;
 
-    // Verify user has write access to the filter's team
-    require_resource_access(&context, "filters", "write", Some(&existing.team))?;
-
-    let service = FilterService::new(state.xds_state.clone());
-
-    let updated = service
-        .update_filter(
-            &filter_id,
-            payload.name.clone(),
-            payload.description.clone(),
-            payload.config.clone(),
-        )
-        .await
-        .map_err(ApiError::from)?;
-
-    info!(
-        filter_id = %updated.id,
-        filter_name = %updated.name,
-        "Filter updated via API"
-    );
-
-    let response = filter_response_from_data(updated)?;
+    let response = filter_response_from_data(result.data)?;
 
     Ok(Json(response))
 }
@@ -300,27 +294,13 @@ pub async fn delete_filter_handler(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let team_scopes = get_effective_team_scopes(&context);
-    let repository = require_filter_repository(&state)?;
+    // Verify user has write access (general scope check)
+    require_resource_access(&context, "filters", "write", None)?;
 
-    let filter_id = FilterId::from_string(id);
-
-    // Get existing filter and verify access
-    let existing = repository.get_by_id(&filter_id).await.map_err(ApiError::from)?;
-    let existing = verify_team_access(existing, &team_scopes).await?;
-
-    // Verify user has write access to the filter's team
-    require_resource_access(&context, "filters", "write", Some(&existing.team))?;
-
-    let service = FilterService::new(state.xds_state.clone());
-
-    service.delete_filter(&filter_id).await.map_err(ApiError::from)?;
-
-    info!(
-        filter_id = %filter_id,
-        filter_name = %existing.name,
-        "Filter deleted via API"
-    );
+    // Delegate to internal API layer (includes team access verification)
+    let ops = FilterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    ops.delete(&id, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

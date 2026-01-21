@@ -1,7 +1,8 @@
 //! Listener configuration HTTP handlers
 //!
 //! This module provides CRUD operations for Envoy listener configurations through
-//! the REST API, with validation and XDS state synchronization.
+//! the REST API. All operations are delegated to the internal API layer (ListenerOperations)
+//! which provides unified validation, access control, and XDS state synchronization.
 
 mod types;
 mod validation;
@@ -18,24 +19,24 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info, instrument};
+use tracing::instrument;
 
 use crate::{
-    api::{
-        error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
-        routes::ApiState,
-    },
+    api::{error::ApiError, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
-    errors::Error,
-    openapi::defaults::is_default_gateway_listener,
-    storage::{CreateListenerRequest, UpdateListenerRequest},
+    internal_api::auth::InternalAuthContext,
+    internal_api::listeners::ListenerOperations,
+    internal_api::types::{
+        CreateListenerRequest as InternalCreateListenerRequest,
+        ListListenersRequest as InternalListListenersRequest,
+        UpdateListenerRequest as InternalUpdateListenerRequest,
+    },
 };
 
 use validation::{
     listener_config_from_create, listener_config_from_update, listener_response_from_data,
-    require_listener_repository, validate_create_listener_body, validate_update_listener_body,
+    validate_create_listener_body, validate_update_listener_body,
 };
 
 // === Handler Implementations ===
@@ -57,42 +58,31 @@ pub async fn create_listener_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<types::CreateListenerBody>,
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
+    // REST-specific validation
     validate_create_listener_body(&payload)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "listeners", "write", Some(&payload.team))?;
 
-    let repository = require_listener_repository(&state)?;
+    // Build ListenerConfig from REST body
     let config = listener_config_from_create(&payload)?;
-    let configuration = serde_json::to_value(&config).map_err(|err| {
-        ApiError::from(Error::internal(format!(
-            "Failed to serialize listener configuration: {}",
-            err
-        )))
-    })?;
 
-    // Use explicit team from request
-    let team = Some(payload.team.clone());
-
-    let request = CreateListenerRequest {
+    // Create internal API request
+    let internal_request = InternalCreateListenerRequest {
         name: payload.name.clone(),
         address: payload.address.clone(),
-        port: Some(payload.port as i64),
+        port: payload.port,
         protocol: payload.protocol.clone(),
-        configuration,
-        team,
-        import_id: None,
+        team: Some(payload.team.clone()),
+        config,
     };
 
-    let created = repository.create(request).await.map_err(ApiError::from)?;
-    info!(listener_id = %created.id, listener_name = %created.name, "Listener created via API");
+    // Delegate to internal API layer
+    let ops = ListenerOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.create(internal_request, &auth).await?;
 
-    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after listener creation");
-        ApiError::from(err)
-    })?;
-
-    let response = listener_response_from_data(created)?;
+    let response = listener_response_from_data(result.data)?;
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -117,17 +107,20 @@ pub async fn list_listeners_handler(
     // Authorization: require listeners:read scope
     require_resource_access(&context, "listeners", "read", None)?;
 
-    // Extract team scopes from auth context for filtering
-    let team_scopes = get_effective_team_scopes(&context);
+    // Create internal API request (REST API: include default resources)
+    let internal_request = InternalListListenersRequest {
+        limit: params.limit,
+        offset: params.offset,
+        include_defaults: true,
+    };
 
-    let repository = require_listener_repository(&state)?;
-    let rows = repository
-        .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
-        .await
-        .map_err(ApiError::from)?;
+    // Delegate to internal API layer
+    let ops = ListenerOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.list(internal_request, &auth).await?;
 
-    let mut listeners = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut listeners = Vec::with_capacity(result.listeners.len());
+    for row in result.listeners {
         listeners.push(listener_response_from_data(row)?);
     }
 
@@ -154,14 +147,10 @@ pub async fn get_listener_handler(
     // Authorization: require listeners:read scope
     require_resource_access(&context, "listeners", "read", None)?;
 
-    // Extract team scopes for access verification
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_listener_repository(&state)?;
-    let listener = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-
-    // Verify the listener belongs to one of the user's teams or is global
-    let listener = verify_team_access(listener, &team_scopes).await?;
+    // Delegate to internal API layer (includes team access verification)
+    let ops = ListenerOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let listener = ops.get(&name, &auth).await?;
 
     let response = listener_response_from_data(listener)?;
     Ok(Json(response))
@@ -190,41 +179,26 @@ pub async fn update_listener_handler(
     // Authorization: require listeners:write scope
     require_resource_access(&context, "listeners", "write", None)?;
 
+    // REST-specific validation
     validate_update_listener_body(&payload)?;
 
-    // Extract team scopes and verify access before updating
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_listener_repository(&state)?;
-    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_team_access(existing.clone(), &team_scopes).await?;
-
+    // Build ListenerConfig from REST body
     let config = listener_config_from_update(name.clone(), &payload)?;
-    let configuration = serde_json::to_value(&config).map_err(|err| {
-        ApiError::from(Error::internal(format!(
-            "Failed to serialize listener configuration: {}",
-            err
-        )))
-    })?;
 
-    let request = UpdateListenerRequest {
+    // Create internal API request
+    let internal_request = InternalUpdateListenerRequest {
         address: Some(payload.address.clone()),
-        port: Some(Some(payload.port as i64)),
+        port: Some(payload.port),
         protocol: payload.protocol.clone(),
-        configuration: Some(configuration),
-        team: None, // Don't modify team on update unless explicitly set
+        config,
     };
 
-    let updated = repository.update(&existing.id, request).await.map_err(ApiError::from)?;
+    // Delegate to internal API layer (includes team access verification and XDS refresh)
+    let ops = ListenerOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.update(&name, internal_request, &auth).await?;
 
-    info!(listener_id = %existing.id, listener_name = %name, "Listener updated via API");
-
-    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after listener update");
-        ApiError::from(err)
-    })?;
-
-    let response = listener_response_from_data(updated)?;
+    let response = listener_response_from_data(result.data)?;
     Ok(Json(response))
 }
 
@@ -248,27 +222,10 @@ pub async fn delete_listener_handler(
     // Authorization: require listeners:write scope (delete is a write operation)
     require_resource_access(&context, "listeners", "write", None)?;
 
-    if is_default_gateway_listener(&name) {
-        return Err(ApiError::Conflict(
-            "The default gateway listener cannot be deleted".to_string(),
-        ));
-    }
-
-    // Extract team scopes and verify access before deleting
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_listener_repository(&state)?;
-    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-    verify_team_access(existing.clone(), &team_scopes).await?;
-
-    repository.delete(&existing.id).await.map_err(ApiError::from)?;
-
-    info!(listener_id = %existing.id, listener_name = %name, "Listener deleted via API");
-
-    state.xds_state.refresh_listeners_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after listener deletion");
-        ApiError::from(err)
-    })?;
+    // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
+    let ops = ListenerOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

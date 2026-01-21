@@ -2,14 +2,14 @@
 //!
 //! Control Plane tools for managing filters.
 
-use crate::domain::FilterId;
+use crate::internal_api::{
+    CreateFilterRequest, FilterOperations, InternalAuthContext, ListFiltersRequest,
+    UpdateFilterRequest,
+};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
-use crate::services::FilterService;
-use crate::storage::FilterRepository;
 use crate::xds::XdsState;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -108,61 +108,33 @@ RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete
     }
 }
 
-/// Execute list filters operation
-#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_list_filters")]
+/// Execute list filters operation using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_filters")]
 pub async fn execute_list_filters(
-    db_pool: &SqlitePool,
+    xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let filter_type = args["filter_type"].as_str();
+    let filter_type = args["filter_type"].as_str().map(|s| s.to_string());
 
-    #[derive(sqlx::FromRow)]
-    struct FilterRow {
-        id: String,
-        name: String,
-        filter_type: String,
-        description: Option<String>,
-        configuration: String,
-        version: i64,
-        source: String,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    }
+    // Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    let filters = if let Some(ft) = filter_type {
-        sqlx::query_as::<_, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, created_at, updated_at \
-             FROM filters WHERE team = $1 AND filter_type = $2 ORDER BY name"
-        )
-        .bind(team)
-        .bind(ft)
-        .fetch_all(db_pool)
-        .await
-    } else {
-        sqlx::query_as::<_, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, created_at, updated_at \
-             FROM filters WHERE team = $1 ORDER BY name"
-        )
-        .bind(team)
-        .fetch_all(db_pool)
-        .await
-    }
-    .map_err(|e| {
-        tracing::error!(error = %e, team = %team, "Failed to list filters");
-        McpError::DatabaseError(e)
-    })?;
+    let req = ListFiltersRequest { filter_type, include_defaults: true, ..Default::default() };
+
+    let response = ops.list(req, &auth).await?;
 
     let result = json!({
-        "filters": filters.iter().map(|f| {
-            // Parse configuration JSON, log warning on failure
+        "filters": response.filters.iter().map(|f| {
+            // Parse configuration JSON
             let config: Value = serde_json::from_str(&f.configuration).unwrap_or_else(|e| {
                 tracing::warn!(filter_id = %f.id, error = %e, "Failed to parse filter configuration");
                 json!({"_parse_error": format!("Failed to parse configuration: {}", e)})
             });
 
             json!({
-                "id": f.id,
+                "id": f.id.to_string(),
                 "name": f.name,
                 "filter_type": f.filter_type,
                 "description": f.description,
@@ -173,7 +145,7 @@ pub async fn execute_list_filters(
                 "updated_at": f.updated_at.to_rfc3339()
             })
         }).collect::<Vec<_>>(),
-        "count": filters.len()
+        "count": response.count
     });
 
     let result_text =
@@ -182,10 +154,10 @@ pub async fn execute_list_filters(
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
 }
 
-/// Execute get filter operation
-#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_get_filter")]
+/// Execute get filter operation using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_filter")]
 pub async fn execute_get_filter(
-    db_pool: &SqlitePool,
+    xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
@@ -193,78 +165,35 @@ pub async fn execute_get_filter(
         .as_str()
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    #[derive(sqlx::FromRow)]
-    struct FilterRow {
-        id: String,
-        name: String,
-        filter_type: String,
-        description: Option<String>,
-        configuration: String,
-        version: i64,
-        source: String,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    }
+    // Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    let filter = sqlx::query_as::<_, FilterRow>(
-        "SELECT id, name, filter_type, description, configuration, version, source, created_at, updated_at \
-         FROM filters WHERE team = $1 AND name = $2"
-    )
-    .bind(team)
-    .bind(name)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, team = %team, filter_name = %name, "Failed to get filter");
-        McpError::DatabaseError(e)
-    })?;
+    let filter_with_installations = ops.get_with_installations(name, &auth).await?;
+    let filter = &filter_with_installations.filter;
 
-    let filter =
-        filter.ok_or_else(|| McpError::ResourceNotFound(format!("Filter '{}' not found", name)))?;
-
-    // Parse configuration JSON, log warning on failure
+    // Parse configuration JSON
     let config: Value = serde_json::from_str(&filter.configuration).unwrap_or_else(|e| {
         tracing::warn!(filter_id = %filter.id, error = %e, "Failed to parse filter configuration");
         json!({"_parse_error": format!("Failed to parse configuration: {}", e)})
     });
 
-    // Get installations (listeners where this filter is installed)
-    #[derive(sqlx::FromRow)]
-    struct InstallationRow {
-        listener_id: String,
-        listener_name: String,
-        listener_address: String,
-        filter_order: i64,
-    }
-
-    let installations = sqlx::query_as::<_, InstallationRow>(
-        "SELECT l.id as listener_id, l.name as listener_name, l.address as listener_address, lf.filter_order \
-         FROM listener_filters lf \
-         INNER JOIN listeners l ON lf.listener_id = l.id \
-         WHERE lf.filter_id = $1 \
-         ORDER BY l.name"
-    )
-    .bind(&filter.id)
-    .fetch_all(db_pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, filter_id = %filter.id, "Failed to get filter installations");
-        McpError::DatabaseError(e)
-    })?;
-
     let result = json!({
-        "id": filter.id,
+        "id": filter.id.to_string(),
         "name": filter.name,
         "filter_type": filter.filter_type,
         "description": filter.description,
         "configuration": config,
         "version": filter.version,
         "source": filter.source,
-        "installations": installations.iter().map(|i| json!({
-            "listener_id": i.listener_id,
-            "listener_name": i.listener_name,
-            "listener_address": i.listener_address,
-            "order": i.filter_order
+        "listenerInstallations": filter_with_installations.listener_installations.iter().map(|i| json!({
+            "listener_id": i.resource_id,
+            "listener_name": i.resource_name,
+            "order": i.order
+        })).collect::<Vec<_>>(),
+        "routeConfigInstallations": filter_with_installations.route_config_installations.iter().map(|i| json!({
+            "route_config_id": i.resource_id,
+            "route_config_name": i.resource_name
         })).collect::<Vec<_>>(),
         "created_at": filter.created_at.to_rfc3339(),
         "updated_at": filter.updated_at.to_rfc3339()
@@ -466,10 +395,9 @@ Authorization: Requires cp:write scope.
     }
 }
 
-/// Execute the cp_create_filter tool.
-#[instrument(skip(_db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_create_filter")]
+/// Execute the cp_create_filter tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_create_filter")]
 pub async fn execute_create_filter(
-    _db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -501,62 +429,53 @@ pub async fn execute_create_filter(
     let config: crate::domain::FilterConfig = serde_json::from_value(configuration.clone())
         .map_err(|e| McpError::InvalidParams(format!("Invalid configuration: {}", e)))?;
 
-    // 3. Create via service layer
-    let filter_service = FilterService::new(xds_state.clone());
-    let created = filter_service
-        .create_filter(
-            name.to_string(),
-            filter_type.to_string(),
-            description,
-            config,
-            team.to_string(),
-        )
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("already exists") || err_str.contains("conflict") {
-                McpError::Conflict(format!("Filter '{}' already exists", name))
-            } else if err_str.contains("validation") || err_str.contains("do not match") {
-                McpError::ValidationError(err_str)
-            } else {
-                McpError::InternalError(format!("Failed to create filter: {}", e))
-            }
-        })?;
+    // 3. Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let req = CreateFilterRequest {
+        name: name.to_string(),
+        filter_type: filter_type.to_string(),
+        description,
+        team: if team.is_empty() { None } else { Some(team.to_string()) },
+        config,
+    };
+
+    let result = ops.create(req, &auth).await?;
 
     // 4. Format success response
     let output = json!({
         "success": true,
         "filter": {
-            "id": created.id.to_string(),
-            "name": created.name,
-            "filterType": created.filter_type,
-            "description": created.description,
-            "team": created.team,
-            "version": created.version,
-            "createdAt": created.created_at.to_rfc3339(),
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "filterType": result.data.filter_type,
+            "description": result.data.description,
+            "team": result.data.team,
+            "version": result.data.version,
+            "createdAt": result.data.created_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Filter '{}' created successfully. xDS configuration has been refreshed.",
-            created.name
-        ),
+            result.data.name
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
-        filter_name = %created.name,
-        filter_id = %created.id,
+        filter_name = %result.data.name,
+        filter_id = %result.data.id,
         "Successfully created filter via MCP"
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
-/// Execute the cp_update_filter tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_update_filter")]
+/// Execute the cp_update_filter tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_update_filter")]
 pub async fn execute_update_filter(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -573,29 +492,9 @@ pub async fn execute_update_filter(
         "Updating filter via MCP"
     );
 
-    // 2. Get existing filter by name
-    let repo = FilterRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Filter '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get filter: {}", e))
-        }
-    })?;
-
-    // 3. Verify team ownership
-    if existing.team != team {
-        return Err(McpError::Forbidden(format!(
-            "Cannot update filter '{}' owned by team '{}'",
-            name, existing.team
-        )));
-    }
-
-    // 4. Parse optional updates
+    // 2. Parse optional updates
     let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
-
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-
     let new_config = if let Some(config_json) = args.get("configuration") {
         Some(
             serde_json::from_value(config_json.clone())
@@ -605,57 +504,48 @@ pub async fn execute_update_filter(
         None
     };
 
-    // 5. Update via service layer
-    let filter_service = FilterService::new(xds_state.clone());
-    let filter_id = FilterId::from_str_unchecked(existing.id.as_ref());
-    let updated = filter_service
-        .update_filter(&filter_id, new_name, new_description, new_config)
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("already exists") || err_str.contains("conflict") {
-                McpError::Conflict(err_str)
-            } else if err_str.contains("validation") || err_str.contains("mismatch") {
-                McpError::ValidationError(err_str)
-            } else {
-                McpError::InternalError(format!("Failed to update filter: {}", e))
-            }
-        })?;
+    // 3. Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 6. Format success response
+    let req =
+        UpdateFilterRequest { name: new_name, description: new_description, config: new_config };
+
+    let result = ops.update(name, req, &auth).await?;
+
+    // 4. Format success response
     let output = json!({
         "success": true,
         "filter": {
-            "id": updated.id.to_string(),
-            "name": updated.name,
-            "filterType": updated.filter_type,
-            "description": updated.description,
-            "team": updated.team,
-            "version": updated.version,
-            "updatedAt": updated.updated_at.to_rfc3339(),
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "filterType": result.data.filter_type,
+            "description": result.data.description,
+            "team": result.data.team,
+            "version": result.data.version,
+            "updatedAt": result.data.updated_at.to_rfc3339(),
         },
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Filter '{}' updated successfully. xDS configuration has been refreshed.",
-            updated.name
-        ),
+            result.data.name
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
-        filter_name = %updated.name,
-        filter_id = %updated.id,
+        filter_name = %result.data.name,
+        filter_id = %result.data.id,
         "Successfully updated filter via MCP"
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
-/// Execute the cp_delete_filter tool.
-#[instrument(skip(db_pool, xds_state, args), fields(team = %team), name = "mcp_execute_delete_filter")]
+/// Execute the cp_delete_filter tool using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_delete_filter")]
 pub async fn execute_delete_filter(
-    db_pool: &SqlitePool,
     xds_state: &Arc<XdsState>,
     team: &str,
     args: Value,
@@ -672,43 +562,19 @@ pub async fn execute_delete_filter(
         "Deleting filter via MCP"
     );
 
-    // 2. Get existing filter to verify ownership
-    let repo = FilterRepository::new(db_pool.clone());
-    let existing = repo.get_by_name(name).await.map_err(|e| {
-        if e.to_string().contains("not found") {
-            McpError::ResourceNotFound(format!("Filter '{}' not found", name))
-        } else {
-            McpError::InternalError(format!("Failed to get filter: {}", e))
-        }
-    })?;
+    // 2. Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
 
-    // 3. Verify team ownership
-    if existing.team != team {
-        return Err(McpError::Forbidden(format!(
-            "Cannot delete filter '{}' owned by team '{}'",
-            name, existing.team
-        )));
-    }
+    let result = ops.delete(name, &auth).await?;
 
-    // 4. Delete via service layer
-    let filter_service = FilterService::new(xds_state.clone());
-    let filter_id = FilterId::from_str_unchecked(existing.id.as_ref());
-    filter_service.delete_filter(&filter_id).await.map_err(|e| {
-        let err_str = e.to_string();
-        if err_str.contains("attached") || err_str.contains("in use") {
-            McpError::Conflict(err_str)
-        } else {
-            McpError::InternalError(format!("Failed to delete filter: {}", e))
-        }
-    })?;
-
-    // 5. Format success response
+    // 3. Format success response
     let output = json!({
         "success": true,
-        "message": format!(
+        "message": result.message.unwrap_or_else(|| format!(
             "Filter '{}' deleted successfully. xDS configuration has been refreshed.",
             name
-        ),
+        )),
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -720,4 +586,54 @@ pub async fn execute_delete_filter(
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cp_list_filters_tool_definition() {
+        let tool = cp_list_filters_tool();
+        assert_eq!(tool.name, "cp_list_filters");
+        assert!(tool.description.contains("filters"));
+    }
+
+    #[test]
+    fn test_cp_get_filter_tool_definition() {
+        let tool = cp_get_filter_tool();
+        assert_eq!(tool.name, "cp_get_filter");
+        assert!(tool.description.contains("detailed information"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+    }
+
+    #[test]
+    fn test_cp_create_filter_tool_definition() {
+        let tool = cp_create_filter_tool();
+        assert_eq!(tool.name, "cp_create_filter");
+        assert!(tool.description.contains("Create"));
+
+        // Check required fields in schema
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+        assert!(required.contains(&json!("filterType")));
+        assert!(required.contains(&json!("configuration")));
+    }
+
+    #[test]
+    fn test_cp_update_filter_tool_definition() {
+        let tool = cp_update_filter_tool();
+        assert_eq!(tool.name, "cp_update_filter");
+        assert!(tool.description.contains("Update"));
+    }
+
+    #[test]
+    fn test_cp_delete_filter_tool_definition() {
+        let tool = cp_delete_filter_tool();
+        assert_eq!(tool.name, "cp_delete_filter");
+        assert!(tool.description.contains("Delete"));
+    }
 }
