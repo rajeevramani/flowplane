@@ -258,8 +258,8 @@ pub async fn mcp_http_handler(
         None
     };
 
-    // Create MCP handler and process request
-    let mut handler = McpHandler::new(db_pool, team.clone());
+    // Create MCP handler with xds_state for full read/write capabilities
+    let mut handler = McpHandler::with_xds_state(db_pool, state.xds_state.clone(), team.clone());
     let response = handler.handle_request(request).await;
 
     // On successful initialize, update metadata

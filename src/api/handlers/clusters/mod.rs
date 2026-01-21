@@ -2,6 +2,9 @@
 //!
 //! This module provides CRUD operations for Envoy cluster configurations through
 //! the REST API, with validation and XDS state synchronization.
+//!
+//! The handlers use the internal API layer (`ClusterOperations`) for unified
+//! validation and team-based access control.
 
 mod types;
 mod validation;
@@ -20,14 +23,14 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{
-        error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
-        routes::ApiState,
-    },
+    api::{error::ApiError, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     errors::Error,
+    internal_api::{
+        ClusterOperations, CreateClusterRequest, InternalAuthContext, ListClustersRequest,
+        UpdateClusterRequest,
+    },
     services::ClusterService,
 };
 
@@ -58,28 +61,23 @@ pub async fn create_cluster_handler(
     // Verify user has write access to the specified team
     require_resource_access(&context, "clusters", "write", Some(&payload.team))?;
 
+    // Convert REST body to internal request
     let ClusterConfigParts { name, service_name, config } =
         cluster_parts_from_body(payload.clone());
 
-    // Use explicit team from request
-    let team = Some(payload.team.clone());
+    let internal_req =
+        CreateClusterRequest { name, service_name, team: Some(payload.team.clone()), config };
 
+    // Use internal API layer
+    let ops = ClusterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.create(internal_req, &auth).await?;
+
+    // Convert to response
     let service = ClusterService::new(state.xds_state.clone());
-    let created = service
-        .create_cluster(name, service_name, config.clone(), team)
-        .await
-        .map_err(ApiError::from)?;
+    let response = cluster_response_from_data(&service, result.data)?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(types::ClusterResponse {
-            name: created.name.clone(),
-            team: created.team.unwrap_or_else(|| "unknown".to_string()),
-            service_name: created.service_name,
-            import_id: created.import_id,
-            config,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 #[utoipa::path(
@@ -104,24 +102,21 @@ pub async fn list_clusters_handler(
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
 
-    // Extract team scopes from auth context for filtering
-    let team_scopes = get_effective_team_scopes(&context);
+    // Use internal API layer
+    let ops = ClusterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let list_req = ListClustersRequest {
+        limit: params.limit,
+        offset: params.offset,
+        include_defaults: true, // REST API includes default resources
+    };
 
-    // Get repository and apply team filtering
-    let repository = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("Cluster repository unavailable"))?;
+    let result = ops.list(list_req, &auth).await?;
 
-    let rows = repository
-        .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
-        .await
-        .map_err(ApiError::from)?;
-
+    // Convert to response DTOs
     let service = ClusterService::new(state.xds_state.clone());
-    let mut clusters = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut clusters = Vec::with_capacity(result.clusters.len());
+    for row in result.clusters {
         clusters.push(cluster_response_from_data(&service, row)?);
     }
 
@@ -148,16 +143,15 @@ pub async fn get_cluster_handler(
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
 
-    // Extract team scopes for access verification
-    let team_scopes = get_effective_team_scopes(&context);
+    // Use internal API layer
+    let ops = ClusterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let cluster = ops.get(&name, &auth).await?;
 
+    // Convert to response DTO
     let service = ClusterService::new(state.xds_state.clone());
-    let cluster = service.get_cluster(&name).await.map_err(ApiError::from)?;
-
-    // Verify the cluster belongs to one of the user's teams or is global
-    let cluster = verify_team_access(cluster, &team_scopes).await?;
-
     let response = cluster_response_from_data(&service, cluster)?;
+
     Ok(Json(response))
 }
 
@@ -197,19 +191,18 @@ pub async fn update_cluster_handler(
         )));
     }
 
-    // Extract team scopes and verify access before updating
-    let team_scopes = get_effective_team_scopes(&context);
+    // Convert to internal request
+    let internal_req = UpdateClusterRequest { service_name: Some(service_name), config };
+
+    // Use internal API layer
+    let ops = ClusterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.update(&name, internal_req, &auth).await?;
+
+    // Convert to response DTO
     let service = ClusterService::new(state.xds_state.clone());
+    let response = cluster_response_from_data(&service, result.data)?;
 
-    // Get existing cluster to verify access
-    let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
-    verify_team_access(existing, &team_scopes).await?;
-
-    // Perform the update
-    let updated =
-        service.update_cluster(&name, service_name, config).await.map_err(ApiError::from)?;
-
-    let response = cluster_response_from_data(&service, updated)?;
     Ok(Json(response))
 }
 
@@ -233,16 +226,11 @@ pub async fn delete_cluster_handler(
     // Authorization: require clusters:write scope (delete is a write operation)
     require_resource_access(&context, "clusters", "write", None)?;
 
-    // Extract team scopes and verify access before deleting
-    let team_scopes = get_effective_team_scopes(&context);
-    let service = ClusterService::new(state.xds_state.clone());
+    // Use internal API layer
+    let ops = ClusterOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    ops.delete(&name, &auth).await?;
 
-    // Get existing cluster to verify access
-    let existing = service.get_cluster(&name).await.map_err(ApiError::from)?;
-    verify_team_access(existing, &team_scopes).await?;
-
-    // Perform the deletion
-    service.delete_cluster(&name).await.map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

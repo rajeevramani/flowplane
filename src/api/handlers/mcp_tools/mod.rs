@@ -44,42 +44,65 @@ pub async fn list_mcp_tools_handler(
     // Authorization: require mcp:read scope
     require_resource_access(&context, "mcp", "read", Some(&team))?;
 
-    let repo = state
-        .xds_state
-        .mcp_tool_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("MCP tool repository unavailable"))?;
+    // === Phase 1: Get CP (built-in) tools ===
+    let cp_tools: Vec<McpToolResponse> = crate::mcp::tools::get_all_tools()
+        .iter()
+        .map(|tool| McpToolResponse::from_builtin_tool(tool, &team))
+        .collect();
 
-    // Get all tools for the team
+    // === Phase 2: Get API (database) tools ===
     let enabled_only = query.enabled.unwrap_or(false);
-    let mut tools = repo.list_by_team(&team, enabled_only).await.map_err(ApiError::from)?;
+    let db_tools: Vec<McpToolResponse> = match state.xds_state.mcp_tool_repository.as_ref() {
+        Some(repo) => repo
+            .list_by_team(&team, enabled_only)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .map(McpToolResponse::from)
+            .collect(),
+        None => {
+            // Graceful degradation: return CP tools even if DB is unavailable
+            tracing::warn!("MCP tool repository unavailable, returning only CP tools");
+            vec![]
+        }
+    };
 
-    // Apply category filter if specified
+    // === Phase 3: Merge tools (CP tools first, then DB tools) ===
+    let mut tools: Vec<McpToolResponse> = cp_tools;
+    tools.extend(db_tools);
+
+    // === Phase 4: Apply filters ===
+
+    // Category filter
     if let Some(category) = query.category {
         tools.retain(|t| t.category == category);
     }
 
-    // Apply search filter if specified
+    // Search filter (searches name and description)
     if let Some(ref search) = query.search {
         let search_lower = search.to_lowercase();
-        tools.retain(|t| t.name.to_lowercase().contains(&search_lower));
+        tools.retain(|t| {
+            t.name.to_lowercase().contains(&search_lower)
+                || t.description.as_ref().is_some_and(|d| d.to_lowercase().contains(&search_lower))
+        });
     }
 
-    // Calculate pagination
+    // Enabled filter (CP tools always pass since they're always enabled)
+    if enabled_only {
+        tools.retain(|t| t.enabled);
+    }
+
+    // === Phase 5: Pagination ===
     let total = tools.len() as i64;
     let limit = query.limit.unwrap_or(100).min(1000); // Cap at 1000
     let offset = query.offset.unwrap_or(0);
 
-    // Apply pagination
     let start = offset as usize;
     let end = (offset + limit) as usize;
     let paginated_tools =
         if start < tools.len() { tools[start..end.min(tools.len())].to_vec() } else { vec![] };
 
-    let responses: Vec<McpToolResponse> =
-        paginated_tools.into_iter().map(McpToolResponse::from).collect();
-
-    Ok(Json(ListMcpToolsResponse { tools: responses, total, limit, offset }))
+    Ok(Json(ListMcpToolsResponse { tools: paginated_tools, total, limit, offset }))
 }
 
 #[utoipa::path(
@@ -105,6 +128,12 @@ pub async fn get_mcp_tool_handler(
     // Authorization: require mcp:read scope
     require_resource_access(&context, "mcp", "read", Some(&team))?;
 
+    // Check if it's a built-in CP tool first
+    if let Some(cp_tool) = crate::mcp::tools::get_all_tools().into_iter().find(|t| t.name == name) {
+        return Ok(Json(McpToolResponse::from_builtin_tool(&cp_tool, &team)));
+    }
+
+    // Otherwise, look in the database
     let repo = state
         .xds_state
         .mcp_tool_repository
@@ -136,6 +165,7 @@ pub async fn get_mcp_tool_handler(
     request_body = UpdateMcpToolBody,
     responses(
         (status = 200, description = "MCP tool updated", body = McpToolResponse),
+        (status = 400, description = "Bad request - cannot modify built-in tools"),
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Tool not found"),
     ),
@@ -150,6 +180,14 @@ pub async fn update_mcp_tool_handler(
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:write scope
     require_resource_access(&context, "mcp", "write", Some(&team))?;
+
+    // Check if it's a built-in CP tool - these cannot be modified
+    if crate::mcp::tools::get_all_tools().iter().any(|t| t.name == name) {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot modify built-in tool '{}'. Built-in tools are read-only.",
+            name
+        )));
+    }
 
     let repo = state
         .xds_state

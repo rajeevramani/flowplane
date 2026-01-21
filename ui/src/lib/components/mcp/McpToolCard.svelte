@@ -128,11 +128,15 @@
 		<div class="flex items-center gap-2 pt-2">
 			<button
 				onclick={onToggle}
-				class="flex-1 px-3 py-2 rounded transition-colors text-sm font-medium {tool.enabled
-					? 'bg-green-100 text-green-700 hover:bg-green-200'
-					: 'bg-gray-100 text-gray-700 hover:bg-gray-200'}"
+				disabled={tool.isBuiltin}
+				class="flex-1 px-3 py-2 rounded transition-colors text-sm font-medium {tool.isBuiltin
+					? 'bg-blue-100 text-blue-700 cursor-not-allowed'
+					: tool.enabled
+						? 'bg-green-100 text-green-700 hover:bg-green-200'
+						: 'bg-gray-100 text-gray-700 hover:bg-gray-200'}"
+				title={tool.isBuiltin ? 'Built-in tools are always enabled' : ''}
 			>
-				{tool.enabled ? 'Enabled' : 'Disabled'}
+				{tool.isBuiltin ? 'Built-in' : tool.enabled ? 'Enabled' : 'Disabled'}
 			</button>
 			<button
 				onclick={onView}

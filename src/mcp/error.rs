@@ -49,6 +49,18 @@ pub enum McpError {
 
     #[error("Unsupported protocol version '{client}'. Supported versions: {}", supported.join(", "))]
     UnsupportedProtocolVersion { client: String, supported: Vec<String> },
+
+    /// Authorization failure - insufficient permissions
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
+    /// Validation failed on domain object
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    /// Conflict with existing resource
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 impl McpError {
@@ -69,6 +81,9 @@ impl McpError {
             | McpError::ConnectionLimitExceeded { .. } => error_codes::INTERNAL_ERROR,
             McpError::PromptNotFound(_) => error_codes::METHOD_NOT_FOUND,
             McpError::UnsupportedProtocolVersion { .. } => error_codes::INVALID_REQUEST,
+            McpError::Forbidden(_) => error_codes::INVALID_REQUEST, // No dedicated 403 in JSON-RPC
+            McpError::ValidationError(_) => error_codes::INVALID_PARAMS,
+            McpError::Conflict(_) => error_codes::INVALID_PARAMS,
         }
     }
 
@@ -146,5 +161,29 @@ mod tests {
 
         assert_eq!(json_rpc_error.code, error_codes::INVALID_PARAMS);
         assert!(json_rpc_error.message.contains("Invalid parameters"));
+    }
+
+    #[test]
+    fn test_forbidden_error() {
+        let error = McpError::Forbidden("Cannot modify resources for other teams".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_REQUEST);
+        assert!(error.to_string().contains("Forbidden"));
+        assert!(error.to_string().contains("Cannot modify"));
+    }
+
+    #[test]
+    fn test_validation_error() {
+        let error = McpError::ValidationError("endpoints must not be empty".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_PARAMS);
+        assert!(error.to_string().contains("Validation error"));
+        assert!(error.to_string().contains("endpoints"));
+    }
+
+    #[test]
+    fn test_conflict_error() {
+        let error = McpError::Conflict("Cluster 'api-backend' already exists".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_PARAMS);
+        assert!(error.to_string().contains("Conflict"));
+        assert!(error.to_string().contains("already exists"));
     }
 }

@@ -148,7 +148,17 @@
 			<div
 				class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between"
 			>
-				<h2 class="text-xl font-semibold text-gray-900">Edit Tool Information</h2>
+				<div class="flex items-center gap-3">
+					<h2 class="text-xl font-semibold text-gray-900">
+						{tool.isBuiltin ? 'View Tool Information' : 'Edit Tool Information'}
+					</h2>
+					{#if tool.isBuiltin}
+						<Badge variant="blue">
+							<Lock class="w-3 h-3 mr-1" />
+							Built-in
+						</Badge>
+					{/if}
+				</div>
 				<button
 					type="button"
 					onclick={onClose}
@@ -158,6 +168,19 @@
 					<X class="w-6 h-6" />
 				</button>
 			</div>
+
+			<!-- Built-in tool warning -->
+			{#if tool.isBuiltin}
+				<div class="mx-6 mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">
+					<Lock class="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+					<div>
+						<h3 class="text-sm font-medium text-blue-900">Built-in Tool</h3>
+						<p class="text-sm text-blue-700">
+							This is a built-in Control Plane tool and cannot be edited. Built-in tools are always enabled and their configuration is managed by the system.
+						</p>
+					</div>
+				</div>
+			{/if}
 
 			<!-- Content -->
 			<div class="px-6 py-6 space-y-6">
@@ -274,11 +297,13 @@
 			<div
 				class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end gap-3"
 			>
-				<Button variant="ghost" onclick={onClose}>Cancel</Button>
-				<Button variant="primary" onclick={handleSave}>
-					<Save class="w-4 h-4 mr-2" />
-					Save Changes
-				</Button>
+				<Button variant="ghost" onclick={onClose}>{tool.isBuiltin ? 'Close' : 'Cancel'}</Button>
+				{#if !tool.isBuiltin}
+					<Button variant="primary" onclick={handleSave}>
+						<Save class="w-4 h-4 mr-2" />
+						Save Changes
+					</Button>
+				{/if}
 			</div>
 		</div>
 	</div>

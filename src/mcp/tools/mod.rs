@@ -12,14 +12,34 @@ pub mod routes;
 pub use clusters::{cp_get_cluster_tool, cp_list_clusters_tool};
 pub use clusters::{execute_get_cluster, execute_list_clusters};
 
+// Re-export cluster CRUD tools
+pub use clusters::{cp_create_cluster_tool, cp_delete_cluster_tool, cp_update_cluster_tool};
+pub use clusters::{execute_create_cluster, execute_delete_cluster, execute_update_cluster};
+
 pub use filters::{cp_get_filter_tool, cp_list_filters_tool};
 pub use filters::{execute_get_filter, execute_list_filters};
+
+// Re-export filter CRUD tools
+pub use filters::{cp_create_filter_tool, cp_delete_filter_tool, cp_update_filter_tool};
+pub use filters::{execute_create_filter, execute_delete_filter, execute_update_filter};
 
 pub use listeners::{cp_get_listener_tool, cp_list_listeners_tool};
 pub use listeners::{execute_get_listener, execute_list_listeners};
 
+// Re-export listener CRUD tools
+pub use listeners::{cp_create_listener_tool, cp_delete_listener_tool, cp_update_listener_tool};
+pub use listeners::{execute_create_listener, execute_delete_listener, execute_update_listener};
+
 pub use routes::cp_list_routes_tool;
 pub use routes::execute_list_routes;
+
+// Re-export route config CRUD tools
+pub use routes::{
+    cp_create_route_config_tool, cp_delete_route_config_tool, cp_update_route_config_tool,
+};
+pub use routes::{
+    execute_create_route_config, execute_delete_route_config, execute_update_route_config,
+};
 
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
@@ -29,8 +49,10 @@ use sqlx::SqlitePool;
 /// Get all available MCP tools.
 ///
 /// Returns a vector of all tool definitions that can be exposed to MCP clients.
+/// Includes both read-only tools (cp_list_*, cp_get_*) and CRUD tools (cp_create_*, cp_update_*, cp_delete_*).
 pub fn get_all_tools() -> Vec<Tool> {
     vec![
+        // Read-only tools
         cp_list_clusters_tool(),
         cp_get_cluster_tool(),
         cp_list_listeners_tool(),
@@ -38,12 +60,30 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_list_routes_tool(),
         cp_list_filters_tool(),
         cp_get_filter_tool(),
+        // Cluster CRUD tools
+        cp_create_cluster_tool(),
+        cp_update_cluster_tool(),
+        cp_delete_cluster_tool(),
+        // Listener CRUD tools
+        cp_create_listener_tool(),
+        cp_update_listener_tool(),
+        cp_delete_listener_tool(),
+        // Route config CRUD tools
+        cp_create_route_config_tool(),
+        cp_update_route_config_tool(),
+        cp_delete_route_config_tool(),
+        // Filter CRUD tools
+        cp_create_filter_tool(),
+        cp_update_filter_tool(),
+        cp_delete_filter_tool(),
     ]
 }
 
-/// Execute a tool by name.
+/// Execute a tool by name (non-cluster tools only).
 ///
 /// Routes tool execution to the appropriate handler based on tool name.
+/// Note: Cluster operations are handled separately via the handler because
+/// they use the internal API layer which requires XdsState.
 ///
 /// # Arguments
 ///
@@ -62,8 +102,9 @@ pub async fn execute_tool(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     match tool_name {
-        "cp_list_clusters" => execute_list_clusters(db_pool, team, args).await,
-        "cp_get_cluster" => execute_get_cluster(db_pool, team, args).await,
+        // Note: Cluster tools (cp_list_clusters, cp_get_cluster, cp_create_cluster,
+        // cp_update_cluster, cp_delete_cluster) are handled in handler.rs using
+        // the internal API layer with XdsState.
         "cp_list_listeners" => execute_list_listeners(db_pool, team, args).await,
         "cp_get_listener" => execute_get_listener(db_pool, team, args).await,
         "cp_list_routes" => execute_list_routes(db_pool, team, args).await,
@@ -80,9 +121,12 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        assert_eq!(tools.len(), 7);
+        // 7 read-only tools + 12 CRUD tools = 19 total
+        assert_eq!(tools.len(), 19);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+
+        // Read-only tools
         assert!(tool_names.contains(&"cp_list_clusters"));
         assert!(tool_names.contains(&"cp_get_cluster"));
         assert!(tool_names.contains(&"cp_list_listeners"));
@@ -90,6 +134,26 @@ mod tests {
         assert!(tool_names.contains(&"cp_list_routes"));
         assert!(tool_names.contains(&"cp_list_filters"));
         assert!(tool_names.contains(&"cp_get_filter"));
+
+        // Cluster CRUD tools
+        assert!(tool_names.contains(&"cp_create_cluster"));
+        assert!(tool_names.contains(&"cp_update_cluster"));
+        assert!(tool_names.contains(&"cp_delete_cluster"));
+
+        // Listener CRUD tools
+        assert!(tool_names.contains(&"cp_create_listener"));
+        assert!(tool_names.contains(&"cp_update_listener"));
+        assert!(tool_names.contains(&"cp_delete_listener"));
+
+        // Route config CRUD tools
+        assert!(tool_names.contains(&"cp_create_route_config"));
+        assert!(tool_names.contains(&"cp_update_route_config"));
+        assert!(tool_names.contains(&"cp_delete_route_config"));
+
+        // Filter CRUD tools
+        assert!(tool_names.contains(&"cp_create_filter"));
+        assert!(tool_names.contains(&"cp_update_filter"));
+        assert!(tool_names.contains(&"cp_delete_filter"));
     }
 
     #[tokio::test]

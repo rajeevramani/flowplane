@@ -2,7 +2,9 @@
 
 use crate::domain::mcp::SchemaSource;
 use crate::domain::{McpToolCategory, McpToolSourceType};
+use crate::mcp::protocol::Tool;
 use crate::storage::McpToolData;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -53,6 +55,10 @@ pub struct McpToolResponse {
     /// Source type: builtin, openapi, learned, or manual
     pub source_type: McpToolSourceType,
 
+    /// Whether this is a built-in tool (cannot be edited/disabled)
+    #[serde(default)]
+    pub is_builtin: bool,
+
     /// JSON Schema for tool input parameters
     pub input_schema: serde_json::Value,
 
@@ -102,6 +108,7 @@ impl From<McpToolData> for McpToolResponse {
             description: data.description,
             category: data.category,
             source_type: data.source_type,
+            is_builtin: false, // Database tools are not built-in
             input_schema: data.input_schema,
             output_schema: data.output_schema,
             learned_schema_id: data.learned_schema_id,
@@ -115,6 +122,37 @@ impl From<McpToolData> for McpToolResponse {
             confidence: data.confidence,
             created_at: data.created_at,
             updated_at: data.updated_at,
+        }
+    }
+}
+
+impl McpToolResponse {
+    /// Create an McpToolResponse from a built-in CP Tool definition.
+    ///
+    /// CP tools are hardcoded in the MCP handler and always enabled.
+    pub fn from_builtin_tool(tool: &Tool, team: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            id: format!("builtin:{}", tool.name),
+            team: team.to_string(),
+            name: tool.name.clone(),
+            description: Some(tool.description.clone()),
+            category: McpToolCategory::ControlPlane,
+            source_type: McpToolSourceType::Builtin,
+            is_builtin: true,
+            input_schema: tool.input_schema.clone(),
+            output_schema: None, // CP tools don't have output schemas
+            learned_schema_id: None,
+            schema_source: None,
+            route_id: None,
+            http_method: None,
+            http_path: None,
+            cluster_name: None,
+            listener_port: None,
+            enabled: true,         // CP tools are always enabled
+            confidence: Some(1.0), // Built-in tools have 100% confidence
+            created_at: now,
+            updated_at: now,
         }
     }
 }

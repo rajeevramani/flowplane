@@ -12,6 +12,7 @@ use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
 use crate::mcp::resources;
 use crate::mcp::tools;
+use crate::xds::XdsState;
 
 /// Negotiate MCP protocol version
 ///
@@ -32,16 +33,25 @@ fn negotiate_version(client_version: &str) -> Result<String, McpError> {
 }
 
 pub struct McpHandler {
-    #[allow(dead_code)]
     db_pool: Arc<SqlitePool>,
-    #[allow(dead_code)]
+    xds_state: Option<Arc<XdsState>>,
     team: String,
     initialized: bool,
 }
 
 impl McpHandler {
+    /// Create a new MCP handler with read-only capabilities
     pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
-        Self { db_pool, team, initialized: false }
+        Self { db_pool, xds_state: None, team, initialized: false }
+    }
+
+    /// Create a new MCP handler with full read/write capabilities
+    pub fn with_xds_state(
+        db_pool: Arc<SqlitePool>,
+        xds_state: Arc<XdsState>,
+        team: String,
+    ) -> Self {
+        Self { db_pool, xds_state: Some(xds_state), team, initialized: false }
     }
 
     /// Handle an incoming JSON-RPC request
@@ -191,6 +201,7 @@ impl McpHandler {
         debug!("Listing available tools");
 
         let tools = vec![
+            // Read operations
             tools::cp_list_clusters_tool(),
             tools::cp_get_cluster_tool(),
             tools::cp_list_listeners_tool(),
@@ -198,6 +209,23 @@ impl McpHandler {
             tools::cp_list_routes_tool(),
             tools::cp_list_filters_tool(),
             tools::cp_get_filter_tool(),
+            // Write operations (requires xds_state)
+            // Cluster CRUD
+            tools::cp_create_cluster_tool(),
+            tools::cp_update_cluster_tool(),
+            tools::cp_delete_cluster_tool(),
+            // Listener CRUD
+            tools::cp_create_listener_tool(),
+            tools::cp_update_listener_tool(),
+            tools::cp_delete_listener_tool(),
+            // Route config CRUD
+            tools::cp_create_route_config_tool(),
+            tools::cp_update_route_config_tool(),
+            tools::cp_delete_route_config_tool(),
+            // Filter CRUD
+            tools::cp_create_filter_tool(),
+            tools::cp_update_filter_tool(),
+            tools::cp_delete_filter_tool(),
         ];
 
         let result = ToolsListResult { tools, next_cursor: None };
@@ -227,10 +255,7 @@ impl McpHandler {
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
         let result = match params.name.as_str() {
-            "cp_list_clusters" => {
-                tools::execute_list_clusters(&self.db_pool, &self.team, args).await
-            }
-            "cp_get_cluster" => tools::execute_get_cluster(&self.db_pool, &self.team, args).await,
+            // Read operations (non-cluster)
             "cp_list_listeners" => {
                 tools::execute_list_listeners(&self.db_pool, &self.team, args).await
             }
@@ -238,6 +263,107 @@ impl McpHandler {
             "cp_list_routes" => tools::execute_list_routes(&self.db_pool, &self.team, args).await,
             "cp_list_filters" => tools::execute_list_filters(&self.db_pool, &self.team, args).await,
             "cp_get_filter" => tools::execute_get_filter(&self.db_pool, &self.team, args).await,
+            // Cluster operations (use internal API layer, require xds_state)
+            "cp_list_clusters" | "cp_get_cluster" |
+            // Write operations (require xds_state)
+            "cp_create_cluster"
+            | "cp_update_cluster"
+            | "cp_delete_cluster"
+            | "cp_create_listener"
+            | "cp_update_listener"
+            | "cp_delete_listener"
+            | "cp_create_route_config"
+            | "cp_update_route_config"
+            | "cp_delete_route_config"
+            | "cp_create_filter"
+            | "cp_update_filter"
+            | "cp_delete_filter" => {
+                let xds_state = match &self.xds_state {
+                    Some(state) => state,
+                    None => {
+                        return self.error_response(
+                            id,
+                            McpError::InternalError(
+                                "Operation not available: xds_state not configured"
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                };
+                match params.name.as_str() {
+                    // Cluster operations (use internal API layer)
+                    "cp_list_clusters" => {
+                        tools::execute_list_clusters(xds_state, &self.team, args).await
+                    }
+                    "cp_get_cluster" => {
+                        tools::execute_get_cluster(xds_state, &self.team, args).await
+                    }
+                    "cp_create_cluster" => {
+                        tools::execute_create_cluster(xds_state, &self.team, args).await
+                    }
+                    "cp_update_cluster" => {
+                        tools::execute_update_cluster(xds_state, &self.team, args).await
+                    }
+                    "cp_delete_cluster" => {
+                        tools::execute_delete_cluster(xds_state, &self.team, args).await
+                    }
+                    // Listener CRUD
+                    "cp_create_listener" => {
+                        tools::execute_create_listener(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    "cp_update_listener" => {
+                        tools::execute_update_listener(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    "cp_delete_listener" => {
+                        tools::execute_delete_listener(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    // Route config CRUD
+                    "cp_create_route_config" => {
+                        tools::execute_create_route_config(
+                            &self.db_pool,
+                            xds_state,
+                            &self.team,
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_update_route_config" => {
+                        tools::execute_update_route_config(
+                            &self.db_pool,
+                            xds_state,
+                            &self.team,
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_route_config" => {
+                        tools::execute_delete_route_config(
+                            &self.db_pool,
+                            xds_state,
+                            &self.team,
+                            args,
+                        )
+                        .await
+                    }
+                    // Filter CRUD
+                    "cp_create_filter" => {
+                        tools::execute_create_filter(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    "cp_update_filter" => {
+                        tools::execute_update_filter(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    "cp_delete_filter" => {
+                        tools::execute_delete_filter(&self.db_pool, xds_state, &self.team, args)
+                            .await
+                    }
+                    _ => unreachable!(),
+                }
+            }
             _ => {
                 return self.error_response(id, McpError::ToolNotFound(params.name));
             }

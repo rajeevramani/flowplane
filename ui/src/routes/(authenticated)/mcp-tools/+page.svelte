@@ -172,6 +172,9 @@
 
 	// Toggle tool enabled state
 	async function handleToggle(tool: McpTool) {
+		// Built-in tools cannot be toggled
+		if (tool.isBuiltin) return;
+
 		try {
 			await apiClient.updateMcpTool(currentTeam, tool.name, { enabled: !tool.enabled });
 			await loadTools();
@@ -188,6 +191,9 @@
 
 	// Open edit modal from detail modal
 	function handleEditTool(tool: McpTool) {
+		// Built-in tools cannot be edited
+		if (tool.isBuiltin) return;
+
 		selectedToolForModal = tool;
 		isDetailModalOpen = false;
 		isEditModalOpen = true;

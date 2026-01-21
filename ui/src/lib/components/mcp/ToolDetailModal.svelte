@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { X, Code, FileJson, AlertCircle, Edit, Sparkles, Database, Server } from 'lucide-svelte';
+	import { X, Code, FileJson, AlertCircle, Edit, Sparkles, Database, Server, Lock } from 'lucide-svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import type { McpTool } from '$lib/api/types';
@@ -75,6 +75,12 @@
 				<div class="flex items-center gap-3">
 					<Code class="w-6 h-6 text-blue-600" />
 					<h2 class="text-xl font-semibold text-gray-900">{tool.name}</h2>
+					{#if tool.isBuiltin}
+						<Badge variant="blue">
+							<Lock class="w-3 h-3 mr-1" />
+							Built-in
+						</Badge>
+					{/if}
 				</div>
 				<button
 					type="button"
@@ -205,7 +211,7 @@
 				class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-between gap-3 z-10"
 			>
 				<div>
-					{#if hasLearnedSchemaAvailable && onApplyLearned}
+					{#if hasLearnedSchemaAvailable && onApplyLearned && !tool.isBuiltin}
 						<Button variant="secondary" onclick={onApplyLearned}>
 							<Sparkles class="w-4 h-4 mr-2" />
 							Apply Learned Schema
@@ -213,10 +219,17 @@
 					{/if}
 				</div>
 				<div class="flex gap-3">
-					<Button variant="primary" onclick={handleEdit}>
-						<Edit class="w-4 h-4 mr-2" />
-						Edit Tool
-					</Button>
+					{#if tool.isBuiltin}
+						<span class="px-4 py-2 text-sm text-gray-500 flex items-center gap-2">
+							<Lock class="w-4 h-4" />
+							Built-in tools cannot be edited
+						</span>
+					{:else}
+						<Button variant="primary" onclick={handleEdit}>
+							<Edit class="w-4 h-4 mr-2" />
+							Edit Tool
+						</Button>
+					{/if}
 					<Button variant="ghost" onclick={onClose}> Close </Button>
 				</div>
 			</div>

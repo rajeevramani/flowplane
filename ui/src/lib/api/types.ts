@@ -1608,6 +1608,8 @@ export interface McpTool {
 	description: string | null;
 	category: McpToolCategory;
 	sourceType: McpToolSourceType;
+	/** Whether this is a built-in tool (cannot be edited/disabled) */
+	isBuiltin: boolean;
 	enabled: boolean;
 	confidence: number | null;
 	httpMethod: string | null;

@@ -28,6 +28,7 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod errors;
+pub mod internal_api;
 pub mod mcp;
 pub mod observability;
 pub mod openapi;
