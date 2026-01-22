@@ -116,6 +116,9 @@ tempfile = "3.14"
 which = "6.0"
 rustls-pemfile = "2.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
+wiremock = "0.6"
+# reqwest with cookies for e2e tests (overrides main dep for tests)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
 
 [[bench]]
 name = "token_repository"
