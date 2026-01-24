@@ -46,6 +46,17 @@ pub struct EnvoyXdsTlsConfig {
     pub client_key: Option<PathBuf>,
 }
 
+/// Response from a proxied request with headers
+#[derive(Debug)]
+pub struct ProxyResponse {
+    /// HTTP status code
+    pub status: u16,
+    /// Response headers
+    pub headers: HashMap<String, String>,
+    /// Response body
+    pub body: String,
+}
+
 impl EnvoyConfig {
     /// Create a basic config pointing to local xDS
     pub fn new(admin_port: u16, xds_port: u16) -> Self {
@@ -205,6 +216,18 @@ impl EnvoyHandle {
         path: &str,
     ) -> anyhow::Result<(u16, String)> {
         proxy_get(port, host, path).await
+    }
+
+    /// Send a GET request through Envoy proxy and return response with headers
+    pub async fn proxy_get_with_headers(
+        &self,
+        port: u16,
+        host: &str,
+        path: &str,
+    ) -> anyhow::Result<ProxyResponse> {
+        let (status, headers, body) =
+            self.proxy_request(port, Method::GET, host, path, HashMap::new(), None).await?;
+        Ok(ProxyResponse { status, headers, body })
     }
 
     /// Send a request with custom headers through Envoy proxy

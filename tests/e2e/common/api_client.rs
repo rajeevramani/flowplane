@@ -735,6 +735,75 @@ impl ApiClient {
         Ok(result)
     }
 
+    /// List clusters for a team
+    pub async fn list_clusters(
+        &self,
+        token: &str,
+        team: Option<&str>,
+    ) -> anyhow::Result<Vec<ClusterResponse>> {
+        let url = match team {
+            Some(t) => format!("{}/api/v1/clusters?team={}", self.base_url, t),
+            None => format!("{}/api/v1/clusters", self.base_url),
+        };
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List clusters failed: {} - {}", status, text);
+        }
+
+        let result: Vec<ClusterResponse> = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Get a filter by ID
+    pub async fn get_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<FilterResponse> {
+        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Get filter failed: {} - {}", status, text);
+        }
+
+        let result: FilterResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Delete a filter by ID
+    pub async fn delete_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Delete filter failed: {} - {}", status, text);
+        }
+
+        Ok(())
+    }
+
     /// Generic GET request with token auth
     pub async fn get(&self, token: &str, path: &str) -> anyhow::Result<(StatusCode, Value)> {
         let url = format!("{}{}", self.base_url, path);
