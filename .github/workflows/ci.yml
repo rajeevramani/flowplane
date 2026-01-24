@@ -91,6 +91,40 @@ jobs:
       - name: Run audit
         run: cargo audit
 
+  e2e-smoke:
+    name: E2E Smoke (PR)
+    runs-on: ubuntu-latest
+    needs: [test, clippy]
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install sqlx-cli (sqlite)
+        run: cargo install sqlx-cli --no-default-features --features sqlite
+      - name: Create database file
+        run: touch /tmp/flowplane_e2e_smoke.sqlite
+      - name: Run migrations
+        run: sqlx migrate run
+        env:
+          DATABASE_URL: sqlite:///tmp/flowplane_e2e_smoke.sqlite
+      - name: Attempt to install Envoy (best-effort)
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y envoy || true
+      - name: Check Envoy availability
+        run: which envoy && envoy --version || echo "Envoy not installed, tests will skip"
+      - name: Run E2E smoke tests
+        run: |
+          set -e
+          export RUN_E2E=1
+          export RUST_LOG=info
+          export DATABASE_URL=sqlite:///tmp/flowplane_e2e_smoke.sqlite
+          export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
+          cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1
+
   e2e-full:
     name: E2E Full (main/nightly)
     runs-on: ubuntu-latest
@@ -123,22 +157,7 @@ jobs:
           export RUST_LOG=info
           export DATABASE_URL=sqlite:///tmp/flowplane_e2e_full.sqlite
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
-          cargo test --test smoke_boot_and_route -- --ignored --nocapture || true
-          cargo test --test smoke_no_nacks -- --ignored --nocapture || true
-          cargo test --test config_update_add_route -- --ignored --nocapture || true
-          cargo test --test config_update_change_upstream -- --ignored --nocapture || true
-          cargo test --test config_delete_cleanup -- --ignored --nocapture || true
-          cargo test --test filters -- --ignored --nocapture || true
-          cargo test --test filters_rate_limit -- --ignored --nocapture || true
-          cargo test --test filters_header_mutation -- --ignored --nocapture || true
-          cargo test --test filters_health_check -- --ignored --nocapture || true
-          cargo test --test filters_custom_response -- --ignored --nocapture || true
-          cargo test --test listener_scoping -- --ignored --nocapture || true
-          cargo test --test resilience_restart_envoy -- --ignored --nocapture || true
-          cargo test --test resilience_restart_cp -- --ignored --nocapture || true
-          cargo test --test multi_envoy_consistency -- --ignored --nocapture || true
-          cargo test --test negative_conflicts -- --ignored --nocapture || true
-          cargo test --test negative_invalid_payload -- --ignored --nocapture || true
+          cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1
       - name: Collect test artifacts
         if: ${{ always() }}
         run: |
