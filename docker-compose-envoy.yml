@@ -1,0 +1,45 @@
+# Envoy proxy for platform-admin team
+# Can be composed with any other docker-compose configuration
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose-envoy.yml up -d
+#
+# Or via Make:
+#   make up ENVOY=1
+#
+# Access:
+#   - Envoy Listener: http://localhost:10000
+#   - Envoy Admin:    http://localhost:9901
+
+services:
+  envoy-platform-admin:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: flowplane-envoy-platform-admin
+    entrypoint: ["/usr/local/bin/envoy"]
+    command:
+      - --config-path
+      - /etc/envoy/envoy-bootstrap.yaml
+      - --log-level
+      - info
+    ports:
+      - "10000:10000"  # Default HTTP listener
+      - "10001-10020:10001-10020"  # Dynamic listener range
+      - "9901:9901"    # Admin interface
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    volumes:
+      - ./envoy-bootstrap-platform-admin.yml:/etc/envoy/envoy-bootstrap.yaml:ro
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9901/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  flowplane-network:
+    external: true

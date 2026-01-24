@@ -7,8 +7,10 @@
 #   make up-tracing      - Backend + UI + Jaeger
 #   make up-full         - Backend + UI + Jaeger + Vault + httpbin
 #
-# Optional httpbin:
+# Optional services:
 #   make up HTTPBIN=1    - Add httpbin to any configuration
+#   make up ENVOY=1      - Add platform-admin Envoy proxy
+#   make up ENVOY=1 HTTPBIN=1  - Combine multiple options
 #
 # Operations:
 #   make down            - Stop all services
@@ -54,6 +56,13 @@ else
     HTTPBIN_COMPOSE :=
 endif
 
+# Conditional envoy - adds platform-admin Envoy proxy to any configuration
+ifdef ENVOY
+    ENVOY_COMPOSE := -f docker-compose-envoy.yml
+else
+    ENVOY_COMPOSE :=
+endif
+
 # =============================================================================
 # Help
 # =============================================================================
@@ -69,6 +78,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(GREEN)Optional Services:$(RESET)"
 	@echo "  $(CYAN)HTTPBIN=1$(RESET)            - Add httpbin (e.g., make up HTTPBIN=1)"
+	@echo "  $(CYAN)ENVOY=1$(RESET)              - Add platform-admin Envoy proxy (e.g., make up ENVOY=1)"
 	@echo ""
 	@echo "$(GREEN)Build Targets:$(RESET)"
 	@echo "  $(CYAN)make build$(RESET)           - Build combined Docker image"
@@ -92,6 +102,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
 	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
+	@echo "  $(CYAN)make up ENVOY=1 HTTPBIN=1$(RESET)  - Backend + Envoy + httpbin"
 	@echo "  $(CYAN)make up-full$(RESET)               - Full stack with all services"
 
 # =============================================================================
@@ -100,7 +111,7 @@ help: ## Show this help message
 
 up: _ensure-network ## Start backend + UI
 	@echo "$(CYAN)Starting Flowplane (Backend + UI)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -110,10 +121,15 @@ up: _ensure-network ## Start backend + UI
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
+ifdef ENVOY
+	@echo "  Envoy (platform-admin):"
+	@echo "    Listener: http://localhost:10000"
+	@echo "    Admin:    http://localhost:9901"
+endif
 
 up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "$(CYAN)Starting Flowplane with Vault (mTLS)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -124,13 +140,18 @@ up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
+ifdef ENVOY
+	@echo "  Envoy (platform-admin):"
+	@echo "    Listener: http://localhost:10000"
+	@echo "    Admin:    http://localhost:9901"
+endif
 	@echo ""
 	@echo "$(YELLOW)Next: Run PKI setup$(RESET)"
 	@echo "  make vault-setup"
 
 up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "$(CYAN)Starting Flowplane with Jaeger (tracing)...$(RESET)"
-	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) up -d
+	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -140,6 +161,11 @@ up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "  Jaeger UI:  http://localhost:16686"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef ENVOY
+	@echo "  Envoy (platform-admin):"
+	@echo "    Listener: http://localhost:10000"
+	@echo "    Admin:    http://localhost:9901"
 endif
 
 up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
@@ -166,6 +192,7 @@ down: ## Stop all services
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-httpbin.yml down 2>/dev/null || true
+	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-envoy.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-monitoring.yml down 2>/dev/null || true
 	@echo "$(GREEN)All services stopped.$(RESET)"
 
