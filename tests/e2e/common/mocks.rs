@@ -12,7 +12,7 @@ use std::sync::Arc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use wiremock::matchers::{header, method, path, path_regex};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// Collection of mock services for E2E tests
@@ -59,21 +59,32 @@ pub struct TestJwtClaims {
 
 impl MockServices {
     /// Start basic mock services (echo only)
+    ///
+    /// The echo mock is "smart" and supports several path patterns:
+    /// - `/status/{code}` - returns that status code (like httpbin)
+    /// - Path ending in `/fail` - returns 500
+    /// - Path ending in `/error` - returns 500
+    /// - Path containing `/503` - returns 503
+    /// - All other paths return 200 with request info
     pub async fn start_basic() -> Self {
         let echo = MockServer::start().await;
 
-        // Setup echo endpoint that returns request info
+        // Setup smart echo endpoint that returns different status codes based on path
         Mock::given(method("GET"))
             .and(path_regex(r".*"))
             .respond_with(|req: &Request| {
+                let path = req.url.path();
+                let status_code = determine_status_code_from_path(path);
+
                 let body = json!({
-                    "path": req.url.path(),
+                    "path": path,
                     "method": req.method.to_string(),
                     "headers": req.headers.iter()
                         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                         .collect::<std::collections::HashMap<_, _>>(),
+                    "status": status_code,
                 });
-                ResponseTemplate::new(200)
+                ResponseTemplate::new(status_code)
                     .set_body_json(body)
                     .insert_header("content-type", "application/json")
             })
@@ -83,15 +94,19 @@ impl MockServices {
         Mock::given(method("POST"))
             .and(path_regex(r".*"))
             .respond_with(|req: &Request| {
+                let path = req.url.path();
+                let status_code = determine_status_code_from_path(path);
+
                 let body = json!({
-                    "path": req.url.path(),
+                    "path": path,
                     "method": req.method.to_string(),
                     "headers": req.headers.iter()
                         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                         .collect::<std::collections::HashMap<_, _>>(),
                     "body": String::from_utf8_lossy(&req.body).to_string(),
+                    "status": status_code,
                 });
-                ResponseTemplate::new(200)
+                ResponseTemplate::new(status_code)
                     .set_body_json(body)
                     .insert_header("content-type", "application/json")
             })
@@ -144,31 +159,48 @@ impl MockServices {
         let mut services = Self::start_basic().await;
         let ext_authz = MockServer::start().await;
 
-        // ext_authz that allows requests with X-Ext-Authz-Allow header
-        Mock::given(method("POST"))
-            .and(path("/auth"))
-            .and(header("x-ext-authz-allow", "true"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "status": {"code": 0},
-                "ok_response": {
-                    "headers": [
-                        {"header": {"key": "x-ext-authz-check-received", "value": "true"}}
-                    ]
-                }
-            })))
-            .mount(&ext_authz)
-            .await;
+        // Debug mock: Returns what headers were received
+        // This helps debug whether headers are being forwarded correctly
+        // Note: Envoy's HTTP ext_authz uses the same method as the original request
+        // So we need to accept both GET and POST (any method starting with /auth)
+        Mock::given(path_regex("^/auth.*"))
+            .respond_with(|req: &Request| {
+                // Log all received headers for debugging
+                let header_names: Vec<String> = req
+                    .headers
+                    .iter()
+                    .map(|(name, value)| format!("{}={}", name, value.to_str().unwrap_or("")))
+                    .collect();
+                println!("[ext_authz mock] Received headers: {:?}", header_names);
+                println!("[ext_authz mock] Request path: {}", req.url.path());
 
-        // ext_authz that denies requests without the header
-        Mock::given(method("POST"))
-            .and(path("/auth"))
-            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-                "status": {"code": 7, "message": "PERMISSION_DENIED"},
-                "denied_response": {
-                    "status": {"code": "Forbidden"},
-                    "body": "Access denied by ext_authz"
+                // Check if x-ext-authz-allow header is present
+                let allow_header = req
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.as_str().eq_ignore_ascii_case("x-ext-authz-allow"));
+
+                if allow_header.is_some() {
+                    println!("[ext_authz mock] ALLOW - header found");
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "status": {"code": 0},
+                        "ok_response": {
+                            "headers": [
+                                {"header": {"key": "x-ext-authz-check-received", "value": "true"}}
+                            ]
+                        }
+                    }))
+                } else {
+                    println!("[ext_authz mock] DENY - header not found");
+                    ResponseTemplate::new(403).set_body_json(json!({
+                        "status": {"code": 7, "message": "PERMISSION_DENIED"},
+                        "denied_response": {
+                            "status": {"code": "Forbidden"},
+                            "body": "Access denied by ext_authz"
+                        }
+                    }))
                 }
-            })))
+            })
             .mount(&ext_authz)
             .await;
 
@@ -181,21 +213,48 @@ impl MockServices {
         let mut services = Self::start_with_auth().await;
         let ext_authz = MockServer::start().await;
 
-        // Setup ext_authz (same as above)
-        Mock::given(method("POST"))
-            .and(path("/auth"))
-            .and(header("x-ext-authz-allow", "true"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "status": {"code": 0}
-            })))
-            .mount(&ext_authz)
-            .await;
+        // ext_authz mock that checks for x-ext-authz-allow header
+        // - If header is present: return 200 (allow)
+        // - If header is missing: return 403 (deny)
+        // Note: Envoy's HTTP ext_authz uses the same method as the original request
+        Mock::given(path_regex("^/auth.*"))
+            .respond_with(|req: &Request| {
+                // Log all received headers for debugging
+                let header_names: Vec<String> = req
+                    .headers
+                    .iter()
+                    .map(|(name, value)| format!("{}={}", name, value.to_str().unwrap_or("")))
+                    .collect();
+                println!("[ext_authz mock] Received headers: {:?}", header_names);
+                println!("[ext_authz mock] Request path: {}", req.url.path());
 
-        Mock::given(method("POST"))
-            .and(path("/auth"))
-            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-                "status": {"code": 7, "message": "PERMISSION_DENIED"}
-            })))
+                // Check if x-ext-authz-allow header is present
+                let allow_header = req
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.as_str().eq_ignore_ascii_case("x-ext-authz-allow"));
+
+                if allow_header.is_some() {
+                    println!("[ext_authz mock] ALLOW - header found");
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "status": {"code": 0},
+                        "ok_response": {
+                            "headers": [
+                                {"header": {"key": "x-ext-authz-check-received", "value": "true"}}
+                            ]
+                        }
+                    }))
+                } else {
+                    println!("[ext_authz mock] DENY - header not found");
+                    ResponseTemplate::new(403).set_body_json(json!({
+                        "status": {"code": 7, "message": "PERMISSION_DENIED"},
+                        "denied_response": {
+                            "status": {"code": "Forbidden"},
+                            "body": "Access denied by ext_authz"
+                        }
+                    }))
+                }
+            })
             .mount(&ext_authz)
             .await;
 
@@ -340,6 +399,67 @@ impl MockServices {
     }
 }
 
+/// Determine HTTP status code based on path patterns
+///
+/// Supports:
+/// - `/status/{code}` - returns that status code (like httpbin)
+/// - Path ending in `/fail` - returns 500
+/// - Path ending in `/error` - returns 500
+/// - Path containing `/503` - returns 503
+/// - Path containing `/500` - returns 500
+/// - Path containing `/endpoint1` with `/multi` - returns 500 (for multi-endpoint tests)
+/// - All other paths return 200
+fn determine_status_code_from_path(path: &str) -> u16 {
+    // Check for /status/{code} pattern (like httpbin)
+    if let Some(status_part) = path.strip_prefix("/status/") {
+        if let Ok(code) = status_part.split('/').next().unwrap_or("200").parse::<u16>() {
+            if (100..=599).contains(&code) {
+                return code;
+            }
+        }
+    }
+
+    // Check for paths ending in /fail or /error
+    if path.ends_with("/fail") || path.ends_with("/error") {
+        return 500;
+    }
+
+    // Check for paths containing specific status codes
+    if path.contains("/503") {
+        return 503;
+    }
+    if path.contains("/500") {
+        return 500;
+    }
+    if path.contains("/502") {
+        return 502;
+    }
+    if path.contains("/504") {
+        return 504;
+    }
+    if path.contains("/429") {
+        return 429;
+    }
+    if path.contains("/401") {
+        return 401;
+    }
+    if path.contains("/403") {
+        return 403;
+    }
+    if path.contains("/404") {
+        return 404;
+    }
+
+    // Special case for multi-endpoint outlier detection tests
+    // /testing/multi/endpoint1 should return 500, endpoint2 returns 200
+    if path.contains("/multi/endpoint1") {
+        return 500;
+    }
+
+    // Default to 200
+    200
+}
+
 /// Generate test JWKS configuration with RSA key pair
 ///
 /// Uses a static 2048-bit RSA key pair for testing purposes.
@@ -347,34 +467,34 @@ impl MockServices {
 fn generate_test_jwks() -> JwksConfig {
     let kid = "e2e-test-key-1".to_string();
 
-    // Static RSA 2048-bit private key for testing
+    // Static RSA 2048-bit private key for testing (PKCS#1 format)
     // Generated specifically for E2E tests - NOT for production
     let private_key_pem = r#"-----BEGIN RSA PRIVATE KEY-----
-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
+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
 -----END RSA PRIVATE KEY-----"#
         .to_string();
 
@@ -386,7 +506,7 @@ B5kR1T7+hFNKaMJf2gBAGZKy0xHD7KNdaQ2qAQwUqKKEr4XGAiBU
             "use": "sig",
             "alg": "RS256",
             "kid": &kid,
-            "n": "u1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gunVTLw7onLRnrq0_IzW7yWR7QkrmBL7jTKEn5u-qKhbwKfBstIs-bMY2Zkp18gnTxkLxUq9fKHjD8BccrxIhowNnkm8d1YFjfplPvl7PoLZd7xqJpPqJ3mziGSLZ5FQy_gmQXFJhTKdBBglmznPNOs7LXPJhYXRNa_kHlSvfq7zAN7Kj2ZlL8G0xTzHRx0DZSQaIkC4Vh1jbjpBxVhFqyKdG64FfYzz4SqFNiD6fXkDdU8mLHPJXuvS9jeFM7-AONXl2_zWjIK3ofN9fwOOdO4NmPgKqFGfhT_AMmNfw",
+            "n": "0hM-IgJX-PIXXcPUnx5lNyTPlXbll--juKxgsL6iEYjy25uDJ8up-m5NxKeiE4WqYm5oQ1dcCfKX_8tKAclF1bjLPd75j0ckvixHa3hgT9VXPTx51zFkYmiVNeNoWF9mT0VlDZuujf82XGkyIDzSFS0C4nzDxXxTqPiRmYzflrDqTCmFTnDIkamht4kgaeflqA7kn7Xu-e3j9Lo8zJn0YiddmOOCOpFbYCFvxJuFrHwBCdQnIBIcqDwpnAzJG7LHBhxsgahSyaUQx_z9IUrRotIq0pc0xJX6Fp0kLokBAhklKGs1wPZvAD3Y_DgZj4-UuSGvflXhU_qrBJLsuOMBrQ",
             "e": "AQAB"
         }]
     });

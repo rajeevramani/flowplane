@@ -75,25 +75,24 @@ impl RateLimitBuilder {
         self
     }
 
+    /// Build the config value (inner config only, without type wrapper)
+    /// The API client adds the wrapper when creating filters
     pub fn build(self) -> Value {
         json!({
-            "type": "local_rate_limit",
-            "config": {
-                "stat_prefix": self.stat_prefix,
-                "token_bucket": {
-                    "max_tokens": self.max_tokens,
-                    "tokens_per_fill": self.tokens_per_fill,
-                    "fill_interval_ms": self.fill_interval_ms
-                },
-                "status_code": self.status_code,
-                "filter_enabled": {
-                    "numerator": self.filter_enabled_percent,
-                    "denominator": "hundred"
-                },
-                "filter_enforced": {
-                    "numerator": self.filter_enforced_percent,
-                    "denominator": "hundred"
-                }
+            "stat_prefix": self.stat_prefix,
+            "token_bucket": {
+                "max_tokens": self.max_tokens,
+                "tokens_per_fill": self.tokens_per_fill,
+                "fill_interval_ms": self.fill_interval_ms
+            },
+            "status_code": self.status_code,
+            "filter_enabled": {
+                "numerator": self.filter_enabled_percent,
+                "denominator": "hundred"
+            },
+            "filter_enforced": {
+                "numerator": self.filter_enforced_percent,
+                "denominator": "hundred"
             }
         })
     }
@@ -134,6 +133,8 @@ impl HeaderMutationBuilder {
         self
     }
 
+    /// Build the config value (inner config only, without type wrapper)
+    /// API expects flat structure: { key, value, append } not nested { header: {...}, append_action }
     pub fn build(self) -> Value {
         let mut config = json!({});
 
@@ -142,9 +143,12 @@ impl HeaderMutationBuilder {
                 .response_headers
                 .into_iter()
                 .map(|(key, value, action)| {
+                    // Convert append_action to boolean append
+                    let append = action.contains("APPEND");
                     json!({
-                        "header": {"key": key, "value": value},
-                        "append_action": action
+                        "key": key,
+                        "value": value,
+                        "append": append
                     })
                 })
                 .collect();
@@ -156,9 +160,11 @@ impl HeaderMutationBuilder {
                 .request_headers
                 .into_iter()
                 .map(|(key, value, action)| {
+                    let append = action.contains("APPEND");
                     json!({
-                        "header": {"key": key, "value": value},
-                        "append_action": action
+                        "key": key,
+                        "value": value,
+                        "append": append
                     })
                 })
                 .collect();
@@ -245,7 +251,7 @@ impl JwtAuthBuilder {
                         "http_uri": {
                             "uri": p.jwks_uri,
                             "cluster": p.jwks_cluster,
-                            "timeout_seconds": 5
+                            "timeout_ms": 5000
                         }
                     },
                     "forward": p.forward
@@ -261,6 +267,7 @@ impl JwtAuthBuilder {
             })
             .collect();
 
+        // Note: PathMatch uses externally tagged enum format {"Prefix": "/"} not {"type": "prefix", "value": "/"}
         let rules: Vec<Value> = self
             .rules
             .into_iter()
@@ -275,7 +282,7 @@ impl JwtAuthBuilder {
                     }
                 };
                 json!({
-                    "match": {"path": {"type": "prefix", "value": r.path_prefix}},
+                    "match": {"path": {"Prefix": r.path_prefix}},
                     "requires": requires
                 })
             })
@@ -351,6 +358,7 @@ impl CorsBuilder {
         self
     }
 
+    /// Build the config value (inner config only, without type wrapper)
     pub fn build(self) -> Value {
         let allow_origin: Vec<Value> =
             self.allow_origins.into_iter().map(|(t, v)| json!({"type": t, "value": v})).collect();
@@ -371,10 +379,7 @@ impl CorsBuilder {
         }
 
         json!({
-            "type": "cors",
-            "config": {
-                "policy": policy
-            }
+            "policy": policy
         })
     }
 }
@@ -388,6 +393,7 @@ pub struct ExtAuthzBuilder {
     with_request_body: bool,
     max_request_bytes: Option<u32>,
     allow_partial_message: bool,
+    allowed_headers: Vec<String>,
 }
 
 impl ExtAuthzBuilder {
@@ -400,6 +406,8 @@ impl ExtAuthzBuilder {
             with_request_body: false,
             max_request_bytes: None,
             allow_partial_message: false,
+            // Default: forward x-ext-authz-allow header for test mock compatibility
+            allowed_headers: vec!["x-ext-authz-allow".to_string()],
         }
     }
 
@@ -425,24 +433,34 @@ impl ExtAuthzBuilder {
         self
     }
 
+    /// Add headers to forward to the authz service
+    pub fn allowed_headers(mut self, headers: Vec<&str>) -> Self {
+        self.allowed_headers = headers.iter().map(|h| h.to_string()).collect();
+        self
+    }
+
+    /// Build the config value (inner config only, without type wrapper)
+    /// API expects: { service: { type: "http", server_uri: {...}, path_prefix: "...", authorization_request: {...} }, ... }
     pub fn build(self) -> Value {
         let mut config = json!({
-            "type": "ext_authz",
-            "config": {
-                "http_service": {
-                    "server_uri": {
-                        "cluster": self.cluster,
-                        "uri": format!("http://authz{}", self.path_prefix),
-                        "timeout_seconds": self.timeout_seconds
-                    },
-                    "path_prefix": self.path_prefix
+            "service": {
+                "type": "http",
+                "server_uri": {
+                    "cluster": self.cluster,
+                    "uri": format!("http://{}", self.cluster),
+                    "timeout_ms": (self.timeout_seconds as u64) * 1000
                 },
-                "failure_mode_allow": self.failure_mode_allow
-            }
+                "path_prefix": self.path_prefix,
+                "authorization_request": {
+                    "allowed_headers": self.allowed_headers,
+                    "headers_to_add": []
+                }
+            },
+            "failure_mode_allow": self.failure_mode_allow
         });
 
         if self.with_request_body {
-            config["config"]["with_request_body"] = json!({
+            config["with_request_body"] = json!({
                 "max_request_bytes": self.max_request_bytes,
                 "allow_partial_message": self.allow_partial_message,
                 "pack_as_bytes": false
@@ -499,29 +517,27 @@ impl CompressorBuilder {
         self
     }
 
+    /// Build the config value (inner config only, without type wrapper)
     pub fn build(self) -> Value {
         json!({
-            "type": "compressor",
-            "config": {
-                "response_direction_config": {
-                    "common_config": {
-                        "min_content_length": self.min_content_length,
-                        "content_type": self.content_types,
-                        "enabled": {
-                            "default_value": true,
-                            "runtime_key": "compression_enabled"
-                        }
-                    },
-                    "disable_on_etag_header": self.disable_on_etag_header,
-                    "remove_accept_encoding_header": self.remove_accept_encoding_header
-                },
-                "compressor_library": {
-                    "type": "gzip",
-                    "config": {
-                        "compression_level": self.compression_level,
-                        "window_bits": self.window_bits,
-                        "memory_level": self.memory_level
+            "response_direction_config": {
+                "common_config": {
+                    "min_content_length": self.min_content_length,
+                    "content_type": self.content_types,
+                    "enabled": {
+                        "default_value": true,
+                        "runtime_key": "compression_enabled"
                     }
+                },
+                "disable_on_etag_header": self.disable_on_etag_header,
+                "remove_accept_encoding_header": self.remove_accept_encoding_header
+            },
+            "compressor_library": {
+                "type": "gzip",
+                "config": {
+                    "compression_level": self.compression_level,
+                    "window_bits": self.window_bits,
+                    "memory_level": self.memory_level
                 }
             }
         })
@@ -529,6 +545,22 @@ impl CompressorBuilder {
 }
 
 /// Builder for custom_response filter configuration
+///
+/// Backend expects:
+/// ```json
+/// {
+///   "matchers": [
+///     {
+///       "status_code": { "type": "exact", "code": 500 },
+///       "response": {
+///         "status_code": 503,  // optional override
+///         "body": "...",
+///         "headers": { "content-type": "application/json" }
+///       }
+///     }
+///   ]
+/// }
+/// ```
 pub struct CustomResponseBuilder {
     matchers: Vec<CustomResponseMatcher>,
 }
@@ -566,32 +598,31 @@ impl CustomResponseBuilder {
             .matchers
             .into_iter()
             .map(|m| {
-                let mut matcher = json!({
-                    "matcher": {
-                        "status_code_matcher": {
-                            "match_type": "exact",
-                            "value": m.status_code_match
-                        }
-                    },
-                    "response": {
-                        "body": {
-                            "inline_string": m.body
-                        },
-                        "content_type": m.content_type
-                    }
+                // Build headers map
+                let mut headers = serde_json::Map::new();
+                headers.insert("content-type".to_string(), json!(m.content_type));
+
+                // Build response object
+                let mut response = json!({
+                    "body": m.body,
+                    "headers": headers
                 });
+
+                // Add status_code to response if override is specified
                 if let Some(override_status) = m.status_code_override {
-                    matcher["response"]["status_code"] = json!(override_status);
+                    response["status_code"] = json!(override_status);
                 }
-                matcher
+
+                json!({
+                    "status_code": { "type": "exact", "code": m.status_code_match },
+                    "response": response
+                })
             })
             .collect();
 
+        // Return inner config matching backend's CustomResponseConfig.matchers field
         json!({
-            "type": "custom_response",
-            "config": {
-                "custom_response_matchers": matchers
-            }
+            "matchers": matchers
         })
     }
 }
@@ -804,9 +835,10 @@ mod tests {
     fn test_rate_limit_builder() {
         let config = rate_limit().max_tokens(5).fill_interval_ms(30000).status_code(429).build();
 
-        assert_eq!(config["type"], "local_rate_limit");
-        assert_eq!(config["config"]["token_bucket"]["max_tokens"], 5);
-        assert_eq!(config["config"]["status_code"], 429);
+        // Config is inner config only (no type wrapper)
+        assert_eq!(config["token_bucket"]["max_tokens"], 5);
+        assert_eq!(config["status_code"], 429);
+        assert_eq!(config["stat_prefix"], "rate_limit");
     }
 
     #[test]
@@ -819,6 +851,9 @@ mod tests {
         assert!(config["response_headers_to_add"].is_array());
         let headers = config["response_headers_to_add"].as_array().unwrap();
         assert_eq!(headers.len(), 2);
+        // Verify flat structure with key, value, append
+        assert_eq!(headers[0]["key"], "X-Custom");
+        assert_eq!(headers[0]["value"], "value");
     }
 
     #[test]
@@ -829,8 +864,8 @@ mod tests {
             .allow_credentials(true)
             .build();
 
-        assert_eq!(config["type"], "cors");
-        assert!(config["config"]["policy"]["allow_credentials"].as_bool().unwrap());
+        // Config is inner config only (no type wrapper)
+        assert!(config["policy"]["allow_credentials"].as_bool().unwrap());
     }
 
     #[test]

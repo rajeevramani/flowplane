@@ -21,10 +21,11 @@ use crate::common::{
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_100_initialize_app() {
-    let harness =
-        TestHarness::start(TestHarnessConfig::new("test_100_initialize_app").without_envoy())
-            .await
-            .expect("Failed to start harness");
+    let harness = TestHarness::start(
+        TestHarnessConfig::new("test_100_initialize_app").isolated().without_envoy(),
+    )
+    .await
+    .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -50,9 +51,10 @@ async fn test_100_initialize_app() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_101_login() {
-    let harness = TestHarness::start(TestHarnessConfig::new("test_101_login").without_envoy())
-        .await
-        .expect("Failed to start harness");
+    let harness =
+        TestHarness::start(TestHarnessConfig::new("test_101_login").isolated().without_envoy())
+            .await
+            .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -82,10 +84,11 @@ async fn test_101_login() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_102_create_admin_token() {
-    let harness =
-        TestHarness::start(TestHarnessConfig::new("test_102_create_admin_token").without_envoy())
-            .await
-            .expect("Failed to start harness");
+    let harness = TestHarness::start(
+        TestHarnessConfig::new("test_102_create_admin_token").isolated().without_envoy(),
+    )
+    .await
+    .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -127,9 +130,9 @@ async fn test_103_create_team() {
     let api = ApiClient::new(harness.api_url());
 
     // Setup dev context (bootstrap + login + admin token)
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_103_create_team").await.expect("Setup should succeed");
 
-    // Verify teams were created
+    // Verify teams were created (with unique names)
     assert!(!ctx.team_a_name.is_empty(), "Team A should be created");
     assert!(!ctx.team_b_name.is_empty(), "Team B should be created");
     assert!(!ctx.team_a_id.is_empty(), "Team A should have valid ID");
@@ -151,25 +154,27 @@ async fn test_300_import_openapi() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    // Setup dev context with unique teams for this test
+    let ctx =
+        setup_dev_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
 
     // Create OpenAPI spec pointing to mock echo server
+    // Use unique domain and path to avoid conflicts with other tests
     let echo_endpoint = harness.echo_endpoint();
     let spec = json!({
         "openapi": "3.0.0",
         "info": {
             "title": "E2E Test API",
             "version": "1.0.0",
-            "x-flowplane-domain": "api.e2e.local"
+            "x-flowplane-domain": "openapi.e2e.local"
         },
         "servers": [
             { "url": format!("http://{}", echo_endpoint) }
         ],
         "paths": {
-            "/testing/echo": {
+            "/testing/openapi/echo": {
                 "get": {
-                    "operationId": "echo-test",
+                    "operationId": "openapi-echo-test",
                     "responses": {
                         "200": { "description": "Success" }
                     }
@@ -189,8 +194,11 @@ async fn test_300_import_openapi() {
 
     // If Envoy is available, verify routing works
     if harness.has_envoy() {
+        // Delay before calling Envoy to allow xDS propagation
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
         let body = with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("api.e2e.local", "/testing/echo", 200).await
+            harness.wait_for_route("openapi.e2e.local", "/testing/openapi/echo", 200).await
         })
         .await
         .expect("Route should converge");
@@ -212,8 +220,9 @@ async fn test_400_team_isolation() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    // Setup dev context with unique teams for this test
+    let ctx =
+        setup_dev_context(&api, "test_400_team_isolation").await.expect("Setup should succeed");
 
     // Create a team-scoped token for Team A
     let team_a_token =
@@ -285,19 +294,20 @@ async fn test_500_full_routing_setup() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    // Setup dev context with unique teams for this test
+    let ctx =
+        setup_dev_context(&api, "test_500_full_routing_setup").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
     let (host, port) = (parts[0], parts[1].parse::<u16>().unwrap_or(8080));
 
-    // Create cluster
+    // Create cluster with unique name
     let cluster = with_timeout(TestTimeout::default_with_label("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "echo-backend", host, port),
+            &simple_cluster(&ctx.team_a_name, "routing-echo-backend", host, port),
         )
         .await
     })
@@ -305,11 +315,20 @@ async fn test_500_full_routing_setup() {
     .expect("Cluster creation should succeed");
     println!("✓ Cluster created: {}", cluster.name);
 
-    // Create route config
+    // Delay between resource creation
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Create route config with unique domain and path
     let route = with_timeout(TestTimeout::default_with_label("Create route"), async {
         api.create_route(
             &ctx.admin_token,
-            &simple_route(&ctx.team_a_name, "echo-route", "api.e2e.local", "/echo", &cluster.name),
+            &simple_route(
+                &ctx.team_a_name,
+                "routing-echo-route",
+                "routing.e2e.local",
+                "/testing/routing/echo",
+                &cluster.name,
+            ),
         )
         .await
     })
@@ -317,13 +336,16 @@ async fn test_500_full_routing_setup() {
     .expect("Route creation should succeed");
     println!("✓ Route created: {}", route.name);
 
-    // Create listener
+    // Delay between resource creation
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Create listener with unique name
     let listener = with_timeout(TestTimeout::default_with_label("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
             &simple_listener(
                 &ctx.team_a_name,
-                "echo-listener",
+                "routing-echo-listener",
                 harness.ports.listener,
                 &route.name,
             ),
@@ -336,8 +358,11 @@ async fn test_500_full_routing_setup() {
 
     // If Envoy is available, verify routing
     if harness.has_envoy() {
+        // Delay before calling Envoy to allow xDS propagation
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
         let body = with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("api.e2e.local", "/echo/test", 200).await
+            harness.wait_for_route("routing.e2e.local", "/testing/routing/echo", 200).await
         })
         .await
         .expect("Route should converge");

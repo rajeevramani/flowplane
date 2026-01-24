@@ -260,6 +260,10 @@ pub struct RouteAction {
     pub cluster: String,
     #[serde(rename = "timeoutSeconds", skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u32>,
+    #[serde(rename = "prefixRewrite", skip_serializing_if = "Option::is_none")]
+    pub prefix_rewrite: Option<String>,
+    #[serde(rename = "retryPolicy", skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<serde_json::Value>,
 }
 
 /// Listener request - matches backend CreateListenerBody
@@ -532,11 +536,15 @@ impl ApiClient {
         config: Value,
     ) -> anyhow::Result<FilterResponse> {
         let url = format!("{}/api/v1/filters", self.base_url);
+        // API expects config in {"type": "...", "config": {...}} format
         let body = json!({
             "team": team,
             "name": name,
-            "filter_type": filter_type,
-            "config": config,
+            "filterType": filter_type,
+            "config": {
+                "type": filter_type,
+                "config": config
+            },
         });
 
         let resp = self
@@ -589,18 +597,93 @@ impl ApiClient {
         Ok(result)
     }
 
-    /// Add a route-specific filter override
-    pub async fn add_route_filter_override(
+    /// Attach a filter to a route
+    /// This makes the filter active on the specified route.
+    /// Endpoint: POST /api/v1/route-configs/{route}/filters
+    /// Returns 204 No Content on success.
+    pub async fn attach_filter_to_route(
         &self,
         token: &str,
         route_name: &str,
         filter_id: &str,
-        config: Value,
-    ) -> anyhow::Result<Value> {
+        order: Option<i64>,
+    ) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/route-configs/{}/filters", self.base_url, route_name);
         let body = json!({
             "filterId": filter_id,
-            "config": config,
+            "order": order.unwrap_or(1),
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Attach filter to route failed: {} - {}", status, text);
+        }
+
+        // Returns 204 No Content
+        Ok(())
+    }
+
+    /// Configure filter at route-config level.
+    /// This enables the filter for all routes in the route config.
+    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    pub async fn configure_filter_at_route_config(
+        &self,
+        token: &str,
+        filter_id: &str,
+        route_config_name: &str,
+    ) -> anyhow::Result<Value> {
+        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let body = json!({
+            "scopeType": "route-config",
+            "scopeId": route_config_name
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Configure filter at route-config failed: {} - {}", status, text);
+        }
+
+        let result: Value = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Add a route-specific filter configuration override
+    /// This allows customizing filter config for a specific scope (route/vhost/listener).
+    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    /// scope_id format for routes: "{route-config-name}/{vhost-name}/{route-name}"
+    pub async fn add_route_filter_override(
+        &self,
+        token: &str,
+        filter_id: &str,
+        scope_id: &str,
+        config: Value,
+    ) -> anyhow::Result<Value> {
+        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let body = json!({
+            "scopeType": "route",
+            "scopeId": scope_id,
+            "settings": {
+                "behavior": "override",
+                "config": config
+            }
         });
 
         let resp = self
@@ -745,19 +828,30 @@ impl ApiClient {
             return Ok(result);
         }
 
-        // If conflict (409), try to get the existing team
+        // If conflict (409), list teams and find by name
+        // Note: GET /api/v1/admin/teams/{id} expects a UUID, not a name
         if status == StatusCode::CONFLICT {
-            let get_url = format!("{}/api/v1/admin/teams/{}", self.base_url, name);
-            let get_resp = self
+            let list_url = format!("{}/api/v1/admin/teams", self.base_url);
+            let list_resp = self
                 .client
-                .get(&get_url)
+                .get(&list_url)
                 .header("Authorization", format!("Bearer {}", token))
                 .send()
                 .await?;
 
-            if get_resp.status().is_success() {
-                let result: TeamResponse = get_resp.json().await?;
-                return Ok(result);
+            if list_resp.status().is_success() {
+                // Response is paginated: {"teams": [...], "total": N, ...}
+                let body: Value = list_resp.json().await?;
+                if let Some(teams_array) = body.get("teams").and_then(|v| v.as_array()) {
+                    for team_value in teams_array {
+                        if let Ok(team) = serde_json::from_value::<TeamResponse>(team_value.clone())
+                        {
+                            if team.name == name {
+                                return Ok(team);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -773,7 +867,15 @@ pub const TEST_NAME: &str = "Smoke Test User";
 
 /// Setup a basic dev context with bootstrap, login, and admin token.
 /// This function is idempotent - safe to call multiple times with shared infrastructure.
-pub async fn setup_dev_context(api: &ApiClient) -> anyhow::Result<TestContext> {
+///
+/// Each test gets unique team names based on the test_name to ensure isolation.
+pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Result<TestContext> {
+    use super::shared_infra::unique_team_name;
+
+    // Generate unique team names for this test
+    let team_a_name = unique_team_name(&format!("{}-team-a", test_name));
+    let team_b_name = unique_team_name(&format!("{}-team-b", test_name));
+
     // Check if bootstrap is needed
     let needs_bootstrap = with_timeout(TestTimeout::quick("Check bootstrap status"), async {
         api.needs_bootstrap().await
@@ -805,16 +907,25 @@ pub async fn setup_dev_context(api: &ApiClient) -> anyhow::Result<TestContext> {
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
 
-    // Create Team A (idempotent - handles already exists)
+    // Create Team A with unique name for this test
     let team_a = with_timeout(TestTimeout::default_with_label("Create Team A"), async {
-        api.create_team_idempotent(&admin_token, "engineering", Some("Engineering Team")).await
+        api.create_team_idempotent(
+            &admin_token,
+            &team_a_name,
+            Some(&format!("Team A for {}", test_name)),
+        )
+        .await
     })
     .await?;
 
-    // Create Team B (idempotent - handles already exists)
-    // Note: "platform-admin" is reserved by bootstrap, use different name
+    // Create Team B with unique name for this test
     let team_b = with_timeout(TestTimeout::default_with_label("Create Team B"), async {
-        api.create_team_idempotent(&admin_token, "qa-team", Some("QA Team")).await
+        api.create_team_idempotent(
+            &admin_token,
+            &team_b_name,
+            Some(&format!("Team B for {}", test_name)),
+        )
+        .await
     })
     .await?;
 
@@ -875,6 +986,8 @@ pub fn simple_route(
                     action_type: "forward".to_string(),
                     cluster: cluster.to_string(),
                     timeout_seconds: Some(30),
+                    prefix_rewrite: None,
+                    retry_policy: None,
                 },
             }],
         }],

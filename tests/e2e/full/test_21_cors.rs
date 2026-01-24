@@ -30,7 +30,7 @@ async fn test_100_setup_cors() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_100_setup_cors").await.expect("Setup should succeed");
 
     // Get echo server endpoint for backend
     let echo_endpoint = harness.echo_endpoint();
@@ -58,7 +58,7 @@ async fn test_100_setup_cors() {
                 &ctx.team_a_name,
                 "cors-route",
                 "cors.e2e.local",
-                "/testing/cors",
+                "/testing/cors-setup",
                 &cluster.name,
             ),
         )
@@ -111,17 +111,12 @@ async fn test_100_setup_cors() {
     assert_eq!(filter.filter_type, "cors");
     println!("✓ CORS filter created: {} (id={})", filter.name, filter.id);
 
-    // Install filter on listener
-    let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
-    })
-    .await
-    .expect("Filter installation should succeed");
+    // Attach filter to route-config (as Bruno does, not to listener)
+    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
+        .await
+        .expect("Filter attachment should succeed");
 
-    println!(
-        "✓ Filter installed: filter_id={} on listener={}",
-        installation.filter_id, installation.listener_name
-    );
+    println!("✓ Filter attached to route-config: {}", route.name);
 
     // Wait for configuration to propagate
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -143,7 +138,8 @@ async fn test_101_preflight_allowed() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_preflight_allowed").await.expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -165,7 +161,7 @@ async fn test_101_preflight_allowed() {
                 &ctx.team_a_name,
                 "preflight-route",
                 "preflight.e2e.local",
-                "/testing/cors",
+                "/testing/cors-preflight",
                 &cluster.name,
             ),
         )
@@ -208,17 +204,21 @@ async fn test_101_preflight_allowed() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    // Attach filter to route-config (as Bruno does, not to listener)
+    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
         .await
-        .expect("Filter installation should succeed");
+        .expect("Filter attachment should succeed");
 
-    println!("✓ Filter installed on listener: {}", listener.name);
+    println!("✓ Filter attached to route-config: {}", route.name);
 
     // Wait for route to converge
     let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
-        harness.wait_for_route("preflight.e2e.local", "/testing/cors", 200).await
+        harness.wait_for_route("preflight.e2e.local", "/testing/cors-preflight", 200).await
     })
     .await;
+
+    // Allow time for per-route filter config to propagate via xDS
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Make OPTIONS preflight request with allowed origin
     let envoy = harness.envoy().unwrap();
@@ -237,7 +237,7 @@ async fn test_101_preflight_allowed() {
                     harness.ports.listener,
                     hyper::Method::OPTIONS,
                     "preflight.e2e.local",
-                    "/testing/cors",
+                    "/testing/cors-preflight",
                     headers,
                     None,
                 )
@@ -301,7 +301,9 @@ async fn test_102_request_with_origin() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_102_request_with_origin")
+        .await
+        .expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -323,14 +325,14 @@ async fn test_102_request_with_origin() {
                 &ctx.team_a_name,
                 "request-route",
                 "request.e2e.local",
-                "/testing/cors",
+                "/testing/cors-request",
                 &cluster.name,
             ),
         )
         .await
         .expect("Route creation should succeed");
 
-    let listener = api
+    let _listener = api
         .create_listener(
             &ctx.admin_token,
             &simple_listener(
@@ -363,13 +365,20 @@ async fn test_102_request_with_origin() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    // Attach filter to route-config (as Bruno does, not to listener)
+    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
         .await
-        .expect("Filter installation should succeed");
+        .expect("Filter attachment should succeed");
 
-    println!("✓ Filter installed on listener: {}", listener.name);
+    println!("✓ Filter attached to route-config: {}", route.name);
 
-    // Wait for configuration to propagate
+    // Wait for route to converge
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
+        harness.wait_for_route("request.e2e.local", "/testing/cors-request", 200).await
+    })
+    .await;
+
+    // Allow time for per-route filter config to propagate via xDS
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Make GET request with Origin header
@@ -384,7 +393,7 @@ async fn test_102_request_with_origin() {
                     harness.ports.listener,
                     hyper::Method::GET,
                     "request.e2e.local",
-                    "/testing/cors",
+                    "/testing/cors-request",
                     headers,
                     None,
                 )
@@ -434,7 +443,8 @@ async fn test_103_blocked_origin() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_103_blocked_origin").await.expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -456,14 +466,14 @@ async fn test_103_blocked_origin() {
                 &ctx.team_a_name,
                 "blocked-route",
                 "blocked.e2e.local",
-                "/testing/cors",
+                "/testing/cors-blocked",
                 &cluster.name,
             ),
         )
         .await
         .expect("Route creation should succeed");
 
-    let listener = api
+    let _listener = api
         .create_listener(
             &ctx.admin_token,
             &simple_listener(
@@ -495,13 +505,20 @@ async fn test_103_blocked_origin() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    // Attach filter to route-config (as Bruno does, not to listener)
+    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
         .await
-        .expect("Filter installation should succeed");
+        .expect("Filter attachment should succeed");
 
-    println!("✓ Filter installed on listener: {}", listener.name);
+    println!("✓ Filter attached to route-config: {}", route.name);
 
-    // Wait for configuration to propagate
+    // Wait for route to converge
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
+        harness.wait_for_route("blocked.e2e.local", "/testing/cors-blocked", 200).await
+    })
+    .await;
+
+    // Allow time for per-route filter config to propagate via xDS
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Make OPTIONS request from blocked origin (https://evil.com)
@@ -517,7 +534,7 @@ async fn test_103_blocked_origin() {
                     harness.ports.listener,
                     hyper::Method::OPTIONS,
                     "blocked.e2e.local",
-                    "/testing/cors",
+                    "/testing/cors-blocked",
                     headers,
                     None,
                 )
@@ -553,9 +570,9 @@ mod tests {
             .allow_credentials(true)
             .build();
 
-        assert_eq!(config["type"], "cors");
-        assert!(config["config"]["policy"]["allow_origin"].is_array());
-        assert!(config["config"]["policy"]["allow_credentials"].as_bool().unwrap());
+        // Config is inner config only (no type wrapper - API client adds it)
+        assert!(config["policy"]["allow_origin"].is_array());
+        assert!(config["policy"]["allow_credentials"].as_bool().unwrap());
     }
 
     #[test]
@@ -566,7 +583,8 @@ mod tests {
             .allow_origin_regex(r"^https://.*\.example\.com$")
             .build();
 
-        let origins = config["config"]["policy"]["allow_origin"].as_array().unwrap();
+        // Config is inner config only (no type wrapper)
+        let origins = config["policy"]["allow_origin"].as_array().unwrap();
         assert_eq!(origins.len(), 3);
         assert_eq!(origins[0]["type"], "exact");
         assert_eq!(origins[1]["type"], "prefix");
@@ -581,6 +599,7 @@ mod tests {
             .max_age(3600)
             .build();
 
-        assert_eq!(config["config"]["policy"]["max_age"], 3600);
+        // Config is inner config only (no type wrapper)
+        assert_eq!(config["policy"]["max_age"], 3600);
     }
 }

@@ -30,7 +30,9 @@ async fn test_100_setup_cb_infrastructure() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_100_setup_cb_infrastructure")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -104,7 +106,8 @@ async fn test_101_trigger_overflow() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_trigger_overflow").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -123,9 +126,10 @@ async fn test_101_trigger_overflow() {
     let cluster_config = ClusterConfig::new("overflow-cb-cluster", host, port)
         .with_circuit_breakers(circuit_breaker_config);
 
-    let route_config = RouteConfig::new("overflow-cb-route", "/testing/cb", "overflow-cb-cluster")
-        .with_domain("overflow-cb.e2e.local")
-        .with_prefix_rewrite("/delay/2"); // Use delay endpoint to keep connections open
+    let route_config =
+        RouteConfig::new("overflow-cb-route", "/testing/cb-overflow", "overflow-cb-cluster")
+            .with_domain("overflow-cb.e2e.local")
+            .with_prefix_rewrite("/delay/2"); // Use delay endpoint to keep connections open
 
     let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
         .with_cluster_config(cluster_config)
@@ -159,7 +163,7 @@ async fn test_101_trigger_overflow() {
             // Use a short timeout to avoid hanging
             let timeout = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                proxy_request_simple(envoy_port, "overflow-cb.e2e.local", "/testing/cb"),
+                proxy_request_simple(envoy_port, "overflow-cb.e2e.local", "/testing/cb-overflow"),
             )
             .await;
 
@@ -240,7 +244,8 @@ async fn test_102_verify_cb_stats() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_102_verify_cb_stats").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -259,7 +264,7 @@ async fn test_102_verify_cb_stats() {
     let cluster_config = ClusterConfig::new("stats-cb-cluster", host, port)
         .with_circuit_breakers(circuit_breaker_config);
 
-    let route_config = RouteConfig::new("stats-cb-route", "/testing/cb", "stats-cb-cluster")
+    let route_config = RouteConfig::new("stats-cb-route", "/testing/cb-stats", "stats-cb-cluster")
         .with_domain("stats-cb.e2e.local");
 
     let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
@@ -293,7 +298,7 @@ async fn test_102_verify_cb_stats() {
                 harness.ports.listener,
                 hyper::Method::GET,
                 "stats-cb.e2e.local",
-                "/testing/cb",
+                "/testing/cb-stats",
                 HashMap::new(),
                 None,
             )

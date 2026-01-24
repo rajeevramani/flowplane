@@ -21,7 +21,7 @@ use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
 use super::envoy::{EnvoyConfig, EnvoyHandle};
 use super::mocks::MockServices;
 use super::ports::{PortAllocator, TestPorts};
-use super::shared_infra::{SharedInfrastructure, SHARED_LISTENER_PORT};
+use super::shared_infra::SharedInfrastructure;
 use super::timeout::{with_timeout, TestTimeout};
 
 /// Test harness configuration
@@ -153,13 +153,18 @@ impl TestHarness {
         let mock_ext_authz_port =
             shared.mocks.ext_authz.as_ref().map(|s| s.address().port()).unwrap_or(0);
 
-        // Create ports struct pointing to shared ports
+        // Generate unique listener port for this test based on test name hash
+        // This allows multiple tests to create their own listeners without port conflicts
+        let listener_port = unique_listener_port(&config.test_name);
+        let listener_secondary_port = listener_port + 1;
+
+        // Create ports struct - shared CP/Envoy but unique listener ports per test
         let ports = super::ports::TestPorts {
             api: super::shared_infra::SHARED_API_PORT,
             xds: super::shared_infra::SHARED_XDS_PORT,
             envoy_admin: super::shared_infra::SHARED_ENVOY_ADMIN_PORT,
-            listener: SHARED_LISTENER_PORT,
-            listener_secondary: SHARED_LISTENER_PORT + 1, // Not used in shared mode typically
+            listener: listener_port,
+            listener_secondary: listener_secondary_port,
             echo: echo_port,
             mock_auth: mock_auth_port,
             mock_ext_authz: mock_ext_authz_port,
@@ -205,6 +210,9 @@ impl TestHarness {
             MockServices::start_basic().await
         };
         info!(echo = %mocks.echo_endpoint(), "Mock services started");
+
+        // Drop the port allocator to release the reserved ports before servers bind
+        drop(port_allocator);
 
         // Start control plane
         let cp_config =
@@ -359,6 +367,23 @@ impl TestHarness {
             cp.shutdown().await;
         }
     }
+}
+
+/// Generate a unique listener port for a test based on its name
+///
+/// Uses a hash of the test name to generate a port in the range 20000-29999.
+/// This ensures each test gets a deterministic but unique port.
+fn unique_listener_port(test_name: &str) -> u16 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    test_name.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Port range 20000-29999 (10000 ports)
+    // Leaves room for shared ports (19xxx) and isolated test ports (30xxx+)
+    20000 + (hash % 10000) as u16
 }
 
 /// Quick harness startup for simple tests

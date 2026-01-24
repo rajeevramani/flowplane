@@ -26,31 +26,27 @@ async fn test_600_create_filter() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_600_create_filter").await.expect("Setup should succeed");
 
     // Create header mutation filter
+    // API expects flat structure: { key, value, append } not nested { header: { key, value }, append_action }
     let filter_config = json!({
         "response_headers_to_add": [
             {
-                "header": {
-                    "key": "X-Content-Type-Options",
-                    "value": "nosniff"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Content-Type-Options",
+                "value": "nosniff",
+                "append": false
             },
             {
-                "header": {
-                    "key": "X-Frame-Options",
-                    "value": "DENY"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Frame-Options",
+                "value": "DENY",
+                "append": false
             },
             {
-                "header": {
-                    "key": "X-Custom-Header",
-                    "value": "test-value"
-                },
-                "append_action": "APPEND_IF_EXISTS_OR_ADD"
+                "key": "X-Custom-Header",
+                "value": "test-value",
+                "append": true
             }
         ]
     });
@@ -88,7 +84,8 @@ async fn test_610_verify_headers() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_610_verify_headers").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -134,21 +131,18 @@ async fn test_610_verify_headers() {
         .expect("Listener creation should succeed");
 
     // Create header mutation filter
+    // API expects flat structure: { key, value, append }
     let filter_config = json!({
         "response_headers_to_add": [
             {
-                "header": {
-                    "key": "X-Content-Type-Options",
-                    "value": "nosniff"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Content-Type-Options",
+                "value": "nosniff",
+                "append": false
             },
             {
-                "header": {
-                    "key": "X-Frame-Options",
-                    "value": "DENY"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Frame-Options",
+                "value": "DENY",
+                "append": false
             }
         ]
     });
@@ -175,6 +169,18 @@ async fn test_610_verify_headers() {
         "✓ Filter installed: filter_id={} on listener={}",
         installation.filter_id, installation.listener_name
     );
+
+    // Attach filter to route
+    with_timeout(TestTimeout::default_with_label("Attach filter to route"), async {
+        api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1)).await
+    })
+    .await
+    .expect("Filter attachment to route should succeed");
+
+    println!("✓ Filter attached to route: {}", route.name);
+
+    // Wait for xDS config to propagate (filters take time)
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Wait for route to converge
     let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
@@ -229,7 +235,8 @@ async fn test_611_route_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_611_route_override").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -253,7 +260,7 @@ async fn test_611_route_override() {
                 &ctx.team_a_name,
                 "override-route",
                 "override.e2e.local",
-                "/testing/override",
+                "/testing/header-override",
                 &cluster.name,
             ),
         )
@@ -275,14 +282,13 @@ async fn test_611_route_override() {
         .expect("Listener creation should succeed");
 
     // Create base filter with one header
+    // API expects flat structure: { key, value, append }
     let filter_config = json!({
         "response_headers_to_add": [
             {
-                "header": {
-                    "key": "X-Base-Header",
-                    "value": "base-value"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Base-Header",
+                "value": "base-value",
+                "append": false
             }
         ]
     });
@@ -303,43 +309,52 @@ async fn test_611_route_override() {
         .await
         .expect("Filter installation should succeed");
 
+    // Attach filter to route
+    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
+        .await
+        .expect("Filter attachment to route should succeed");
+
+    println!("✓ Filter installed and attached to route");
+
+    // Wait for base filter to propagate
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
     // Add route-specific override with different header value
+    // scope_id format: {route-config-name}/{vhost-name}/{route-name}
+    // simple_route creates: vhost = "{name}-vh", route = "{name}-route"
+    let scope_id = format!("{}/{}-vh/{}-route", route.name, "override-route", "override-route");
+
     let override_config = json!({
         "response_headers_to_add": [
             {
-                "header": {
-                    "key": "X-Base-Header",
-                    "value": "override-value"
-                },
-                "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                "key": "X-Base-Header",
+                "value": "override-value",
+                "append": false
             },
             {
-                "header": {
-                    "key": "X-Route-Only-Header",
-                    "value": "route-specific"
-                },
-                "append_action": "APPEND_IF_EXISTS_OR_ADD"
+                "key": "X-Route-Only-Header",
+                "value": "route-specific",
+                "append": true
             }
         ]
     });
 
     let override_result =
         with_timeout(TestTimeout::default_with_label("Add route override"), async {
-            api.add_route_filter_override(
-                &ctx.admin_token,
-                &route.name,
-                &filter.id,
-                override_config,
-            )
-            .await
+            api.add_route_filter_override(&ctx.admin_token, &filter.id, &scope_id, override_config)
+                .await
         })
         .await
         .expect("Route override should succeed");
 
     println!("✓ Route override added: {:?}", override_result);
 
-    // Wait for config to propagate
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for route to converge in Envoy
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
+        harness.wait_for_route("override.e2e.local", "/testing/header-override/test", 200).await
+    })
+    .await
+    .expect("Route should converge");
 
     // Make request and verify override headers
     let envoy = harness.envoy().unwrap();
@@ -348,7 +363,7 @@ async fn test_611_route_override() {
             harness.ports.listener,
             hyper::Method::GET,
             "override.e2e.local",
-            "/testing/override/test",
+            "/testing/header-override/test",
             HashMap::new(),
             None,
         )
@@ -380,19 +395,20 @@ async fn test_611_route_override() {
 mod tests {
     #[test]
     fn test_header_filter_config_format() {
-        // Verify the config JSON structure is valid
+        // Verify the config JSON structure matches the API schema
+        // API expects: { key, value, append } structure
         let config = serde_json::json!({
             "response_headers_to_add": [
                 {
-                    "header": {
-                        "key": "X-Test",
-                        "value": "test"
-                    },
-                    "append_action": "OVERWRITE_IF_EXISTS_OR_ADD"
+                    "key": "X-Test",
+                    "value": "test",
+                    "append": false
                 }
             ]
         });
 
         assert!(config["response_headers_to_add"].is_array());
+        assert!(config["response_headers_to_add"][0]["key"].is_string());
+        assert!(config["response_headers_to_add"][0]["value"].is_string());
     }
 }

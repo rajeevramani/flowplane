@@ -33,7 +33,8 @@ async fn test_100_setup_rate_limit() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_100_setup_rate_limit").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -46,21 +47,17 @@ async fn test_100_setup_rate_limit() {
 
     // Build infrastructure with rate limit filter
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("ratelimit-backend", host, port))
+        .with_cluster_config(ClusterConfig::new("rl-setup-backend", host, port))
         .with_route_config(
-            RouteConfig::new("ratelimit-route", "/testing/ratelimit", "ratelimit-backend")
-                .with_domain("ratelimit.e2e.local"),
+            RouteConfig::new("rl-setup-route", "/testing/rl/setup", "rl-setup-backend")
+                .with_domain("rl-setup.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
-            "ratelimit-listener",
+            "rl-setup-listener",
             harness.ports.listener,
-            "ratelimit-route",
+            "rl-setup-route",
         ))
-        .with_filter_config(FilterConfig::new(
-            "ratelimit-filter",
-            "local_rate_limit",
-            filter_config,
-        ))
+        .with_filter_config(FilterConfig::new("rl-setup-filter", "local_rate_limit", filter_config))
         .build()
         .await
         .expect("Resource setup should succeed");
@@ -73,12 +70,8 @@ async fn test_100_setup_rate_limit() {
         resources.filter().name
     );
 
-    // Wait for route to converge
-    let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
-        harness.wait_for_route("ratelimit.e2e.local", "/testing/ratelimit/test", 200).await
-    })
-    .await
-    .expect("Route should converge");
+    // Wait for xDS propagation (3 sec delay per design principles)
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     println!("✓ Rate limit filter configured with 5 tokens/min");
 }
@@ -97,34 +90,46 @@ async fn test_101_verify_base_limit() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_verify_base_limit").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
     let (host, port) = (parts[0], parts[1].parse::<u16>().unwrap_or(8080));
 
-    // Create rate limit filter with 5 tokens
+    // Create rate limit filter with 6 tokens (5 for test + 1 for wait_for_route health check)
     let filter_config =
-        filter_configs::rate_limit().max_tokens(5).fill_interval_ms(60000).status_code(429).build();
+        filter_configs::rate_limit().max_tokens(6).fill_interval_ms(60000).status_code(429).build();
 
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("verify-backend", host, port))
+        .with_cluster_config(ClusterConfig::new("rl-verify-backend", host, port))
         .with_route_config(
-            RouteConfig::new("verify-route", "/testing/verify", "verify-backend")
-                .with_domain("verify.e2e.local"),
+            RouteConfig::new("rl-verify-route", "/testing/rl/verify", "rl-verify-backend")
+                .with_domain("rl-verify.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
-            "verify-listener",
+            "rl-verify-listener",
             harness.ports.listener,
-            "verify-route",
+            "rl-verify-route",
         ))
-        .with_filter_config(FilterConfig::new("verify-filter", "local_rate_limit", filter_config))
+        .with_filter_config(FilterConfig::new(
+            "rl-verify-filter",
+            "local_rate_limit",
+            filter_config,
+        ))
         .build()
         .await
         .expect("Resource setup should succeed");
 
-    // Wait for route to converge
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for route to converge (3 sec delay per design principles)
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Wait for route to be ready in Envoy
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
+        harness.wait_for_route("rl-verify.e2e.local", "/testing/rl/verify/health", 200).await
+    })
+    .await
+    .expect("Route should converge");
 
     let envoy = harness.envoy().unwrap();
 
@@ -134,8 +139,8 @@ async fn test_101_verify_base_limit() {
             .proxy_request(
                 harness.ports.listener,
                 hyper::Method::GET,
-                "verify.e2e.local",
-                &format!("/testing/verify/req{}", i),
+                "rl-verify.e2e.local",
+                &format!("/testing/rl/verify/req{}", i),
                 HashMap::new(),
                 None,
             )
@@ -151,8 +156,8 @@ async fn test_101_verify_base_limit() {
         .proxy_request(
             harness.ports.listener,
             hyper::Method::GET,
-            "verify.e2e.local",
-            "/testing/verify/req6",
+            "rl-verify.e2e.local",
+            "/testing/rl/verify/req6",
             HashMap::new(),
             None,
         )
@@ -162,7 +167,7 @@ async fn test_101_verify_base_limit() {
     assert_eq!(status, 429, "6th request should be rate limited with 429");
     println!("✓ Request 6/5 rate limited (429 Too Many Requests)");
 
-    println!("✓ Rate limit verification complete: {} has 5 tokens/min", resources.filter().name);
+    println!("✓ Rate limit verification complete: {} has 6 tokens/min", resources.filter().name);
 }
 
 /// Test configure route-specific token limit override
@@ -174,7 +179,9 @@ async fn test_102_configure_route_override() {
         .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_102_configure_route_override")
+        .await
+        .expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -188,18 +195,18 @@ async fn test_102_configure_route_override() {
         .build();
 
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("override-backend", host, port))
+        .with_cluster_config(ClusterConfig::new("rl-override-backend", host, port))
         .with_route_config(
-            RouteConfig::new("override-route", "/low/limit", "override-backend")
-                .with_domain("override.e2e.local"),
+            RouteConfig::new("rl-override-route", "/testing/rl/override", "rl-override-backend")
+                .with_domain("rl-override.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
-            "override-listener",
+            "rl-override-listener",
             harness.ports.listener,
-            "override-route",
+            "rl-override-route",
         ))
         .with_filter_config(FilterConfig::new(
-            "override-filter",
+            "rl-override-filter",
             "local_rate_limit",
             base_filter_config,
         ))
@@ -207,9 +214,18 @@ async fn test_102_configure_route_override() {
         .await
         .expect("Resource setup should succeed");
 
+    // Wait for resources to propagate (3 sec delay per design principles)
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
     println!("✓ Base filter created: {} with 10 tokens/min", resources.filter().name);
 
     // Configure route-specific override with 3 tokens
+    // scope_id format: {route-config-name}/{vhost-name}/{route-name}
+    // ResourceSetup creates: vhost = "{name}-vh", route = "{name}-route"
+    let route_config_name = &resources.route().name;
+    let scope_id =
+        format!("{}/{}-vh/{}-route", route_config_name, route_config_name, route_config_name);
+
     let override_config = json!({
         "stat_prefix": "low_limit_override",
         "token_bucket": {
@@ -232,8 +248,8 @@ async fn test_102_configure_route_override() {
         with_timeout(TestTimeout::default_with_label("Configure route override"), async {
             api.add_route_filter_override(
                 &ctx.admin_token,
-                &resources.route().name,
                 &resources.filter().id,
+                &scope_id,
                 override_config,
             )
             .await
@@ -243,7 +259,7 @@ async fn test_102_configure_route_override() {
 
     println!("✓ Route override configured: {:?}", override_result);
     println!("  Base: 10 tokens/min (inherited by all routes)");
-    println!("  Override: 3 tokens/min for /low/limit");
+    println!("  Override: 3 tokens/min for /testing/rl/override");
 }
 
 /// Test verify override applies - 4th request should fail
@@ -260,7 +276,8 @@ async fn test_103_verify_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_103_verify_override").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -274,18 +291,22 @@ async fn test_103_verify_override() {
         .build();
 
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("verify-override-backend", host, port))
+        .with_cluster_config(ClusterConfig::new("rl-verify-ovr-backend", host, port))
         .with_route_config(
-            RouteConfig::new("verify-override-route", "/low/limit", "verify-override-backend")
-                .with_domain("verify-override.e2e.local"),
+            RouteConfig::new(
+                "rl-verify-ovr-route",
+                "/testing/rl/verify-override",
+                "rl-verify-ovr-backend",
+            )
+            .with_domain("rl-verify-ovr.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
-            "verify-override-listener",
+            "rl-verify-ovr-listener",
             harness.ports.listener,
-            "verify-override-route",
+            "rl-verify-ovr-route",
         ))
         .with_filter_config(FilterConfig::new(
-            "verify-override-filter",
+            "rl-verify-ovr-filter",
             "local_rate_limit",
             base_filter_config,
         ))
@@ -293,7 +314,16 @@ async fn test_103_verify_override() {
         .await
         .expect("Resource setup should succeed");
 
+    // Wait for resources to propagate (3 sec delay per design principles)
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
     // Configure route override with 3 tokens
+    // scope_id format: {route-config-name}/{vhost-name}/{route-name}
+    // ResourceSetup creates: vhost = "{name}-vh", route = "{name}-route"
+    let route_config_name = &resources.route().name;
+    let scope_id =
+        format!("{}/{}-vh/{}-route", route_config_name, route_config_name, route_config_name);
+
     let override_config = json!({
         "stat_prefix": "verify_override",
         "token_bucket": {
@@ -314,14 +344,14 @@ async fn test_103_verify_override() {
 
     api.add_route_filter_override(
         &ctx.admin_token,
-        &resources.route().name,
         &resources.filter().id,
+        &scope_id,
         override_config,
     )
     .await
     .expect("Route override should succeed");
 
-    // Wait for config to propagate
+    // Wait for config to propagate (3 sec delay per design principles)
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     let envoy = harness.envoy().unwrap();
@@ -332,8 +362,8 @@ async fn test_103_verify_override() {
             .proxy_request(
                 harness.ports.listener,
                 hyper::Method::GET,
-                "verify-override.e2e.local",
-                &format!("/low/limit/req{}", i),
+                "rl-verify-ovr.e2e.local",
+                &format!("/testing/rl/verify-override/req{}", i),
                 HashMap::new(),
                 None,
             )
@@ -349,8 +379,8 @@ async fn test_103_verify_override() {
         .proxy_request(
             harness.ports.listener,
             hyper::Method::GET,
-            "verify-override.e2e.local",
-            "/low/limit/req4",
+            "rl-verify-ovr.e2e.local",
+            "/testing/rl/verify-override/req4",
             HashMap::new(),
             None,
         )

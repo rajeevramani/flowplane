@@ -27,7 +27,8 @@ async fn test_800_create_jwt_filter() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_800_create_jwt_filter").await.expect("Setup should succeed");
 
     // Get mock auth server endpoint for JWKS
     let auth_endpoint = harness.mocks().auth_endpoint().expect("Auth mock should be running");
@@ -52,6 +53,8 @@ async fn test_800_create_jwt_filter() {
     println!("✓ JWKS cluster created: {}", jwks_cluster.name);
 
     // Create JWT filter configuration
+    // Note: PathMatch uses externally tagged enum format {"Prefix": "/"} not {"type": "prefix", "value": "/"}
+    // And timeout uses timeout_ms not timeout_seconds
     let filter_config = json!({
         "providers": {
             "e2e-auth": {
@@ -62,7 +65,7 @@ async fn test_800_create_jwt_filter() {
                     "http_uri": {
                         "uri": format!("{}/.well-known/jwks.json", auth_uri),
                         "cluster": jwks_cluster.name,
-                        "timeout_seconds": 5
+                        "timeout_ms": 5000
                     }
                 },
                 "forward": true
@@ -71,7 +74,7 @@ async fn test_800_create_jwt_filter() {
         "rules": [
             {
                 "match": {
-                    "path": {"type": "prefix", "value": "/"}
+                    "path": {"Prefix": "/"}
                 },
                 "requires": {
                     "type": "provider_name",
@@ -114,7 +117,7 @@ async fn test_810_auth_success() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_810_auth_success").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -155,7 +158,13 @@ async fn test_810_auth_success() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(&ctx.team_a_name, "jwt-route", "jwt.e2e.local", "/api", &cluster.name),
+            &simple_route(
+                &ctx.team_a_name,
+                "jwt-route",
+                "jwt.e2e.local",
+                "/testing/jwt-api",
+                &cluster.name,
+            ),
         )
         .await
         .expect("Route creation should succeed");
@@ -174,6 +183,8 @@ async fn test_810_auth_success() {
     println!("✓ Listener created: {} on port {:?}", listener.name, listener.port);
 
     // Create JWT filter
+    // Note: PathMatch uses externally tagged enum format {"Prefix": "/"} not {"type": "prefix", "value": "/"}
+    // And timeout uses timeout_ms not timeout_seconds
     let filter_config = json!({
         "providers": {
             "e2e-auth": {
@@ -184,7 +195,7 @@ async fn test_810_auth_success() {
                     "http_uri": {
                         "uri": format!("{}/.well-known/jwks.json", auth_uri),
                         "cluster": jwks_cluster.name,
-                        "timeout_seconds": 5
+                        "timeout_ms": 5000
                     }
                 },
                 "forward": true,
@@ -196,7 +207,7 @@ async fn test_810_auth_success() {
         "rules": [
             {
                 "match": {
-                    "path": {"type": "prefix", "value": "/"}
+                    "path": {"Prefix": "/"}
                 },
                 "requires": {
                     "type": "provider_name",
@@ -256,7 +267,7 @@ async fn test_810_auth_success() {
                     harness.ports.listener,
                     hyper::Method::GET,
                     "jwt.e2e.local",
-                    "/api/protected",
+                    "/testing/jwt-api/protected",
                     headers,
                     None,
                 )
@@ -291,7 +302,9 @@ async fn test_811_auth_fail_invalid_jwt() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_811_auth_fail_invalid_jwt")
+        .await
+        .expect("Setup should succeed");
 
     // Setup infrastructure (similar to test_810)
     let echo_endpoint = harness.echo_endpoint();
@@ -324,7 +337,13 @@ async fn test_811_auth_fail_invalid_jwt() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(&ctx.team_a_name, "fail-route", "fail.e2e.local", "/api", &cluster.name),
+            &simple_route(
+                &ctx.team_a_name,
+                "fail-route",
+                "fail.e2e.local",
+                "/testing/jwt-fail",
+                &cluster.name,
+            ),
         )
         .await
         .expect("Route creation should succeed");
@@ -352,14 +371,14 @@ async fn test_811_auth_fail_invalid_jwt() {
                     "http_uri": {
                         "uri": format!("{}/.well-known/jwks.json", auth_uri),
                         "cluster": jwks_cluster.name,
-                        "timeout_seconds": 5
+                        "timeout_ms": 5000
                     }
                 }
             }
         },
         "rules": [
             {
-                "match": {"path": {"type": "prefix", "value": "/"}},
+                "match": {"path": {"Prefix": "/"}},
                 "requires": {"type": "provider_name", "provider_name": "e2e-auth"}
             }
         ]
@@ -397,7 +416,7 @@ async fn test_811_auth_fail_invalid_jwt() {
             harness.ports.listener,
             hyper::Method::GET,
             "fail.e2e.local",
-            "/api/protected",
+            "/testing/jwt-fail/protected",
             headers,
             None,
         )
@@ -413,7 +432,7 @@ async fn test_811_auth_fail_invalid_jwt() {
             harness.ports.listener,
             hyper::Method::GET,
             "fail.e2e.local",
-            "/api/protected",
+            "/testing/jwt-fail/protected",
             HashMap::new(),
             None,
         )
@@ -440,7 +459,9 @@ async fn test_812_auth_fail_expired_jwt() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_812_auth_fail_expired_jwt")
+        .await
+        .expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -477,7 +498,7 @@ async fn test_812_auth_fail_expired_jwt() {
                 &ctx.team_a_name,
                 "expired-route",
                 "expired.e2e.local",
-                "/api",
+                "/testing/jwt-expired",
                 &cluster.name,
             ),
         )
@@ -507,14 +528,14 @@ async fn test_812_auth_fail_expired_jwt() {
                     "http_uri": {
                         "uri": format!("{}/.well-known/jwks.json", auth_uri),
                         "cluster": jwks_cluster.name,
-                        "timeout_seconds": 5
+                        "timeout_ms": 5000
                     }
                 }
             }
         },
         "rules": [
             {
-                "match": {"path": {"type": "prefix", "value": "/"}},
+                "match": {"path": {"Prefix": "/"}},
                 "requires": {"type": "provider_name", "provider_name": "e2e-auth"}
             }
         ]
@@ -550,7 +571,7 @@ async fn test_812_auth_fail_expired_jwt() {
             harness.ports.listener,
             hyper::Method::GET,
             "expired.e2e.local",
-            "/api/protected",
+            "/testing/jwt-expired/protected",
             headers,
             None,
         )
@@ -575,7 +596,9 @@ async fn test_815_public_route_bypass() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_815_public_route_bypass")
+        .await
+        .expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -609,7 +632,13 @@ async fn test_815_public_route_bypass() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(&ctx.team_a_name, "public-route", "public.e2e.local", "/", &cluster.name),
+            &simple_route(
+                &ctx.team_a_name,
+                "public-route",
+                "public.e2e.local",
+                "/testing/jwt-public",
+                &cluster.name,
+            ),
         )
         .await
         .expect("Route creation should succeed");
@@ -628,6 +657,7 @@ async fn test_815_public_route_bypass() {
         .expect("Listener creation should succeed");
 
     // Create JWT filter with rule that allows missing for /public paths
+    // Note: PathMatch uses externally tagged enum format {"Prefix": "/"} not {"type": "prefix", "value": "/"}
     let filter_config = json!({
         "providers": {
             "e2e-auth": {
@@ -638,18 +668,18 @@ async fn test_815_public_route_bypass() {
                     "http_uri": {
                         "uri": format!("{}/.well-known/jwks.json", auth_uri),
                         "cluster": jwks_cluster.name,
-                        "timeout_seconds": 5
+                        "timeout_ms": 5000
                     }
                 }
             }
         },
         "rules": [
             {
-                "match": {"path": {"type": "prefix", "value": "/public"}},
+                "match": {"path": {"Prefix": "/testing/jwt-public/open"}},
                 "requires": {"type": "allow_missing"}
             },
             {
-                "match": {"path": {"type": "prefix", "value": "/"}},
+                "match": {"path": {"Prefix": "/testing/jwt-public"}},
                 "requires": {"type": "provider_name", "provider_name": "e2e-auth"}
             }
         ]
@@ -680,7 +710,7 @@ async fn test_815_public_route_bypass() {
             harness.ports.listener,
             hyper::Method::GET,
             "public.e2e.local",
-            "/public/health",
+            "/testing/jwt-public/open/health",
             HashMap::new(),
             None,
         )
@@ -696,7 +726,7 @@ async fn test_815_public_route_bypass() {
             harness.ports.listener,
             hyper::Method::GET,
             "public.e2e.local",
-            "/api/protected",
+            "/testing/jwt-public/protected",
             HashMap::new(),
             None,
         )
@@ -714,6 +744,8 @@ mod tests {
     #[test]
     fn test_jwt_filter_config_format() {
         // Verify the config JSON structure is valid
+        // Note: PathMatch uses externally tagged enum format {"Prefix": "/"} not {"type": "prefix", "value": "/"}
+        // And timeout uses timeout_ms not timeout_seconds
         let config = serde_json::json!({
             "providers": {
                 "test-provider": {
@@ -724,13 +756,13 @@ mod tests {
                         "http_uri": {
                             "uri": "https://test.example.com/.well-known/jwks.json",
                             "cluster": "test-cluster",
-                            "timeout_seconds": 5
+                            "timeout_ms": 5000
                         }
                     }
                 }
             },
             "rules": [{
-                "match": {"path": {"type": "prefix", "value": "/"}},
+                "match": {"path": {"Prefix": "/"}},
                 "requires": {"type": "provider_name", "provider_name": "test-provider"}
             }]
         });

@@ -3,12 +3,11 @@
 //! Tests the custom response filter:
 //! - Create filter with custom response for 5xx errors
 //! - Install filter on listener
+//! - Configure filter at route-config level
 //! - Trigger 500 error and verify custom response body
 //! - Route-specific override for different status codes
 
-use serde_json::json;
 use std::collections::HashMap;
-use wiremock::{matchers::path, Mock, ResponseTemplate};
 
 use crate::common::{
     api_client::{setup_dev_context, ApiClient},
@@ -29,7 +28,8 @@ async fn test_100_create_filter() {
     .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_100_create_filter").await.expect("Setup should succeed");
 
     // Create custom response filter for 5xx errors
     let filter_config = filter_configs::custom_response()
@@ -74,25 +74,11 @@ async fn test_101_verify_custom_response() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_101_verify_custom_response")
+        .await
+        .expect("Setup should succeed");
 
-    // Setup mock endpoints that return errors
-    let mocks = harness.mocks();
-    Mock::given(path("/error"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
-            "error": "Original backend error"
-        })))
-        .mount(&mocks.echo)
-        .await;
-
-    Mock::given(path("/success"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
-        })))
-        .mount(&mocks.echo)
-        .await;
-
-    // Extract echo server endpoint
+    // Extract echo server endpoint - use the smart mock which returns status based on path
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
     let (host, port) = (parts[0], parts[1].parse::<u16>().unwrap_or(8080));
@@ -120,7 +106,17 @@ async fn test_101_verify_custom_response() {
 
     println!("✓ Setup complete: filter={}, route={}", filter.name, route.name);
 
-    // Wait for route to converge
+    // Configure filter at route-config level (required for filter to be active)
+    let _config_result =
+        with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
+            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+        })
+        .await
+        .expect("Configure filter at route-config should succeed");
+
+    println!("✓ Filter configured at route-config level");
+
+    // Wait for route to converge (uses /success path which returns 200)
     let _ = with_timeout(TestTimeout::default_with_label("Wait for route convergence"), async {
         harness
             .wait_for_route(&format!("{}.e2e.local", route.name), "/testing/custom/success", 200)
@@ -134,12 +130,13 @@ async fn test_101_verify_custom_response() {
     let envoy = harness.envoy().unwrap();
 
     // Test 1: Trigger 500 error and verify custom response
+    // Smart mock returns 500 for paths ending in /fail or /error
     let (status, headers, body) = envoy
         .proxy_request(
             harness.ports.listener,
             hyper::Method::GET,
             &format!("{}.e2e.local", route.name),
-            "/testing/custom/error",
+            "/testing/custom/fail",
             HashMap::new(),
             None,
         )
@@ -188,7 +185,8 @@ async fn test_101_verify_custom_response() {
     assert_eq!(status_ok, 200, "Successful requests should still work");
     let body_ok_json: serde_json::Value =
         serde_json::from_str(&body_ok).expect("Success response should be valid JSON");
-    assert_eq!(body_ok_json["status"], "ok", "Successful response should be unmodified");
+    // Mock returns {"status": 200} for successful requests (not {"status": "ok"})
+    assert_eq!(body_ok_json["status"], 200, "Successful response should be unmodified");
 
     println!("✓ Custom response filter test completed");
 }
@@ -207,16 +205,8 @@ async fn test_102_route_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
-
-    // Setup mock endpoints
-    let mocks = harness.mocks();
-    Mock::given(path("/error"))
-        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
-            "error": "Service unavailable"
-        })))
-        .mount(&mocks.echo)
-        .await;
+    let ctx =
+        setup_dev_context(&api, "test_102_route_override").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -233,11 +223,12 @@ async fn test_102_route_override() {
         .build();
 
     // Setup resources with filter
+    // Note: Use "cr-" prefix (custom response) to avoid collision with test_12's "override-route"
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster("override-cluster", host, port)
-        .with_route("override-route", "/testing/override")
-        .with_listener("override-listener", harness.ports.listener)
-        .with_filter("base-custom-filter", "custom_response", base_filter_config)
+        .with_cluster("cr-override-cluster", host, port)
+        .with_route("cr-override-route", "/testing/custom-override")
+        .with_listener("cr-override-listener", harness.ports.listener)
+        .with_filter("cr-base-custom-filter", "custom_response", base_filter_config)
         .build()
         .await
         .expect("Resource setup should succeed");
@@ -247,7 +238,20 @@ async fn test_102_route_override() {
 
     println!("✓ Base setup complete: filter={}, route={}", filter.name, route.name);
 
+    // Configure filter at route-config level first
+    let _config_result =
+        with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
+            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+        })
+        .await
+        .expect("Configure filter at route-config should succeed");
+
+    println!("✓ Filter configured at route-config level");
+
     // Add route-specific override with different message
+    // scope_id format: "{route-config-name}/{vhost-name}/{route-name}"
+    // From resource_setup.rs: vhost = "{name}-vh", route = "{name}-route"
+    let scope_id = format!("{}/{}-vh/{}-route", route.name, route.name, route.name);
     let override_config = filter_configs::custom_response()
         .add_matcher(
             503,
@@ -259,30 +263,39 @@ async fn test_102_route_override() {
 
     let override_result =
         with_timeout(TestTimeout::default_with_label("Add route override"), async {
-            api.add_route_filter_override(
-                &ctx.admin_token,
-                &route.name,
-                &filter.id,
-                override_config,
-            )
-            .await
+            api.add_route_filter_override(&ctx.admin_token, &filter.id, &scope_id, override_config)
+                .await
         })
         .await
         .expect("Route override should succeed");
 
     println!("✓ Route override added: {:?}", override_result);
 
-    // Wait for config to propagate
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for xDS propagation (3 sec delay per design principles)
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Wait for route to converge
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route convergence"), async {
+        harness
+            .wait_for_route(
+                &format!("{}.e2e.local", route.name),
+                "/testing/custom-override/success",
+                200,
+            )
+            .await
+    })
+    .await
+    .expect("Route should converge");
 
     // Make request and verify override is applied
+    // Smart mock: path containing /503 returns 503
     let envoy = harness.envoy().unwrap();
     let (status, _, body) = envoy
         .proxy_request(
             harness.ports.listener,
             hyper::Method::GET,
             &format!("{}.e2e.local", route.name),
-            "/testing/override/error",
+            "/testing/custom-override/503",
             HashMap::new(),
             None,
         )
@@ -324,16 +337,8 @@ async fn test_103_status_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
-
-    // Setup mock that returns 500
-    let mocks = harness.mocks();
-    Mock::given(path("/backend-error"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
-            "error": "Internal error"
-        })))
-        .mount(&mocks.echo)
-        .await;
+    let ctx =
+        setup_dev_context(&api, "test_103_status_override").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -359,17 +364,38 @@ async fn test_103_status_override() {
         .expect("Resource setup should succeed");
 
     let route = resources.route();
+    let filter = resources.filter();
 
-    // Wait for config
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    println!("✓ Setup complete: filter={}, route={}", filter.name, route.name);
+
+    // Configure filter at route-config level
+    let _config_result =
+        with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
+            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+        })
+        .await
+        .expect("Configure filter at route-config should succeed");
+
+    println!("✓ Filter configured at route-config level");
+
+    // Wait for route to converge
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for route convergence"), async {
+        harness
+            .wait_for_route(&format!("{}.e2e.local", route.name), "/testing/status/success", 200)
+            .await
+    })
+    .await
+    .expect("Route should converge");
 
     let envoy = harness.envoy().unwrap();
+
+    // Smart mock: path ending in /fail returns 500
     let (status, _, body) = envoy
         .proxy_request(
             harness.ports.listener,
             hyper::Method::GET,
             &format!("{}.e2e.local", route.name),
-            "/testing/status/backend-error",
+            "/testing/status/fail",
             HashMap::new(),
             None,
         )
@@ -394,29 +420,22 @@ async fn test_103_status_override() {
 mod tests {
     #[test]
     fn test_custom_response_config_format() {
+        // Config matches backend's CustomResponseConfig format
         let config = serde_json::json!({
-            "type": "custom_response",
-            "config": {
-                "custom_response_matchers": [
-                    {
-                        "matcher": {
-                            "status_code_matcher": {
-                                "match_type": "exact",
-                                "value": 500
-                            }
-                        },
-                        "response": {
-                            "body": {
-                                "inline_string": "{\"error\":\"custom\"}"
-                            },
-                            "content_type": "application/json"
-                        }
+            "matchers": [
+                {
+                    "status_code": { "type": "exact", "code": 500 },
+                    "response": {
+                        "body": "{\"error\":\"custom\"}",
+                        "headers": { "content-type": "application/json" }
                     }
-                ]
-            }
+                }
+            ]
         });
 
-        assert_eq!(config["type"], "custom_response");
-        assert!(config["config"]["custom_response_matchers"].is_array());
+        assert!(config["matchers"].is_array());
+        let matcher = &config["matchers"][0];
+        assert_eq!(matcher["status_code"]["type"], "exact");
+        assert_eq!(matcher["status_code"]["code"], 500);
     }
 }

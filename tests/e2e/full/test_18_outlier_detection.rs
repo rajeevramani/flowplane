@@ -6,9 +6,7 @@
 //! - Verify ejection stats are incremented
 //! - Verify upstream health tracking
 
-use serde_json::json;
 use std::collections::HashMap;
-use wiremock::{matchers::path, Mock, ResponseTemplate};
 
 use crate::common::{
     api_client::{setup_dev_context, ApiClient},
@@ -29,7 +27,9 @@ async fn test_100_setup_outlier_detection() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_100_setup_outlier_detection")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -79,23 +79,14 @@ async fn test_101_verify_ejection() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_verify_ejection").await.expect("Setup should succeed");
 
-    // Setup a mock endpoint that returns 500 errors
-    let mocks = harness.mocks();
-    Mock::given(path("/fail"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
-            "error": "Internal Server Error"
-        })))
-        .mount(&mocks.echo)
-        .await;
-
-    Mock::given(path("/success"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
-        })))
-        .mount(&mocks.echo)
-        .await;
+    // The echo mock server is "smart" and returns status codes based on path patterns:
+    // - Paths ending in /fail return 500
+    // - Paths containing /503 return 503
+    // - All other paths return 200
+    // No explicit mock registration needed.
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -244,19 +235,14 @@ async fn test_102_multi_endpoint_ejection() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_102_multi_endpoint_ejection")
+        .await
+        .expect("Setup should succeed");
 
-    // Setup mock endpoints
-    let mocks = harness.mocks();
-    Mock::given(path("/endpoint1"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"error": "endpoint1 error"})))
-        .mount(&mocks.echo)
-        .await;
-
-    Mock::given(path("/endpoint2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
-        .mount(&mocks.echo)
-        .await;
+    // The echo mock server is "smart" and returns status codes based on path patterns:
+    // - /testing/multi/endpoint1 returns 500
+    // - /testing/multi/endpoint2 returns 200
+    // No explicit mock registration needed.
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();

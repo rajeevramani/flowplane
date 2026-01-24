@@ -31,7 +31,8 @@ async fn test_100_setup_compression() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_100_setup_compression").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -94,7 +95,8 @@ async fn test_101_verify_compression() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_verify_compression").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -112,7 +114,7 @@ async fn test_101_verify_compression() {
         .with_route_config(
             RouteConfig::new(
                 "verify-compression-route",
-                "/testing/compression",
+                "/testing/compression-verify",
                 "verify-compression-backend",
             )
             .with_domain("verify-compression.e2e.local"),
@@ -146,7 +148,7 @@ async fn test_101_verify_compression() {
             harness.ports.listener,
             hyper::Method::GET,
             "verify-compression.e2e.local",
-            "/testing/compression/test",
+            "/testing/compression-verify/test",
             headers,
             None,
         )
@@ -202,7 +204,7 @@ async fn test_102_check_stats() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_102_check_stats").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -218,7 +220,7 @@ async fn test_102_check_stats() {
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
         .with_cluster_config(ClusterConfig::new("stats-backend", host, port))
         .with_route_config(
-            RouteConfig::new("stats-route", "/testing/stats", "stats-backend")
+            RouteConfig::new("stats-route", "/testing/compression-stats", "stats-backend")
                 .with_domain("stats.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
@@ -246,7 +248,7 @@ async fn test_102_check_stats() {
                 harness.ports.listener,
                 hyper::Method::GET,
                 "stats.e2e.local",
-                &format!("/testing/stats/req{}", i),
+                &format!("/testing/compression-stats/req{}", i),
                 headers.clone(),
                 None,
             )
@@ -307,7 +309,9 @@ async fn test_103_compression_large_payload() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_103_compression_large_payload")
+        .await
+        .expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -323,8 +327,12 @@ async fn test_103_compression_large_payload() {
     let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
         .with_cluster_config(ClusterConfig::new("large-payload-backend", host, port))
         .with_route_config(
-            RouteConfig::new("large-payload-route", "/testing/large", "large-payload-backend")
-                .with_domain("large-payload.e2e.local"),
+            RouteConfig::new(
+                "large-payload-route",
+                "/testing/compression-large",
+                "large-payload-backend",
+            )
+            .with_domain("large-payload.e2e.local"),
         )
         .with_listener_config(ListenerConfig::new(
             "large-payload-listener",
@@ -358,7 +366,7 @@ async fn test_103_compression_large_payload() {
             harness.ports.listener,
             hyper::Method::POST,
             "large-payload.e2e.local",
-            "/testing/large/data",
+            "/testing/compression-large/data",
             headers,
             Some(large_payload.to_string()),
         )
@@ -395,11 +403,8 @@ mod tests {
             .content_types(vec!["application/json"])
             .build();
 
-        assert_eq!(config["type"], "compressor");
-        assert_eq!(
-            config["config"]["response_direction_config"]["common_config"]["min_content_length"],
-            100
-        );
-        assert_eq!(config["config"]["compressor_library"]["type"], "gzip");
+        // Config is inner config only (no type wrapper - API client adds it)
+        assert_eq!(config["response_direction_config"]["common_config"]["min_content_length"], 100);
+        assert_eq!(config["compressor_library"]["type"], "gzip");
     }
 }

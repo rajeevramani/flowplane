@@ -44,7 +44,8 @@ async fn test_100_create_secrets() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_100_create_secrets").await.expect("Setup should succeed");
 
     // TODO: Implement when secrets API is available
     // This would:
@@ -91,7 +92,7 @@ async fn test_101_setup_oauth2() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_101_setup_oauth2").await.expect("Setup should succeed");
 
     // Get auth server endpoint (for OAuth2 token endpoint)
     let auth_endpoint = match harness.mocks().auth_endpoint() {

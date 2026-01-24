@@ -383,20 +383,6 @@ impl<'a> ResourceSetup<'a> {
 
 /// Build a route request with optional retry policy and prefix rewrite
 fn build_route_request(team: &str, config: &RouteConfig) -> CreateRouteRequest {
-    let mut action = serde_json::json!({
-        "type": "forward",
-        "cluster": config.cluster_name,
-        "timeoutSeconds": 30
-    });
-
-    if let Some(ref retry) = config.retry_policy {
-        action["retryPolicy"] = retry.clone();
-    }
-
-    if let Some(ref rewrite) = config.prefix_rewrite {
-        action["prefixRewrite"] = serde_json::json!(rewrite);
-    }
-
     CreateRouteRequest {
         team: team.to_string(),
         name: config.name.clone(),
@@ -415,6 +401,8 @@ fn build_route_request(team: &str, config: &RouteConfig) -> CreateRouteRequest {
                     action_type: "forward".to_string(),
                     cluster: config.cluster_name.clone(),
                     timeout_seconds: Some(30),
+                    prefix_rewrite: config.prefix_rewrite.clone(),
+                    retry_policy: config.retry_policy.clone(),
                 },
             }],
         }],

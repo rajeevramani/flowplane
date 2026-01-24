@@ -39,7 +39,7 @@ async fn test_100_upload_wasm() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let _ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let _ctx = setup_dev_context(&api, "test_100_upload_wasm").await.expect("Setup should succeed");
 
     // TODO: Implement WASM upload when API is available
     // This would:
@@ -69,7 +69,8 @@ async fn test_101_setup_wasm_filter() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let _ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let _ctx =
+        setup_dev_context(&api, "test_101_setup_wasm_filter").await.expect("Setup should succeed");
 
     // TODO: Implement when WASM upload is available
     // This would:
@@ -117,7 +118,9 @@ async fn test_102_verify_wasm_execution() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let _ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let _ctx = setup_dev_context(&api, "test_102_verify_wasm_execution")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -202,7 +205,9 @@ async fn test_103_list_custom_filters() {
             .expect("Failed to start harness");
 
     let api = ApiClient::new(harness.api_url());
-    let _ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let _ctx = setup_dev_context(&api, "test_103_list_custom_filters")
+        .await
+        .expect("Setup should succeed");
 
     // TODO: Implement when WASM upload is available
     // This would:

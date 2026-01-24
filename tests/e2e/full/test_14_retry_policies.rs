@@ -20,7 +20,7 @@ use crate::common::{
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_100_setup_retry_infrastructure() {
-    let harness = TestHarness::start(TestHarnessConfig::new("test_100_setup_retry"))
+    let harness = TestHarness::start(TestHarnessConfig::new("test_100_setup_retry_infrastructure"))
         .await
         .expect("Failed to start harness");
 
@@ -30,7 +30,9 @@ async fn test_100_setup_retry_infrastructure() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx = setup_dev_context(&api, "test_100_setup_retry_infrastructure")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -49,10 +51,11 @@ async fn test_100_setup_retry_infrastructure() {
     let cluster_config = ClusterConfig::new("retry-test-cluster", host, port);
 
     // Create route with retry policy using prefix rewrite to /status/503
-    let route_config = RouteConfig::new("retry-test-route", "/testing/retry", "retry-test-cluster")
-        .with_domain("retry.e2e.local")
-        .with_retry_policy(retry_policy)
-        .with_prefix_rewrite("/status/503");
+    let route_config =
+        RouteConfig::new("retry-test-route", "/testing/retry-basic", "retry-test-cluster")
+            .with_domain("retry.e2e.local")
+            .with_retry_policy(retry_policy)
+            .with_prefix_rewrite("/status/503");
 
     // Build all resources
     let resources =
@@ -77,7 +80,7 @@ async fn test_100_setup_retry_infrastructure() {
 
     // Wait for route to converge
     let _ = with_timeout(TestTimeout::default_with_label("Wait for route"), async {
-        harness.wait_for_route("retry.e2e.local", "/testing/retry", 503).await
+        harness.wait_for_route("retry.e2e.local", "/testing/retry-basic", 503).await
     })
     .await
     .expect("Route should converge");
@@ -99,7 +102,8 @@ async fn test_101_trigger_retries() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_101_trigger_retries").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -117,7 +121,7 @@ async fn test_101_trigger_retries() {
     // Create cluster + route + listener with retry policy
     let cluster_config = ClusterConfig::new("trigger-retry-cluster", host, port);
     let route_config =
-        RouteConfig::new("trigger-retry-route", "/testing/retry", "trigger-retry-cluster")
+        RouteConfig::new("trigger-retry-route", "/testing/retry-trigger", "trigger-retry-cluster")
             .with_domain("trigger-retry.e2e.local")
             .with_retry_policy(retry_policy)
             .with_prefix_rewrite("/status/503");
@@ -130,8 +134,12 @@ async fn test_101_trigger_retries() {
         .await
         .expect("Resource setup should succeed");
 
-    // Wait for route convergence
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for route to converge (xDS propagation)
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for retry route"), async {
+        harness.wait_for_route("trigger-retry.e2e.local", "/testing/retry-trigger", 503).await
+    })
+    .await
+    .expect("Route should converge");
 
     // Make request that will trigger retries (echo server /status/503 returns 503)
     let envoy = harness.envoy().unwrap();
@@ -142,7 +150,7 @@ async fn test_101_trigger_retries() {
                     harness.ports.listener,
                     hyper::Method::GET,
                     "trigger-retry.e2e.local",
-                    "/testing/retry",
+                    "/testing/retry-trigger",
                     HashMap::new(),
                     None,
                 )
@@ -171,7 +179,8 @@ async fn test_102_verify_retry_stats() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "test_102_verify_retry_stats").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -189,7 +198,7 @@ async fn test_102_verify_retry_stats() {
     // Create cluster + route + listener with retry policy
     let cluster_config = ClusterConfig::new("stats-retry-cluster", host, port);
     let route_config =
-        RouteConfig::new("stats-retry-route", "/testing/retry", "stats-retry-cluster")
+        RouteConfig::new("stats-retry-route", "/testing/retry-stats", "stats-retry-cluster")
             .with_domain("stats-retry.e2e.local")
             .with_retry_policy(retry_policy)
             .with_prefix_rewrite("/status/503");
@@ -202,8 +211,12 @@ async fn test_102_verify_retry_stats() {
         .await
         .expect("Resource setup should succeed");
 
-    // Wait for route convergence
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for route to converge (xDS propagation)
+    let _ = with_timeout(TestTimeout::default_with_label("Wait for retry route"), async {
+        harness.wait_for_route("stats-retry.e2e.local", "/testing/retry-stats", 503).await
+    })
+    .await
+    .expect("Route should converge");
 
     // Make request that will trigger retries
     let envoy = harness.envoy().unwrap();
@@ -212,7 +225,7 @@ async fn test_102_verify_retry_stats() {
             harness.ports.listener,
             hyper::Method::GET,
             "stats-retry.e2e.local",
-            "/testing/retry",
+            "/testing/retry-stats",
             HashMap::new(),
             None,
         )

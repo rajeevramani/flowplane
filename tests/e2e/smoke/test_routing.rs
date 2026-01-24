@@ -23,7 +23,8 @@ async fn smoke_test_basic_routing() {
     let api = ApiClient::new(harness.api_url());
 
     // Setup dev context (bootstrap + login + admin token + teams)
-    let ctx = setup_dev_context(&api).await.expect("Setup should succeed");
+    let ctx =
+        setup_dev_context(&api, "smoke_test_basic_routing").await.expect("Setup should succeed");
     println!("✓ Dev context ready");
 
     // Get echo server endpoint

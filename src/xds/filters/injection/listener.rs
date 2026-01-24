@@ -401,13 +401,21 @@ fn try_typed_conversion(
             Some(config.to_any())
         }
         "cors" => {
+            // CORS filter needs the empty Cors marker in the HCM chain, not the CorsPolicy.
+            // The CorsPolicy is applied per-route via typed_per_filter_config.
+            // Validate the config to catch errors early, but return the empty marker.
             let config: CorsConfig = match serde_json::from_value(config.clone()) {
                 Ok(c) => c,
                 Err(e) => {
                     return Some(Err(crate::Error::config(format!("Invalid cors config: {}", e))))
                 }
             };
-            Some(config.to_any())
+            // Validate the policy
+            if let Err(e) = config.policy.validate() {
+                return Some(Err(e));
+            }
+            // Return empty CORS marker for HCM chain
+            Some(Ok(crate::xds::filters::http::cors::filter_marker_any()))
         }
         "header_mutation" => {
             // Parse and convert using proper protobuf
