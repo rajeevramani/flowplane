@@ -108,9 +108,27 @@ fn check_sse_authorization(context: &AuthContext) -> Result<(), String> {
 }
 
 /// Format a notification message as an SSE event
+///
+/// Per MCP spec, SSE events should contain the raw JSON-RPC payload (for message events)
+/// or the notification payload (for progress/log), not wrapped in an envelope.
 fn format_sse_event(message: &NotificationMessage, event_id: u64) -> Result<Event, Infallible> {
     let event_type = message.event_type();
-    let data = serde_json::to_string(message).unwrap_or_else(|_| "{}".to_string());
+
+    // Serialize only the inner data, not the wrapper enum
+    let data = match message {
+        NotificationMessage::Message { data } => {
+            serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string())
+        }
+        NotificationMessage::Progress { data } => {
+            serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string())
+        }
+        NotificationMessage::Log { data } => {
+            serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string())
+        }
+        NotificationMessage::Ping { timestamp } => {
+            serde_json::json!({"timestamp": timestamp}).to_string()
+        }
+    };
 
     Ok(Event::default().id(event_id.to_string()).event(event_type).data(data))
 }
@@ -196,6 +214,13 @@ pub async fn mcp_sse_handler(
     // Store connection ID for header before moving
     let connection_id_str = connection_id.to_string();
 
+    // Create the endpoint URI that clients should use to POST messages
+    // Per MCP spec: server MUST send an endpoint event containing a URI for sending messages
+    let endpoint_uri = format!("/api/v1/mcp/cp?team={}&sessionId={}", team, connection_id_str);
+
+    // Create initial endpoint event (required by MCP spec)
+    let initial_event = Event::default().event("endpoint").data(endpoint_uri);
+
     // Create stream from receiver
     let receiver_stream = ReceiverStream::new(receiver);
 
@@ -208,8 +233,12 @@ pub async fn mcp_sse_handler(
         format_sse_event(&message, event_id)
     });
 
+    // Prepend the initial endpoint event to the stream
+    let initial_stream = tokio_stream::once(Ok::<_, Infallible>(initial_event));
+    let combined_stream = initial_stream.chain(event_stream);
+
     // Wrap with cleanup stream to unregister connection when client disconnects
-    let cleanup_stream = CleanupStream::new(event_stream, connection_manager, connection_id);
+    let cleanup_stream = CleanupStream::new(combined_stream, connection_manager, connection_id);
 
     // Create SSE response with keepalive
     let sse = Sse::new(cleanup_stream).keep_alive(

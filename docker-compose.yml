@@ -28,6 +28,9 @@ services:
       FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
       FLOWPLANE_XDS_PORT: 50051
 
+      # UI and MCP
+      FLOWPLANE_UI_ORIGIN: "http://localhost:8080,http://localhost:6274"
+
       # Logging
       RUST_LOG: info,flowplane=debug
 

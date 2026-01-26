@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    http::{header, HeaderName, HeaderValue, Method},
+    http::{header, HeaderName, Method},
     middleware,
     routing::{delete, get, patch, post, put},
     Router,
 };
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{
@@ -176,23 +176,34 @@ fn get_ui_static_dir() -> Option<PathBuf> {
 }
 
 /// Build CORS layer from environment configuration
+/// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
+/// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
-    // Read allowed origin from environment variable, default to localhost for development
-    let allowed_origin = std::env::var("FLOWPLANE_UI_ORIGIN")
+    // Read allowed origins from environment variable, default to localhost for development
+    let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
+    // Parse comma-separated origins into a list
+    let allowed_origins: Vec<String> = allowed_origins_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     tracing::info!(
-        allowed_origin = %allowed_origin,
+        allowed_origins = ?allowed_origins,
         "Configuring CORS for UI integration"
     );
 
+    // Create origin predicate that checks against allowed list
+    let origins = allowed_origins.clone();
+    let allow_origin = AllowOrigin::predicate(move |origin, _request_parts| {
+        origin.to_str().map(|o| origins.iter().any(|allowed| allowed == o)).unwrap_or(false)
+    });
+
     CorsLayer::new()
-        // Allow specific origin (not wildcard for security with credentials)
-        .allow_origin(
-            allowed_origin
-                .parse::<HeaderValue>()
-                .unwrap_or_else(|_| HeaderValue::from_static("http://localhost:3000")),
-        )
+        // Allow specific origins (checked via predicate)
+        .allow_origin(allow_origin)
         // Allow credentials (cookies, authorization headers)
         .allow_credentials(true)
         // Allow common HTTP methods
@@ -532,5 +543,23 @@ mod tests {
         // The CorsLayer is built successfully with default localhost
         // Actual CORS behavior is tested via integration tests with HTTP requests
         drop(cors_layer);
+    }
+
+    #[test]
+    fn test_cors_layer_allows_multiple_origins() {
+        // Set environment variable with multiple origins
+        std::env::set_var(
+            "FLOWPLANE_UI_ORIGIN",
+            "http://localhost:3000,http://localhost:6274,https://app.example.com",
+        );
+
+        let cors_layer = build_cors_layer();
+
+        // The CorsLayer is built successfully with multiple origins
+        // Actual CORS behavior is tested via integration tests with HTTP requests
+        drop(cors_layer);
+
+        // Clean up
+        std::env::remove_var("FLOWPLANE_UI_ORIGIN");
     }
 }
