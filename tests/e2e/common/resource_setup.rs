@@ -102,11 +102,33 @@ pub struct ListenerConfig {
     pub name: String,
     pub port: u16,
     pub route_config_name: String,
+    pub dataplane_id: String,
 }
 
 impl ListenerConfig {
+    /// Create new listener config. dataplane_id will be set by ResourceSetup builder.
     pub fn new(name: &str, port: u16, route_config_name: &str) -> Self {
-        Self { name: name.to_string(), port, route_config_name: route_config_name.to_string() }
+        Self {
+            name: name.to_string(),
+            port,
+            route_config_name: route_config_name.to_string(),
+            dataplane_id: String::new(), // Will be overridden by ResourceSetup
+        }
+    }
+
+    /// Create new listener config with explicit dataplane_id
+    pub fn new_with_dataplane(
+        name: &str,
+        port: u16,
+        route_config_name: &str,
+        dataplane_id: &str,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            port,
+            route_config_name: route_config_name.to_string(),
+            dataplane_id: dataplane_id.to_string(),
+        }
     }
 }
 
@@ -171,6 +193,7 @@ pub struct ResourceSetup<'a> {
     api: &'a ApiClient,
     token: &'a str,
     team: &'a str,
+    dataplane_id: &'a str,
     cluster: Option<ClusterConfig>,
     route: Option<RouteConfig>,
     listener: Option<ListenerConfig>,
@@ -179,8 +202,17 @@ pub struct ResourceSetup<'a> {
 
 impl<'a> ResourceSetup<'a> {
     /// Create a new resource setup builder
-    pub fn new(api: &'a ApiClient, token: &'a str, team: &'a str) -> Self {
-        Self { api, token, team, cluster: None, route: None, listener: None, filter: None }
+    pub fn new(api: &'a ApiClient, token: &'a str, team: &'a str, dataplane_id: &'a str) -> Self {
+        Self {
+            api,
+            token,
+            team,
+            dataplane_id,
+            cluster: None,
+            route: None,
+            listener: None,
+            filter: None,
+        }
     }
 
     /// Add a cluster configuration
@@ -211,12 +243,15 @@ impl<'a> ResourceSetup<'a> {
     /// Add a listener configuration
     pub fn with_listener(mut self, name: &str, port: u16) -> Self {
         // Route config name will be set in build() based on actual route
-        self.listener = Some(ListenerConfig::new(name, port, ""));
+        // dataplane_id comes from the ResourceSetup
+        self.listener = Some(ListenerConfig::new_with_dataplane(name, port, "", self.dataplane_id));
         self
     }
 
     /// Add a listener with full configuration
-    pub fn with_listener_config(mut self, config: ListenerConfig) -> Self {
+    /// Note: dataplane_id is overridden from the ResourceSetup's dataplane_id
+    pub fn with_listener_config(mut self, mut config: ListenerConfig) -> Self {
+        config.dataplane_id = self.dataplane_id.to_string();
         self.listener = Some(config);
         self
     }
@@ -322,6 +357,7 @@ impl<'a> ResourceSetup<'a> {
                     tls_context: None,
                 }],
                 protocol: None,
+                dataplane_id: listener_config.dataplane_id,
             };
 
             let listener = with_timeout(

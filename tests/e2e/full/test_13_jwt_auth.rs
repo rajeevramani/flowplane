@@ -175,7 +175,13 @@ async fn test_810_auth_success() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
-            &simple_listener(&ctx.team_a_name, "jwt-listener", harness.ports.listener, &route.name),
+            &simple_listener(
+                &ctx.team_a_name,
+                "jwt-listener",
+                harness.ports.listener,
+                &route.name,
+                &ctx.team_a_dataplane_id,
+            ),
         )
         .await
         .expect("Listener creation should succeed");
@@ -356,6 +362,7 @@ async fn test_811_auth_fail_invalid_jwt() {
                 "fail-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -513,6 +520,7 @@ async fn test_812_auth_fail_expired_jwt() {
                 "expired-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -651,6 +659,7 @@ async fn test_815_public_route_bypass() {
                 "public-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

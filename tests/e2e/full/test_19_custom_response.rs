@@ -92,14 +92,15 @@ async fn test_101_verify_custom_response() {
         .build();
 
     // Setup resources with filter
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster("custom-response-cluster", host, port)
-        .with_route("custom-response-route", "/testing/custom")
-        .with_listener("custom-response-listener", harness.ports.listener)
-        .with_filter("custom-error-filter", "custom_response", filter_config)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster("custom-response-cluster", host, port)
+            .with_route("custom-response-route", "/testing/custom")
+            .with_listener("custom-response-listener", harness.ports.listener)
+            .with_filter("custom-error-filter", "custom_response", filter_config)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     let route = resources.route();
     let filter = resources.filter();
@@ -224,14 +225,15 @@ async fn test_102_route_override() {
 
     // Setup resources with filter
     // Note: Use "cr-" prefix (custom response) to avoid collision with test_12's "override-route"
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster("cr-override-cluster", host, port)
-        .with_route("cr-override-route", "/testing/custom-override")
-        .with_listener("cr-override-listener", harness.ports.listener)
-        .with_filter("cr-base-custom-filter", "custom_response", base_filter_config)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster("cr-override-cluster", host, port)
+            .with_route("cr-override-route", "/testing/custom-override")
+            .with_listener("cr-override-listener", harness.ports.listener)
+            .with_filter("cr-base-custom-filter", "custom_response", base_filter_config)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     let route = resources.route();
     let filter = resources.filter();
@@ -354,14 +356,15 @@ async fn test_103_status_override() {
         )
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster("status-override-cluster", host, port)
-        .with_route("status-override-route", "/testing/status")
-        .with_listener("status-override-listener", harness.ports.listener)
-        .with_filter("status-override-filter", "custom_response", filter_config)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster("status-override-cluster", host, port)
+            .with_route("status-override-route", "/testing/status")
+            .with_listener("status-override-listener", harness.ports.listener)
+            .with_filter("status-override-filter", "custom_response", filter_config)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     let route = resources.route();
     let filter = resources.filter();

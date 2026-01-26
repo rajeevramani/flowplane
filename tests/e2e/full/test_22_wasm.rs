@@ -138,7 +138,7 @@ async fn test_102_verify_wasm_execution() {
     let wasm_filter_type = upload_wasm_filter(&api, &ctx).await;
 
     // 2. Setup infrastructure with WASM filter
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
+    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
         .with_cluster("wasm-backend", host, port)
         .with_route("wasm-route", "/testing/wasm")
         .with_listener("wasm-listener", harness.ports.listener)

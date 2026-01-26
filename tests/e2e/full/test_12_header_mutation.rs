@@ -125,6 +125,7 @@ async fn test_610_verify_headers() {
                 "header-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -276,6 +277,7 @@ async fn test_611_route_override() {
                 "override-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

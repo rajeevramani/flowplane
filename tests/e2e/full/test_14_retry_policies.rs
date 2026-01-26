@@ -60,7 +60,7 @@ async fn test_100_setup_retry_infrastructure() {
     // Build all resources
     let resources =
         with_timeout(TestTimeout::default_with_label("Setup retry infrastructure"), async {
-            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
+            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
                 .with_cluster_config(cluster_config)
                 .with_route_config(route_config)
                 .with_listener("retry-listener", harness.ports.listener)
@@ -126,13 +126,14 @@ async fn test_101_trigger_retries() {
             .with_retry_policy(retry_policy)
             .with_prefix_rewrite("/status/503");
 
-    let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route_config(route_config)
-        .with_listener("trigger-retry-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let _resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route_config(route_config)
+            .with_listener("trigger-retry-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for route to converge (xDS propagation)
     let _ = with_timeout(TestTimeout::default_with_label("Wait for retry route"), async {
@@ -203,13 +204,14 @@ async fn test_102_verify_retry_stats() {
             .with_retry_policy(retry_policy)
             .with_prefix_rewrite("/status/503");
 
-    let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route_config(route_config)
-        .with_listener("stats-retry-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let _resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route_config(route_config)
+            .with_listener("stats-retry-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for route to converge (xDS propagation)
     let _ = with_timeout(TestTimeout::default_with_label("Wait for retry route"), async {

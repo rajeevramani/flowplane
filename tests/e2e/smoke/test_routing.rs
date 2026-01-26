@@ -90,6 +90,7 @@ async fn smoke_test_basic_routing() {
                 "smoke-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -184,6 +185,7 @@ async fn smoke_test_filter_attachment() {
                 "smoke-filter-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -352,6 +354,7 @@ async fn smoke_test_xds_config() {
                 "smoke-xds-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

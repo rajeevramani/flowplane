@@ -163,6 +163,7 @@ async fn test_101_setup_oauth2() {
                 "oauth2-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

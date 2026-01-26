@@ -46,21 +46,26 @@ async fn test_100_setup_rate_limit() {
         filter_configs::rate_limit().max_tokens(5).fill_interval_ms(60000).status_code(429).build();
 
     // Build infrastructure with rate limit filter
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("rl-setup-backend", host, port))
-        .with_route_config(
-            RouteConfig::new("rl-setup-route", "/testing/rl/setup", "rl-setup-backend")
-                .with_domain("rl-setup.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "rl-setup-listener",
-            harness.ports.listener,
-            "rl-setup-route",
-        ))
-        .with_filter_config(FilterConfig::new("rl-setup-filter", "local_rate_limit", filter_config))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("rl-setup-backend", host, port))
+            .with_route_config(
+                RouteConfig::new("rl-setup-route", "/testing/rl/setup", "rl-setup-backend")
+                    .with_domain("rl-setup.e2e.local"),
+            )
+            .with_listener_config(ListenerConfig::new(
+                "rl-setup-listener",
+                harness.ports.listener,
+                "rl-setup-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "rl-setup-filter",
+                "local_rate_limit",
+                filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     println!(
         "✓ Rate limit infrastructure created: cluster={}, route={}, listener={}, filter={}",
@@ -101,25 +106,26 @@ async fn test_101_verify_base_limit() {
     let filter_config =
         filter_configs::rate_limit().max_tokens(6).fill_interval_ms(60000).status_code(429).build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("rl-verify-backend", host, port))
-        .with_route_config(
-            RouteConfig::new("rl-verify-route", "/testing/rl/verify", "rl-verify-backend")
-                .with_domain("rl-verify.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "rl-verify-listener",
-            harness.ports.listener,
-            "rl-verify-route",
-        ))
-        .with_filter_config(FilterConfig::new(
-            "rl-verify-filter",
-            "local_rate_limit",
-            filter_config,
-        ))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("rl-verify-backend", host, port))
+            .with_route_config(
+                RouteConfig::new("rl-verify-route", "/testing/rl/verify", "rl-verify-backend")
+                    .with_domain("rl-verify.e2e.local"),
+            )
+            .with_listener_config(ListenerConfig::new(
+                "rl-verify-listener",
+                harness.ports.listener,
+                "rl-verify-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "rl-verify-filter",
+                "local_rate_limit",
+                filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for route to converge (3 sec delay per design principles)
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -194,25 +200,30 @@ async fn test_102_configure_route_override() {
         .status_code(429)
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("rl-override-backend", host, port))
-        .with_route_config(
-            RouteConfig::new("rl-override-route", "/testing/rl/override", "rl-override-backend")
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("rl-override-backend", host, port))
+            .with_route_config(
+                RouteConfig::new(
+                    "rl-override-route",
+                    "/testing/rl/override",
+                    "rl-override-backend",
+                )
                 .with_domain("rl-override.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "rl-override-listener",
-            harness.ports.listener,
-            "rl-override-route",
-        ))
-        .with_filter_config(FilterConfig::new(
-            "rl-override-filter",
-            "local_rate_limit",
-            base_filter_config,
-        ))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+            )
+            .with_listener_config(ListenerConfig::new(
+                "rl-override-listener",
+                harness.ports.listener,
+                "rl-override-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "rl-override-filter",
+                "local_rate_limit",
+                base_filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for resources to propagate (3 sec delay per design principles)
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -290,29 +301,30 @@ async fn test_103_verify_override() {
         .status_code(429)
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("rl-verify-ovr-backend", host, port))
-        .with_route_config(
-            RouteConfig::new(
-                "rl-verify-ovr-route",
-                "/testing/rl/verify-override",
-                "rl-verify-ovr-backend",
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("rl-verify-ovr-backend", host, port))
+            .with_route_config(
+                RouteConfig::new(
+                    "rl-verify-ovr-route",
+                    "/testing/rl/verify-override",
+                    "rl-verify-ovr-backend",
+                )
+                .with_domain("rl-verify-ovr.e2e.local"),
             )
-            .with_domain("rl-verify-ovr.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "rl-verify-ovr-listener",
-            harness.ports.listener,
-            "rl-verify-ovr-route",
-        ))
-        .with_filter_config(FilterConfig::new(
-            "rl-verify-ovr-filter",
-            "local_rate_limit",
-            base_filter_config,
-        ))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+            .with_listener_config(ListenerConfig::new(
+                "rl-verify-ovr-listener",
+                harness.ports.listener,
+                "rl-verify-ovr-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "rl-verify-ovr-filter",
+                "local_rate_limit",
+                base_filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for resources to propagate (3 sec delay per design principles)
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;

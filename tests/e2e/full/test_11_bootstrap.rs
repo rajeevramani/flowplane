@@ -355,6 +355,7 @@ async fn test_500_full_routing_setup() {
                 "routing-echo-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

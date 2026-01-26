@@ -34,11 +34,15 @@ pub struct TestContext {
     pub team_a_id: String,
     /// Team A developer token
     pub team_a_dev_token: Option<String>,
+    /// Team A dataplane ID (created during setup)
+    pub team_a_dataplane_id: String,
     /// Team B info
     pub team_b_name: String,
     pub team_b_id: String,
     /// Team B developer token
     pub team_b_dev_token: Option<String>,
+    /// Team B dataplane ID (created during setup)
+    pub team_b_dataplane_id: String,
 }
 
 /// API Client for flowplane
@@ -182,6 +186,19 @@ pub struct FilterInstallationResponse {
     pub order: i64,
 }
 
+/// Dataplane response - matches backend DataplaneResponse
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataplaneResponse {
+    pub id: String,
+    pub team: String,
+    pub name: String,
+    #[serde(default)]
+    pub gateway_host: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 // Request types - match backend CreateClusterBody
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +294,20 @@ pub struct CreateListenerRequest {
     pub filter_chains: Vec<ListenerFilterChainInput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// The dataplane ID this listener belongs to (required)
+    pub dataplane_id: String,
+}
+
+/// Dataplane request - matches backend CreateDataplaneBody
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDataplaneRequest {
+    pub team: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -523,6 +554,32 @@ impl ApiClient {
         }
 
         let result: ListenerResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Create a dataplane
+    pub async fn create_dataplane(
+        &self,
+        token: &str,
+        req: &CreateDataplaneRequest,
+    ) -> anyhow::Result<DataplaneResponse> {
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Create dataplane failed: {} - {}", status, text);
+        }
+
+        let result: DataplaneResponse = resp.json().await?;
         Ok(result)
     }
 
@@ -998,15 +1055,47 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     })
     .await?;
 
+    // Create dataplane for Team A
+    let dataplane_a = with_timeout(TestTimeout::default_with_label("Create Dataplane A"), async {
+        api.create_dataplane(
+            &admin_token,
+            &CreateDataplaneRequest {
+                team: team_a.name.clone(),
+                name: format!("{}-dataplane", team_a.name),
+                gateway_host: Some("127.0.0.1".to_string()),
+                description: Some(format!("Default dataplane for {}", team_a.name)),
+            },
+        )
+        .await
+    })
+    .await?;
+
+    // Create dataplane for Team B
+    let dataplane_b = with_timeout(TestTimeout::default_with_label("Create Dataplane B"), async {
+        api.create_dataplane(
+            &admin_token,
+            &CreateDataplaneRequest {
+                team: team_b.name.clone(),
+                name: format!("{}-dataplane", team_b.name),
+                gateway_host: Some("127.0.0.1".to_string()),
+                description: Some(format!("Default dataplane for {}", team_b.name)),
+            },
+        )
+        .await
+    })
+    .await?;
+
     Ok(TestContext {
         admin_session: session,
         admin_token,
         team_a_name: team_a.name,
         team_a_id: team_a.id,
         team_a_dev_token: None,
+        team_a_dataplane_id: dataplane_a.id,
         team_b_name: team_b.name,
         team_b_id: team_b.id,
         team_b_dev_token: None,
+        team_b_dataplane_id: dataplane_b.id,
     })
 }
 
@@ -1069,6 +1158,7 @@ pub fn simple_listener(
     name: &str,
     port: u16,
     route_config: &str,
+    dataplane_id: &str,
 ) -> CreateListenerRequest {
     CreateListenerRequest {
         team: team.to_string(),
@@ -1090,6 +1180,7 @@ pub fn simple_listener(
             tls_context: None,
         }],
         protocol: None,
+        dataplane_id: dataplane_id.to_string(),
     }
 }
 
@@ -1118,11 +1209,13 @@ mod tests {
 
     #[test]
     fn test_simple_listener_creation() {
-        let listener_req = simple_listener("engineering", "test-listener", 8080, "test-route");
+        let listener_req =
+            simple_listener("engineering", "test-listener", 8080, "test-route", "dp-123");
         assert_eq!(listener_req.team, "engineering");
         assert_eq!(listener_req.name, "test-listener");
         assert_eq!(listener_req.port, 8080);
         assert_eq!(listener_req.address, "0.0.0.0");
         assert_eq!(listener_req.filter_chains.len(), 1);
+        assert_eq!(listener_req.dataplane_id, "dp-123");
     }
 }

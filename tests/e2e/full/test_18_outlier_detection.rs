@@ -50,7 +50,7 @@ async fn test_100_setup_outlier_detection() {
     let resources = with_timeout(
         TestTimeout::default_with_label("Create cluster with outlier detection"),
         async {
-            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
+            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
                 .with_cluster_config(cluster_config)
                 .build()
                 .await
@@ -104,13 +104,14 @@ async fn test_101_verify_ejection() {
     let cluster_config =
         ClusterConfig::new("ejection-cluster", host, port).with_outlier_detection(outlier_config);
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route("ejection-route", "/testing/outlier")
-        .with_listener("ejection-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route("ejection-route", "/testing/outlier")
+            .with_listener("ejection-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     let cluster = resources.cluster();
     let route = resources.route();
@@ -259,13 +260,14 @@ async fn test_102_multi_endpoint_ejection() {
     let cluster_config = ClusterConfig::new("multi-endpoint-cluster", host, port)
         .with_outlier_detection(outlier_config);
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route("multi-route", "/testing/multi")
-        .with_listener("multi-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route("multi-route", "/testing/multi")
+            .with_listener("multi-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     let route = resources.route();
 

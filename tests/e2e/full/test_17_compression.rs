@@ -47,21 +47,30 @@ async fn test_100_setup_compression() {
         .build();
 
     // Build infrastructure with compression filter
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("compression-backend", host, port))
-        .with_route_config(
-            RouteConfig::new("compression-route", "/testing/compression", "compression-backend")
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("compression-backend", host, port))
+            .with_route_config(
+                RouteConfig::new(
+                    "compression-route",
+                    "/testing/compression",
+                    "compression-backend",
+                )
                 .with_domain("compression.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "compression-listener",
-            harness.ports.listener,
-            "compression-route",
-        ))
-        .with_filter_config(FilterConfig::new("compression-filter", "compressor", filter_config))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+            )
+            .with_listener_config(ListenerConfig::new(
+                "compression-listener",
+                harness.ports.listener,
+                "compression-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "compression-filter",
+                "compressor",
+                filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     println!(
         "✓ Compression infrastructure created: cluster={}, route={}, listener={}, filter={}",
@@ -109,29 +118,30 @@ async fn test_101_verify_compression() {
         .compression_level("DEFAULT_COMPRESSION")
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("verify-compression-backend", host, port))
-        .with_route_config(
-            RouteConfig::new(
-                "verify-compression-route",
-                "/testing/compression-verify",
-                "verify-compression-backend",
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("verify-compression-backend", host, port))
+            .with_route_config(
+                RouteConfig::new(
+                    "verify-compression-route",
+                    "/testing/compression-verify",
+                    "verify-compression-backend",
+                )
+                .with_domain("verify-compression.e2e.local"),
             )
-            .with_domain("verify-compression.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "verify-compression-listener",
-            harness.ports.listener,
-            "verify-compression-route",
-        ))
-        .with_filter_config(FilterConfig::new(
-            "verify-compression-filter",
-            "compressor",
-            filter_config,
-        ))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+            .with_listener_config(ListenerConfig::new(
+                "verify-compression-listener",
+                harness.ports.listener,
+                "verify-compression-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "verify-compression-filter",
+                "compressor",
+                filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for config to propagate
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -217,21 +227,22 @@ async fn test_102_check_stats() {
         .compression_level("DEFAULT_COMPRESSION")
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("stats-backend", host, port))
-        .with_route_config(
-            RouteConfig::new("stats-route", "/testing/compression-stats", "stats-backend")
-                .with_domain("stats.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "stats-listener",
-            harness.ports.listener,
-            "stats-route",
-        ))
-        .with_filter_config(FilterConfig::new("stats-filter", "compressor", filter_config))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("stats-backend", host, port))
+            .with_route_config(
+                RouteConfig::new("stats-route", "/testing/compression-stats", "stats-backend")
+                    .with_domain("stats.e2e.local"),
+            )
+            .with_listener_config(ListenerConfig::new(
+                "stats-listener",
+                harness.ports.listener,
+                "stats-route",
+            ))
+            .with_filter_config(FilterConfig::new("stats-filter", "compressor", filter_config))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for config to propagate
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -324,25 +335,30 @@ async fn test_103_compression_large_payload() {
         .compression_level("DEFAULT_COMPRESSION")
         .build();
 
-    let resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(ClusterConfig::new("large-payload-backend", host, port))
-        .with_route_config(
-            RouteConfig::new(
-                "large-payload-route",
-                "/testing/compression-large",
-                "large-payload-backend",
+    let resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(ClusterConfig::new("large-payload-backend", host, port))
+            .with_route_config(
+                RouteConfig::new(
+                    "large-payload-route",
+                    "/testing/compression-large",
+                    "large-payload-backend",
+                )
+                .with_domain("large-payload.e2e.local"),
             )
-            .with_domain("large-payload.e2e.local"),
-        )
-        .with_listener_config(ListenerConfig::new(
-            "large-payload-listener",
-            harness.ports.listener,
-            "large-payload-route",
-        ))
-        .with_filter_config(FilterConfig::new("large-payload-filter", "compressor", filter_config))
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+            .with_listener_config(ListenerConfig::new(
+                "large-payload-listener",
+                harness.ports.listener,
+                "large-payload-route",
+            ))
+            .with_filter_config(FilterConfig::new(
+                "large-payload-filter",
+                "compressor",
+                filter_config,
+            ))
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 

@@ -76,6 +76,7 @@ async fn test_100_setup_cors() {
                 "cors-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -176,6 +177,7 @@ async fn test_101_preflight_allowed() {
                 "preflight-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -340,6 +342,7 @@ async fn test_102_request_with_origin() {
                 "request-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -481,6 +484,7 @@ async fn test_103_blocked_origin() {
                 "blocked-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await

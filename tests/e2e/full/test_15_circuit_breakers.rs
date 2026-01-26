@@ -63,7 +63,7 @@ async fn test_100_setup_cb_infrastructure() {
     let resources = with_timeout(
         TestTimeout::default_with_label("Setup circuit breaker infrastructure"),
         async {
-            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
+            ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
                 .with_cluster_config(cluster_config)
                 .with_route_config(route_config)
                 .with_listener("circuit-breaker-listener", harness.ports.listener)
@@ -131,13 +131,14 @@ async fn test_101_trigger_overflow() {
             .with_domain("overflow-cb.e2e.local")
             .with_prefix_rewrite("/delay/2"); // Use delay endpoint to keep connections open
 
-    let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route_config(route_config)
-        .with_listener("overflow-cb-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let _resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route_config(route_config)
+            .with_listener("overflow-cb-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for route convergence
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -267,13 +268,14 @@ async fn test_102_verify_cb_stats() {
     let route_config = RouteConfig::new("stats-cb-route", "/testing/cb-stats", "stats-cb-cluster")
         .with_domain("stats-cb.e2e.local");
 
-    let _resources = ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name)
-        .with_cluster_config(cluster_config)
-        .with_route_config(route_config)
-        .with_listener("stats-cb-listener", harness.ports.listener)
-        .build()
-        .await
-        .expect("Resource setup should succeed");
+    let _resources =
+        ResourceSetup::new(&api, &ctx.admin_token, &ctx.team_a_name, &ctx.team_a_dataplane_id)
+            .with_cluster_config(cluster_config)
+            .with_route_config(route_config)
+            .with_listener("stats-cb-listener", harness.ports.listener)
+            .build()
+            .await
+            .expect("Resource setup should succeed");
 
     // Wait for route convergence
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;

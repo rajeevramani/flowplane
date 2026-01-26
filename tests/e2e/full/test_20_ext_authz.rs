@@ -101,6 +101,7 @@ async fn test_098_debug_ext_authz_step_by_step() {
                 "debug-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -510,6 +511,7 @@ async fn test_100_setup_ext_authz() {
                 "authz-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -633,6 +635,7 @@ async fn test_101_authz_allow() {
                 "allow-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
@@ -845,6 +848,7 @@ async fn test_102_authz_deny() {
                 "deny-listener",
                 harness.ports.listener,
                 &route.name,
+                &ctx.team_a_dataplane_id,
             ),
         )
         .await
