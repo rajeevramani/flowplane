@@ -192,7 +192,7 @@ async fn test_300_import_openapi() {
 
     // Import OpenAPI spec
     let result = with_timeout(TestTimeout::default_with_label("Import OpenAPI"), async {
-        api.import_openapi(&ctx.admin_token, &ctx.team_a_name, spec, harness.ports.listener).await
+        api.import_openapi(&ctx.admin_token, &ctx.team_a_name, spec, harness.ports.listener, &ctx.team_a_dataplane_id).await
     })
     .await
     .expect("OpenAPI import should succeed");

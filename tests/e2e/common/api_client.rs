@@ -768,10 +768,11 @@ impl ApiClient {
         team: &str,
         spec: Value,
         listener_port: u16,
+        dataplane_id: &str,
     ) -> anyhow::Result<Value> {
         let url = format!(
-            "{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener&new_listener_port={}",
-            self.base_url, team, team, listener_port
+            "{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener&new_listener_port={}&dataplane_id={}",
+            self.base_url, team, team, listener_port, dataplane_id
         );
 
         let resp = self
