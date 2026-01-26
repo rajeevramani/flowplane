@@ -224,6 +224,7 @@ pub async fn update_mcp_tool_handler(
         http_path: payload.http_path.map(Some),
         cluster_name: payload.cluster_name.map(Some),
         listener_port: payload.listener_port.map(Some),
+        host_header: None, // Keep existing host_header
         enabled: payload.enabled,
         confidence: None,
     };

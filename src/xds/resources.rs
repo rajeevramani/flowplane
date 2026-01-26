@@ -1310,6 +1310,7 @@ mod tests {
             source: "native_api".to_string(),
             team: None,
             import_id: None,
+            dataplane_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

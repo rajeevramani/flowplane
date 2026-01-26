@@ -32,12 +32,20 @@ impl Default for GatewayToolGenerator {
 
 impl GatewayToolGenerator {
     /// Generate an MCP tool from a route with its metadata
+    ///
+    /// # Arguments
+    /// * `route` - The route data
+    /// * `metadata` - Route metadata (operation_id, description, schemas)
+    /// * `listener_port` - The listener port for this tool
+    /// * `team` - The team that owns this tool
+    /// * `host_header` - Optional Host header value for upstream routing (from virtual host domain)
     pub fn generate_tool(
         &self,
         route: &RouteData,
         metadata: &RouteMetadataData,
         listener_port: i32,
         team: &str,
+        host_header: Option<String>,
     ) -> Result<CreateMcpToolRequest, McpError> {
         let tool_name = self.generate_tool_name(metadata, route);
         let description = self.generate_description(metadata, route);
@@ -66,6 +74,7 @@ impl GatewayToolGenerator {
             http_path: Some(route.path_pattern.clone()),
             cluster_name: None,
             listener_port: Some(listener_port as i64),
+            host_header,
             enabled: true,
             confidence: metadata.confidence,
         })
@@ -154,13 +163,16 @@ impl GatewayToolGenerator {
     }
 
     /// Build schema from path params only (fallback)
-    /// Returns null when there are no path parameters, indicating no input is required.
-    /// This is more semantically correct than returning an empty object schema.
+    /// Returns a valid JSON Schema object even when there are no parameters.
+    /// MCP spec requires inputSchema to always be a JSON object.
     fn build_path_params_schema(&self, params: &[String]) -> serde_json::Value {
         if params.is_empty() {
-            // Return null to indicate no input schema is required
-            // This prevents showing empty {} schemas for simple endpoints like GET /users
-            return serde_json::Value::Null;
+            // Return a valid empty object schema - MCP spec requires inputSchema to be an object
+            return serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            });
         }
 
         let mut properties = serde_json::Map::new();
@@ -355,8 +367,10 @@ mod tests {
         let generator = GatewayToolGenerator::new();
 
         let schema = generator.build_path_params_schema(&[]);
-        // When no path parameters exist, return null to indicate no input required
-        assert!(schema.is_null());
+        // MCP spec requires inputSchema to always be a valid JSON object
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"].is_object());
+        assert_eq!(schema["additionalProperties"], false);
     }
 
     #[test]
@@ -383,7 +397,7 @@ mod tests {
         metadata.response_schemas = Some(response_schema.clone());
 
         let tool = generator
-            .generate_tool(&route, &metadata, 8080, "test-team")
+            .generate_tool(&route, &metadata, 8080, "test-team", None)
             .expect("Failed to generate tool");
 
         // Verify output_schema is populated with response_schemas
@@ -406,7 +420,7 @@ mod tests {
         assert!(metadata.response_schemas.is_none());
 
         let tool = generator
-            .generate_tool(&route, &metadata, 8080, "test-team")
+            .generate_tool(&route, &metadata, 8080, "test-team", None)
             .expect("Failed to generate tool");
 
         // Verify output_schema is None when metadata has no response_schemas

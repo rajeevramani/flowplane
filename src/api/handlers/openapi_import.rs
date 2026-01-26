@@ -71,6 +71,9 @@ pub struct ImportOpenApiQuery {
     /// Port for the new listener (default: 10000)
     #[param(required = false, example = 10000)]
     pub new_listener_port: Option<u16>,
+    /// Dataplane ID for the new listener (required when listener_mode="new")
+    #[param(required = false, example = "dp-abc123")]
+    pub dataplane_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -247,8 +250,13 @@ pub async fn import_openapi_handler(
         crate::openapi::ListenerMode::New { name, .. } => name.clone(),
     };
 
-    let gateway_options =
-        GatewayOptions { name: gateway_name.clone(), protocol: "HTTP".to_string(), listener_mode };
+    let gateway_options = GatewayOptions {
+        name: gateway_name.clone(),
+        protocol: "HTTP".to_string(),
+        listener_mode,
+        dataplane_id: params.dataplane_id.clone(),
+        team: Some(params.team.clone()),
+    };
 
     let plan = build_gateway_plan(document, gateway_options)
         .map_err(|err| ApiError::BadRequest(format!("Failed to build gateway plan: {}", err)))?;

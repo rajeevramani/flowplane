@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { Plus, Edit, Trash2, Radio, Lock, Shield, Route } from 'lucide-svelte';
-	import type { ListenerResponse, RouteResponse, ImportSummary } from '$lib/api/types';
+	import type { ListenerResponse, RouteResponse, ImportSummary, DataplaneResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
@@ -17,6 +17,7 @@
 	let listeners = $state<ListenerResponse[]>([]);
 	let routes = $state<RouteResponse[]>([]);
 	let imports = $state<ImportSummary[]>([]);
+	let dataplanes = $state<DataplaneResponse[]>([]);
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -37,15 +38,17 @@
 		error = null;
 
 		try {
-			const [listenersData, routesData, importsData] = await Promise.all([
+			const [listenersData, routesData, importsData, dataplanesData] = await Promise.all([
 				apiClient.listListeners(),
 				apiClient.listRouteConfigs(),
-				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([])
+				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([]),
+				currentTeam ? apiClient.listDataplanes(currentTeam) : Promise.resolve([])
 			]);
 
 			listeners = listenersData;
 			routes = routesData;
 			imports = importsData;
+			dataplanes = dataplanesData;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
@@ -134,6 +137,12 @@
 		}
 
 		return [...new Set(names)]; // Remove duplicates
+	}
+
+	// Get dataplane for a listener
+	function getDataplane(listener: ListenerResponse): DataplaneResponse | null {
+		if (!listener.dataplaneId) return null;
+		return dataplanes.find(dp => dp.id === listener.dataplaneId) || null;
 	}
 
 	// Navigate to create page
@@ -296,6 +305,9 @@
 							Route Configs
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Dataplane
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Source
 						</th>
 						<th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -348,6 +360,21 @@
 									</div>
 								{:else}
 									<span class="text-sm text-gray-500">None</span>
+								{/if}
+							</td>
+
+							<!-- Dataplane -->
+							<td class="px-6 py-4">
+								{#if getDataplane(listener)}
+									{@const dataplane = getDataplane(listener)}
+									<div class="flex flex-col">
+										<span class="text-sm font-medium text-gray-900">{dataplane?.name}</span>
+										{#if dataplane?.gatewayHost}
+											<span class="text-xs text-gray-500 font-mono">{dataplane.gatewayHost}</span>
+										{/if}
+									</div>
+								{:else}
+									<span class="text-sm text-gray-400">None</span>
 								{/if}
 							</td>
 

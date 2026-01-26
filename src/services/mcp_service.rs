@@ -483,7 +483,14 @@ impl McpService {
 
         // Check if tool already exists
         if let Some(existing_tool) = self.mcp_tool_repo.get_by_route_id(&route_id).await? {
-            // Update existing tool to enabled
+            // Refresh listener port in case it changed since tool was created
+            let listener_port =
+                self.get_listener_port_for_route_config(&virtual_host.route_config_id).await?;
+
+            // Extract non-wildcard domain from virtual host for Host header
+            let host_header = virtual_host.domains.iter().find(|d| *d != "*").cloned();
+
+            // Update existing tool to enabled with refreshed listener port and host header
             let update_request = UpdateMcpToolRequest {
                 enabled: Some(true),
                 name: request.tool_name,
@@ -498,7 +505,8 @@ impl McpService {
                 http_method: None,
                 http_path: None,
                 cluster_name: None,
-                listener_port: None,
+                listener_port: Some(Some(listener_port as i64)),
+                host_header: Some(host_header),
                 confidence: None,
             };
             return Ok(self.mcp_tool_repo.update(&existing_tool.id, update_request).await?);
@@ -508,9 +516,18 @@ impl McpService {
         let listener_port =
             self.get_listener_port_for_route_config(&virtual_host.route_config_id).await?;
 
+        // Extract non-wildcard domain from virtual host for Host header
+        // Priority: first non-wildcard domain, otherwise None
+        let host_header = virtual_host.domains.iter().find(|d| *d != "*").cloned();
+
         // Generate tool using GatewayToolGenerator
-        let mut tool_request =
-            self.gateway_tool_generator.generate_tool(&route, &metadata, listener_port, team)?;
+        let mut tool_request = self.gateway_tool_generator.generate_tool(
+            &route,
+            &metadata,
+            listener_port,
+            team,
+            host_header,
+        )?;
 
         // Apply custom overrides from request
         if let Some(tool_name) = request.tool_name {
@@ -654,15 +671,19 @@ impl McpService {
                         .get_listener_port_for_route_config(&virtual_host.route_config_id)
                         .await?;
 
+                    // Extract non-wildcard domain from virtual host for Host header
+                    let host_header = virtual_host.domains.iter().find(|d| *d != "*").cloned();
+
                     // Generate new tool with updated metadata
                     let new_tool_request = self.gateway_tool_generator.generate_tool(
                         &route,
                         &updated_metadata,
                         listener_port,
                         team,
+                        host_header.clone(),
                     )?;
 
-                    // Update the existing tool with new schemas
+                    // Update the existing tool with new schemas and refreshed listener port
                     let tool_update =
                         crate::storage::repositories::mcp_tool::UpdateMcpToolRequest {
                             name: None,
@@ -677,7 +698,8 @@ impl McpService {
                             http_method: None,
                             http_path: None,
                             cluster_name: None,
-                            listener_port: None,
+                            listener_port: Some(new_tool_request.listener_port),
+                            host_header: Some(host_header),
                             enabled: None, // Keep existing enabled state
                             confidence: Some(new_tool_request.confidence),
                         };
@@ -725,40 +747,125 @@ impl McpService {
     }
 
     /// Get listener port for a route config
+    ///
+    /// Returns an error if no listeners are bound or if the listener has no port configured.
+    /// This ensures MCP tools always have valid, executable listener ports.
+    ///
+    /// Resolution strategy:
+    /// 1. First, check the listener_route_configs junction table
+    /// 2. If empty, fall back to finding listeners by route_config_name in their HCM config
     async fn get_listener_port_for_route_config(
         &self,
         route_config_id: &RouteConfigId,
     ) -> std::result::Result<i32, McpServiceError> {
-        // Get listener IDs associated with this route config
+        // Strategy 1: Check the junction table for listener bindings
         let listener_ids = self
             .listener_route_config_repo
             .list_listener_ids_by_route_config(route_config_id)
             .await
             .map_err(|e| McpServiceError::Internal(format!("Failed to get listeners: {}", e)))?;
 
-        // Get the first listener's port (or default to 10000)
         if let Some(listener_id) = listener_ids.first() {
-            match self.listener_repo.get_by_id(listener_id).await {
-                Ok(listener) => {
-                    let port = listener.port.unwrap_or(10000) as i32;
-                    return Ok(port);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        listener_id = %listener_id,
-                        error = %e,
-                        "Failed to get listener, using default port"
-                    );
-                }
+            // Found via junction table
+            let listener = self.listener_repo.get_by_id(listener_id).await.map_err(|e| {
+                McpServiceError::Internal(format!(
+                    "Failed to get listener '{}': {}",
+                    listener_id, e
+                ))
+            })?;
+
+            let port = listener.port.ok_or_else(|| {
+                McpServiceError::Validation(format!(
+                    "Cannot enable MCP: listener '{}' has no port configured. \
+                     MCP tools require listeners with explicit ports.",
+                    listener.name
+                ))
+            })? as i32;
+
+            if listener_ids.len() > 1 {
+                tracing::warn!(
+                    route_config_id = %route_config_id,
+                    listener_count = listener_ids.len(),
+                    selected_listener = %listener_id,
+                    selected_port = port,
+                    "Multiple listeners found for route config, using first listener's port"
+                );
             }
-        } else {
+
+            tracing::info!(
+                route_config_id = %route_config_id,
+                listener_id = %listener_id,
+                listener_name = %listener.name,
+                port = port,
+                "Resolved listener port via junction table"
+            );
+
+            return Ok(port);
+        }
+
+        // Strategy 2: Junction table empty - find listener by route_config_name in HCM config
+        tracing::debug!(
+            route_config_id = %route_config_id,
+            "Junction table empty, falling back to route_config_name lookup"
+        );
+
+        // Get the route_config to find its name
+        let route_config =
+            self.route_config_repo.get_by_id(route_config_id).await.map_err(|e| {
+                McpServiceError::Internal(format!(
+                    "Failed to get route config '{}': {}",
+                    route_config_id, e
+                ))
+            })?;
+
+        // Find listeners that reference this route_config_name in their HCM configuration
+        let listeners =
+            self.listener_repo.find_by_route_config_name(&route_config.name, &[]).await.map_err(
+                |e| {
+                    McpServiceError::Internal(format!(
+                        "Failed to find listeners for route config '{}': {}",
+                        route_config.name, e
+                    ))
+                },
+            )?;
+
+        let listener = listeners.first().ok_or_else(|| {
+            McpServiceError::Validation(format!(
+                "Cannot enable MCP: no listener found that references route config '{}'. \
+                 Please ensure a listener is configured with this route config.",
+                route_config.name
+            ))
+        })?;
+
+        let port = listener.port.ok_or_else(|| {
+            McpServiceError::Validation(format!(
+                "Cannot enable MCP: listener '{}' has no port configured. \
+                 MCP tools require listeners with explicit ports.",
+                listener.name
+            ))
+        })? as i32;
+
+        if listeners.len() > 1 {
             tracing::warn!(
                 route_config_id = %route_config_id,
-                "No listeners found for route config, using default port 10000"
+                route_config_name = %route_config.name,
+                listener_count = listeners.len(),
+                selected_listener = %listener.id,
+                selected_port = port,
+                "Multiple listeners reference this route config, using first listener's port"
             );
         }
 
-        Ok(10000)
+        tracing::info!(
+            route_config_id = %route_config_id,
+            route_config_name = %route_config.name,
+            listener_id = %listener.id,
+            listener_name = %listener.name,
+            port = port,
+            "Resolved listener port via route_config_name lookup"
+        );
+
+        Ok(port)
     }
 
     /// Check which required fields are missing from metadata

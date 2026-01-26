@@ -121,6 +121,8 @@ pub struct CreateListenerRequest {
     pub team: Option<String>,
     /// Listener configuration (filter chains, etc.)
     pub config: ListenerConfig,
+    /// The dataplane ID this listener belongs to (required)
+    pub dataplane_id: String,
 }
 
 /// Request to list listeners with pagination
@@ -158,6 +160,8 @@ pub struct UpdateListenerRequest {
     pub protocol: Option<String>,
     /// New listener configuration
     pub config: ListenerConfig,
+    /// New dataplane ID (optional) - if provided, listener will be assigned to this dataplane
+    pub dataplane_id: Option<String>,
 }
 
 // =============================================================================

@@ -100,6 +100,7 @@ mod tests {
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
                 import_id TEXT,
+                dataplane_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, version)
@@ -300,6 +301,7 @@ mod tests {
             }),
             team: None,
             import_id: None,
+            dataplane_id: None,
         };
 
         let created = repo.create(create_request).await.unwrap();
@@ -324,6 +326,7 @@ mod tests {
                 "port": 9090
             })),
             team: None,
+            dataplane_id: None,
         };
 
         let updated = repo.update(&created.id, update_request).await.unwrap();

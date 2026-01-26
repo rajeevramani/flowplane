@@ -37,6 +37,7 @@ impl GatewayExecutor {
     /// # Arguments
     /// * `tool` - The MCP tool definition containing HTTP method, path, and listener port
     /// * `arguments` - The arguments to pass to the tool (includes path params and body)
+    /// * `gateway_host` - Optional gateway host to use instead of 127.0.0.1
     ///
     /// # Returns
     /// * `Ok(ToolCallResult)` - The result of the tool execution
@@ -45,6 +46,7 @@ impl GatewayExecutor {
         &self,
         tool: &McpToolData,
         arguments: serde_json::Value,
+        gateway_host: Option<&str>,
     ) -> Result<ToolCallResult, McpError> {
         // Extract required fields from tool
         let http_method = tool.http_method.as_ref().ok_or_else(|| {
@@ -68,22 +70,31 @@ impl GatewayExecutor {
         );
 
         // Build URL with path parameter substitution
-        let url = self.build_url(http_path, listener_port, &arguments)?;
+        let url = self.build_url(http_path, listener_port, &arguments, gateway_host)?;
 
         // Extract request body (remove path params from arguments)
         let body = self.extract_request_body(&arguments, http_path)?;
 
+        // Build the Host header value for upstream routing
+        // Priority: tool.host_header (from virtual host) > gateway_host:port fallback
+        let host_header = tool.host_header.clone().unwrap_or_else(|| {
+            let host = gateway_host.unwrap_or("127.0.0.1");
+            format!("{}:{}", host, listener_port)
+        });
+
         debug!(
             url = %url,
             method = %http_method,
+            host_header = %host_header,
             has_body = !body.is_null(),
             "Executing HTTP request"
         );
 
         // Execute request based on HTTP method
+        // Include Host header for proper Envoy virtual host routing
         let response = match http_method.to_uppercase().as_str() {
             "GET" => {
-                let mut req = HTTP_CLIENT.get(&url);
+                let mut req = HTTP_CLIENT.get(&url).header("Host", &host_header);
                 // Add query parameters from body for GET requests
                 if let Some(obj) = body.as_object() {
                     for (key, value) in obj {
@@ -96,10 +107,12 @@ impl GatewayExecutor {
                 }
                 req.send().await
             }
-            "POST" => HTTP_CLIENT.post(&url).json(&body).send().await,
-            "PUT" => HTTP_CLIENT.put(&url).json(&body).send().await,
-            "PATCH" => HTTP_CLIENT.patch(&url).json(&body).send().await,
-            "DELETE" => HTTP_CLIENT.delete(&url).send().await,
+            "POST" => HTTP_CLIENT.post(&url).header("Host", &host_header).json(&body).send().await,
+            "PUT" => HTTP_CLIENT.put(&url).header("Host", &host_header).json(&body).send().await,
+            "PATCH" => {
+                HTTP_CLIENT.patch(&url).header("Host", &host_header).json(&body).send().await
+            }
+            "DELETE" => HTTP_CLIENT.delete(&url).header("Host", &host_header).send().await,
             _ => {
                 return Err(McpError::InvalidParams(format!(
                     "Unsupported HTTP method: {}",
@@ -144,6 +157,7 @@ impl GatewayExecutor {
     /// * `path_pattern` - The path pattern with parameters like "/users/{id}"
     /// * `listener_port` - The Envoy listener port
     /// * `arguments` - The arguments containing parameter values
+    /// * `gateway_host` - Optional gateway host (defaults to 127.0.0.1)
     ///
     /// # Returns
     /// * `Ok(String)` - The complete URL with substituted parameters
@@ -153,6 +167,7 @@ impl GatewayExecutor {
         path_pattern: &str,
         listener_port: i64,
         arguments: &serde_json::Value,
+        gateway_host: Option<&str>,
     ) -> Result<String, McpError> {
         let mut path = path_pattern.to_string();
 
@@ -183,7 +198,8 @@ impl GatewayExecutor {
             path = path.replace(&format!("{{{}}}", param_name), &value_str);
         }
 
-        Ok(format!("http://localhost:{}{}", listener_port, path))
+        let host = gateway_host.unwrap_or("127.0.0.1");
+        Ok(format!("http://{}:{}{}", host, listener_port, path))
     }
 
     /// Extract request body by removing path parameters from arguments
@@ -250,6 +266,7 @@ mod tests {
             http_path: Some("/users/{id}".to_string()),
             cluster_name: Some("test-cluster".to_string()),
             listener_port: Some(8080),
+            host_header: None,
             enabled: true,
             confidence: Some(1.0),
             created_at: chrono::Utc::now(),
@@ -265,9 +282,10 @@ mod tests {
             "filter": "active"
         });
 
-        let url = executor.build_url("/users/{id}", 8080, &arguments).expect("Failed to build URL");
+        let url =
+            executor.build_url("/users/{id}", 8080, &arguments, None).expect("Failed to build URL");
 
-        assert_eq!(url, "http://localhost:8080/users/123");
+        assert_eq!(url, "http://127.0.0.1:8080/users/123");
     }
 
     #[test]
@@ -279,10 +297,10 @@ mod tests {
         });
 
         let url = executor
-            .build_url("/orgs/{org_id}/users/{user_id}", 8080, &arguments)
+            .build_url("/orgs/{org_id}/users/{user_id}", 8080, &arguments, None)
             .expect("Failed to build URL");
 
-        assert_eq!(url, "http://localhost:8080/orgs/org-456/users/user-789");
+        assert_eq!(url, "http://127.0.0.1:8080/orgs/org-456/users/user-789");
     }
 
     #[test]
@@ -292,9 +310,24 @@ mod tests {
             "id": 123
         });
 
-        let url = executor.build_url("/users/{id}", 8080, &arguments).expect("Failed to build URL");
+        let url =
+            executor.build_url("/users/{id}", 8080, &arguments, None).expect("Failed to build URL");
 
-        assert_eq!(url, "http://localhost:8080/users/123");
+        assert_eq!(url, "http://127.0.0.1:8080/users/123");
+    }
+
+    #[test]
+    fn test_build_url_with_custom_gateway_host() {
+        let executor = GatewayExecutor::new();
+        let arguments = serde_json::json!({
+            "id": "123"
+        });
+
+        let url = executor
+            .build_url("/users/{id}", 8080, &arguments, Some("10.0.0.5"))
+            .expect("Failed to build URL");
+
+        assert_eq!(url, "http://10.0.0.5:8080/users/123");
     }
 
     #[test]
@@ -304,7 +337,7 @@ mod tests {
             "name": "john"
         });
 
-        let result = executor.build_url("/users/{id}", 8080, &arguments);
+        let result = executor.build_url("/users/{id}", 8080, &arguments, None);
 
         assert!(result.is_err());
         match result {
@@ -376,8 +409,9 @@ mod tests {
         tool.http_method = None;
 
         let runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-        let result = runtime
-            .block_on(async { executor.execute(&tool, serde_json::json!({"id": "123"})).await });
+        let result = runtime.block_on(async {
+            executor.execute(&tool, serde_json::json!({"id": "123"}), None).await
+        });
 
         assert!(result.is_err());
         match result {
@@ -395,8 +429,9 @@ mod tests {
         tool.http_path = None;
 
         let runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-        let result = runtime
-            .block_on(async { executor.execute(&tool, serde_json::json!({"id": "123"})).await });
+        let result = runtime.block_on(async {
+            executor.execute(&tool, serde_json::json!({"id": "123"}), None).await
+        });
 
         assert!(result.is_err());
         match result {
@@ -414,8 +449,9 @@ mod tests {
         tool.listener_port = None;
 
         let runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-        let result = runtime
-            .block_on(async { executor.execute(&tool, serde_json::json!({"id": "123"})).await });
+        let result = runtime.block_on(async {
+            executor.execute(&tool, serde_json::json!({"id": "123"}), None).await
+        });
 
         assert!(result.is_err());
         match result {

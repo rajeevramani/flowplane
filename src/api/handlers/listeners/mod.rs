@@ -75,6 +75,7 @@ pub async fn create_listener_handler(
         protocol: payload.protocol.clone(),
         team: Some(payload.team.clone()),
         config,
+        dataplane_id: payload.dataplane_id.clone(),
     };
 
     // Delegate to internal API layer
@@ -191,6 +192,7 @@ pub async fn update_listener_handler(
         port: Some(payload.port),
         protocol: payload.protocol.clone(),
         config,
+        dataplane_id: payload.dataplane_id.clone(),
     };
 
     // Delegate to internal API layer (includes team access verification and XDS refresh)
@@ -327,9 +329,39 @@ mod tests {
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
                 import_id TEXT,
+                dataplane_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+        "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS dataplanes (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                name TEXT NOT NULL,
+                gateway_host TEXT,
+                description TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(team, name)
+            )
+        "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert test dataplanes
+        sqlx::query(
+            r#"
+            INSERT INTO dataplanes (id, team, name, gateway_host, description)
+            VALUES ('dp-test-123', 'test-team', 'test-dataplane', '10.0.0.1', 'Test dataplane')
         "#,
         )
         .execute(&pool)
@@ -438,6 +470,7 @@ mod tests {
                 }],
                 tls_context: None,
             }],
+            dataplane_id: "dp-test-123".to_string(),
         };
 
         let (status, Json(resp)) = create_listener_handler(
@@ -484,6 +517,7 @@ mod tests {
                 }],
                 tls_context: None,
             }],
+            dataplane_id: "dp-test-123".to_string(),
         };
 
         let _ = create_listener_handler(
@@ -512,6 +546,7 @@ mod tests {
                 }],
                 tls_context: None,
             }],
+            dataplane_id: None, // Don't change dataplane on update
         };
 
         let Json(updated) = update_listener_handler(

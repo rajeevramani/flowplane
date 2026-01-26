@@ -9,6 +9,7 @@ pub mod cluster;
 pub mod cluster_endpoint;
 pub mod cluster_references;
 pub mod custom_wasm_filter;
+pub mod dataplane;
 pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
@@ -46,6 +47,9 @@ pub use custom_wasm_filter::{
     CreateCustomWasmFilterRequest, CustomWasmFilterData, CustomWasmFilterRepository,
     UpdateCustomWasmFilterRequest,
 };
+pub use dataplane::{
+    CreateDataplaneRequest, DataplaneData, DataplaneRepository, UpdateDataplaneRequest,
+};
 pub use filter::{
     CreateFilterRequest, FilterConfiguration, FilterData, FilterInstallation, FilterRepository,
     FilterScopeType, UpdateFilterRequest,
@@ -70,7 +74,9 @@ pub use listener_auto_filter::{
     CreateVirtualHostAutoFilterRequest, ListenerAutoFilterData, ListenerAutoFilterRepository,
 };
 pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepository};
-pub use mcp_tool::{CreateMcpToolRequest, McpToolData, McpToolRepository, UpdateMcpToolRequest};
+pub use mcp_tool::{
+    CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
+};
 pub use proxy_certificate::{
     CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
     SqlxProxyCertificateRepository,

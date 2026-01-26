@@ -28,6 +28,7 @@ struct McpToolRow {
     pub http_path: Option<String>,
     pub cluster_name: Option<String>,
     pub listener_port: Option<i64>,
+    pub host_header: Option<String>,
     pub enabled: bool,
     pub confidence: Option<f64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -52,6 +53,8 @@ pub struct McpToolData {
     pub http_path: Option<String>,
     pub cluster_name: Option<String>,
     pub listener_port: Option<i64>,
+    /// Host header to use when executing this tool (for upstream routing)
+    pub host_header: Option<String>,
     pub enabled: bool,
     pub confidence: Option<f64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -96,6 +99,7 @@ impl TryFrom<McpToolRow> for McpToolData {
             http_path: row.http_path,
             cluster_name: row.cluster_name,
             listener_port: row.listener_port,
+            host_header: row.host_header,
             enabled: row.enabled,
             confidence: row.confidence,
             created_at: row.created_at,
@@ -121,6 +125,8 @@ pub struct CreateMcpToolRequest {
     pub http_path: Option<String>,
     pub cluster_name: Option<String>,
     pub listener_port: Option<i64>,
+    /// Host header to use when executing this tool (for upstream routing)
+    pub host_header: Option<String>,
     pub enabled: bool,
     pub confidence: Option<f64>,
 }
@@ -141,6 +147,8 @@ pub struct UpdateMcpToolRequest {
     pub http_path: Option<Option<String>>,
     pub cluster_name: Option<Option<String>>,
     pub listener_port: Option<Option<i64>>,
+    /// Host header to use when executing this tool (for upstream routing)
+    pub host_header: Option<Option<String>>,
     pub enabled: Option<bool>,
     pub confidence: Option<Option<f64>>,
 }
@@ -175,8 +183,8 @@ impl McpToolRepository {
             "INSERT INTO mcp_tools (
                 id, team, name, description, category, source_type, input_schema, output_schema,
                 learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                listener_port, enabled, confidence, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+                listener_port, host_header, enabled, confidence, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
         )
         .bind(&id)
         .bind(&request.team)
@@ -193,6 +201,7 @@ impl McpToolRepository {
         .bind(&request.http_path)
         .bind(&request.cluster_name)
         .bind(request.listener_port)
+        .bind(&request.host_header)
         .bind(request.enabled)
         .bind(request.confidence)
         .bind(now)
@@ -230,7 +239,7 @@ impl McpToolRepository {
         let row = sqlx::query_as::<Sqlite, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE id = $1",
         )
         .bind(id)
@@ -253,7 +262,7 @@ impl McpToolRepository {
         let row = sqlx::query_as::<Sqlite, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE team = $1 AND name = $2",
         )
         .bind(team)
@@ -277,7 +286,7 @@ impl McpToolRepository {
         let row = sqlx::query_as::<Sqlite, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE route_id = $1",
         )
         .bind(route_id)
@@ -300,13 +309,13 @@ impl McpToolRepository {
         let query = if enabled_only {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE team = $1 AND enabled = 1
              ORDER BY created_at DESC"
         } else {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE team = $1
              ORDER BY created_at DESC"
         };
@@ -336,7 +345,7 @@ impl McpToolRepository {
         let rows = sqlx::query_as::<Sqlite, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
-                    listener_port, enabled, confidence, created_at, updated_at
+                    listener_port, host_header, enabled, confidence, created_at, updated_at
              FROM mcp_tools WHERE team = $1 AND category = $2
              ORDER BY created_at DESC",
         )
@@ -380,6 +389,7 @@ impl McpToolRepository {
         let new_http_path = request.http_path.unwrap_or(current.http_path);
         let new_cluster_name = request.cluster_name.unwrap_or(current.cluster_name);
         let new_listener_port = request.listener_port.unwrap_or(current.listener_port);
+        let new_host_header = request.host_header.unwrap_or(current.host_header);
         let new_enabled = request.enabled.unwrap_or(current.enabled);
         let new_confidence = request.confidence.unwrap_or(current.confidence);
 
@@ -398,8 +408,8 @@ impl McpToolRepository {
                 name = $1, description = $2, category = $3, source_type = $4, input_schema = $5,
                 output_schema = $6, learned_schema_id = $7, schema_source = $8, route_id = $9,
                 http_method = $10, http_path = $11, cluster_name = $12, listener_port = $13,
-                enabled = $14, confidence = $15, updated_at = $16
-             WHERE id = $17",
+                host_header = $14, enabled = $15, confidence = $16, updated_at = $17
+             WHERE id = $18",
         )
         .bind(&new_name)
         .bind(&new_description)
@@ -414,6 +424,7 @@ impl McpToolRepository {
         .bind(&new_http_path)
         .bind(&new_cluster_name)
         .bind(new_listener_port)
+        .bind(&new_host_header)
         .bind(new_enabled)
         .bind(new_confidence)
         .bind(now)
@@ -585,5 +596,147 @@ impl McpToolRepository {
         );
 
         Ok(())
+    }
+
+    /// Get MCP tool by name and team with gateway_host from dataplane.
+    ///
+    /// This method joins through listeners and dataplanes to resolve the gateway_host
+    /// for MCP tool execution. If the tool's listener doesn't have a dataplane assigned,
+    /// gateway_host will be None.
+    #[instrument(skip(self), fields(team = %team, tool_name = %name), name = "db_get_mcp_tool_with_gateway")]
+    pub async fn get_by_name_with_gateway(
+        &self,
+        team: &str,
+        name: &str,
+    ) -> Result<Option<McpToolWithGateway>> {
+        // Query that joins mcp_tools -> listeners -> dataplanes to get gateway_host
+        let row = sqlx::query_as::<Sqlite, McpToolWithGatewayRow>(
+            r#"
+            SELECT
+                t.id, t.team, t.name, t.description, t.category, t.source_type,
+                t.input_schema, t.output_schema, t.learned_schema_id, t.schema_source,
+                t.route_id, t.http_method, t.http_path, t.cluster_name, t.listener_port,
+                t.host_header, t.enabled, t.confidence, t.created_at, t.updated_at,
+                d.gateway_host
+            FROM mcp_tools t
+            LEFT JOIN listeners l ON l.port = t.listener_port AND l.team = t.team
+            LEFT JOIN dataplanes d ON d.id = l.dataplane_id
+            WHERE t.team = $1 AND t.name = $2
+            "#,
+        )
+        .bind(team)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, tool_name = %name, "Failed to get MCP tool with gateway");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to get MCP tool '{}' with gateway for team '{}'", name, team),
+            }
+        })?;
+
+        row.map(McpToolWithGateway::try_from).transpose()
+    }
+}
+
+/// Database row structure for MCP tool with gateway_host
+#[derive(Debug, Clone, FromRow)]
+struct McpToolWithGatewayRow {
+    pub id: String,
+    pub team: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: String,
+    pub source_type: String,
+    pub input_schema: String,
+    pub output_schema: Option<String>,
+    pub learned_schema_id: Option<i64>,
+    pub schema_source: Option<String>,
+    pub route_id: Option<String>,
+    pub http_method: Option<String>,
+    pub http_path: Option<String>,
+    pub cluster_name: Option<String>,
+    pub listener_port: Option<i64>,
+    pub host_header: Option<String>,
+    pub enabled: bool,
+    pub confidence: Option<f64>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub gateway_host: Option<String>,
+}
+
+/// MCP tool data with gateway_host resolved from dataplane
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolWithGateway {
+    pub id: McpToolId,
+    pub team: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: McpToolCategory,
+    pub source_type: McpToolSourceType,
+    pub input_schema: serde_json::Value,
+    pub output_schema: Option<serde_json::Value>,
+    pub learned_schema_id: Option<i64>,
+    pub schema_source: Option<String>,
+    pub route_id: Option<RouteId>,
+    pub http_method: Option<String>,
+    pub http_path: Option<String>,
+    pub cluster_name: Option<String>,
+    pub listener_port: Option<i64>,
+    /// Host header to use when executing this tool (for upstream routing)
+    pub host_header: Option<String>,
+    pub enabled: bool,
+    pub confidence: Option<f64>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub gateway_host: Option<String>,
+}
+
+impl TryFrom<McpToolWithGatewayRow> for McpToolWithGateway {
+    type Error = FlowplaneError;
+
+    fn try_from(row: McpToolWithGatewayRow) -> Result<Self> {
+        let category = row
+            .category
+            .parse()
+            .map_err(|e| FlowplaneError::validation(format!("Invalid category: {}", e)))?;
+
+        let source_type = row
+            .source_type
+            .parse()
+            .map_err(|e| FlowplaneError::validation(format!("Invalid source_type: {}", e)))?;
+
+        let input_schema = serde_json::from_str(&row.input_schema)
+            .map_err(|e| FlowplaneError::validation(format!("Invalid input_schema JSON: {}", e)))?;
+
+        let output_schema =
+            row.output_schema.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid output_schema JSON: {}", e)),
+            )?;
+
+        Ok(Self {
+            id: McpToolId::from_string(row.id),
+            team: row.team,
+            name: row.name,
+            description: row.description,
+            category,
+            source_type,
+            input_schema,
+            output_schema,
+            learned_schema_id: row.learned_schema_id,
+            schema_source: row.schema_source,
+            route_id: row.route_id.map(RouteId::from_string),
+            http_method: row.http_method,
+            http_path: row.http_path,
+            cluster_name: row.cluster_name,
+            listener_port: row.listener_port,
+            host_header: row.host_header,
+            enabled: row.enabled,
+            confidence: row.confidence,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            gateway_host: row.gateway_host,
+        })
     }
 }

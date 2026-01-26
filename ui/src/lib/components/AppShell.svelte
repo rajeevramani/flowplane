@@ -12,6 +12,7 @@
 		imports: number;
 		filters: number;
 		secrets?: number;
+		dataplanes?: number;
 	}
 
 	interface Props {

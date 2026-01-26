@@ -146,12 +146,22 @@ impl McpApiHandler {
         };
 
         // Convert to MCP Tool format
+        // MCP spec requires inputSchema to always be a valid JSON object
         let tools: Vec<Tool> = tools_data
             .into_iter()
             .map(|t| Tool {
                 name: t.name.clone(),
                 description: t.description.clone().unwrap_or_default(),
-                input_schema: t.input_schema.clone(),
+                input_schema: if t.input_schema.is_null() || !t.input_schema.is_object() {
+                    // Fallback to empty object schema if stored value is null or not an object
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    })
+                } else {
+                    t.input_schema.clone()
+                },
             })
             .collect();
 
@@ -183,8 +193,8 @@ impl McpApiHandler {
 
         let repo = McpToolRepository::new((*self.db_pool).clone());
 
-        // Find the tool by name and team
-        let tool = match repo.get_by_name(&self.team, &params.name).await {
+        // Find the tool by name and team with gateway_host resolved from dataplane
+        let tool = match repo.get_by_name_with_gateway(&self.team, &params.name).await {
             Ok(Some(t)) if t.enabled => t,
             Ok(Some(_)) => {
                 return self.error_response(
@@ -217,10 +227,54 @@ impl McpApiHandler {
             );
         }
 
+        // Require gateway_host for execution - fail explicitly if listener has no dataplane
+        let gateway_host = match &tool.gateway_host {
+            Some(host) if !host.is_empty() => host.clone(),
+            _ => {
+                error!(
+                    tool_name = %params.name,
+                    team = %self.team,
+                    "Tool cannot execute: listener has no dataplane with gateway_host"
+                );
+                return self.error_response(
+                    id,
+                    McpError::Configuration(format!(
+                        "Tool '{}' cannot execute: listener has no dataplane with gateway_host configured. \
+                         Create a dataplane first, then assign the listener to it.",
+                        params.name
+                    )),
+                );
+            }
+        };
+
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
-        // Execute via GatewayExecutor
-        let result = self.gateway_executor.execute(&tool, args).await;
+        // Convert McpToolWithGateway to McpToolData for executor
+        let tool_data = crate::storage::repositories::mcp_tool::McpToolData {
+            id: tool.id,
+            team: tool.team,
+            name: tool.name.clone(),
+            description: tool.description,
+            category: tool.category,
+            source_type: tool.source_type,
+            input_schema: tool.input_schema,
+            output_schema: tool.output_schema,
+            learned_schema_id: tool.learned_schema_id,
+            schema_source: tool.schema_source,
+            route_id: tool.route_id,
+            http_method: tool.http_method,
+            http_path: tool.http_path,
+            cluster_name: tool.cluster_name,
+            listener_port: tool.listener_port,
+            host_header: tool.host_header,
+            enabled: tool.enabled,
+            confidence: tool.confidence,
+            created_at: tool.created_at,
+            updated_at: tool.updated_at,
+        };
+
+        // Execute via GatewayExecutor with validated gateway_host from dataplane
+        let result = self.gateway_executor.execute(&tool_data, args, Some(&gateway_host)).await;
 
         match result {
             Ok(tool_result) => match serde_json::to_value(tool_result) {

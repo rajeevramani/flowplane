@@ -47,4 +47,4 @@ pub use session::{
     create_session_manager, create_session_manager_with_ttl, McpSession, SessionId, SessionManager,
     SharedSessionManager,
 };
-pub use sse::mcp_sse_handler;
+pub use sse::{mcp_api_sse_handler, mcp_sse_handler};

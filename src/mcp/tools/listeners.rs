@@ -218,9 +218,13 @@ Authorization: Requires cp:write scope."#
                             }
                         }
                     }
+                },
+                "dataplaneId": {
+                    "type": "string",
+                    "description": "ID of the dataplane this listener belongs to. Required for MCP tool execution routing. Create a dataplane first if none exist."
                 }
             },
-            "required": ["name", "port"]
+            "required": ["name", "port", "dataplaneId"]
         }),
     }
 }
@@ -254,6 +258,7 @@ Optional Parameters:
 - port: New port number (1-65535)
 - protocol: HTTP, HTTPS, or TCP
 - filterChains: New filter chain configuration (REPLACES existing)
+- dataplaneId: ID of dataplane to assign listener to (for MCP tool gateway routing)
 
 TIP: Use cp_get_listener first to see current configuration.
 
@@ -284,6 +289,10 @@ Authorization: Requires cp:write scope."#
                 "filterChains": {
                     "type": "array",
                     "description": "New filter chain configurations (REPLACES existing completely)"
+                },
+                "dataplaneId": {
+                    "type": "string",
+                    "description": "ID of the dataplane to assign this listener to. The dataplane must exist and belong to the same team."
                 }
             },
             "required": ["name"]
@@ -479,6 +488,15 @@ pub async fn execute_create_listener(
 
     let address = args.get("address").and_then(|v| v.as_str()).unwrap_or("0.0.0.0").to_string();
     let protocol = args.get("protocol").and_then(|v| v.as_str()).unwrap_or("HTTP").to_string();
+    let dataplane_id = args
+        .get("dataplaneId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            McpError::InvalidParams(
+                "Missing required parameter: dataplaneId - create a dataplane first".to_string(),
+            )
+        })?
+        .to_string();
 
     tracing::debug!(
         team = %team,
@@ -536,6 +554,7 @@ pub async fn execute_create_listener(
         protocol: Some(protocol),
         team: Some(team.to_string()),
         config,
+        dataplane_id,
     };
 
     let result = ops.create(create_req, &auth).await?;
@@ -607,6 +626,7 @@ pub async fn execute_update_listener(
     let address = args.get("address").and_then(|v| v.as_str()).map(|s| s.to_string());
     let port = args.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
     let protocol = args.get("protocol").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let dataplane_id = args.get("dataplaneId").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     // Update config address/port if provided
     if let Some(ref addr) = address {
@@ -616,7 +636,7 @@ pub async fn execute_update_listener(
         config.port = p as u32;
     }
 
-    let update_req = InternalUpdateRequest { address, port, protocol, config };
+    let update_req = InternalUpdateRequest { address, port, protocol, config, dataplane_id };
 
     let result = ops.update(name, update_req, &auth).await?;
     let updated = result.data;

@@ -110,7 +110,11 @@ import type {
 	BulkMcpResponse,
 	LearnedSchemaAvailability,
 	ApplyLearnedSchemaRequest,
-	ApplyLearnedSchemaResponse
+	ApplyLearnedSchemaResponse,
+	// Dataplane types
+	DataplaneResponse,
+	CreateDataplaneBody,
+	UpdateDataplaneBody
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -1408,6 +1412,87 @@ class ApiClient {
 		}
 
 		return response.json();
+	}
+	// ============================================================================
+	// Dataplane API
+	// ============================================================================
+
+	/**
+	 * List dataplanes for a team.
+	 */
+	async listDataplanes(team: string, query?: { limit?: number; offset?: number }): Promise<DataplaneResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
+		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
+		return response.dataplanes;
+	}
+
+	/**
+	 * List all dataplanes across all teams (admin only).
+	 */
+	async listAllDataplanes(query?: { limit?: number; offset?: number }): Promise<DataplaneResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
+		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
+		return response.dataplanes;
+	}
+
+	/**
+	 * Get a specific dataplane by name.
+	 */
+	async getDataplane(team: string, name: string): Promise<DataplaneResponse> {
+		return this.get<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`);
+	}
+
+	/**
+	 * Create a new dataplane.
+	 */
+	async createDataplane(team: string, body: CreateDataplaneBody): Promise<DataplaneResponse> {
+		return this.post<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes`, body);
+	}
+
+	/**
+	 * Update a dataplane.
+	 */
+	async updateDataplane(team: string, name: string, body: UpdateDataplaneBody): Promise<DataplaneResponse> {
+		return this.put<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
+	}
+
+	/**
+	 * Delete a dataplane.
+	 */
+	async deleteDataplane(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`);
+	}
+
+	/**
+	 * Get Envoy bootstrap configuration for a dataplane.
+	 * Returns YAML or JSON based on the format parameter.
+	 */
+	async getDataplaneBootstrap(team: string, name: string, format: 'yaml' | 'json' = 'yaml'): Promise<string> {
+		const params = new URLSearchParams();
+		params.append('format', format);
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}/bootstrap?${params.toString()}`;
+
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'GET',
+			headers: this.getHeaders(),
+			credentials: 'include'
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(errorText || `HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		return response.text();
 	}
 }
 

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
 pub mod custom_wasm_filters;
+pub mod dataplanes;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
@@ -47,6 +48,11 @@ pub use custom_wasm_filters::{
     create_custom_wasm_filter_handler, delete_custom_wasm_filter_handler,
     download_wasm_binary_handler, get_custom_wasm_filter_handler, list_custom_wasm_filters_handler,
     update_custom_wasm_filter_handler,
+};
+pub use dataplanes::{
+    create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+    get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
+    update_dataplane_handler,
 };
 pub use filters::{
     attach_filter_handler, attach_filter_to_listener_handler, configure_filter_handler,
@@ -154,6 +160,12 @@ pub use users::ListUsersResponse;
 pub use custom_wasm_filters::{
     CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
     ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+};
+
+// Dataplane DTOs
+pub use dataplanes::{
+    BootstrapQuery as DataplaneBootstrapQuery, CreateDataplaneBody, DataplaneResponse,
+    ListDataplanesQuery, ListDataplanesResponse, UpdateDataplaneBody,
 };
 
 // Hierarchy DTOs for route hierarchy filter attachment

@@ -28,6 +28,11 @@ use super::{
         download_wasm_binary_handler, get_custom_wasm_filter_handler,
         list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
     },
+    handlers::dataplanes::{
+        create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+        get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
+        update_dataplane_handler,
+    },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
         get_secret_handler,
@@ -416,6 +421,14 @@ pub fn build_router_with_registry(
         .route("/api/v1/learning-sessions", post(create_learning_session_handler))
         .route("/api/v1/learning-sessions/{id}", get(get_learning_session_handler))
         .route("/api/v1/learning-sessions/{id}", delete(delete_learning_session_handler))
+        // Dataplane endpoints (team-scoped Envoy instances with gateway_host)
+        .route("/api/v1/dataplanes", get(list_all_dataplanes_handler))
+        .route("/api/v1/teams/{team}/dataplanes", get(list_dataplanes_handler))
+        .route("/api/v1/teams/{team}/dataplanes", post(create_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}/bootstrap", get(get_dataplane_bootstrap_handler))
         // Aggregated schema endpoints (API catalog)
         .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
@@ -461,6 +474,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
         // MCP protocol endpoints - API tools (gateway API tools with different scopes)
         .route("/api/v1/mcp/api", post(crate::mcp::mcp_api_http_handler))
+        .route("/api/v1/mcp/api/sse", get(crate::mcp::mcp_api_sse_handler))
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))

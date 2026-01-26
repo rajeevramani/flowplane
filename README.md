@@ -312,6 +312,7 @@ graph TD
 - [TLS](docs/tls.md)
 - [Secrets Management (SDS)](docs/secrets-sds.md)
 - [Learning Gateway](docs/learning-manual/README.md)
+- [MCP Integration](docs/mcp.md)
 
 ## Acknowledgments
 

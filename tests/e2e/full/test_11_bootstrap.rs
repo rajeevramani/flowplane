@@ -158,23 +158,30 @@ async fn test_300_import_openapi() {
     let ctx =
         setup_dev_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
 
+    // Delay between setup and resource creation
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Create unique domain and path using team name to avoid conflicts
+    let unique_domain = format!("{}.openapi.e2e.local", ctx.team_a_name);
+    let unique_path = format!("/testing/openapi/{}/echo", ctx.team_a_name);
+    let unique_operation_id = format!("openapi-echo-{}", ctx.team_a_name);
+
     // Create OpenAPI spec pointing to mock echo server
-    // Use unique domain and path to avoid conflicts with other tests
     let echo_endpoint = harness.echo_endpoint();
     let spec = json!({
         "openapi": "3.0.0",
         "info": {
             "title": "E2E Test API",
             "version": "1.0.0",
-            "x-flowplane-domain": "openapi.e2e.local"
+            "x-flowplane-domain": unique_domain
         },
         "servers": [
             { "url": format!("http://{}", echo_endpoint) }
         ],
         "paths": {
-            "/testing/openapi/echo": {
+            unique_path.clone(): {
                 "get": {
-                    "operationId": "openapi-echo-test",
+                    "operationId": unique_operation_id,
                     "responses": {
                         "200": { "description": "Success" }
                     }
@@ -198,7 +205,7 @@ async fn test_300_import_openapi() {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         let body = with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("openapi.e2e.local", "/testing/openapi/echo", 200).await
+            harness.wait_for_route(&unique_domain, &unique_path, 200).await
         })
         .await
         .expect("Route should converge");

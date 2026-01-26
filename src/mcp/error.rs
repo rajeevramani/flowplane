@@ -61,6 +61,10 @@ pub enum McpError {
     /// Conflict with existing resource
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    /// Configuration error - missing or invalid configuration
+    #[error("Configuration error: {0}")]
+    Configuration(String),
 }
 
 impl McpError {
@@ -84,6 +88,7 @@ impl McpError {
             McpError::Forbidden(_) => error_codes::INVALID_REQUEST, // No dedicated 403 in JSON-RPC
             McpError::ValidationError(_) => error_codes::INVALID_PARAMS,
             McpError::Conflict(_) => error_codes::INVALID_PARAMS,
+            McpError::Configuration(_) => error_codes::INTERNAL_ERROR, // Configuration issues are internal
         }
     }
 

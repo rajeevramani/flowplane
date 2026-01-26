@@ -198,6 +198,11 @@ domain_id!(
     RouteMetadataId
 );
 
+domain_id!(
+    /// Unique identifier for a dataplane resource (Envoy instance)
+    DataplaneId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

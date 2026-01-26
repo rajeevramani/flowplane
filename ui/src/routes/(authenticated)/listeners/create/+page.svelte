@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { ChevronDown, ChevronUp } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
-	import type { ListenerFilterChainInput, RouteResponse, ListenerResponse } from '$lib/api/types';
+	import type { ListenerFilterChainInput, RouteResponse, ListenerResponse, DataplaneResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import FilterChainList from '$lib/components/listener/FilterChainList.svelte';
@@ -19,6 +19,7 @@
 		port: number;
 		protocol: string;
 		filterChains: ListenerFilterChainInput[];
+		dataplaneId: string;
 	}
 
 	let currentTeam = $state<string>('');
@@ -28,9 +29,10 @@
 	let activeTab = $state<'configuration' | 'json'>('configuration');
 	let filterChainsExpanded = $state(true);
 
-	// Route configs and listeners data
+	// Route configs, listeners, and dataplanes data
 	let routeConfigs = $state<RouteResponse[]>([]);
 	let listeners = $state<ListenerResponse[]>([]);
+	let dataplanes = $state<DataplaneResponse[]>([]);
 	let routeConfigSearch = $state('');
 	let routeConfigDropdownOpen = $state(false);
 	let selectedRouteConfigName = $state<string>('');
@@ -48,12 +50,14 @@
 	async function loadData() {
 		isLoadingData = true;
 		try {
-			const [routesData, listenersData] = await Promise.all([
+			const [routesData, listenersData, dataplanesData] = await Promise.all([
 				apiClient.listRouteConfigs(),
-				apiClient.listListeners()
+				apiClient.listListeners(),
+				currentTeam ? apiClient.listDataplanes(currentTeam) : Promise.resolve([])
 			]);
 			routeConfigs = routesData;
 			listeners = listenersData;
+			dataplanes = dataplanesData;
 		} catch (e) {
 			console.error('Failed to load data:', e);
 		} finally {
@@ -121,6 +125,7 @@
 		address: '0.0.0.0',
 		port: 8080,
 		protocol: 'HTTP',
+		dataplaneId: '',
 		filterChains: [
 			{
 				name: 'default',
@@ -204,7 +209,8 @@
 			address: form.address || '0.0.0.0',
 			port: form.port || 8080,
 			protocol: form.protocol || 'HTTP',
-			filterChains: cleanedFilterChains
+			filterChains: cleanedFilterChains,
+			dataplaneId: form.dataplaneId // Required field
 		};
 
 		return JSON.stringify(payload, null, 2);
@@ -220,6 +226,11 @@
 			() => validatePort(formState.port)
 		]);
 		if (basicError) return basicError;
+
+		// Validate dataplane is selected
+		if (!formState.dataplaneId) {
+			return 'Dataplane is required - create a dataplane first, then assign this listener to it';
+		}
 
 		// Validate filter chains
 		if (formState.filterChains.length === 0) {
@@ -387,6 +398,37 @@
 						</select>
 						<p class="text-xs text-gray-500 mt-1">
 							Network protocol
+						</p>
+					</div>
+
+					<!-- Dataplane Selection (Required) -->
+					<div class="w-full md:w-72">
+						<label class="block text-sm font-medium text-gray-700 mb-1">
+							Dataplane <span class="text-red-500">*</span>
+						</label>
+						{#if dataplanes.length === 0 && !isLoadingData}
+							<div class="p-3 bg-amber-50 border border-amber-200 rounded-md">
+								<p class="text-sm text-amber-800">No dataplanes found for this team.</p>
+								<a href="/dataplanes/create" class="text-sm text-blue-600 hover:underline">
+									Create a dataplane first →
+								</a>
+							</div>
+						{:else}
+							<select
+								bind:value={formState.dataplaneId}
+								class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+								class:border-red-500={!formState.dataplaneId && error}
+							>
+								<option value="">Select a dataplane...</option>
+								{#each dataplanes as dataplane}
+									<option value={dataplane.id}>
+										{dataplane.name} {dataplane.gatewayHost ? `(${dataplane.gatewayHost})` : ''}
+									</option>
+								{/each}
+							</select>
+						{/if}
+						<p class="text-xs text-gray-500 mt-1">
+							Required for MCP tool routing. Create a dataplane first if none exist.
 						</p>
 					</div>
 				</div>

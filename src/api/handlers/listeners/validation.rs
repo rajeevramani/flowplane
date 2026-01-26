@@ -49,6 +49,7 @@ pub(super) fn listener_response_from_data(
         protocol: data.protocol,
         version: data.version,
         import_id: data.import_id,
+        dataplane_id: data.dataplane_id,
         config,
     })
 }
@@ -193,6 +194,11 @@ pub(super) fn validate_create_listener_body(body: &CreateListenerBody) -> Result
     }
     if body.name.trim().is_empty() {
         return Err(ApiError::from(Error::validation("Listener name cannot be empty")));
+    }
+    if body.dataplane_id.trim().is_empty() {
+        return Err(ApiError::from(Error::validation(
+            "dataplane_id is required - create a dataplane first",
+        )));
     }
     validate_listener_common(&body.address, body.port, &body.filter_chains)
 }

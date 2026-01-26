@@ -26,6 +26,7 @@ struct ListenerRow {
     pub source: String,
     pub team: Option<String>,
     pub import_id: Option<String>,
+    pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -61,6 +62,7 @@ pub struct ListenerData {
     pub source: String,
     pub team: Option<String>,
     pub import_id: Option<String>,
+    pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -78,6 +80,7 @@ impl From<ListenerRow> for ListenerData {
             source: row.source,
             team: row.team,
             import_id: row.import_id,
+            dataplane_id: row.dataplane_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -128,6 +131,7 @@ pub struct CreateListenerRequest {
     pub configuration: serde_json::Value,
     pub team: Option<String>,
     pub import_id: Option<String>,
+    pub dataplane_id: Option<String>,
 }
 
 /// Request to update an existing listener.
@@ -142,6 +146,7 @@ pub struct UpdateListenerRequest {
     pub protocol: Option<String>,
     pub configuration: Option<serde_json::Value>,
     pub team: Option<Option<String>>,
+    pub dataplane_id: Option<Option<String>>,
 }
 
 /// Repository for listener configuration persistence.
@@ -215,7 +220,7 @@ impl ListenerRepository {
         let protocol = request.protocol.unwrap_or_else(|| "HTTP".to_string());
 
         let result = sqlx::query(
-            "INSERT INTO listeners (id, name, address, port, protocol, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10)"
+            "INSERT INTO listeners (id, name, address, port, protocol, configuration, version, team, import_id, dataplane_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10, $11)"
         )
         .bind(&id)
         .bind(&request.name)
@@ -225,6 +230,7 @@ impl ListenerRepository {
         .bind(&configuration_json)
         .bind(&request.team)
         .bind(&request.import_id)
+        .bind(&request.dataplane_id)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -263,7 +269,7 @@ impl ListenerRepository {
     #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE id = $1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -287,7 +293,7 @@ impl ListenerRepository {
     #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -315,7 +321,7 @@ impl ListenerRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -403,7 +409,7 @@ impl ListenerRepository {
         let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, created_at, updated_at \
+            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at \
              FROM listeners \
              {} \
              ORDER BY created_at DESC \
@@ -479,12 +485,13 @@ impl ListenerRepository {
             current_configuration
         };
         let new_team = request.team.unwrap_or(current.team);
+        let new_dataplane_id = request.dataplane_id.unwrap_or(current.dataplane_id);
 
         let now = chrono::Utc::now();
         let new_version = current.version + 1;
 
         let result = sqlx::query(
-            "UPDATE listeners SET address = $1, port = $2, protocol = $3, configuration = $4, version = $5, team = $6, updated_at = $7 WHERE id = $8"
+            "UPDATE listeners SET address = $1, port = $2, protocol = $3, configuration = $4, version = $5, team = $6, dataplane_id = $7, updated_at = $8 WHERE id = $9"
         )
         .bind(&new_address)
         .bind(new_port)
@@ -492,6 +499,7 @@ impl ListenerRepository {
         .bind(&new_configuration)
         .bind(new_version)
         .bind(&new_team)
+        .bind(&new_dataplane_id)
         .bind(now)
         .bind(id)
         .execute(&self.pool)

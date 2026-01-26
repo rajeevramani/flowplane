@@ -3,10 +3,15 @@
 //! Provides HTTP endpoint for API tools (gateway_api category).
 //! Separate from CP tools endpoint to enforce different authorization scopes.
 
-use axum::{extract::Query, extract::State, http::HeaderMap, Extension, Json};
+use axum::{
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Extension, Json,
+};
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
@@ -23,6 +28,9 @@ const MCP_CONNECTION_ID_HEADER: &str = "mcp-connection-id";
 #[derive(Debug, Deserialize)]
 pub struct McpApiHttpQuery {
     pub team: Option<String>,
+    /// Session ID linking to an SSE connection (from endpoint event)
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
 }
 
 /// Extract team name from query parameters or auth context
@@ -125,18 +133,23 @@ pub async fn mcp_api_http_handler(
     headers: HeaderMap,
     Query(query): Query<McpApiHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
-) -> Json<JsonRpcResponse> {
+) -> impl IntoResponse {
     debug!(
         method = %request.method,
         id = ?request.id,
         token_name = %context.token_name,
+        session_id = ?query.session_id,
         "Received MCP API HTTP request"
     );
 
-    let connection_id = headers
-        .get(MCP_CONNECTION_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| ConnectionId::new(s.to_string()));
+    // Extract connection ID from query sessionId (SSE flow) or header (legacy)
+    let connection_id =
+        query.session_id.as_ref().map(|s| ConnectionId::new(s.clone())).or_else(|| {
+            headers
+                .get(MCP_CONNECTION_ID_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| ConnectionId::new(s.to_string()))
+        });
 
     let team = match extract_team(&query, &context) {
         Ok(team) => team,
@@ -151,7 +164,8 @@ pub async fn mcp_api_http_handler(
                     message: e,
                     data: None,
                 }),
-            });
+            })
+            .into_response();
         }
     };
 
@@ -168,7 +182,8 @@ pub async fn mcp_api_http_handler(
                 message: e,
                 data: None,
             }),
-        });
+        })
+        .into_response();
     }
 
     let db_pool = match get_db_pool(&state) {
@@ -184,7 +199,8 @@ pub async fn mcp_api_http_handler(
                     message: format!("Service unavailable: {}", e),
                     data: None,
                 }),
-            });
+            })
+            .into_response();
         }
     };
 
@@ -250,10 +266,47 @@ pub async fn mcp_api_http_handler(
     debug!(
         method = ?response.id,
         has_error = response.error.is_some(),
+        has_sse_connection = has_valid_sse_connection,
         "Completed MCP API HTTP request"
     );
 
-    Json(response)
+    // For SSE flow: send response via SSE stream and return 202 Accepted
+    // For HTTP-only flow: return JSON response directly
+    if has_valid_sse_connection {
+        if let Some(conn_id) = &connection_id {
+            use crate::mcp::notifications::NotificationMessage;
+            let message = NotificationMessage::message(response);
+            if let Err(e) = state.mcp_connection_manager.send_to_connection(conn_id, message).await
+            {
+                error!(
+                    error = %e,
+                    connection_id = %conn_id,
+                    "Failed to send response via SSE"
+                );
+                // Fall back to HTTP response on error
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: None,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: error_codes::INTERNAL_ERROR,
+                            message: "Failed to send response via SSE".to_string(),
+                            data: None,
+                        }),
+                    }),
+                )
+                    .into_response();
+            }
+            info!(connection_id = %conn_id, "Response sent via SSE");
+            // Return 202 Accepted for SSE flow
+            return StatusCode::ACCEPTED.into_response();
+        }
+    }
+
+    // HTTP-only flow: return JSON response directly
+    Json(response).into_response()
 }
 
 #[cfg(test)]
@@ -312,7 +365,7 @@ mod tests {
     #[test]
     fn test_extract_team_from_query() {
         let context = create_test_context_with_scopes(vec![]);
-        let query = McpApiHttpQuery { team: Some("my-team".to_string()) };
+        let query = McpApiHttpQuery { team: Some("my-team".to_string()), session_id: None };
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -322,7 +375,7 @@ mod tests {
     #[test]
     fn test_extract_team_from_scope() {
         let context = create_test_context_with_scopes(vec!["team:my-team:api:read".to_string()]);
-        let query = McpApiHttpQuery { team: None };
+        let query = McpApiHttpQuery { team: None, session_id: None };
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -332,7 +385,7 @@ mod tests {
     #[test]
     fn test_extract_team_admin_requires_query() {
         let context = create_test_context_with_scopes(vec!["admin:all".to_string()]);
-        let query = McpApiHttpQuery { team: None };
+        let query = McpApiHttpQuery { team: None, session_id: None };
 
         let result = extract_team(&query, &context);
         assert!(result.is_err());
@@ -342,7 +395,7 @@ mod tests {
     #[test]
     fn test_extract_team_no_team_no_scope() {
         let context = create_test_context_with_scopes(vec!["api:read".to_string()]);
-        let query = McpApiHttpQuery { team: None };
+        let query = McpApiHttpQuery { team: None, session_id: None };
 
         let result = extract_team(&query, &context);
         assert!(result.is_err());

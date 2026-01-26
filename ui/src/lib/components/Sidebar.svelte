@@ -19,7 +19,8 @@
 		FileCode,
 		Puzzle,
 		Bot,
-		Cable
+		Cable,
+		Network
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -30,6 +31,7 @@
 		imports: number;
 		filters: number;
 		secrets?: number;
+		dataplanes?: number;
 	}
 
 	interface Props {
@@ -45,6 +47,7 @@
 
 	// Resources navigation items (without filters - handled separately)
 	const resourceItems = [
+		{ id: 'dataplanes', label: 'Dataplanes', href: '/dataplanes', icon: Network },
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
@@ -110,6 +113,8 @@
 				return resourceCounts.imports;
 			case 'secrets':
 				return resourceCounts.secrets;
+			case 'dataplanes':
+				return resourceCounts.dataplanes;
 			default:
 				return undefined;
 		}

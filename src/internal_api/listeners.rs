@@ -59,6 +59,7 @@ impl ListenerOperations {
         }
 
         // 2. Call service layer
+        let dataplane_id = req.dataplane_id.clone();
         let service = ListenerService::new(self.xds_state.clone());
         let created = service
             .create_listener(
@@ -68,12 +69,17 @@ impl ListenerOperations {
                 req.protocol.unwrap_or_else(|| "HTTP".to_string()),
                 req.config,
                 req.team,
+                req.dataplane_id,
             )
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
                 if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
                     InternalError::already_exists("Listener", &req.name)
+                } else if err_str.contains("not found") {
+                    InternalError::not_found("Dataplane", &dataplane_id)
+                } else if err_str.contains("team mismatch") {
+                    InternalError::validation(&err_str)
                 } else {
                     InternalError::from(e)
                 }
@@ -180,12 +186,14 @@ impl ListenerOperations {
         // 3. Update via service layer
         let service = ListenerService::new(self.xds_state.clone());
         let updated = service
-            .update_listener(name, address, port, protocol, req.config)
+            .update_listener(name, address, port, protocol, req.config, req.dataplane_id)
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
                 if err_str.contains("not found") {
                     InternalError::not_found("Listener", name)
+                } else if err_str.contains("team mismatch") {
+                    InternalError::validation(&err_str)
                 } else {
                     InternalError::from(e)
                 }
@@ -281,13 +289,45 @@ mod tests {
                 source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
                 team TEXT,
                 import_id TEXT,
+                dataplane_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         "#,
         )
         .await
-        .expect("create table");
+        .expect("create listeners table");
+
+        // Create dataplanes table
+        pool.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS dataplanes (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                name TEXT NOT NULL,
+                gateway_host TEXT,
+                description TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(team, name)
+            )
+        "#,
+        )
+        .await
+        .expect("create dataplanes table");
+
+        // Insert test dataplanes for various teams
+        pool.execute(
+            r#"
+            INSERT INTO dataplanes (id, team, name, gateway_host, description)
+            VALUES
+                ('dp-test-123', 'test-team', 'test-dataplane', '10.0.0.1', 'Test dataplane'),
+                ('dp-team-a-123', 'team-a', 'team-a-dataplane', '10.0.0.2', 'Team A dataplane'),
+                ('dp-team-b-123', 'team-b', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
+        "#,
+        )
+        .await
+        .expect("insert test dataplanes");
 
         Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
     }
@@ -327,6 +367,7 @@ mod tests {
             protocol: Some("HTTP".to_string()),
             team: Some("test-team".to_string()),
             config: sample_config(),
+            dataplane_id: "dp-test-123".to_string(),
         };
 
         let result = ops.create(req, &auth).await;
@@ -352,6 +393,7 @@ mod tests {
             protocol: Some("HTTPS".to_string()),
             team: Some("team-a".to_string()),
             config: sample_config(),
+            dataplane_id: "dp-team-a-123".to_string(),
         };
 
         let result = ops.create(req, &auth).await;
@@ -371,6 +413,7 @@ mod tests {
             protocol: Some("HTTP".to_string()),
             team: Some("team-b".to_string()), // Different team
             config: sample_config(),
+            dataplane_id: "dp-team-b-123".to_string(),
         };
 
         let result = ops.create(req, &auth).await;
@@ -403,6 +446,7 @@ mod tests {
             protocol: Some("HTTP".to_string()),
             team: Some("team-a".to_string()),
             config: sample_config(),
+            dataplane_id: "dp-team-a-123".to_string(),
         };
         ops.create(req, &admin_auth).await.expect("create listener");
 
@@ -434,6 +478,7 @@ mod tests {
                 protocol: Some("HTTP".to_string()),
                 team: Some(team.to_string()),
                 config: sample_config(),
+                dataplane_id: format!("dp-{}-123", team),
             };
             ops.create(req, &admin_auth).await.expect("create listener");
         }
@@ -464,6 +509,7 @@ mod tests {
             protocol: Some("HTTP".to_string()),
             team: Some("test-team".to_string()),
             config: sample_config(),
+            dataplane_id: "dp-test-123".to_string(),
         };
         ops.create(create_req, &auth).await.expect("create listener");
 
@@ -477,6 +523,7 @@ mod tests {
             port: Some(9090),
             protocol: Some("HTTPS".to_string()),
             config: updated_config,
+            dataplane_id: None, // Don't change dataplane on update
         };
         let result = ops.update("update-test", update_req, &auth).await;
 
@@ -500,6 +547,7 @@ mod tests {
             protocol: Some("HTTP".to_string()),
             team: Some("test-team".to_string()),
             config: sample_config(),
+            dataplane_id: "dp-test-123".to_string(),
         };
         ops.create(create_req, &auth).await.expect("create listener");
 

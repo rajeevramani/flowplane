@@ -37,6 +37,10 @@ pub struct GatewayOptions {
     pub name: String,
     pub protocol: String,
     pub listener_mode: ListenerMode,
+    /// The dataplane ID for the listener. Required when creating a new listener.
+    pub dataplane_id: Option<String>,
+    /// Optional team for the gateway resources
+    pub team: Option<String>,
 }
 
 /// Metadata extracted from an OpenAPI operation for a route
@@ -94,6 +98,8 @@ pub enum GatewayError {
     NoRoutes,
     #[error("Failed to parse Flowplane filters: {0}")]
     InvalidFilters(String),
+    #[error("dataplane_id is required when creating a new listener - create a dataplane first")]
+    MissingDataplaneId,
 }
 
 pub fn build_gateway_plan(
@@ -249,6 +255,9 @@ pub fn build_gateway_plan(
             route_metadata,
         })
     } else {
+        // When creating a new listener, dataplane_id is required
+        let dataplane_id = options.dataplane_id.clone().ok_or(GatewayError::MissingDataplaneId)?;
+
         // When creating a new listener, we create both the route config and listener
         let route_config =
             XdsRouteConfig { name: route_name.clone(), virtual_hosts: vec![virtual_host] };
@@ -262,7 +271,7 @@ pub fn build_gateway_plan(
             path_prefix: "/".to_string(),
             cluster_name: default_cluster_name,
             configuration: route_config_value,
-            team: None, // OpenAPI Gateway routes are not team-scoped by default
+            team: options.team.clone(),
             import_id: None,
             route_order: None,
             headers: None,
@@ -298,8 +307,9 @@ pub fn build_gateway_plan(
             port: Some(port as i64),
             protocol: Some(options.protocol),
             configuration: listener_config_value,
-            team: None, // OpenAPI Gateway listeners are not team-scoped by default
+            team: options.team.clone(),
             import_id: None,
+            dataplane_id: Some(dataplane_id),
         };
 
         Ok(GatewayPlan {
@@ -693,6 +703,8 @@ mod tests {
                 address: "0.0.0.0".to_string(),
                 port: 10000,
             },
+            dataplane_id: Some("dp-test-123".to_string()),
+            team: Some("test-team".to_string()),
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -708,6 +720,7 @@ mod tests {
         let listener_request =
             plan.listener_request.as_ref().expect("listener request should exist");
         assert_eq!(listener_request.name, "example-listener");
+        assert_eq!(listener_request.dataplane_id, Some("dp-test-123".to_string()));
         assert!(plan.default_virtual_host.is_none());
 
         fn expect_tag(value: &JsonValue, gateway: &str) {
@@ -805,6 +818,8 @@ mod tests {
             listener_mode: ListenerMode::Existing {
                 name: defaults::DEFAULT_GATEWAY_LISTENER.to_string(),
             },
+            dataplane_id: None, // Not needed for existing listeners
+            team: None,
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -843,6 +858,8 @@ mod tests {
                 address: "0.0.0.0".to_string(),
                 port: 10000,
             },
+            dataplane_id: Some("dp-test-123".to_string()),
+            team: None,
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -911,6 +928,8 @@ mod tests {
                 address: "0.0.0.0".to_string(),
                 port: 10000,
             },
+            dataplane_id: Some("dp-test-123".to_string()),
+            team: None,
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -977,6 +996,8 @@ mod tests {
                 address: "0.0.0.0".to_string(),
                 port: 10000,
             },
+            dataplane_id: Some("dp-test-123".to_string()),
+            team: None,
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");
@@ -1022,6 +1043,8 @@ mod tests {
                 address: "0.0.0.0".to_string(),
                 port: 10000,
             },
+            dataplane_id: Some("dp-test-123".to_string()),
+            team: None,
         };
 
         let plan = build_gateway_plan(doc, options).expect("plan");

@@ -14,13 +14,14 @@
 		filters: number;
 		imports: number;
 		secrets: number;
+		dataplanes: number;
 	}
 
 	let isLoading = $state(true);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state<string>('');
 	let availableTeams = $state<string[]>([]);
-	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0, secrets: 0 });
+	let resourceCounts = $state<ResourceCounts>({ routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0, secrets: 0, dataplanes: 0 });
 	let statsEnabled = $state(false);
 
 	let { children } = $props();
@@ -65,7 +66,7 @@
 			}
 		}
 
-		const [routes, clusters, listeners, filters, imports, secrets] = await Promise.all([
+		const [routes, clusters, listeners, filters, imports, secrets, dataplanes] = await Promise.all([
 			safeCall(() => apiClient.listRouteConfigs()),
 			safeCall(() => apiClient.listClusters()),
 			safeCall(() => apiClient.listListeners()),
@@ -81,6 +82,11 @@
 				currentTeam
 					? apiClient.listSecrets(currentTeam)
 					: Promise.resolve([])
+			),
+			safeCall(() =>
+				currentTeam
+					? apiClient.listDataplanes(currentTeam)
+					: Promise.resolve([])
 			)
 		]);
 
@@ -90,7 +96,8 @@
 			listeners: listeners.length,
 			filters: filters.length,
 			imports: imports.length,
-			secrets: secrets.length
+			secrets: secrets.length,
+			dataplanes: dataplanes.length
 		};
 	}
 

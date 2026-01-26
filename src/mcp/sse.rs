@@ -98,12 +98,21 @@ fn extract_team(query: &SseQuery, context: &AuthContext) -> Result<String, Strin
     Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
-/// Check if context has required scope for SSE
+/// Check if context has required scope for CP SSE
 fn check_sse_authorization(context: &AuthContext) -> Result<(), String> {
     if context.has_scope("mcp:read") || context.has_scope("admin:all") {
         Ok(())
     } else {
         Err("Missing required scope 'mcp:read' for SSE streaming".to_string())
+    }
+}
+
+/// Check if context has required scope for API SSE
+fn check_api_sse_authorization(context: &AuthContext) -> Result<(), String> {
+    if context.has_scope("api:read") || context.has_scope("admin:all") {
+        Ok(())
+    } else {
+        Err("Missing required scope 'api:read' for API SSE streaming".to_string())
     }
 }
 
@@ -250,6 +259,121 @@ pub async fn mcp_sse_handler(
     Ok(([(header_name, connection_id_str)], sse))
 }
 
+/// GET /api/v1/mcp/api/sse
+///
+/// Establishes an SSE connection for streaming MCP API notifications.
+/// This endpoint exposes API tools (gateway routes enabled for MCP).
+///
+/// # Authentication
+/// Requires a valid bearer token with `api:read` scope.
+///
+/// # Query Parameters
+/// - `team`: Optional team name. Required for admin users.
+///
+/// # Response Headers
+/// - `Mcp-Connection-Id`: The unique identifier for this SSE connection. Use this when
+///   sending requests to `/api/v1/mcp/api` to associate them with this SSE session.
+///
+/// # Events
+/// - `message`: JSON-RPC response messages
+/// - `progress`: Progress notifications for long-running operations
+/// - `log`: Log messages from the server
+/// - `ping`: Heartbeat events (every 10 seconds)
+#[utoipa::path(
+    get,
+    path = "/api/v1/mcp/api/sse",
+    responses(
+        (status = 200, description = "SSE stream established"),
+        (status = 400, description = "Invalid request (missing team)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 429, description = "Connection limit exceeded")
+    ),
+    tag = "MCP Protocol"
+)]
+pub async fn mcp_api_sse_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Query(query): Query<SseQuery>,
+) -> Result<impl IntoResponse, axum::response::Response> {
+    let connection_manager = state.mcp_connection_manager.clone();
+    // Extract team
+    let team = match extract_team(&query, &context) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to extract team for API SSE");
+            return Err(error_response(error_codes::INVALID_REQUEST, e));
+        }
+    };
+
+    // Check authorization (api:read instead of mcp:read)
+    if let Err(e) = check_api_sse_authorization(&context) {
+        error!(error = %e, "API SSE authorization failed");
+        return Err(error_response(error_codes::INVALID_REQUEST, e));
+    }
+
+    // Register connection
+    let (connection_id, receiver) = match connection_manager.register(team.clone()) {
+        Ok(result) => result,
+        Err(e) => {
+            error!(error = %e, team = %team, "Failed to register API SSE connection");
+            let (code, msg) = match e {
+                McpError::ConnectionLimitExceeded { team, limit } => (
+                    429, // Too Many Requests
+                    format!("Connection limit ({}) exceeded for team: {}", limit, team),
+                ),
+                _ => (error_codes::INTERNAL_ERROR, e.to_string()),
+            };
+            return Err(error_response(code, msg));
+        }
+    };
+
+    info!(
+        connection_id = %connection_id,
+        team = %team,
+        token_name = %context.token_name,
+        "API SSE connection established"
+    );
+
+    // Store connection ID for header before moving
+    let connection_id_str = connection_id.to_string();
+
+    // Create the endpoint URI that clients should use to POST messages
+    // Per MCP spec: server MUST send an endpoint event containing a URI for sending messages
+    let endpoint_uri = format!("/api/v1/mcp/api?team={}&sessionId={}", team, connection_id_str);
+
+    // Create initial endpoint event (required by MCP spec)
+    let initial_event = Event::default().event("endpoint").data(endpoint_uri);
+
+    // Create stream from receiver
+    let receiver_stream = ReceiverStream::new(receiver);
+
+    // Add event ID counter
+    let mut event_id = 0u64;
+
+    // Map messages to SSE events
+    let event_stream = receiver_stream.map(move |message| {
+        event_id += 1;
+        format_sse_event(&message, event_id)
+    });
+
+    // Prepend the initial endpoint event to the stream
+    let initial_stream = tokio_stream::once(Ok::<_, Infallible>(initial_event));
+    let combined_stream = initial_stream.chain(event_stream);
+
+    // Wrap with cleanup stream to unregister connection when client disconnects
+    let cleanup_stream = CleanupStream::new(combined_stream, connection_manager, connection_id);
+
+    // Create SSE response with keepalive
+    let sse = Sse::new(cleanup_stream).keep_alive(
+        KeepAlive::new().interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).text("ping"),
+    );
+
+    // Return SSE response with Mcp-Connection-Id header
+    let header_name = HeaderName::from_static(MCP_CONNECTION_ID_HEADER);
+    Ok(([(header_name, connection_id_str)], sse))
+}
+
 /// Create an error response for SSE endpoint
 fn error_response(code: i32, message: String) -> axum::response::Response {
     use axum::http::StatusCode;
@@ -360,6 +484,38 @@ mod tests {
             vec![],
         );
         assert!(check_sse_authorization(&no_scope_context).is_err());
+    }
+
+    #[test]
+    fn test_check_api_sse_authorization() {
+        let context_with_scope = AuthContext::new(
+            TokenId::from_str_unchecked("token-1"),
+            "test-token".to_string(),
+            vec!["api:read".to_string()],
+        );
+        assert!(check_api_sse_authorization(&context_with_scope).is_ok());
+
+        let admin_context = AuthContext::new(
+            TokenId::from_str_unchecked("admin-1"),
+            "admin-token".to_string(),
+            vec!["admin:all".to_string()],
+        );
+        assert!(check_api_sse_authorization(&admin_context).is_ok());
+
+        let no_scope_context = AuthContext::new(
+            TokenId::from_str_unchecked("token-1"),
+            "test-token".to_string(),
+            vec![],
+        );
+        assert!(check_api_sse_authorization(&no_scope_context).is_err());
+
+        // mcp:read should NOT grant api SSE access
+        let mcp_scope_context = AuthContext::new(
+            TokenId::from_str_unchecked("token-1"),
+            "test-token".to_string(),
+            vec!["mcp:read".to_string()],
+        );
+        assert!(check_api_sse_authorization(&mcp_scope_context).is_err());
     }
 
     #[test]

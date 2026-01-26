@@ -17,6 +17,8 @@ pub struct ListenerResponse {
     pub version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataplane_id: Option<String>,
     #[schema(value_type = Object)]
     pub config: ListenerConfig,
 }
@@ -37,6 +39,9 @@ pub struct CreateListenerBody {
     pub filter_chains: Vec<ListenerFilterChainInput>,
     #[serde(default)]
     pub protocol: Option<String>,
+    /// The dataplane ID this listener belongs to (required).
+    /// Create a dataplane first, then assign listeners to it.
+    pub dataplane_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -47,6 +52,10 @@ pub struct UpdateListenerBody {
     pub filter_chains: Vec<ListenerFilterChainInput>,
     #[serde(default)]
     pub protocol: Option<String>,
+    /// The dataplane ID to assign this listener to (optional on update).
+    /// If provided, the dataplane must exist and belong to the same team.
+    #[serde(default)]
+    pub dataplane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

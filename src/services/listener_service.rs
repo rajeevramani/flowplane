@@ -7,10 +7,14 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 use crate::{
+    domain::DataplaneId,
     errors::Error,
     observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_listener,
-    storage::{CreateListenerRequest, ListenerData, ListenerRepository, UpdateListenerRequest},
+    storage::{
+        CreateListenerRequest, DataplaneRepository, ListenerData, ListenerRepository,
+        UpdateListenerRequest,
+    },
     xds::{listener::ListenerConfig, XdsState},
 };
 use opentelemetry::{
@@ -39,6 +43,11 @@ impl ListenerService {
     }
 
     /// Create a new listener
+    ///
+    /// # Arguments
+    /// * `dataplane_id` - The ID of the dataplane this listener belongs to.
+    ///   The dataplane must exist and belong to the same team as the listener.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_listener(
         &self,
         name: String,
@@ -47,6 +56,7 @@ impl ListenerService {
         protocol: String,
         config: ListenerConfig,
         team: Option<String>,
+        dataplane_id: String,
     ) -> Result<ListenerData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -56,11 +66,15 @@ impl ListenerService {
         span.set_attribute(KeyValue::new("listener.address", address.clone()));
         span.set_attribute(KeyValue::new("listener.port", port as i64));
         span.set_attribute(KeyValue::new("listener.protocol", protocol.clone()));
+        span.set_attribute(KeyValue::new("listener.dataplane_id", dataplane_id.clone()));
 
         let cx = opentelemetry::Context::current().with_span(span);
 
         async move {
             let repository = self.repository()?;
+
+            // Validate dataplane exists and belongs to the same team
+            self.validate_dataplane(&dataplane_id, team.as_deref()).await?;
 
             let configuration = serde_json::to_value(&config).map_err(|err| {
                 Error::internal(format!("Failed to serialize listener configuration: {}", err))
@@ -74,6 +88,7 @@ impl ListenerService {
                 configuration,
                 team,
                 import_id: None,
+                dataplane_id: Some(dataplane_id),
             };
 
             let mut db_span = create_operation_span("db.listener.insert", SpanKind::Client);
@@ -116,6 +131,16 @@ impl ListenerService {
     }
 
     /// Update an existing listener
+    ///
+    /// # Arguments
+    /// * `name` - The listener name to update
+    /// * `address` - The new bind address
+    /// * `port` - The new port
+    /// * `protocol` - The new protocol
+    /// * `config` - The new listener configuration
+    /// * `dataplane_id` - Optional new dataplane ID to assign. If provided, the dataplane
+    ///   must exist and belong to the same team as the listener.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_listener(
         &self,
         name: &str,
@@ -123,6 +148,7 @@ impl ListenerService {
         port: u16,
         protocol: String,
         config: ListenerConfig,
+        dataplane_id: Option<String>,
     ) -> Result<ListenerData, Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
 
@@ -132,12 +158,21 @@ impl ListenerService {
         span.set_attribute(KeyValue::new("listener.address", address.clone()));
         span.set_attribute(KeyValue::new("listener.port", port as i64));
         span.set_attribute(KeyValue::new("listener.protocol", protocol.clone()));
+        if let Some(ref dp_id) = dataplane_id {
+            span.set_attribute(KeyValue::new("listener.dataplane_id", dp_id.clone()));
+        }
 
         let cx = opentelemetry::Context::current().with_span(span);
 
         async move {
             let repository = self.repository()?;
             let existing = repository.get_by_name(name).await?;
+
+            // Validate new dataplane if provided
+            if let Some(ref dp_id) = dataplane_id {
+                // Use existing listener's team for validation
+                self.validate_dataplane(dp_id, existing.team.as_deref()).await?;
+            }
 
             let configuration = serde_json::to_value(&config).map_err(|err| {
                 Error::internal(format!("Failed to serialize listener configuration: {}", err))
@@ -149,6 +184,7 @@ impl ListenerService {
                 protocol: Some(protocol),
                 configuration: Some(configuration),
                 team: None, // Don't modify team on update unless explicitly set
+                dataplane_id: dataplane_id.map(Some), // Some(Some(id)) to set, None to leave unchanged
             };
 
             let mut db_span = create_operation_span("db.listener.update", SpanKind::Client);
@@ -221,6 +257,44 @@ impl ListenerService {
         serde_json::from_str(&data.configuration).map_err(|err| {
             Error::internal(format!("Failed to parse stored listener configuration: {}", err))
         })
+    }
+
+    /// Validate that a dataplane exists and belongs to the expected team
+    async fn validate_dataplane(
+        &self,
+        dataplane_id: &str,
+        expected_team: Option<&str>,
+    ) -> Result<(), Error> {
+        let pool = self
+            .xds_state
+            .listener_repository
+            .as_ref()
+            .map(|r| r.pool().clone())
+            .ok_or_else(|| Error::internal("Database pool not configured"))?;
+
+        let dataplane_repo = DataplaneRepository::new(pool);
+        let dataplane = dataplane_repo
+            .get_by_id(&DataplaneId::from_string(dataplane_id.to_string()))
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("not found") {
+                    Error::not_found("Dataplane", dataplane_id)
+                } else {
+                    Error::internal(format!("Failed to validate dataplane: {}", e))
+                }
+            })?;
+
+        // Validate team match if team is specified
+        if let Some(team) = expected_team {
+            if dataplane.team != team {
+                return Err(Error::validation(format!(
+                    "Dataplane '{}' belongs to team '{}', not '{}' (team mismatch)",
+                    dataplane_id, dataplane.team, team
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Refresh xDS caches after listener changes

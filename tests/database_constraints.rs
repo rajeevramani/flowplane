@@ -112,6 +112,7 @@ async fn test_valid_source_values_accepted() {
             configuration: serde_json::json!({"name": "test"}),
             team: Some("test".into()),
             import_id: None,
+            dataplane_id: None,
         })
         .await
         .unwrap();
@@ -182,6 +183,7 @@ async fn test_listener_created_with_import_id_stores_in_column() {
             configuration: serde_json::json!({"name": "imported-listener"}),
             team: Some("test".into()),
             import_id: Some(import.id.clone()),
+            dataplane_id: None,
         })
         .await
         .unwrap();
@@ -209,6 +211,7 @@ async fn test_listener_without_import_id_has_none() {
             configuration: serde_json::json!({"name": "native-listener"}),
             team: Some("test".into()),
             import_id: None,
+            dataplane_id: None,
         })
         .await
         .unwrap();
@@ -260,6 +263,7 @@ async fn test_count_by_import_uses_column_not_json() {
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
                 team: Some("test".into()),
                 import_id: Some(import1.id.clone()),
+                dataplane_id: None,
             })
             .await
             .unwrap();
@@ -276,6 +280,7 @@ async fn test_count_by_import_uses_column_not_json() {
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
                 team: Some("test".into()),
                 import_id: Some(import2.id.clone()),
+                dataplane_id: None,
             })
             .await
             .unwrap();
@@ -321,6 +326,7 @@ async fn test_cascade_delete_removes_listeners_when_import_deleted() {
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
                 team: Some("test".into()),
                 import_id: Some(import.id.clone()),
+                dataplane_id: None,
             })
             .await
             .unwrap();
@@ -373,6 +379,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             configuration: serde_json::json!({"name": "linked"}),
             team: Some("test".into()),
             import_id: Some(import.id.clone()),
+            dataplane_id: None,
         })
         .await
         .unwrap();
@@ -387,6 +394,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             configuration: serde_json::json!({"name": "unlinked"}),
             team: Some("test".into()),
             import_id: None,
+            dataplane_id: None,
         })
         .await
         .unwrap();

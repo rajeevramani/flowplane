@@ -639,6 +639,7 @@ mod tests {
                 source TEXT NOT NULL DEFAULT 'native_api',
                 team TEXT,
                 import_id TEXT,
+                dataplane_id TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )

@@ -206,6 +206,7 @@ export interface ListenerResponse {
 	protocol: string;
 	version: number;
 	importId?: string;
+	dataplaneId?: string | null;
 	config: any; // Full listener config
 }
 
@@ -573,6 +574,7 @@ export interface CreateListenerBody {
 	port: number;
 	protocol?: string;
 	filterChains: ListenerFilterChainInput[];
+	dataplaneId?: string;
 }
 
 // UpdateListenerBody - no name or team fields (from path param / existing listener)
@@ -581,6 +583,7 @@ export interface UpdateListenerBody {
 	port: number;
 	filterChains: ListenerFilterChainInput[];
 	protocol?: string;
+	dataplaneId?: string | null;
 }
 
 // === Scope Types ===
@@ -1763,4 +1766,47 @@ export interface ApplyLearnedSchemaResponse {
 export interface RouteMetadata {
 	routeId: string;
 	schemaSource: McpSchemaSource;
+}
+
+// ============================================================================
+// Dataplane Types
+// ============================================================================
+
+/** Dataplane response from API */
+export interface DataplaneResponse {
+	id: string;
+	team: string;
+	name: string;
+	gatewayHost: string | null;
+	description: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Request to create a new dataplane */
+export interface CreateDataplaneBody {
+	team: string;
+	name: string;
+	gatewayHost?: string;
+	description?: string;
+}
+
+/** Request to update a dataplane */
+export interface UpdateDataplaneBody {
+	gatewayHost?: string;
+	description?: string;
+}
+
+/** Query parameters for listing dataplanes */
+export interface ListDataplanesQuery {
+	limit?: number;
+	offset?: number;
+}
+
+/** Response for listing dataplanes */
+export interface ListDataplanesResponse {
+	dataplanes: DataplaneResponse[];
+	total: number;
+	limit: number;
+	offset: number;
 }
