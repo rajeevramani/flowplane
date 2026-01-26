@@ -111,15 +111,15 @@ impl ResourceUri {
 #[derive(FromRow)]
 struct ClusterListRow {
     name: String,
-    lb_policy: String,
+    service_name: String,
     description: Option<String>,
 }
 
 #[derive(FromRow)]
 struct ClusterDetailRow {
     name: String,
-    lb_policy: String,
-    connect_timeout_secs: Option<i64>,
+    service_name: String,
+    configuration: String,
     description: Option<String>,
     created_at: String,
     updated_at: String,
@@ -139,7 +139,6 @@ struct ListenerDetailRow {
     address: String,
     port: i64,
     protocol: String,
-    enabled: bool,
     description: Option<String>,
     created_at: String,
     updated_at: String,
@@ -155,14 +154,9 @@ struct RouteListRow {
 struct RouteDetailRow {
     name: String,
     cluster_name: String,
-    path_prefix: Option<String>,
-    path_exact: Option<String>,
-    path_regex: Option<String>,
+    path_prefix: String,
     headers: Option<String>,
-    query_params: Option<String>,
-    match_type: String,
-    rule_order: i64,
-    enabled: bool,
+    route_order: Option<i64>,
     created_at: String,
     updated_at: String,
 }
@@ -177,8 +171,8 @@ struct FilterListRow {
 struct FilterDetailRow {
     name: String,
     filter_type: String,
-    config: Option<String>,
-    enabled: bool,
+    configuration: String,
+    description: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -261,7 +255,7 @@ async fn list_cluster_resources(
     team: &str,
 ) -> Result<Vec<Resource>, McpError> {
     let rows: Vec<ClusterListRow> = sqlx::query_as(
-        "SELECT name, lb_policy, description FROM clusters WHERE team = $1 ORDER BY name",
+        "SELECT name, service_name, description FROM clusters WHERE team = $1 ORDER BY name",
     )
     .bind(team)
     .fetch_all(db_pool.as_ref())
@@ -275,7 +269,7 @@ async fn list_cluster_resources(
             name: row.name.clone(),
             description: row
                 .description
-                .or_else(|| Some(format!("Cluster: {} ({})", row.name, row.lb_policy))),
+                .or_else(|| Some(format!("Cluster: {} (service: {})", row.name, row.service_name))),
             mime_type: Some("application/json".to_string()),
         })
         .collect();
@@ -285,7 +279,7 @@ async fn list_cluster_resources(
 
 async fn read_cluster(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<String, McpError> {
     let row: ClusterDetailRow = sqlx::query_as(
-        "SELECT name, lb_policy, connect_timeout_secs, description, created_at, updated_at \
+        "SELECT name, service_name, configuration, description, created_at, updated_at \
          FROM clusters WHERE team = $1 AND name = $2",
     )
     .bind(team)
@@ -295,11 +289,14 @@ async fn read_cluster(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<S
     .map_err(McpError::DatabaseError)?
     .ok_or_else(|| McpError::ResourceNotFound(format!("flowplane://clusters/{}/{}", team, name)))?;
 
+    // Parse configuration JSON to extract lb_policy and other settings
+    let config: Option<serde_json::Value> = serde_json::from_str(&row.configuration).ok();
+
     let data = serde_json::json!({
         "name": row.name,
         "team": team,
-        "lb_policy": row.lb_policy,
-        "connect_timeout_secs": row.connect_timeout_secs,
+        "service_name": row.service_name,
+        "configuration": config,
         "description": row.description,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -341,7 +338,7 @@ async fn list_listener_resources(
 
 async fn read_listener(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<String, McpError> {
     let row: ListenerDetailRow = sqlx::query_as(
-        "SELECT name, address, port, protocol, enabled, description, created_at, updated_at \
+        "SELECT name, address, port, protocol, description, created_at, updated_at \
          FROM listeners WHERE team = $1 AND name = $2",
     )
     .bind(team)
@@ -359,7 +356,6 @@ async fn read_listener(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<
         "address": row.address,
         "port": row.port,
         "protocol": row.protocol,
-        "enabled": row.enabled,
         "description": row.description,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -399,8 +395,7 @@ async fn list_route_resources(
 
 async fn read_route(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<String, McpError> {
     let row: RouteDetailRow = sqlx::query_as(
-        "SELECT name, cluster_name, path_prefix, path_exact, path_regex, \
-         headers, query_params, match_type, rule_order, enabled, created_at, updated_at \
+        "SELECT name, cluster_name, path_prefix, headers, route_order, created_at, updated_at \
          FROM route_configs WHERE team = $1 AND name = $2",
     )
     .bind(team)
@@ -410,24 +405,17 @@ async fn read_route(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<Str
     .map_err(McpError::DatabaseError)?
     .ok_or_else(|| McpError::ResourceNotFound(format!("flowplane://routes/{}/{}", team, name)))?;
 
-    // Parse headers and query_params if they exist
+    // Parse headers if they exist
     let headers: Option<serde_json::Value> =
         row.headers.as_ref().and_then(|h| serde_json::from_str(h).ok());
-    let query_params: Option<serde_json::Value> =
-        row.query_params.as_ref().and_then(|q| serde_json::from_str(q).ok());
 
     let data = serde_json::json!({
         "name": row.name,
         "team": team,
         "cluster_name": row.cluster_name,
         "path_prefix": row.path_prefix,
-        "path_exact": row.path_exact,
-        "path_regex": row.path_regex,
         "headers": headers,
-        "query_params": query_params,
-        "match_type": row.match_type,
-        "rule_order": row.rule_order,
-        "enabled": row.enabled,
+        "route_order": row.route_order,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     });
@@ -465,7 +453,7 @@ async fn list_filter_resources(
 
 async fn read_filter(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<String, McpError> {
     let row: FilterDetailRow = sqlx::query_as(
-        "SELECT name, filter_type, config, enabled, created_at, updated_at \
+        "SELECT name, filter_type, configuration, description, created_at, updated_at \
          FROM filters WHERE team = $1 AND name = $2",
     )
     .bind(team)
@@ -475,16 +463,15 @@ async fn read_filter(db_pool: &Arc<DbPool>, team: &str, name: &str) -> Result<St
     .map_err(McpError::DatabaseError)?
     .ok_or_else(|| McpError::ResourceNotFound(format!("flowplane://filters/{}/{}", team, name)))?;
 
-    // Parse config JSON
-    let config: Option<serde_json::Value> =
-        row.config.as_ref().and_then(|c| serde_json::from_str(c).ok());
+    // Parse configuration JSON
+    let configuration: Option<serde_json::Value> = serde_json::from_str(&row.configuration).ok();
 
     let data = serde_json::json!({
         "name": row.name,
         "team": team,
         "filter_type": row.filter_type,
-        "config": config,
-        "enabled": row.enabled,
+        "configuration": configuration,
+        "description": row.description,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     });
