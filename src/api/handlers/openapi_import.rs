@@ -336,7 +336,9 @@ pub async fn import_openapi_handler(
         create_route_metadata_from_plan(&db_pool, &params.team, &plan.route_metadata).await?;
     }
 
-    // Trigger xDS refresh
+    // Trigger xDS refresh for all resource types
+    state.xds_state.refresh_clusters_from_repository().await.map_err(ApiError::from)?;
+    state.xds_state.refresh_listeners_from_repository().await.map_err(ApiError::from)?;
     state.xds_state.refresh_routes_from_repository().await.map_err(ApiError::from)?;
 
     Ok((
@@ -546,7 +548,9 @@ pub async fn delete_import_handler(
     // Delete import cascade logic
     delete_import_cascade(&state.xds_state, &db_pool, &id).await?;
 
-    // Trigger xDS refresh
+    // Trigger xDS refresh for all resource types
+    state.xds_state.refresh_clusters_from_repository().await.map_err(ApiError::from)?;
+    state.xds_state.refresh_listeners_from_repository().await.map_err(ApiError::from)?;
     state.xds_state.refresh_routes_from_repository().await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
