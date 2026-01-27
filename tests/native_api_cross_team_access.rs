@@ -84,6 +84,34 @@ pub async fn setup_native_api_app() -> NativeApiApp {
         .await
         .expect("create team-b");
 
+    // Create dataplanes for both teams (required for listener creation)
+    let dataplane_id_a = uuid::Uuid::new_v4().to_string();
+    let dataplane_id_b = uuid::Uuid::new_v4().to_string();
+
+    sqlx::query(
+        "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&dataplane_id_a)
+    .bind("team-a")
+    .bind("team-a-dataplane")
+    .bind("127.0.0.1")
+    .bind("Team A dataplane")
+    .execute(&pool)
+    .await
+    .expect("create team-a dataplane");
+
+    sqlx::query(
+        "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&dataplane_id_b)
+    .bind("team-b")
+    .bind("team-b-dataplane")
+    .bind("127.0.0.1")
+    .bind("Team B dataplane")
+    .execute(&pool)
+    .await
+    .expect("create team-b dataplane");
+
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let token_service = TokenService::with_sqlx(pool.clone(), audit_repo);
@@ -523,10 +551,17 @@ async fn team_a_cannot_list_team_b_listeners() {
         .issue_token("team-b-user", &["team:team-b:listeners:read", "team:team-b:listeners:write"])
         .await;
 
-    // Team B creates a listener
+    // Team B creates a listener (need to get dataplane_id first)
+    let dataplane_id: String =
+        sqlx::query_scalar("SELECT id FROM dataplanes WHERE name = 'team-b-dataplane'")
+            .fetch_one(&app.pool)
+            .await
+            .expect("get team-b dataplane id");
+
     let team_b_listener = json!({
         "team": "team-b",
         "name": "team-b-listener",
+        "dataplaneId": dataplane_id,
         "address": "0.0.0.0",
         "port": 9090,
         "filterChains": [{
@@ -567,10 +602,17 @@ async fn team_a_cannot_get_team_b_listener() {
     let team_a_token = app.issue_token("team-a-user", &["team:team-a:listeners:read"]).await;
     let team_b_token = app.issue_token("team-b-user", &["team:team-b:listeners:write"]).await;
 
-    // Team B creates a listener
+    // Team B creates a listener (need to get dataplane_id first)
+    let dataplane_id: String =
+        sqlx::query_scalar("SELECT id FROM dataplanes WHERE name = 'team-b-dataplane'")
+            .fetch_one(&app.pool)
+            .await
+            .expect("get team-b dataplane id");
+
     let team_b_listener = json!({
         "team": "team-b",
         "name": "team-b-private-listener",
+        "dataplaneId": dataplane_id,
         "address": "127.0.0.1",
         "port": 8888,
         "filterChains": [{
@@ -612,10 +654,17 @@ async fn team_a_cannot_delete_team_b_listener() {
     let team_a_token = app.issue_token("team-a-user", &["team:team-a:listeners:write"]).await;
     let team_b_token = app.issue_token("team-b-user", &["team:team-b:listeners:write"]).await;
 
-    // Team B creates a listener
+    // Team B creates a listener (need to get dataplane_id first)
+    let dataplane_id: String =
+        sqlx::query_scalar("SELECT id FROM dataplanes WHERE name = 'team-b-dataplane'")
+            .fetch_one(&app.pool)
+            .await
+            .expect("get team-b dataplane id");
+
     let team_b_listener = json!({
         "team": "team-b",
         "name": "team-b-critical-listener",
+        "dataplaneId": dataplane_id,
         "address": "0.0.0.0",
         "port": 7777,
         "filterChains": [{
