@@ -411,14 +411,16 @@ mod tests {
 
     #[test]
     fn test_rate_limit_filter_config_format() {
+        // build() returns inner config only (without type wrapper)
+        // The API client adds the wrapper when creating filters
         let config = filter_configs::rate_limit()
             .max_tokens(5)
             .fill_interval_ms(60000)
             .status_code(429)
             .build();
 
-        assert_eq!(config["type"], "local_rate_limit");
-        assert_eq!(config["config"]["token_bucket"]["max_tokens"], 5);
-        assert_eq!(config["config"]["status_code"], 429);
+        assert_eq!(config["token_bucket"]["max_tokens"], 5);
+        assert_eq!(config["token_bucket"]["fill_interval_ms"], 60000);
+        assert_eq!(config["status_code"], 429);
     }
 }
