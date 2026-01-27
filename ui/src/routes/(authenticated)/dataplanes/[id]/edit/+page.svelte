@@ -4,10 +4,18 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { ArrowLeft, Save, Server, Download, Copy, Check } from 'lucide-svelte';
-	import type { DataplaneResponse } from '$lib/api/types';
+	import type { DataplaneResponse, MtlsStatusResponse, GenerateCertificateResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import { validateRequired, validateIdentifier, runValidators } from '$lib/utils/validators';
 	import { selectedTeam } from '$lib/stores/team';
+	import hljs from 'highlight.js/lib/core';
+	import yaml from 'highlight.js/lib/languages/yaml';
+	import json from 'highlight.js/lib/languages/json';
+	import 'highlight.js/styles/github-dark.css';
+
+	// Register highlight.js languages
+	hljs.registerLanguage('yaml', yaml);
+	hljs.registerLanguage('json', json);
 
 	// Get dataplane name from URL (the [id] param is actually the name)
 	let dataplaneName = $derived($page.params.id);
@@ -30,13 +38,48 @@
 	let isSubmitting = $state(false);
 	let error = $state<string | null>(null);
 	let bootstrapConfig = $state<string | null>(null);
+	let highlightedCode = $state<string>('');
 	let showBootstrap = $state(false);
 	let copied = $state(false);
+	let format = $state<'yaml' | 'json'>('yaml');
 
-	// Load dataplane on mount
+	// mTLS state
+	let mtlsStatus = $state<MtlsStatusResponse | null>(null);
+	let enableMtlsInBootstrap = $state(false);
+
+	// Default certificate paths
+	const DEFAULT_CERT_PATH = '/etc/envoy/certs/client.pem';
+	const DEFAULT_KEY_PATH = '/etc/envoy/certs/client-key.pem';
+	const DEFAULT_CA_PATH = '/etc/envoy/certs/ca.pem';
+
+	let certPath = $state(DEFAULT_CERT_PATH);
+	let keyPath = $state(DEFAULT_KEY_PATH);
+	let caPath = $state(DEFAULT_CA_PATH);
+
+	// Certificate generation state
+	let proxyId = $state('');
+	let proxyIdError = $state<string | null>(null);
+	let isGeneratingCert = $state(false);
+	let generatedCertificate = $state<GenerateCertificateResponse | null>(null);
+	let certCopySuccess = $state<Record<string, boolean>>({});
+
+	// Proxy ID validation regex
+	const PROXY_ID_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+
+	// Load dataplane and mTLS status on mount
 	onMount(async () => {
-		await loadDataplane();
+		await Promise.all([loadDataplane(), loadMtlsStatus()]);
 	});
+
+	// Load mTLS status
+	async function loadMtlsStatus() {
+		try {
+			mtlsStatus = await apiClient.getMtlsStatus();
+		} catch (err) {
+			// If we can't get mTLS status, assume it's not configured
+			mtlsStatus = null;
+		}
+	}
 
 	async function loadDataplane() {
 		if (!dataplaneName || !currentTeam) {
@@ -108,17 +151,29 @@
 		goto('/dataplanes');
 	}
 
+	// Build bootstrap options
+	function getBootstrapOptions() {
+		return {
+			format,
+			mtls: enableMtlsInBootstrap && mtlsStatus?.pkiMountConfigured ? true : undefined,
+			certPath: enableMtlsInBootstrap ? certPath : undefined,
+			keyPath: enableMtlsInBootstrap ? keyPath : undefined,
+			caPath: enableMtlsInBootstrap ? caPath : undefined
+		};
+	}
+
 	// Download bootstrap
 	async function handleDownloadBootstrap() {
 		if (!dataplaneName || !currentTeam) return;
 
 		try {
-			const bootstrap = await apiClient.getDataplaneBootstrap(currentTeam, dataplaneName, 'yaml');
-			const blob = new Blob([bootstrap], { type: 'application/yaml' });
+			const bootstrap = await apiClient.getDataplaneBootstrap(currentTeam, dataplaneName, getBootstrapOptions());
+			const mimeType = format === 'yaml' ? 'application/yaml' : 'application/json';
+			const blob = new Blob([bootstrap], { type: mimeType });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `envoy-bootstrap-${formState.name}.yaml`;
+			a.download = `envoy-bootstrap-${formState.name}.${format}`;
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
@@ -128,19 +183,132 @@
 		}
 	}
 
+	// Load bootstrap config with current options
+	async function loadBootstrapConfig() {
+		if (!dataplaneName || !currentTeam) return;
+
+		try {
+			bootstrapConfig = await apiClient.getDataplaneBootstrap(currentTeam, dataplaneName, getBootstrapOptions());
+			highlightedCode = hljs.highlight(bootstrapConfig, { language: format }).value;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to load bootstrap';
+		}
+	}
+
 	// Show/hide bootstrap preview
 	async function toggleBootstrapPreview() {
 		if (!dataplaneName || !currentTeam) return;
 
 		if (!showBootstrap && !bootstrapConfig) {
-			try {
-				bootstrapConfig = await apiClient.getDataplaneBootstrap(currentTeam, dataplaneName, 'yaml');
-			} catch (err) {
-				error = err instanceof Error ? err.message : 'Failed to load bootstrap';
-				return;
-			}
+			await loadBootstrapConfig();
+			if (error) return;
 		}
 		showBootstrap = !showBootstrap;
+	}
+
+	// Handle format change - reload bootstrap config if visible
+	async function handleFormatChange() {
+		if (!showBootstrap) return;
+		await loadBootstrapConfig();
+	}
+
+	// Handle mTLS toggle - reload bootstrap config if visible
+	async function handleMtlsToggle() {
+		if (!showBootstrap) return;
+		await loadBootstrapConfig();
+	}
+
+	// Handle certificate path change - reload bootstrap config if visible
+	async function handlePathChange() {
+		if (!showBootstrap || !enableMtlsInBootstrap) return;
+		await loadBootstrapConfig();
+	}
+
+	// Validate proxy ID
+	function validateProxyId(value: string): string | null {
+		if (!value) {
+			return 'Proxy ID is required';
+		}
+		if (value.length < 3) {
+			return 'Proxy ID must be at least 3 characters';
+		}
+		if (value.length > 64) {
+			return 'Proxy ID must be at most 64 characters';
+		}
+		if (!PROXY_ID_REGEX.test(value)) {
+			return 'Proxy ID must start with alphanumeric and contain only alphanumeric characters, hyphens, and underscores';
+		}
+		return null;
+	}
+
+	// Handle proxy ID input
+	function handleProxyIdInput(event: Event) {
+		const target = event.target as HTMLInputElement;
+		proxyId = target.value;
+		proxyIdError = validateProxyId(proxyId);
+	}
+
+	// Generate certificate
+	async function generateCertificate() {
+		proxyIdError = validateProxyId(proxyId);
+		if (proxyIdError) {
+			return;
+		}
+
+		isGeneratingCert = true;
+		error = null;
+
+		try {
+			generatedCertificate = await apiClient.generateProxyCertificate(currentTeam, {
+				proxyId
+			});
+
+			// Enable mTLS in bootstrap after generating certificate
+			enableMtlsInBootstrap = true;
+			if (showBootstrap) {
+				await loadBootstrapConfig();
+			}
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to generate certificate';
+		} finally {
+			isGeneratingCert = false;
+		}
+	}
+
+	// Copy certificate field to clipboard
+	async function copyCertificateField(field: 'certificate' | 'privateKey' | 'caChain') {
+		if (!generatedCertificate) return;
+
+		try {
+			await navigator.clipboard.writeText(generatedCertificate[field]);
+			certCopySuccess = { ...certCopySuccess, [field]: true };
+			setTimeout(() => {
+				certCopySuccess = { ...certCopySuccess, [field]: false };
+			}, 2000);
+		} catch (err) {
+			error = 'Failed to copy to clipboard';
+		}
+	}
+
+	// Format expiry date
+	function formatExpiryDate(dateString: string): string {
+		const date = new Date(dateString);
+		return date.toLocaleDateString('en-US', {
+			year: 'numeric',
+			month: 'long',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit',
+			timeZoneName: 'short'
+		});
+	}
+
+	// Get days until expiry
+	function getDaysUntilExpiry(dateString: string): number {
+		const expiry = new Date(dateString);
+		const now = new Date();
+		const diffMs = expiry.getTime() - now.getTime();
+		return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 	}
 
 	// Copy bootstrap to clipboard
@@ -159,7 +327,7 @@
 	}
 </script>
 
-<div class="w-full px-4 sm:px-6 lg:px-8 py-8 max-w-4xl mx-auto">
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8">
 		<button
@@ -292,16 +460,138 @@
 						onclick={toggleBootstrapPreview}
 						class="text-sm text-blue-600 hover:text-blue-800"
 					>
-						{showBootstrap ? 'Hide' : 'Show'} Bootstrap YAML
+						{showBootstrap ? 'Hide' : 'Show'} Bootstrap
 					</button>
 				</div>
+
+				<!-- Format Selection -->
+				<div class="mb-4">
+					<label class="block text-sm font-medium text-gray-700 mb-2">Format</label>
+					<div class="flex gap-4">
+						<label class="flex items-center">
+							<input
+								type="radio"
+								bind:group={format}
+								value="yaml"
+								onchange={handleFormatChange}
+								class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+							/>
+							<span class="ml-2 text-sm text-gray-700">YAML</span>
+						</label>
+						<label class="flex items-center">
+							<input
+								type="radio"
+								bind:group={format}
+								value="json"
+								onchange={handleFormatChange}
+								class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+							/>
+							<span class="ml-2 text-sm text-gray-700">JSON</span>
+						</label>
+					</div>
+				</div>
+
+				<!-- mTLS Configuration Section -->
+				{#if mtlsStatus}
+					<div class="border-t border-gray-200 pt-4 mb-4">
+						<h3 class="text-sm font-medium text-gray-900 mb-3">mTLS Configuration</h3>
+
+						{#if mtlsStatus.pkiMountConfigured}
+							<!-- mTLS is available -->
+							<div class="space-y-3">
+								<label class="flex items-center">
+									<input
+										type="checkbox"
+										bind:checked={enableMtlsInBootstrap}
+										onchange={handleMtlsToggle}
+										class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+									/>
+									<span class="ml-2 text-sm text-gray-700">Enable mTLS in bootstrap</span>
+								</label>
+
+								{#if enableMtlsInBootstrap}
+									<div class="ml-6 space-y-2">
+										<div>
+											<label class="block text-xs font-medium text-gray-600 mb-1">Certificate Path</label>
+											<input
+												type="text"
+												bind:value={certPath}
+												onblur={handlePathChange}
+												class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+											/>
+										</div>
+										<div>
+											<label class="block text-xs font-medium text-gray-600 mb-1">Key Path</label>
+											<input
+												type="text"
+												bind:value={keyPath}
+												onblur={handlePathChange}
+												class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+											/>
+										</div>
+										<div>
+											<label class="block text-xs font-medium text-gray-600 mb-1">CA Path</label>
+											<input
+												type="text"
+												bind:value={caPath}
+												onblur={handlePathChange}
+												class="w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+											/>
+										</div>
+									</div>
+								{/if}
+
+								<!-- Proxy ID Input for Certificate Generation -->
+								<div class="mt-4 pt-4 border-t border-gray-100">
+									<label class="block text-sm font-medium text-gray-700 mb-2">
+										Proxy ID
+										<span class="text-red-500">*</span>
+									</label>
+									<input
+										type="text"
+										value={proxyId}
+										oninput={handleProxyIdInput}
+										placeholder="e.g., {formState.name}-proxy"
+										class="w-full px-3 py-2 border rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 {proxyIdError
+											? 'border-red-500'
+											: 'border-gray-300'}"
+									/>
+									{#if proxyIdError}
+										<p class="mt-1 text-xs text-red-600">{proxyIdError}</p>
+									{:else}
+										<p class="mt-1 text-xs text-gray-500">
+											A unique identifier for this proxy instance (e.g., hostname, deployment ID)
+										</p>
+									{/if}
+
+									<button
+										type="button"
+										onclick={generateCertificate}
+										disabled={isGeneratingCert || !currentTeam || !proxyId || !!proxyIdError}
+										class="mt-3 w-full px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+									>
+										{isGeneratingCert ? 'Generating...' : 'Generate Certificate'}
+									</button>
+								</div>
+							</div>
+						{:else}
+							<!-- mTLS not configured -->
+							<div class="bg-amber-50 border-l-4 border-amber-500 rounded-md p-3">
+								<p class="text-amber-800 text-sm font-medium">mTLS Not Configured</p>
+								<p class="text-amber-700 text-xs mt-1">
+									{mtlsStatus.message}
+								</p>
+							</div>
+						{/if}
+					</div>
+				{/if}
 
 				{#if showBootstrap && bootstrapConfig}
 					<div class="relative">
 						<button
 							type="button"
 							onclick={handleCopyBootstrap}
-							class="absolute top-2 right-2 p-2 text-gray-400 hover:text-gray-600 bg-gray-800 rounded"
+							class="absolute top-2 right-2 p-2 text-gray-400 hover:text-gray-600 bg-gray-800 rounded z-10"
 							title="Copy to clipboard"
 						>
 							{#if copied}
@@ -310,8 +600,7 @@
 								<Copy class="h-4 w-4" />
 							{/if}
 						</button>
-						<pre
-							class="bg-gray-900 text-gray-100 p-4 rounded-md text-sm overflow-x-auto max-h-96">{bootstrapConfig}</pre>
+						<pre class="bg-gray-900 rounded-md p-4 text-sm overflow-x-auto max-h-96"><code class="hljs">{@html highlightedCode}</code></pre>
 					</div>
 					<p class="mt-2 text-xs text-gray-500">
 						Use this configuration to start your Envoy instance with the correct node ID and xDS
@@ -319,10 +608,129 @@
 					</p>
 				{:else}
 					<p class="text-sm text-gray-600">
-						Click "Show Bootstrap YAML" to preview the Envoy bootstrap configuration for this
-						dataplane.
+						Click "Show Bootstrap" to preview the Envoy bootstrap configuration for this
+						dataplane in {format.toUpperCase()} format.
 					</p>
 				{/if}
+			</div>
+
+			<!-- Generated Certificate Section -->
+			{#if generatedCertificate}
+				<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+					<div class="flex justify-between items-start mb-4">
+						<div>
+							<h2 class="text-lg font-medium text-gray-900">Generated Certificate</h2>
+							<p class="text-sm text-gray-500 mt-1">
+								SPIFFE URI: <code class="bg-gray-100 px-1 rounded text-xs">{generatedCertificate.spiffeUri}</code>
+							</p>
+						</div>
+						<div class="text-right">
+							<span
+								class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {getDaysUntilExpiry(generatedCertificate.expiresAt) > 30
+									? 'bg-green-100 text-green-800'
+									: 'bg-amber-100 text-amber-800'}"
+							>
+								Expires: {formatExpiryDate(generatedCertificate.expiresAt)}
+							</span>
+						</div>
+					</div>
+
+					<!-- Security Warning -->
+					<div class="mb-4 bg-red-50 border-l-4 border-red-500 rounded-md p-3">
+						<p class="text-red-800 text-sm font-medium">Security Notice</p>
+						<p class="text-red-700 text-xs mt-1">
+							The private key is only shown once. Save it securely now. It cannot be retrieved later.
+						</p>
+					</div>
+
+					<!-- Certificate Files -->
+					<div class="space-y-4">
+						<!-- Certificate -->
+						<div>
+							<div class="flex justify-between items-center mb-2">
+								<label class="block text-sm font-medium text-gray-700">
+									Client Certificate
+									<code class="ml-2 text-xs text-gray-500 bg-gray-100 px-1 rounded">{certPath}</code>
+								</label>
+								<button
+									type="button"
+									onclick={() => copyCertificateField('certificate')}
+									class="text-xs text-blue-600 hover:text-blue-800"
+								>
+									{certCopySuccess['certificate'] ? 'Copied!' : 'Copy'}
+								</button>
+							</div>
+							<textarea
+								readonly
+								value={generatedCertificate.certificate}
+								class="w-full h-32 px-3 py-2 text-xs font-mono bg-gray-900 text-green-400 border border-gray-300 rounded-md resize-none"
+							></textarea>
+						</div>
+
+						<!-- Private Key -->
+						<div>
+							<div class="flex justify-between items-center mb-2">
+								<label class="block text-sm font-medium text-gray-700">
+									Private Key
+									<code class="ml-2 text-xs text-gray-500 bg-gray-100 px-1 rounded">{keyPath}</code>
+									<span class="ml-2 text-xs text-red-600">(Save securely!)</span>
+								</label>
+								<button
+									type="button"
+									onclick={() => copyCertificateField('privateKey')}
+									class="text-xs text-blue-600 hover:text-blue-800"
+								>
+									{certCopySuccess['privateKey'] ? 'Copied!' : 'Copy'}
+								</button>
+							</div>
+							<textarea
+								readonly
+								value={generatedCertificate.privateKey}
+								class="w-full h-32 px-3 py-2 text-xs font-mono bg-gray-900 text-yellow-400 border border-gray-300 rounded-md resize-none"
+							></textarea>
+						</div>
+
+						<!-- CA Chain -->
+						<div>
+							<div class="flex justify-between items-center mb-2">
+								<label class="block text-sm font-medium text-gray-700">
+									CA Certificate Chain
+									<code class="ml-2 text-xs text-gray-500 bg-gray-100 px-1 rounded">{caPath}</code>
+								</label>
+								<button
+									type="button"
+									onclick={() => copyCertificateField('caChain')}
+									class="text-xs text-blue-600 hover:text-blue-800"
+								>
+									{certCopySuccess['caChain'] ? 'Copied!' : 'Copy'}
+								</button>
+							</div>
+							<textarea
+								readonly
+								value={generatedCertificate.caChain}
+								class="w-full h-32 px-3 py-2 text-xs font-mono bg-gray-900 text-blue-400 border border-gray-300 rounded-md resize-none"
+							></textarea>
+						</div>
+					</div>
+				</div>
+			{/if}
+
+			<!-- Usage Instructions -->
+			<div class="bg-blue-50 border-l-4 border-blue-500 rounded-md p-4">
+				<h3 class="text-sm font-medium text-blue-800 mb-2">How to Use</h3>
+				<div class="text-sm text-blue-700 space-y-2">
+					{#if generatedCertificate}
+						<p>1. Save the certificate files to your proxy at the configured paths</p>
+						<p>2. Download or copy the bootstrap configuration</p>
+						<p>3. Save it as <code class="bg-blue-100 px-1 rounded">bootstrap.yaml</code></p>
+						<p>4. Start Envoy with the configuration:</p>
+					{:else}
+						<p>1. Download or copy the bootstrap configuration</p>
+						<p>2. Save it as <code class="bg-blue-100 px-1 rounded">bootstrap.{format}</code></p>
+						<p>3. Start Envoy with the configuration:</p>
+					{/if}
+					<pre class="mt-2 p-2 bg-blue-100 rounded text-xs overflow-x-auto">envoy -c bootstrap.{format}</pre>
+				</div>
 			</div>
 
 			<!-- Form Actions -->

@@ -1475,9 +1475,31 @@ class ApiClient {
 	 * Get Envoy bootstrap configuration for a dataplane.
 	 * Returns YAML or JSON based on the format parameter.
 	 */
-	async getDataplaneBootstrap(team: string, name: string, format: 'yaml' | 'json' = 'yaml'): Promise<string> {
+	async getDataplaneBootstrap(
+		team: string,
+		name: string,
+		options: {
+			format?: 'yaml' | 'json';
+			mtls?: boolean;
+			certPath?: string;
+			keyPath?: string;
+			caPath?: string;
+		} = {}
+	): Promise<string> {
 		const params = new URLSearchParams();
-		params.append('format', format);
+		params.append('format', options.format || 'yaml');
+		if (options.mtls !== undefined) {
+			params.append('mtls', String(options.mtls));
+		}
+		if (options.certPath) {
+			params.append('cert_path', options.certPath);
+		}
+		if (options.keyPath) {
+			params.append('key_path', options.keyPath);
+		}
+		if (options.caPath) {
+			params.append('ca_path', options.caPath);
+		}
 
 		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}/bootstrap?${params.toString()}`;
 

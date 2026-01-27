@@ -94,7 +94,7 @@
 	// Download bootstrap config
 	async function handleDownloadBootstrap(dataplane: DataplaneResponse) {
 		try {
-			const bootstrap = await apiClient.getDataplaneBootstrap(dataplane.team, dataplane.name, 'yaml');
+			const bootstrap = await apiClient.getDataplaneBootstrap(dataplane.team, dataplane.name, { format: 'yaml' });
 			const blob = new Blob([bootstrap], { type: 'application/yaml' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
