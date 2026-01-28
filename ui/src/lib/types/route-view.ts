@@ -24,6 +24,8 @@ export interface RouteListViewDto {
 	routeConfigId: string;
 	/** Name of the parent route configuration */
 	routeConfigName: string;
+	/** Team that owns this route's configuration */
+	team: string | null;
 
 	// === From routes table (already denormalized) ===
 	/** Path pattern for matching (e.g., "/api/users", "/v1/.*") */

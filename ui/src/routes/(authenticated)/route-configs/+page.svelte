@@ -307,6 +307,11 @@
 			)
 	);
 
+	// Filter routes for flat view (team filtering - same pattern as clusters/listeners)
+	let filteredFlatRoutes = $derived(
+		flatRoutes.filter((route: RouteListViewDto) => route.team === currentTeam)
+	);
+
 	// Get route statistics for a configuration
 	function getRouteStats(config: RouteResponse) {
 		const configObj = config.config as Record<string, unknown>;
@@ -663,7 +668,7 @@
 		</div>
 	{:else if viewMode === 'flat'}
 		<!-- Flat Table View -->
-		{#if flatRoutes.length === 0}
+		{#if filteredFlatRoutes.length === 0}
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
 				<Server class="h-12 w-12 text-gray-400 mx-auto mb-4" />
 				<h3 class="text-lg font-medium text-gray-900 mb-2">
@@ -730,7 +735,7 @@
 						</tr>
 					</thead>
 					<tbody class="bg-white divide-y divide-gray-200">
-						{#each flatRoutes as route}
+						{#each filteredFlatRoutes as route}
 							<tr class="hover:bg-gray-50 transition-colors">
 								<!-- Route Name -->
 								<td class="px-6 py-4">
@@ -842,7 +847,7 @@
 					</div>
 				{:else}
 					<div class="border-t border-gray-200 px-6 py-4 text-sm text-gray-500">
-						Showing {flatRoutes.length} of {totalItems} routes
+						Showing {filteredFlatRoutes.length} of {totalItems} routes
 					</div>
 				{/if}
 			</div>

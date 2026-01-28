@@ -71,6 +71,7 @@ impl RouteViewExtractor {
             virtual_host_name: virtual_host.name.clone(),
             route_config_id: route_config.id.to_string(),
             route_config_name: route_config.name.clone(),
+            team: route_config.team.clone(),
 
             // From routes table
             path_pattern: route.path_pattern.clone(),
@@ -299,6 +300,7 @@ impl RouteViewExtractor {
             virtual_host_name: data.virtual_host_name.clone(),
             route_config_id: data.route_config_id.to_string(),
             route_config_name: data.route_config_name.clone(),
+            team: data.team.clone(),
 
             // From routes table
             path_pattern: data.path_pattern.clone(),
@@ -480,6 +482,7 @@ mod tests {
                 virtual_host_name: "default".to_string(),
                 route_config_id: "rc1".to_string(),
                 route_config_name: "config1".to_string(),
+                team: None,
                 path_pattern: "/api".to_string(),
                 match_type: RouteMatchType::Prefix,
                 rule_order: 0,
@@ -504,6 +507,7 @@ mod tests {
                 virtual_host_name: "default".to_string(),
                 route_config_id: "rc1".to_string(),
                 route_config_name: "config1".to_string(),
+                team: None,
                 path_pattern: "/users".to_string(),
                 match_type: RouteMatchType::Prefix,
                 rule_order: 1,
@@ -528,6 +532,7 @@ mod tests {
                 virtual_host_name: "default".to_string(),
                 route_config_id: "rc1".to_string(),
                 route_config_name: "config1".to_string(),
+                team: None,
                 path_pattern: "/orders".to_string(),
                 match_type: RouteMatchType::Prefix,
                 rule_order: 2,
@@ -561,6 +566,7 @@ mod tests {
                 virtual_host_name: "default".to_string(),
                 route_config_id: "rc1".to_string(),
                 route_config_name: "config1".to_string(),
+                team: None,
                 path_pattern: "/api".to_string(),
                 match_type: RouteMatchType::Prefix,
                 rule_order: 0,
@@ -585,6 +591,7 @@ mod tests {
                 virtual_host_name: "web".to_string(),
                 route_config_id: "rc1".to_string(),
                 route_config_name: "config1".to_string(),
+                team: None,
                 path_pattern: "/".to_string(),
                 match_type: RouteMatchType::Prefix,
                 rule_order: 0,

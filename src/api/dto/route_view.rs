@@ -25,6 +25,7 @@ use crate::domain::RouteMatchType;
     "virtualHostName": "default",
     "routeConfigId": "770e8400-e29b-41d4-a716-446655440002",
     "routeConfigName": "primary-routes",
+    "team": "payments",
     "pathPattern": "/api/users",
     "matchType": "prefix",
     "ruleOrder": 1,
@@ -56,6 +57,8 @@ pub struct RouteListViewDto {
     pub route_config_id: String,
     /// Name of the parent route configuration
     pub route_config_name: String,
+    /// Team that owns this route's configuration
+    pub team: Option<String>,
 
     // === From routes table (already denormalized) ===
     /// Path pattern for matching (e.g., "/api/users", "/v1/.*")

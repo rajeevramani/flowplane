@@ -94,6 +94,7 @@ struct RouteWithRelatedDataRow {
     // Route config fields
     pub route_config_id: String,
     pub route_config_name: String,
+    pub route_config_team: Option<String>,
     pub configuration: String, // JSON for extraction
     // MCP tool fields (optional, from LEFT JOIN)
     pub mcp_enabled: i32, // SQLite uses integer for boolean
@@ -121,6 +122,7 @@ pub struct RouteWithRelatedData {
     // Route config fields
     pub route_config_id: crate::domain::RouteConfigId,
     pub route_config_name: String,
+    pub team: Option<String>,
     pub configuration: String,
     // MCP tool fields
     pub mcp_enabled: bool,
@@ -154,6 +156,7 @@ impl TryFrom<RouteWithRelatedDataRow> for RouteWithRelatedData {
             domains,
             route_config_id: crate::domain::RouteConfigId::from_string(row.route_config_id),
             route_config_name: row.route_config_name,
+            team: row.route_config_team,
             configuration: row.configuration,
             mcp_enabled: row.mcp_enabled != 0,
             mcp_tool_name: row.mcp_tool_name,
@@ -617,6 +620,7 @@ impl RouteRepository {
                 vh.domains,
                 rc.id as route_config_id,
                 rc.name as route_config_name,
+                rc.team as route_config_team,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
@@ -840,6 +844,7 @@ impl RouteRepository {
                 vh.domains,
                 rc.id as route_config_id,
                 rc.name as route_config_name,
+                rc.team as route_config_team,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
@@ -985,6 +990,7 @@ impl RouteRepository {
                 vh.domains,
                 rc.id as route_config_id,
                 rc.name as route_config_name,
+                rc.team as route_config_team,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
