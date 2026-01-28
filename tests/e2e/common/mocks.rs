@@ -469,6 +469,7 @@ fn generate_test_jwks() -> JwksConfig {
 
     // Static RSA 2048-bit private key for testing (PKCS#1 format)
     // Generated specifically for E2E tests - NOT for production
+    #[allow(clippy::needless_raw_string_hashes)] // pragma: allowlist secret
     let private_key_pem = r#"-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEA0hM+IgJX+PIXXcPUnx5lNyTPlXbll++juKxgsL6iEYjy25uD
 J8up+m5NxKeiE4WqYm5oQ1dcCfKX/8tKAclF1bjLPd75j0ckvixHa3hgT9VXPTx5
