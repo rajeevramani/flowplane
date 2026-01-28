@@ -38,8 +38,8 @@ services:
       FLOWPLANE_ENABLE_METRICS: "true"
       FLOWPLANE_ENABLE_TRACING: "false"
 
-      # Secrets encryption (enables SDS)
-      FLOWPLANE_SECRET_ENCRYPTION_KEY: "d2t71S8xKUQqhaWbj1VofrH/Z8Dq4qR+hAcgXpP6Udg="
+      # Secrets encryption (enables SDS) - generate with: openssl rand -base64 32
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: ${FLOWPLANE_SECRET_ENCRYPTION_KEY:-}
 
       # Vault integration
       VAULT_ADDR: "http://flowplane-vault:8200"
