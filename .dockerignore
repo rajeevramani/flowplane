@@ -10,7 +10,6 @@
 README.md
 CHANGELOG.md
 LICENSE
-docs/
 
 # IDE
 .vscode/
@@ -18,14 +17,14 @@ docs/
 *.swp
 *.swo
 
-# Rust
+# Rust build artifacts
 target/
 **/*.rs.bk
 
-# Node.js / UI
+# Node.js / UI (except what we need)
 ui/node_modules/
-ui/build/
 ui/.svelte-kit/
+ui/.vite/
 
 # Logs
 *.log
@@ -33,6 +32,8 @@ ui/.svelte-kit/
 # Environment
 .env
 .env.local
+.env.make
+.env.make.local
 
 # Local development
 .local/
@@ -50,16 +51,40 @@ coverage/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # Claude Code
 .claude/
 CLAUDE.md
 
-# Task Master
+# Task files
 .taskmaster/
 .codex/
-.local/
+
+# Data directories
 data/
 examples/
 specs/
 docs/
+
+# Docker compose files (don't copy into image)
+docker-compose*.yml
+
+# Makefile (don't need in image)
+Makefile
+
+# Scripts (don't need in image)
+scripts/
+
+# Other Dockerfiles
+Dockerfile.backend
+Dockerfile.ui
+Dockerfile.cli
+.dockerignore
+
+# Bruno API tests
+bruno/
+
+# Monitoring configs
+monitoring/

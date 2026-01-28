@@ -130,7 +130,7 @@ services:
 
 networks:
   flowplane-network:
-    driver: bridge
+    external: true
 
 volumes:
   flowplane_data:

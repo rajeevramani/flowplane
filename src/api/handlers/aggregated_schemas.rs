@@ -615,7 +615,7 @@ fn build_openapi_spec(
 ) -> OpenApiExportResponse {
     use super::openapi_utils::{
         build_path_parameters, convert_schema_to_openapi, extract_path_parameters,
-        generate_operation_id, infer_param_type, parse_path_with_query,
+        generate_operation_id, generate_semantic_summary, infer_param_type, parse_path_with_query,
     };
 
     let mut path_item = serde_json::json!({});
@@ -630,8 +630,11 @@ fn build_openapi_spec(
     let method_key = schema.http_method.to_lowercase();
     let operation_id = generate_operation_id(&schema.http_method, &schema.path);
 
+    // BUG-007 FIX: Use semantic summary generation for better API documentation
+    let summary = generate_semantic_summary(&schema.http_method, &schema.path);
+
     let mut operation = serde_json::json!({
-        "summary": format!("{} {}", schema.http_method, parsed.base_path),
+        "summary": summary,
         "operationId": operation_id,
         "responses": {}
     });
@@ -781,7 +784,7 @@ fn build_unified_openapi_spec(
     use super::openapi_utils::{
         aggregate_query_params, build_path_parameters, build_query_parameters,
         convert_schema_to_openapi, extract_path_parameters, generate_operation_id,
-        parse_path_with_query,
+        generate_semantic_summary, parse_path_with_query,
     };
     use std::collections::HashMap;
 
@@ -814,9 +817,12 @@ fn build_unified_openapi_spec(
 
         let operation_id = generate_operation_id(&representative.http_method, &representative.path);
 
+        // BUG-007 FIX: Use semantic summary generation for better API documentation
+        let summary = generate_semantic_summary(&representative.http_method, &representative.path);
+
         // Build operation object
         let mut operation = serde_json::json!({
-            "summary": format!("{} {}", representative.http_method, base_path),
+            "summary": summary,
             "operationId": operation_id,
             "responses": {}
         });

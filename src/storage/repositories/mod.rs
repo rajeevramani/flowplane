@@ -9,6 +9,7 @@ pub mod cluster;
 pub mod cluster_endpoint;
 pub mod cluster_references;
 pub mod custom_wasm_filter;
+pub mod dataplane;
 pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
@@ -17,11 +18,13 @@ pub mod learning_session;
 pub mod listener;
 pub mod listener_auto_filter;
 pub mod listener_route_config;
+pub mod mcp_tool;
 pub mod proxy_certificate;
 pub mod reporting;
 pub mod route;
 pub mod route_config;
 pub mod route_filter;
+pub mod route_metadata;
 pub mod scope;
 pub mod secret;
 pub mod team;
@@ -43,6 +46,9 @@ pub use cluster_references::{ClusterReferenceData, ClusterReferencesRepository};
 pub use custom_wasm_filter::{
     CreateCustomWasmFilterRequest, CustomWasmFilterData, CustomWasmFilterRepository,
     UpdateCustomWasmFilterRequest,
+};
+pub use dataplane::{
+    CreateDataplaneRequest, DataplaneData, DataplaneRepository, UpdateDataplaneRequest,
 };
 pub use filter::{
     CreateFilterRequest, FilterConfiguration, FilterData, FilterInstallation, FilterRepository,
@@ -68,16 +74,25 @@ pub use listener_auto_filter::{
     CreateVirtualHostAutoFilterRequest, ListenerAutoFilterData, ListenerAutoFilterRepository,
 };
 pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepository};
+pub use mcp_tool::{
+    CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
+};
 pub use proxy_certificate::{
     CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
     SqlxProxyCertificateRepository,
 };
 pub use reporting::{ReportingRepository, RouteFlowRow};
-pub use route::{CreateRouteRequest, RouteData, RouteRepository, UpdateRouteRequest};
+pub use route::{
+    CreateRouteRequest, RouteData, RouteRepository, RouteWithRelatedData, UpdateRouteRequest,
+};
 pub use route_config::{
     CreateRouteConfigRequest, RouteConfigData, RouteConfigRepository, UpdateRouteConfigRequest,
 };
 pub use route_filter::{RouteFilterData, RouteFilterRepository};
+pub use route_metadata::{
+    CreateRouteMetadataRequest, RouteMetadataData, RouteMetadataRepository,
+    UpdateRouteMetadataRequest,
+};
 pub use scope::{
     CreateScopeRequest, ScopeDefinition, ScopeRepository, SqlxScopeRepository, UpdateScopeRequest,
 };

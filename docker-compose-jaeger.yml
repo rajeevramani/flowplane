@@ -1,0 +1,91 @@
+# Docker Compose for Flowplane with Jaeger Tracing
+#
+# This configuration provides:
+# - Flowplane Control Plane with tracing enabled
+# - Jaeger for trace visualization (with native OTLP support)
+#
+# Usage:
+#   docker-compose -f docker-compose-base.yml -f docker-compose-jaeger.yml up -d
+#
+# Or via Make:
+#   make up-tracing
+#
+# Access:
+#   - Flowplane API: http://localhost:8080
+#   - Swagger UI:    http://localhost:8080/swagger-ui/
+#   - Jaeger UI:     http://localhost:16686
+
+services:
+  # Jaeger for trace collection and visualization (with native OTLP support)
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: flowplane-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # Flowplane Control Plane with tracing enabled
+  control-plane:
+    image: ghcr.io/rajeevramani/flowplane:latest
+    container_name: flowplane-control-plane
+    environment:
+      # Database configuration (SQLite)
+      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
+
+      # Server configuration
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 50051
+
+      # Logging
+      RUST_LOG: info,flowplane=debug
+
+      # Observability - Tracing ENABLED, pointing to Jaeger OTLP endpoint
+      FLOWPLANE_ENABLE_METRICS: "true"
+      FLOWPLANE_ENABLE_TRACING: "true"
+      FLOWPLANE_OTLP_ENDPOINT: "http://jaeger:4317"
+      FLOWPLANE_TRACE_SAMPLING_RATIO: "1.0"
+      FLOWPLANE_SERVICE_NAME: "flowplane-control-plane"
+
+      # Secrets encryption (enables SDS) - generate with: openssl rand -base64 32
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: ${FLOWPLANE_SECRET_ENCRYPTION_KEY:-}
+    ports:
+      - "8080:8080"   # HTTP API
+      - "50051:50051" # xDS gRPC
+      - "50052:50052" # Access Log Service
+      - "50053:50053" # External Processor
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - flowplane_data:/app/data
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+networks:
+  flowplane-network:
+    external: true
+
+volumes:
+  flowplane_data:
+    driver: local

@@ -1,16 +1,18 @@
 # Docker Compose for mTLS Development
 #
-# Minimal setup: Only HashiCorp Vault for PKI certificate generation.
-# Control plane and Envoy proxy run locally (not in Docker).
+# Provides HashiCorp Vault for PKI certificate generation.
+# Used for mTLS between Envoy proxies and Control Plane.
 #
 # Usage:
 #   docker-compose -f docker-compose-mtls-dev.yml up -d
+#   make up-mtls
 #
 # Access:
 #   - Vault UI: http://localhost:8200 (token: flowplane-dev-token)
 #
 # After starting, run the PKI setup script:
 #   ./scripts/setup-vault-pki.sh
+#   make vault-setup
 
 services:
   vault:
@@ -31,4 +33,10 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+    networks:
+      - flowplane-network
     command: server -dev
+
+networks:
+  flowplane-network:
+    external: true

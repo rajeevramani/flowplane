@@ -140,6 +140,59 @@ impl RouteFilterRepository {
         })
     }
 
+    /// Attach or update a filter on a route (upsert).
+    /// If the filter is already attached, updates its settings.
+    /// If not attached, creates a new attachment with the given settings.
+    #[instrument(skip(self, settings), fields(route_id = %route_id, filter_id = %filter_id, order = order), name = "db_upsert_filter_to_route")]
+    pub async fn upsert(
+        &self,
+        route_id: &RouteId,
+        filter_id: &FilterId,
+        order: i32,
+        settings: Option<serde_json::Value>,
+    ) -> Result<RouteFilterData> {
+        let now = Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
+
+        // Use INSERT OR REPLACE (SQLite UPSERT)
+        // This will update if the (route_id, filter_id) PK exists, otherwise insert
+        sqlx::query(
+            "INSERT INTO route_filters (route_id, filter_id, filter_order, created_at, settings) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT(route_id, filter_id) DO UPDATE SET \
+             settings = excluded.settings"
+        )
+        .bind(route_id.as_str())
+        .bind(filter_id.as_str())
+        .bind(order)
+        .bind(now)
+        .bind(&settings_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_id = %route_id, filter_id = %filter_id, "Failed to upsert filter to route");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to configure filter '{}' on route '{}'", filter_id, route_id),
+            }
+        })?;
+
+        tracing::info!(
+            route_id = %route_id,
+            filter_id = %filter_id,
+            order = order,
+            "Configured filter on route"
+        );
+
+        Ok(RouteFilterData {
+            route_id: route_id.clone(),
+            filter_id: filter_id.clone(),
+            filter_order: order,
+            created_at: now,
+            settings,
+        })
+    }
+
     /// Detach a filter from a route.
     #[instrument(skip(self), fields(route_id = %route_id, filter_id = %filter_id), name = "db_detach_filter_from_route")]
     pub async fn detach(&self, route_id: &RouteId, filter_id: &FilterId) -> Result<()> {

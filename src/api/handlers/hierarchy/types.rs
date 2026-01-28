@@ -116,6 +116,7 @@ pub struct ListRouteRulesResponse {
 
 /// Response for a filter attachment
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct FilterResponse {
     /// Unique ID of the filter
     pub id: String,

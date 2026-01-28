@@ -17,7 +17,10 @@
 		Lock,
 		BookOpen,
 		FileCode,
-		Puzzle
+		Puzzle,
+		Bot,
+		Cable,
+		Network
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 
@@ -28,6 +31,7 @@
 		imports: number;
 		filters: number;
 		secrets?: number;
+		dataplanes?: number;
 	}
 
 	interface Props {
@@ -43,6 +47,7 @@
 
 	// Resources navigation items (without filters - handled separately)
 	const resourceItems = [
+		{ id: 'dataplanes', label: 'Dataplanes', href: '/dataplanes', icon: Network },
 		{ id: 'clusters', label: 'Clusters', href: '/clusters', icon: Server },
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
@@ -54,6 +59,12 @@
 	const filtersSubmenu = [
 		{ id: 'manage-filters', label: 'Manage Filters', href: '/filters', icon: List },
 		{ id: 'custom-filters', label: 'Custom Filters', href: '/custom-filters', icon: Puzzle }
+	];
+
+	// MCP navigation items
+	const mcpItems = [
+		{ id: 'mcp-tools', label: 'MCP Tools', href: '/mcp-tools', icon: Bot },
+		{ id: 'mcp-connections', label: 'MCP Connections', href: '/mcp-connections', icon: Cable }
 	];
 
 	// Admin navigation items
@@ -102,6 +113,8 @@
 				return resourceCounts.imports;
 			case 'secrets':
 				return resourceCounts.secrets;
+			case 'dataplanes':
+				return resourceCounts.dataplanes;
 			default:
 				return undefined;
 		}
@@ -253,6 +266,27 @@
 					<FileCode class="h-5 w-5" />
 					Discovered Schemas
 				</a>
+			</div>
+		</div>
+
+		<!-- MCP Section -->
+		<div class="px-3 mb-4">
+			<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+				MCP
+			</h3>
+			<div class="space-y-1">
+				{#each mcpItems as item}
+					<a
+						href={item.href}
+						class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+							{isActive(item.href)
+							? 'bg-blue-600 text-white'
+							: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+					>
+						<svelte:component this={item.icon} class="h-5 w-5" />
+						{item.label}
+					</a>
+				{/each}
 			</div>
 		</div>
 

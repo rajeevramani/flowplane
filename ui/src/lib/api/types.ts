@@ -206,6 +206,7 @@ export interface ListenerResponse {
 	protocol: string;
 	version: number;
 	importId?: string;
+	dataplaneId?: string | null;
 	config: any; // Full listener config
 }
 
@@ -573,6 +574,7 @@ export interface CreateListenerBody {
 	port: number;
 	protocol?: string;
 	filterChains: ListenerFilterChainInput[];
+	dataplaneId?: string;
 }
 
 // UpdateListenerBody - no name or team fields (from path param / existing listener)
@@ -581,6 +583,7 @@ export interface UpdateListenerBody {
 	port: number;
 	filterChains: ListenerFilterChainInput[];
 	protocol?: string;
+	dataplaneId?: string | null;
 }
 
 // === Scope Types ===
@@ -1401,6 +1404,12 @@ export interface FilterStatusResponse {
 // Learning Session Types
 // ============================================================================
 
+/** Learned schema information for MCP badge display */
+export interface LearnedSchemaInfo {
+	confidenceScore: number;
+	sampleCount: number;
+}
+
 /** Learning session status */
 export type LearningSessionStatus =
 	| 'pending'
@@ -1580,4 +1589,224 @@ export interface UpdateCustomWasmFilterRequest {
 export interface ListCustomWasmFiltersResponse {
 	items: CustomWasmFilterResponse[];
 	total: number;
+}
+
+// ============================================================================
+// MCP (Model Context Protocol) Types
+// ============================================================================
+
+/** MCP Tool category */
+export type McpToolCategory = 'control_plane' | 'gateway_api';
+
+/** MCP Tool source type */
+export type McpToolSourceType = 'builtin' | 'openapi' | 'learned' | 'manual';
+
+/** MCP Schema source type */
+export type McpSchemaSource = 'openapi' | 'learned' | 'manual' | 'mixed';
+
+/** MCP Tool response from API */
+export interface McpTool {
+	id: string;
+	name: string;
+	description: string | null;
+	category: McpToolCategory;
+	sourceType: McpToolSourceType;
+	/** Whether this is a built-in tool (cannot be edited/disabled) */
+	isBuiltin: boolean;
+	enabled: boolean;
+	confidence: number | null;
+	httpMethod: string | null;
+	httpPath: string | null;
+	clusterName: string | null;
+	listenerPort: number | null;
+	inputSchema: Record<string, unknown>;
+	outputSchema: Record<string, unknown> | null;
+	schemaSource: McpSchemaSource | null;
+	routeId: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Response for listing MCP tools */
+export interface ListMcpToolsResponse {
+	tools: McpTool[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+/** OpenAPI schema information for MCP status */
+export interface OpenApiSchemaInfo {
+	hasInputSchema: boolean;
+	hasOutputSchema: boolean;
+}
+
+/** Learned schema information for MCP status */
+export interface LearnedSchemaInfo {
+	available: boolean;
+	schemaId: number;
+	confidenceScore: number;
+	sampleCount: number;
+	hasRequestSchema: boolean;
+	hasResponseSchemas: boolean;
+	responseStatusCodes: string[];
+	lastObserved: string;
+}
+
+/** Metadata information for MCP status */
+export interface McpMetadataInfo {
+	operationId: string | null;
+	summary: string | null;
+	description: string | null;
+	tags: string | null;
+}
+
+/** MCP Status response for a route */
+export interface McpStatus {
+	ready: boolean;
+	enabled: boolean;
+	missingFields: string[];
+	schemaSources: {
+		openapi: OpenApiSchemaInfo | null;
+		learned: LearnedSchemaInfo | null;
+	};
+	recommendedSource: string;
+	metadata: McpMetadataInfo | null;
+	toolName: string | null;
+}
+
+/** Request to enable MCP on a route */
+export interface EnableMcpRequest {
+	toolName?: string;
+	description?: string;
+	schemaSource?: McpSchemaSource;
+	summary?: string;
+	httpMethod?: string;
+}
+
+/** Response after enabling MCP */
+export interface EnableMcpResponse {
+	success: boolean;
+	tool: McpTool;
+}
+
+/** Response for disable/refresh operations */
+export interface McpOperationResponse {
+	success: boolean;
+	message: string;
+}
+
+/** Request for bulk MCP operations */
+export interface BulkMcpRequest {
+	routeIds: string[];
+}
+
+/** Response for bulk MCP operations */
+export interface BulkMcpResponse {
+	success: boolean;
+	enabledCount: number;
+	disabledCount: number;
+	failedCount: number;
+	failures: { routeId: string; reason: string }[];
+}
+
+/** Query parameters for listing MCP tools */
+export interface ListMcpToolsQuery {
+	category?: McpToolCategory;
+	enabled?: boolean;
+	search?: string;
+	limit?: number;
+	offset?: number;
+}
+
+/** Request to update an MCP tool */
+export interface UpdateMcpToolRequest {
+	name?: string;
+	description?: string;
+	category?: McpToolCategory;
+	httpMethod?: string;
+	httpPath?: string;
+	inputSchema?: Record<string, unknown>;
+	outputSchema?: Record<string, unknown> | null;
+	enabled?: boolean;
+}
+
+/** Learned schema information for apply flow */
+export interface LearnedSchemaInfo {
+	id: number;
+	confidence: number;
+	sampleCount: number;
+	version: number;
+	lastObserved: string;
+}
+
+/** Learned schema availability check response */
+export interface LearnedSchemaAvailability {
+	available: boolean;
+	schema: LearnedSchemaInfo | null;
+	currentSource: 'openapi' | 'learned' | 'manual';
+	canApply: boolean;
+	requiresForce: boolean;
+}
+
+/** Request to apply learned schema */
+export interface ApplyLearnedSchemaRequest {
+	force?: boolean;
+}
+
+/** Response after applying learned schema */
+export interface ApplyLearnedSchemaResponse {
+	success: boolean;
+	metadata: RouteMetadata;
+	previousSource: string;
+	learnedSchema: LearnedSchemaInfo;
+}
+
+/** Route metadata (simplified version for apply response) */
+export interface RouteMetadata {
+	routeId: string;
+	schemaSource: McpSchemaSource;
+}
+
+// ============================================================================
+// Dataplane Types
+// ============================================================================
+
+/** Dataplane response from API */
+export interface DataplaneResponse {
+	id: string;
+	team: string;
+	name: string;
+	gatewayHost: string | null;
+	description: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** Request to create a new dataplane */
+export interface CreateDataplaneBody {
+	team: string;
+	name: string;
+	gatewayHost?: string;
+	description?: string;
+}
+
+/** Request to update a dataplane */
+export interface UpdateDataplaneBody {
+	gatewayHost?: string;
+	description?: string;
+}
+
+/** Query parameters for listing dataplanes */
+export interface ListDataplanesQuery {
+	limit?: number;
+	offset?: number;
+}
+
+/** Response for listing dataplanes */
+export interface ListDataplanesResponse {
+	dataplanes: DataplaneResponse[];
+	total: number;
+	limit: number;
+	offset: number;
 }

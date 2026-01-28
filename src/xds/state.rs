@@ -90,6 +90,8 @@ pub struct XdsState {
     pub filter_schema_registry: FilterSchemaRegistry,
     /// Custom WASM filter repository for user-uploaded WASM filters
     pub custom_wasm_filter_repository: Option<CustomWasmFilterRepository>,
+    /// MCP tool repository for AI assistant tools
+    pub mcp_tool_repository: Option<crate::storage::McpToolRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -119,6 +121,7 @@ impl XdsState {
             secret_backend_registry: None,
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: None,
+            mcp_tool_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -142,6 +145,9 @@ impl XdsState {
 
         // Custom WASM filter repository
         let custom_wasm_filter_repository = CustomWasmFilterRepository::new(pool.clone());
+
+        // MCP tool repository
+        let mcp_tool_repository = crate::storage::McpToolRepository::new(pool.clone());
 
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
@@ -192,6 +198,7 @@ impl XdsState {
             secret_backend_registry: None, // Initialized separately via set_secret_backend_registry
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
+            mcp_tool_repository: Some(mcp_tool_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }

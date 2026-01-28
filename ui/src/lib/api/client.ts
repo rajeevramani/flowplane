@@ -96,7 +96,25 @@ import type {
 	CustomWasmFilterResponse,
 	CreateCustomWasmFilterRequest,
 	UpdateCustomWasmFilterRequest,
-	ListCustomWasmFiltersResponse
+	ListCustomWasmFiltersResponse,
+	// MCP types
+	ListMcpToolsResponse,
+	ListMcpToolsQuery,
+	McpTool,
+	UpdateMcpToolRequest,
+	McpStatus,
+	EnableMcpRequest,
+	EnableMcpResponse,
+	McpOperationResponse,
+	BulkMcpRequest,
+	BulkMcpResponse,
+	LearnedSchemaAvailability,
+	ApplyLearnedSchemaRequest,
+	ApplyLearnedSchemaResponse,
+	// Dataplane types
+	DataplaneResponse,
+	CreateDataplaneBody,
+	UpdateDataplaneBody
 } from './types';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
@@ -259,6 +277,17 @@ class ApiClient {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'DELETE',
 			headers: this.getHeaders(true), // Include CSRF
+			credentials: 'include',
+		});
+
+		return this.handleResponse<T>(response);
+	}
+
+	async patch<T>(path: string, body: unknown): Promise<T> {
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'PATCH',
+			headers: this.getHeaders(true), // Include CSRF
+			body: JSON.stringify(body),
 			credentials: 'include',
 		});
 
@@ -1171,6 +1200,354 @@ class ApiClient {
 
 		return response.blob();
 	}
+
+	// ============================================================================
+	// MCP (Model Context Protocol) API
+	// ============================================================================
+
+	/**
+	 * List MCP tools for a team.
+	 * Supports filtering by category, enabled status, and search.
+	 */
+	async listMcpTools(team: string, query?: ListMcpToolsQuery): Promise<ListMcpToolsResponse> {
+		const params = new URLSearchParams();
+		if (query?.category) params.append('category', query.category);
+		if (query?.enabled !== undefined) params.append('enabled', String(query.enabled));
+		if (query?.search) params.append('search', query.search);
+		if (query?.limit) params.append('limit', String(query.limit));
+		if (query?.offset) params.append('offset', String(query.offset));
+
+		const queryString = params.toString();
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/mcp/tools${queryString ? `?${queryString}` : ''}`;
+		return this.get<ListMcpToolsResponse>(path);
+	}
+
+	/**
+	 * Get a specific MCP tool by name.
+	 */
+	async getMcpTool(team: string, name: string): Promise<McpTool> {
+		return this.get<McpTool>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/tools/${encodeURIComponent(name)}`
+		);
+	}
+
+	/**
+	 * Update an MCP tool (enable/disable or update description).
+	 */
+	async updateMcpTool(team: string, name: string, request: UpdateMcpToolRequest): Promise<McpTool> {
+		return this.patch<McpTool>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/tools/${encodeURIComponent(name)}`,
+			request
+		);
+	}
+
+	/**
+	 * Get MCP status for a route.
+	 * Returns readiness, schema sources, and metadata.
+	 */
+	async getMcpStatus(team: string, routeId: string): Promise<McpStatus> {
+		return this.get<McpStatus>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/status`
+		);
+	}
+
+	/**
+	 * Enable MCP on a route.
+	 * Creates an MCP tool for the route with optional configuration.
+	 */
+	async enableMcp(team: string, routeId: string, request?: EnableMcpRequest): Promise<EnableMcpResponse> {
+		return this.post<EnableMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/enable`,
+			request || {}
+		);
+	}
+
+	/**
+	 * Disable MCP on a route.
+	 * Removes the MCP tool for the route.
+	 */
+	async disableMcp(team: string, routeId: string): Promise<McpOperationResponse> {
+		return this.post<McpOperationResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/disable`,
+			{}
+		);
+	}
+
+	/**
+	 * Refresh MCP schema for a route.
+	 * Re-generates the input/output schemas from the latest metadata.
+	 */
+	async refreshMcpSchema(team: string, routeId: string): Promise<McpOperationResponse> {
+		return this.post<McpOperationResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/routes/${encodeURIComponent(routeId)}/mcp/refresh`,
+			{}
+		);
+	}
+
+	/**
+	 * Bulk enable MCP on multiple routes.
+	 */
+	async bulkEnableMcp(team: string, request: BulkMcpRequest): Promise<BulkMcpResponse> {
+		return this.post<BulkMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/bulk-enable`,
+			request
+		);
+	}
+
+	/**
+	 * Bulk disable MCP on multiple routes.
+	 */
+	async bulkDisableMcp(team: string, request: BulkMcpRequest): Promise<BulkMcpResponse> {
+		return this.post<BulkMcpResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/bulk-disable`,
+			request
+		);
+	}
+
+	/**
+	 * Check if a learned schema is available for a route.
+	 * Returns availability status, schema info, and whether force is required to override.
+	 */
+	async checkLearnedSchema(team: string, routeId: string): Promise<LearnedSchemaAvailability> {
+		return this.get<LearnedSchemaAvailability>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/routes/${encodeURIComponent(routeId)}/learned-schema`
+		);
+	}
+
+	/**
+	 * Apply a learned schema to a route's MCP tool.
+	 * If the route currently uses OpenAPI, force=true must be set to override.
+	 */
+	async applyLearnedSchema(
+		team: string,
+		routeId: string,
+		force?: boolean
+	): Promise<ApplyLearnedSchemaResponse> {
+		const request: ApplyLearnedSchemaRequest = force ? { force } : {};
+		return this.post<ApplyLearnedSchemaResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/mcp/routes/${encodeURIComponent(routeId)}/apply-learned`,
+			request
+		);
+	}
+
+	// ============================================================================
+	// MCP Protocol Server Communication
+	// ============================================================================
+
+	/**
+	 * Ping the MCP server to check connectivity and measure latency.
+	 * Sends a JSON-RPC 2.0 ping request to the MCP endpoint.
+	 */
+	async pingMcpServer(team: string): Promise<{ success: boolean; latencyMs: number; error?: string }> {
+		const start = Date.now();
+
+		try {
+			const response = await fetch(`${API_BASE}/api/v1/mcp/cp?team=${encodeURIComponent(team)}`, {
+				method: 'POST',
+				headers: this.getHeaders(true),
+				credentials: 'include',
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: crypto.randomUUID(),
+					method: 'ping',
+					params: {}
+				})
+			});
+
+			const latencyMs = Date.now() - start;
+
+			if (!response.ok) {
+				return {
+					success: false,
+					latencyMs,
+					error: `HTTP ${response.status}: ${response.statusText}`
+				};
+			}
+
+			const data = await response.json();
+
+			if (data.error) {
+				return {
+					success: false,
+					latencyMs,
+					error: data.error.message || 'Unknown error'
+				};
+			}
+
+			return {
+				success: true,
+				latencyMs
+			};
+		} catch (error) {
+			const latencyMs = Date.now() - start;
+			return {
+				success: false,
+				latencyMs,
+				error: error instanceof Error ? error.message : 'Network error'
+			};
+		}
+	}
+
+	/**
+	 * List active MCP/SSE connections for a team
+	 *
+	 * @param team - Team identifier
+	 * @returns List of active connections with metadata
+	 */
+	async listMcpConnections(
+		team: string
+	): Promise<{ connections: McpConnectionInfo[]; totalCount: number }> {
+		const response = await fetch(
+			`${API_BASE}/api/v1/mcp/cp/connections?team=${encodeURIComponent(team)}`,
+			{
+				method: 'GET',
+				headers: this.getHeaders(true),
+				credentials: 'include'
+			}
+		);
+
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+			throw new Error(error.message || `HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		return response.json();
+	}
+	// ============================================================================
+	// Dataplane API
+	// ============================================================================
+
+	/**
+	 * List dataplanes for a team.
+	 */
+	async listDataplanes(team: string, query?: { limit?: number; offset?: number }): Promise<DataplaneResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
+		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
+		return response.dataplanes;
+	}
+
+	/**
+	 * List all dataplanes across all teams (admin only).
+	 */
+	async listAllDataplanes(query?: { limit?: number; offset?: number }): Promise<DataplaneResponse[]> {
+		const params = new URLSearchParams();
+		if (query?.limit) params.append('limit', query.limit.toString());
+		if (query?.offset) params.append('offset', query.offset.toString());
+
+		const path = `/api/v1/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
+		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
+		return response.dataplanes;
+	}
+
+	/**
+	 * Get a specific dataplane by name.
+	 */
+	async getDataplane(team: string, name: string): Promise<DataplaneResponse> {
+		return this.get<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`);
+	}
+
+	/**
+	 * Create a new dataplane.
+	 */
+	async createDataplane(team: string, body: CreateDataplaneBody): Promise<DataplaneResponse> {
+		return this.post<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes`, body);
+	}
+
+	/**
+	 * Update a dataplane.
+	 */
+	async updateDataplane(team: string, name: string, body: UpdateDataplaneBody): Promise<DataplaneResponse> {
+		return this.put<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
+	}
+
+	/**
+	 * Delete a dataplane.
+	 */
+	async deleteDataplane(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`);
+	}
+
+	/**
+	 * Get Envoy bootstrap configuration for a dataplane.
+	 * Returns YAML or JSON based on the format parameter.
+	 */
+	async getDataplaneBootstrap(
+		team: string,
+		name: string,
+		options: {
+			format?: 'yaml' | 'json';
+			mtls?: boolean;
+			certPath?: string;
+			keyPath?: string;
+			caPath?: string;
+		} = {}
+	): Promise<string> {
+		const params = new URLSearchParams();
+		params.append('format', options.format || 'yaml');
+		if (options.mtls !== undefined) {
+			params.append('mtls', String(options.mtls));
+		}
+		if (options.certPath) {
+			params.append('cert_path', options.certPath);
+		}
+		if (options.keyPath) {
+			params.append('key_path', options.keyPath);
+		}
+		if (options.caPath) {
+			params.append('ca_path', options.caPath);
+		}
+
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}/bootstrap?${params.toString()}`;
+
+		const response = await fetch(`${API_BASE}${path}`, {
+			method: 'GET',
+			headers: this.getHeaders(),
+			credentials: 'include'
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(errorText || `HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		return response.text();
+	}
+}
+
+/**
+ * MCP Client information (captured during initialize)
+ */
+export interface McpClientInfo {
+	name: string;
+	version: string;
+}
+
+/**
+ * Type of MCP connection
+ */
+export type McpConnectionType = 'sse' | 'http';
+
+/**
+ * MCP Connection information
+ */
+export interface McpConnectionInfo {
+	connectionId: string;
+	team: string;
+	createdAt: string;
+	lastActivity: string;
+	logLevel: string;
+	/** Client information (name, version) if available */
+	clientInfo?: McpClientInfo;
+	/** Negotiated protocol version if initialized */
+	protocolVersion?: string;
+	/** Whether the connection has completed initialization */
+	initialized: boolean;
+	/** Type of connection (sse for streaming, http for stateless) */
+	connectionType: McpConnectionType;
 }
 
 // Export singleton instance

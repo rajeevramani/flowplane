@@ -6,16 +6,20 @@ pub mod auth;
 pub mod bootstrap;
 pub mod clusters;
 pub mod custom_wasm_filters;
+pub mod dataplanes;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
 pub mod learning_sessions;
 pub mod listeners;
+pub mod mcp_routes;
+pub mod mcp_tools;
 pub mod openapi_import;
 pub mod openapi_utils;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
+pub mod route_views;
 pub mod scopes;
 pub mod secrets;
 pub mod stats;
@@ -45,6 +49,11 @@ pub use custom_wasm_filters::{
     download_wasm_binary_handler, get_custom_wasm_filter_handler, list_custom_wasm_filters_handler,
     update_custom_wasm_filter_handler,
 };
+pub use dataplanes::{
+    create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+    get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
+    update_dataplane_handler,
+};
 pub use filters::{
     attach_filter_handler, attach_filter_to_listener_handler, configure_filter_handler,
     create_filter_handler, delete_filter_handler, detach_filter_from_listener_handler,
@@ -63,6 +72,16 @@ pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,
     update_listener_handler,
 };
+pub use mcp_routes::{
+    bulk_disable_mcp_handler, bulk_enable_mcp_handler, disable_mcp_handler, enable_mcp_handler,
+    get_mcp_status_handler, refresh_mcp_schema_handler, BulkMcpDisableRequest,
+    BulkMcpDisableResponse, BulkMcpEnableRequest, BulkMcpEnableResponse, EnableMcpRequestBody,
+    McpStatusResponse, RefreshSchemaResponse,
+};
+pub use mcp_tools::{
+    apply_learned_schema_handler, check_learned_schema_handler, get_mcp_tool_handler,
+    list_mcp_tools_handler, update_mcp_tool_handler,
+};
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -73,6 +92,7 @@ pub use route_configs::{
     create_route_config_handler, delete_route_config_handler, get_route_config_handler,
     list_route_configs_handler, update_route_config_handler,
 };
+pub use route_views::{get_route_stats_handler, list_route_views_handler};
 pub use scopes::{list_all_scopes_handler, list_scopes_handler, ListScopesResponse};
 pub use secrets::{
     create_secret_handler, delete_secret_handler, get_secret_handler, list_secrets_handler,
@@ -121,6 +141,7 @@ pub use filters::{
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
+pub use mcp_tools::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
     ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
@@ -139,6 +160,12 @@ pub use users::ListUsersResponse;
 pub use custom_wasm_filters::{
     CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
     ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+};
+
+// Dataplane DTOs
+pub use dataplanes::{
+    BootstrapQuery as DataplaneBootstrapQuery, CreateDataplaneBody, DataplaneResponse,
+    ListDataplanesQuery, ListDataplanesResponse, UpdateDataplaneBody,
 };
 
 // Hierarchy DTOs for route hierarchy filter attachment

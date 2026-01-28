@@ -3,13 +3,15 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { Plus, ChevronDown, ChevronUp } from 'lucide-svelte';
-	import type { ClusterResponse, CreateRouteBody } from '$lib/api/types';
+	import type { ClusterResponse, CreateRouteBody, RouteResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
-	import VirtualHostEditor, {
+	import {
+		VirtualHostEditor,
+		JsonPanel,
+		WizardCreateFlow,
 		type VirtualHostFormState,
 		type RouteFormState
-	} from '$lib/components/route-config/VirtualHostEditor.svelte';
-	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
+	} from '$lib/components/route-config';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, runValidators } from '$lib/utils/validators';
 
@@ -24,8 +26,10 @@
 	let error = $state<string | null>(null);
 	let isSubmitting = $state(false);
 	let clusters = $state<ClusterResponse[]>([]);
+	let routeConfigs = $state<RouteResponse[]>([]);
 	let advancedExpanded = $state(false);
 	let activeTab = $state<'configuration' | 'json'>('configuration');
+	let createApproach = $state<'wizard' | 'single-page' | 'smart-defaults'>('wizard');
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
@@ -46,12 +50,17 @@
 		]
 	});
 
-	// Load clusters
+	// Load clusters and route configs
 	onMount(async () => {
 		try {
-			clusters = await apiClient.listClusters();
+			const [clustersData, routeConfigsData] = await Promise.all([
+				apiClient.listClusters(),
+				apiClient.listRouteConfigs()
+			]);
+			clusters = clustersData;
+			routeConfigs = routeConfigsData;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load clusters';
+			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
 			isLoading = false;
 		}
@@ -195,45 +204,89 @@
 	function handleCancel() {
 		goto('/route-configs');
 	}
+
+	// Handle wizard completion
+	async function handleWizardComplete(formData: CreateRouteBody) {
+		error = null;
+		isSubmitting = true;
+
+		try {
+			const payload = { ...formData, team: currentTeam };
+			await apiClient.createRouteConfig(payload);
+			goto('/route-configs');
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to create configuration';
+			isSubmitting = false;
+		}
+	}
+
+	// Get route config summaries for wizard
+	let routeConfigSummaries = $derived(
+		routeConfigs.map((rc) => ({
+			name: rc.name,
+			id: rc.name
+		}))
+	);
 </script>
 
 <div class="min-h-screen bg-gray-50">
 	<div class="px-8 py-8">
-		<!-- Tabs -->
+		<!-- Page Header -->
+		<PageHeader
+			title="Create Route Configuration"
+			subtitle="Define a new route configuration with virtual hosts and routes"
+			onBack={handleCancel}
+		/>
+
+		<!-- Error Message -->
+		<ErrorAlert message={error} />
+
+		<!-- Approach Selector Tabs -->
 		<div class="mb-6">
 			<div class="border-b border-gray-200">
-				<nav class="-mb-px flex space-x-8" aria-label="Tabs">
+				<nav class="-mb-px flex space-x-1" aria-label="Create Approach">
 					<button
-						onclick={() => (activeTab = 'configuration')}
-						class="{activeTab === 'configuration'
+						onclick={() => (createApproach = 'wizard')}
+						class="{createApproach === 'wizard'
 							? 'border-blue-500 text-blue-600'
-							: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm"
+							: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm transition-colors"
 					>
-						Configuration
+						Wizard
 					</button>
 					<button
-						onclick={() => (activeTab = 'json')}
-						class="{activeTab === 'json'
+						onclick={() => (createApproach = 'single-page')}
+						class="{createApproach === 'single-page'
 							? 'border-blue-500 text-blue-600'
-							: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm"
+							: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm transition-colors"
 					>
-						JSON Preview
+						Single Page
+					</button>
+					<button
+						onclick={() => (createApproach = 'smart-defaults')}
+						class="{createApproach === 'smart-defaults'
+							? 'border-blue-500 text-blue-600'
+							: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-3 px-4 border-b-2 font-medium text-sm transition-colors"
+						disabled
+						title="Coming soon"
+					>
+						Smart Defaults
+						<span class="ml-1 text-xs">(Coming Soon)</span>
 					</button>
 				</nav>
 			</div>
 		</div>
 
-		<!-- Tab Content -->
-		{#if activeTab === 'configuration'}
-			<!-- Page Header with Back Button -->
-			<PageHeader
-				title="Create Route Configuration"
-				subtitle="Define a new route configuration with virtual hosts and routes"
-				onBack={handleCancel}
+		<!-- Approach Content -->
+		{#if createApproach === 'wizard'}
+			<!-- Wizard Approach -->
+			<WizardCreateFlow
+				availableClusters={clusters}
+				routeConfigs={routeConfigSummaries}
+				onComplete={handleWizardComplete}
+				onCancel={handleCancel}
 			/>
-
-			<!-- Error Message -->
-			<ErrorAlert message={error} />
+		{:else if createApproach === 'single-page'}
+			<!-- Single Page Approach (existing form) -->
 
 			<!-- Basic Information -->
 			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
@@ -336,9 +389,30 @@
 				onCancel={handleCancel}
 			/>
 		{:else}
-			<!-- JSON Tab -->
-			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-				<JsonPanel jsonString={jsonPayload} editable={false} />
+			<!-- Smart Defaults Approach (coming soon) -->
+			<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+				<div class="max-w-md mx-auto">
+					<div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+						<svg
+							class="w-8 h-8 text-blue-600"
+							fill="none"
+							stroke="currentColor"
+							viewBox="0 0 24 24"
+						>
+							<path
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="2"
+								d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+							/>
+						</svg>
+					</div>
+					<h3 class="text-xl font-semibold text-gray-900 mb-2">Smart Defaults Coming Soon</h3>
+					<p class="text-gray-600">
+						Auto-detection of route configuration and virtual host based on domain and path will be
+						available in a future update.
+					</p>
+				</div>
 			</div>
 		{/if}
 	</div>

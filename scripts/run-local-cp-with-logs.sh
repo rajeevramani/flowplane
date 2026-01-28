@@ -2,6 +2,14 @@
   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
   LOG_FILE="./data/logs/flowplane-${TIMESTAMP}.log"
 
+cd ui
+
+# Build the UI
+  echo "Building Flowplane UI..."
+  npm run build
+
+cd ..
+
 cargo clean
 
 # Optional arg "new-db=y" clears and recreates the local DB before starting

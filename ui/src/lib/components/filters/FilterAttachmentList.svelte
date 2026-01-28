@@ -14,7 +14,8 @@
 	let { filters, onDetach, isLoading = false, emptyMessage = 'No filters configured', actionLabel = 'Remove' }: Props =
 		$props();
 
-	function getFilterTypeLabel(filterType: string): string {
+	function getFilterTypeLabel(filterType: string | undefined): string {
+		if (!filterType) return 'Unknown';
 		switch (filterType) {
 			case 'header_mutation':
 				return 'Header Mutation';
@@ -31,7 +32,8 @@
 		}
 	}
 
-	function getFilterTypeBadgeColor(filterType: string): string {
+	function getFilterTypeBadgeColor(filterType: string | undefined): string {
+		if (!filterType) return 'bg-gray-100 text-gray-800';
 		switch (filterType) {
 			case 'header_mutation':
 				return 'bg-blue-100 text-blue-800';

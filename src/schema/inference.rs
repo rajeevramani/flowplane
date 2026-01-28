@@ -418,21 +418,23 @@ impl SchemaInferenceEngine {
                 let schema_type =
                     if n.is_i64() || n.is_u64() { SchemaType::Integer } else { SchemaType::Number };
 
-                let numeric_value = n.as_f64().unwrap_or(0.0);
-
-                let mut schema = InferredSchema::new(schema_type);
-                schema.numeric_constraints = Some(NumericConstraints {
-                    minimum: Some(numeric_value),
-                    maximum: Some(numeric_value),
-                    multiple_of: None,
-                });
+                // BUG-004 FIX: Don't set numeric constraints from individual observations
+                // Single observations should not dictate min/max as they overfit to sample data.
+                // If numeric constraints are needed, they should be calculated during
+                // aggregation with sufficient sample sizes and statistical analysis.
+                let schema = InferredSchema::new(schema_type);
 
                 Ok(schema)
             }
 
             Value::String(s) => {
                 let mut schema = InferredSchema::new(SchemaType::String);
-                schema.format = Some(self.detect_string_format(s));
+                // Only set format when a valid format is detected (not None)
+                // This fixes BUG-002: Invalid `format: "none"` in schema output
+                let detected_format = self.detect_string_format(s);
+                if detected_format != StringFormat::None {
+                    schema.format = Some(detected_format);
+                }
                 Ok(schema)
             }
 
@@ -575,7 +577,8 @@ mod tests {
         let engine = SchemaInferenceEngine::new();
         let schema = engine.infer_from_value(&serde_json::json!(42)).unwrap();
         assert_eq!(schema.schema_type, SchemaType::Integer);
-        assert!(schema.numeric_constraints.is_some());
+        // BUG-004 FIX: numeric_constraints should be None to avoid overfitting
+        assert!(schema.numeric_constraints.is_none());
     }
 
     #[test]
@@ -583,7 +586,8 @@ mod tests {
         let engine = SchemaInferenceEngine::new();
         let schema = engine.infer_from_value(&serde_json::json!(3.75)).unwrap();
         assert_eq!(schema.schema_type, SchemaType::Number);
-        assert!(schema.numeric_constraints.is_some());
+        // BUG-004 FIX: numeric_constraints should be None to avoid overfitting
+        assert!(schema.numeric_constraints.is_none());
     }
 
     #[test]
@@ -591,7 +595,9 @@ mod tests {
         let engine = SchemaInferenceEngine::new();
         let schema = engine.infer_from_value(&Value::String("hello".to_string())).unwrap();
         assert_eq!(schema.schema_type, SchemaType::String);
-        assert_eq!(schema.format, Some(StringFormat::None));
+        // BUG-002 FIX: format should be None when no specific format detected
+        // This avoids invalid "format": "none" in OpenAPI output
+        assert!(schema.format.is_none());
     }
 
     #[test]
@@ -712,9 +718,12 @@ mod tests {
 
         schema1.merge(&schema2);
 
-        let constraints = schema1.numeric_constraints.unwrap();
-        assert_eq!(constraints.minimum, Some(10.0));
-        assert_eq!(constraints.maximum, Some(20.0));
+        // BUG-004 FIX: numeric_constraints are no longer set from individual observations
+        // to avoid overfitting. Both schemas have None for constraints, so merged is None.
+        assert!(schema1.numeric_constraints.is_none());
+
+        // But stats should be merged correctly
+        assert_eq!(schema1.stats.sample_count, 2);
     }
 
     #[test]
@@ -1034,7 +1043,9 @@ mod tests {
     }
 
     #[test]
-    fn test_json_schema_with_numeric_constraints() {
+    fn test_json_schema_no_numeric_constraints_by_default() {
+        // BUG-004 FIX: This test verifies that numeric constraints are NOT
+        // automatically generated from observed values, as that leads to overfitting.
         let engine = SchemaInferenceEngine::new();
 
         let json1 = serde_json::json!({"value": 10});
@@ -1046,11 +1057,16 @@ mod tests {
 
         let json_schema = schema.to_json_schema();
 
-        // Check that numeric constraints are in the output
+        // Check that numeric_constraints are NOT in the output (avoiding overfitting)
         let value_schema = &json_schema["properties"]["value"];
-        assert!(value_schema["numeric_constraints"].is_object());
-        assert!(value_schema["numeric_constraints"]["minimum"].is_number());
-        assert!(value_schema["numeric_constraints"]["maximum"].is_number());
+        assert!(
+            value_schema.get("numeric_constraints").is_none()
+                || value_schema["numeric_constraints"].is_null(),
+            "numeric_constraints should not be set to avoid overfitting to sample data"
+        );
+
+        // But type should still be correct
+        assert_eq!(value_schema["type"], "integer");
     }
 
     #[test]

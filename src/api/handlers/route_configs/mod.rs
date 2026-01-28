@@ -1,7 +1,8 @@
 //! Route configuration HTTP handlers
 //!
 //! This module provides CRUD operations for Envoy route configurations through
-//! the REST API, with validation and XDS state synchronization.
+//! the REST API. All operations are delegated to the internal API layer (RouteConfigOperations)
+//! which provides unified validation, access control, and XDS state synchronization.
 
 mod types;
 mod validation;
@@ -19,25 +20,23 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use tracing::{error, info, instrument};
+use tracing::instrument;
 
 use crate::{
-    api::{
-        error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
-        routes::ApiState,
-    },
+    api::{error::ApiError, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
-    domain::RouteConfigId,
-    errors::Error,
-    openapi::defaults::is_default_gateway_route,
-    storage::{CreateRouteConfigRepositoryRequest, UpdateRouteConfigRepositoryRequest},
+    internal_api::auth::InternalAuthContext,
+    internal_api::routes::RouteConfigOperations,
+    internal_api::types::{
+        CreateRouteConfigRequest as InternalCreateRouteConfigRequest,
+        ListRouteConfigsRequest as InternalListRouteConfigsRequest,
+        UpdateRouteConfigRequest as InternalUpdateRouteConfigRequest,
+    },
 };
 
 use validation::{
-    require_route_config_repository, route_config_response_from_data, summarize_route_config,
-    validate_route_config, validate_route_config_payload,
+    route_config_response_from_data, validate_route_config, validate_route_config_payload,
 };
 
 // === Handler Implementations ===
@@ -59,59 +58,37 @@ pub async fn create_route_config_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<RouteConfigDefinition>,
 ) -> Result<(StatusCode, Json<RouteConfigResponse>), ApiError> {
+    // REST-specific validation
     validate_route_config_payload(&payload)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "routes", "write", Some(&payload.team))?;
 
-    let route_config_repository = require_route_config_repository(&state)?;
-
+    // Validate and convert to XDS config
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
-
-    let (path_prefix, cluster_summary) = summarize_route_config(&payload);
-    let configuration = serde_json::to_value(&xds_config).map_err(|err| {
-        ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
+    let config_value = serde_json::to_value(&xds_config).map_err(|err| {
+        ApiError::BadRequest(format!("Failed to serialize route config: {}", err))
     })?;
 
-    // Use explicit team from request
-    let team = Some(payload.team.clone());
-
-    let request = CreateRouteConfigRepositoryRequest {
+    // Create internal API request
+    let internal_request = InternalCreateRouteConfigRequest {
         name: payload.name.clone(),
-        path_prefix,
-        cluster_name: cluster_summary,
-        configuration,
-        team,
-        import_id: None,
-        route_order: None,
-        headers: None,
+        team: Some(payload.team.clone()),
+        config: config_value,
     };
 
-    let created = route_config_repository.create(request).await.map_err(ApiError::from)?;
-
-    info!(route_config_id = %created.id, route_config_name = %created.name, "Route config created via API");
-
-    // Sync route hierarchy (extract virtual hosts and routes to database tables)
-    if let Some(ref sync_service) = state.xds_state.route_hierarchy_sync_service {
-        let route_config_id = RouteConfigId::from_string(created.id.to_string());
-        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
-            error!(error = %err, route_config_id = %created.id, "Failed to sync route hierarchy after creation");
-            // Continue anyway - the route config was created, hierarchy sync is optional
-        }
-    }
-
-    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route config creation");
-        ApiError::from(err)
-    })?;
+    // Delegate to internal API layer (includes XDS refresh and route hierarchy sync)
+    let ops = RouteConfigOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.create(internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
-        name: created.name,
-        team: created.team.unwrap_or_default(),
-        path_prefix: created.path_prefix,
-        cluster_targets: created.cluster_name,
-        import_id: created.import_id,
-        route_order: created.route_order,
+        name: result.data.name,
+        team: result.data.team.unwrap_or_default(),
+        path_prefix: result.data.path_prefix,
+        cluster_targets: result.data.cluster_name,
+        import_id: result.data.import_id,
+        route_order: result.data.route_order,
         config: payload,
     };
 
@@ -140,17 +117,20 @@ pub async fn list_route_configs_handler(
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
-    // Extract team scopes from auth context for filtering
-    let team_scopes = get_effective_team_scopes(&context);
+    // Create internal API request (REST API: include default resources)
+    let internal_request = InternalListRouteConfigsRequest {
+        limit: params.limit,
+        offset: params.offset,
+        include_defaults: true,
+    };
 
-    let repository = require_route_config_repository(&state)?;
-    let rows = repository
-        .list_by_teams(&team_scopes, true, params.limit, params.offset) // REST API: include default resources
-        .await
-        .map_err(ApiError::from)?;
+    // Delegate to internal API layer
+    let ops = RouteConfigOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.list(internal_request, &auth).await?;
 
-    let mut routes = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut routes = Vec::with_capacity(result.routes.len());
+    for row in result.routes {
         routes.push(route_config_response_from_data(row)?);
     }
 
@@ -177,14 +157,10 @@ pub async fn get_route_config_handler(
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
-    // Extract team scopes for access verification
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_route_config_repository(&state)?;
-    let route_config = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-
-    // Verify the route config belongs to one of the user's teams or is global
-    let route_config = verify_team_access(route_config, &team_scopes).await?;
+    // Delegate to internal API layer (includes team access verification)
+    let ops = RouteConfigOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let route_config = ops.get(&name, &auth).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
 }
@@ -212,6 +188,7 @@ pub async fn update_route_config_handler(
     // Authorization: require routes:write scope
     require_resource_access(&context, "routes", "write", None)?;
 
+    // REST-specific validation
     validate_route_config_payload(&payload)?;
 
     if payload.name != name {
@@ -221,53 +198,27 @@ pub async fn update_route_config_handler(
         )));
     }
 
-    // Extract team scopes and verify access before updating
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_route_config_repository(&state)?;
-    let existing = repository.get_by_name(&payload.name).await.map_err(ApiError::from)?;
-
-    // Verify the route config belongs to one of the user's teams or is global
-    verify_team_access(existing.clone(), &team_scopes).await?;
-
+    // Validate and convert to XDS config
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
-    let (path_prefix, cluster_summary) = summarize_route_config(&payload);
-    let configuration = serde_json::to_value(&xds_config).map_err(|err| {
-        ApiError::from(Error::internal(format!("Failed to serialize route definition: {}", err)))
+    let config_value = serde_json::to_value(&xds_config).map_err(|err| {
+        ApiError::BadRequest(format!("Failed to serialize route config: {}", err))
     })?;
 
-    let update_request = UpdateRouteConfigRepositoryRequest {
-        path_prefix: Some(path_prefix.clone()),
-        cluster_name: Some(cluster_summary.clone()),
-        configuration: Some(configuration),
-        team: None, // Don't modify team on update unless explicitly set
-    };
+    // Create internal API request
+    let internal_request = InternalUpdateRouteConfigRequest { config: config_value };
 
-    let updated = repository.update(&existing.id, update_request).await.map_err(ApiError::from)?;
-
-    info!(route_config_id = %updated.id, route_config_name = %updated.name, "Route config updated via API");
-
-    // Sync route hierarchy (re-sync virtual hosts and routes after update)
-    if let Some(ref sync_service) = state.xds_state.route_hierarchy_sync_service {
-        let route_config_id = RouteConfigId::from_string(updated.id.to_string());
-        if let Err(err) = sync_service.sync(&route_config_id, &xds_config).await {
-            error!(error = %err, route_config_id = %updated.id, "Failed to sync route hierarchy after update");
-            // Continue anyway - the route config was updated, hierarchy sync is optional
-        }
-    }
-
-    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route config update");
-        ApiError::from(err)
-    })?;
+    // Delegate to internal API layer (includes team access, XDS refresh, and route hierarchy sync)
+    let ops = RouteConfigOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
-        name: updated.name,
-        team: updated.team.unwrap_or_default(),
-        path_prefix,
-        cluster_targets: cluster_summary,
-        import_id: updated.import_id,
-        route_order: updated.route_order,
+        name: result.data.name,
+        team: result.data.team.unwrap_or_default(),
+        path_prefix: result.data.path_prefix,
+        cluster_targets: result.data.cluster_name,
+        import_id: result.data.import_id,
+        route_order: result.data.route_order,
         config: payload,
     };
 
@@ -294,29 +245,10 @@ pub async fn delete_route_config_handler(
     // Authorization: require routes:write scope (delete is a write operation)
     require_resource_access(&context, "routes", "write", None)?;
 
-    if is_default_gateway_route(&name) {
-        return Err(ApiError::Conflict(
-            "The default gateway route configuration cannot be deleted".to_string(),
-        ));
-    }
-
-    // Extract team scopes and verify access before deleting
-    let team_scopes = get_effective_team_scopes(&context);
-
-    let repository = require_route_config_repository(&state)?;
-    let existing = repository.get_by_name(&name).await.map_err(ApiError::from)?;
-
-    // Verify the route config belongs to one of the user's teams or is global
-    verify_team_access(existing.clone(), &team_scopes).await?;
-
-    repository.delete(&existing.id).await.map_err(ApiError::from)?;
-
-    info!(route_config_id = %existing.id, route_config_name = %existing.name, "Route config deleted via API");
-
-    state.xds_state.refresh_routes_from_repository().await.map_err(|err| {
-        error!(error = %err, "Failed to refresh xDS caches after route config deletion");
-        ApiError::from(err)
-    })?;
+    // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
+    let ops = RouteConfigOperations::new(state.xds_state.clone());
+    let auth = InternalAuthContext::from_rest(&context);
+    ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -407,8 +339,15 @@ mod tests {
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool.clone());
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
-        let api_state =
-            ApiState { xds_state: Arc::new(state), filter_schema_registry: None, stats_cache };
+        let mcp_connection_manager = crate::mcp::create_connection_manager();
+        let mcp_session_manager = crate::mcp::create_session_manager();
+        let api_state = ApiState {
+            xds_state: Arc::new(state),
+            filter_schema_registry: None,
+            stats_cache,
+            mcp_connection_manager,
+            mcp_session_manager,
+        };
 
         // Seed a cluster for route references
         let cluster_repo =

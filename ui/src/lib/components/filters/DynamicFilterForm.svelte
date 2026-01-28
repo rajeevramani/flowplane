@@ -27,14 +27,19 @@
 
 	// Track collapsed state for each section
 	let collapsedSections = $state<Record<string, boolean>>({});
+	let hasInitializedSections = $state(false);
 
-	// Initialize collapsed state based on UI hints
+	// Initialize collapsed state based on UI hints (only once per filterType)
 	$effect(() => {
-		const initial: Record<string, boolean> = {};
-		for (const section of formConfig.sections) {
-			initial[section.name] = section.collapsedByDefault;
+		// Only initialize when we have sections and haven't initialized yet
+		if (!hasInitializedSections && formConfig.sections.length > 0) {
+			const initial: Record<string, boolean> = {};
+			for (const section of formConfig.sections) {
+				initial[section.name] = section.collapsedByDefault;
+			}
+			collapsedSections = initial;
+			hasInitializedSections = true;
 		}
-		collapsedSections = initial;
 	});
 
 	// Get field value, using fullPath for nested fields extracted into sections

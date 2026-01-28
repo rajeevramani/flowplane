@@ -384,16 +384,16 @@
 			</a>
 
 			<a
-				href="/generate-envoy-config"
+				href="/dataplanes"
 				class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
 			>
 				<div class="flex items-start justify-between">
 					<div>
 						<h4 class="text-lg font-semibold text-gray-900 mb-2">
-							Generate Envoy Config
+							Dataplanes
 						</h4>
 						<p class="text-sm text-gray-600">
-							Download Envoy bootstrap configuration for your team
+							Manage dataplanes and download Envoy bootstrap configuration
 						</p>
 					</div>
 					<svg

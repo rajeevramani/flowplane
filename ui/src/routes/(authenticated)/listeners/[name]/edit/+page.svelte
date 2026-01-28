@@ -5,7 +5,7 @@
 	import { onMount } from 'svelte';
 	import { ArrowLeft, ChevronDown, ChevronUp, Link as LinkIcon, ExternalLink, Filter, Plus } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
-	import type { ListenerResponse, ListenerFilterChainInput, ListenerFilterInput, FilterResponse } from '$lib/api/types';
+	import type { ListenerResponse, ListenerFilterChainInput, ListenerFilterInput, FilterResponse, DataplaneResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
 	import FilterChainList from '$lib/components/listener/FilterChainList.svelte';
@@ -20,6 +20,7 @@
 		port: number;
 		protocol: string;
 		filterChains: ListenerFilterChainInput[];
+		dataplaneId: string;
 	}
 
 	let currentTeam = $state<string>('');
@@ -38,6 +39,9 @@
 	let showFilterModal = $state(false);
 	let filterError = $state<string | null>(null);
 
+	// Dataplanes
+	let dataplanes = $state<DataplaneResponse[]>([]);
+
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
 		currentTeam = value;
@@ -50,7 +54,8 @@
 		address: '0.0.0.0',
 		port: 8080,
 		protocol: 'HTTP',
-		filterChains: []
+		filterChains: [],
+		dataplaneId: ''
 	});
 
 	// Get listener name from URL params
@@ -72,6 +77,11 @@
 		try {
 			const listener = await apiClient.getListener(listenerName);
 			formState = parseListenerToForm(listener);
+
+			// Load dataplanes for the listener's team
+			if (listener.team) {
+				dataplanes = await apiClient.listDataplanes(listener.team);
+			}
 
 			// Load filters (separate from main data load to not block UI)
 			loadFilters();
@@ -197,7 +207,8 @@
 			address: listener.address,
 			port: listener.port ?? 8080,
 			protocol: listener.protocol || 'HTTP',
-			filterChains
+			filterChains,
+			dataplaneId: listener.dataplaneId || ''
 		};
 	}
 
@@ -276,6 +287,13 @@
 			protocol: form.protocol || 'HTTP',
 			filterChains: cleanedFilterChains
 		};
+
+		// Include dataplaneId (can be null to unassign)
+		if (form.dataplaneId) {
+			payload.dataplaneId = form.dataplaneId;
+		} else {
+			payload.dataplaneId = null;
+		}
 
 		return JSON.stringify(payload, null, 2);
 	}
@@ -518,6 +536,27 @@
 							</select>
 							<p class="text-xs text-gray-500 mt-1">
 								Network protocol
+							</p>
+						</div>
+
+						<!-- Dataplane Selection -->
+						<div class="w-full md:w-72">
+							<label class="block text-sm font-medium text-gray-700 mb-1">
+								Dataplane
+							</label>
+							<select
+								bind:value={formState.dataplaneId}
+								class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+							>
+								<option value="">No dataplane (localhost)</option>
+								{#each dataplanes as dataplane}
+									<option value={dataplane.id}>
+										{dataplane.name} {dataplane.gatewayHost ? `(${dataplane.gatewayHost})` : ''}
+									</option>
+								{/each}
+							</select>
+							<p class="text-xs text-gray-500 mt-1">
+								Associate this listener with a dataplane for MCP tool routing
 							</p>
 						</div>
 					</div>

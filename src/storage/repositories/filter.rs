@@ -562,6 +562,52 @@ impl FilterRepository {
         Ok(())
     }
 
+    /// Attach or update a filter on a route config (upsert).
+    /// If the filter is already attached, updates its settings.
+    /// If not attached, creates a new attachment with the given settings.
+    #[instrument(skip(self, settings), fields(route_config_id = %route_config_id, filter_id = %filter_id, order = %order), name = "db_upsert_filter_to_route_config")]
+    pub async fn upsert_to_route_config(
+        &self,
+        route_config_id: &RouteConfigId,
+        filter_id: &FilterId,
+        order: i64,
+        settings: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        let settings_json = settings.as_ref().map(|s| s.to_string());
+
+        // Use INSERT OR REPLACE (SQLite UPSERT)
+        sqlx::query(
+            "INSERT INTO route_config_filters (route_config_id, filter_id, filter_order, created_at, settings) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT(route_config_id, filter_id) DO UPDATE SET \
+             settings = excluded.settings"
+        )
+        .bind(route_config_id.as_str())
+        .bind(filter_id.as_str())
+        .bind(order)
+        .bind(now)
+        .bind(&settings_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, route_config_id = %route_config_id, filter_id = %filter_id, "Failed to upsert filter to route config");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to configure filter '{}' on route config '{}'", filter_id, route_config_id),
+            }
+        })?;
+
+        tracing::info!(
+            route_config_id = %route_config_id,
+            filter_id = %filter_id,
+            order = %order,
+            "Configured filter on route config"
+        );
+
+        Ok(())
+    }
+
     #[instrument(skip(self), fields(route_config_id = %route_config_id, filter_id = %filter_id), name = "db_detach_filter_from_route_config")]
     pub async fn detach_from_route_config(
         &self,

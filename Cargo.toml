@@ -1,6 +1,6 @@
 [package]
 name = "flowplane"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 
 [dependencies]
@@ -22,6 +22,7 @@ tonic-reflection = "0.14.0"
 prost = "0.14.0"
 prost-types = "0.14.0"
 tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = "0.7"
 
 # Configuration and state management
 serde = { version = "1.0.226", features = ["derive"] }
@@ -115,6 +116,9 @@ tempfile = "3.14"
 which = "6.0"
 rustls-pemfile = "2.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
+wiremock = "0.6"
+# reqwest with cookies for e2e tests (overrides main dep for tests)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
 
 [[bench]]
 name = "token_repository"

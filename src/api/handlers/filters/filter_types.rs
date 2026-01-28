@@ -17,7 +17,7 @@ use crate::{
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::{
-        filter_schema::{FormLayout, SchemaSource},
+        filter_schema::{FormLayout, SchemaSource as FilterSchemaSource},
         AttachmentPoint, PerRouteBehavior,
     },
 };
@@ -178,8 +178,8 @@ pub async fn list_filter_types_handler(
                 },
                 is_implemented: schema.is_implemented,
                 source: match schema.source {
-                    SchemaSource::BuiltIn => "built_in".to_string(),
-                    SchemaSource::Custom => "custom".to_string(),
+                    FilterSchemaSource::BuiltIn => "built_in".to_string(),
+                    FilterSchemaSource::Custom => "custom".to_string(),
                 },
                 config_schema: schema.config_schema.clone(),
                 ui_hints,
@@ -261,8 +261,8 @@ pub async fn get_filter_type_handler(
         },
         is_implemented: schema.is_implemented,
         source: match schema.source {
-            SchemaSource::BuiltIn => "built_in".to_string(),
-            SchemaSource::Custom => "custom".to_string(),
+            FilterSchemaSource::BuiltIn => "built_in".to_string(),
+            FilterSchemaSource::Custom => "custom".to_string(),
         },
         config_schema: schema.config_schema.clone(),
         ui_hints,

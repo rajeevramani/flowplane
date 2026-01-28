@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    http::{header, HeaderName, HeaderValue, Method},
+    http::{header, HeaderName, Method},
     middleware,
     routing::{delete, get, patch, post, put},
     Router,
 };
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{
@@ -28,6 +28,11 @@ use super::{
         download_wasm_binary_handler, get_custom_wasm_filter_handler,
         list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
     },
+    handlers::dataplanes::{
+        create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+        get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
+        update_dataplane_handler,
+    },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
         get_secret_handler,
@@ -39,13 +44,17 @@ use super::{
         admin_get_team,
         admin_list_teams,
         admin_update_team,
+        apply_learned_schema_handler,
         attach_filter_handler,
         attach_filter_to_listener_handler,
         attach_filter_to_route_rule_handler,
         attach_filter_to_virtual_host_handler,
         bootstrap_initialize_handler,
         bootstrap_status_handler,
+        bulk_disable_mcp_handler,
+        bulk_enable_mcp_handler,
         change_password_handler,
+        check_learned_schema_handler,
         compare_aggregated_schemas_handler,
         // Install/Configure redesign handlers
         configure_filter_handler,
@@ -67,6 +76,8 @@ use super::{
         detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler,
         detach_filter_handler,
+        disable_mcp_handler,
+        enable_mcp_handler,
         export_aggregated_schema_handler,
         export_multiple_schemas_handler,
         generate_certificate_handler,
@@ -79,8 +90,12 @@ use super::{
         get_filter_type_handler,
         get_learning_session_handler,
         get_listener_handler,
+        get_mcp_status_handler,
+        // MCP tools and route enablement handlers
+        get_mcp_tool_handler,
         get_mtls_status_handler,
         get_route_config_handler,
+        get_route_stats_handler,
         get_session_info_handler,
         get_stats_cluster_handler,
         get_stats_clusters_handler,
@@ -104,11 +119,13 @@ use super::{
         list_learning_sessions_handler,
         list_listener_filters_handler,
         list_listeners_handler,
+        list_mcp_tools_handler,
         list_route_configs_handler,
         list_route_filters_handler,
         list_route_flows_handler,
         list_route_rule_filters_handler,
         list_route_rules_handler,
+        list_route_views_handler,
         list_scopes_handler,
         list_secrets_handler,
         list_teams_handler,
@@ -119,6 +136,7 @@ use super::{
         list_virtual_hosts_handler,
         login_handler,
         logout_handler,
+        refresh_mcp_schema_handler,
         reload_filter_schemas_handler,
         remove_filter_configuration_handler,
         remove_team_membership,
@@ -130,6 +148,7 @@ use super::{
         update_cluster_handler,
         update_filter_handler,
         update_listener_handler,
+        update_mcp_tool_handler,
         update_route_config_handler,
         update_secret_handler,
         update_team_membership_scopes,
@@ -143,6 +162,8 @@ pub struct ApiState {
     pub xds_state: Arc<XdsState>,
     pub filter_schema_registry: Option<SharedFilterSchemaRegistry>,
     pub stats_cache: Arc<StatsCache>,
+    pub mcp_connection_manager: crate::mcp::SharedConnectionManager,
+    pub mcp_session_manager: crate::mcp::SharedSessionManager,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -160,23 +181,34 @@ fn get_ui_static_dir() -> Option<PathBuf> {
 }
 
 /// Build CORS layer from environment configuration
+/// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
+/// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
-    // Read allowed origin from environment variable, default to localhost for development
-    let allowed_origin = std::env::var("FLOWPLANE_UI_ORIGIN")
+    // Read allowed origins from environment variable, default to localhost for development
+    let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
         .unwrap_or_else(|_| "http://localhost:3000".to_string());
 
+    // Parse comma-separated origins into a list
+    let allowed_origins: Vec<String> = allowed_origins_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     tracing::info!(
-        allowed_origin = %allowed_origin,
+        allowed_origins = ?allowed_origins,
         "Configuring CORS for UI integration"
     );
 
+    // Create origin predicate that checks against allowed list
+    let origins = allowed_origins.clone();
+    let allow_origin = AllowOrigin::predicate(move |origin, _request_parts| {
+        origin.to_str().map(|o| origins.iter().any(|allowed| allowed == o)).unwrap_or(false)
+    });
+
     CorsLayer::new()
-        // Allow specific origin (not wildcard for security with credentials)
-        .allow_origin(
-            allowed_origin
-                .parse::<HeaderValue>()
-                .unwrap_or_else(|_| HeaderValue::from_static("http://localhost:3000")),
-        )
+        // Allow specific origins (checked via predicate)
+        .allow_origin(allow_origin)
         // Allow credentials (cookies, authorization headers)
         .allow_credentials(true)
         // Allow common HTTP methods
@@ -209,7 +241,19 @@ pub fn build_router_with_registry(
     // Create stats cache with default config (10 second TTL, 100 max entries)
     let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
 
-    let api_state = ApiState { xds_state: state.clone(), filter_schema_registry, stats_cache };
+    // Create MCP connection manager for SSE streaming
+    let mcp_connection_manager = crate::mcp::create_connection_manager();
+
+    // Create MCP session manager for HTTP-only connections
+    let mcp_session_manager = crate::mcp::create_session_manager();
+
+    let api_state = ApiState {
+        xds_state: state.clone(),
+        filter_schema_registry,
+        stats_cache,
+        mcp_connection_manager,
+        mcp_session_manager,
+    };
 
     let cluster_repo = match &state.cluster_repository {
         Some(repo) => repo.clone(),
@@ -257,6 +301,9 @@ pub fn build_router_with_registry(
         .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
         .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
         .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
+        // Route views endpoints (UI flattened view)
+        .route("/api/v1/route-views", get(list_route_views_handler))
+        .route("/api/v1/route-views/stats", get(get_route_stats_handler))
         // Filter endpoints
         .route("/api/v1/filters", get(list_filters_handler))
         .route("/api/v1/filters", post(create_filter_handler))
@@ -374,6 +421,14 @@ pub fn build_router_with_registry(
         .route("/api/v1/learning-sessions", post(create_learning_session_handler))
         .route("/api/v1/learning-sessions/{id}", get(get_learning_session_handler))
         .route("/api/v1/learning-sessions/{id}", delete(delete_learning_session_handler))
+        // Dataplane endpoints (team-scoped Envoy instances with gateway_host)
+        .route("/api/v1/dataplanes", get(list_all_dataplanes_handler))
+        .route("/api/v1/teams/{team}/dataplanes", get(list_dataplanes_handler))
+        .route("/api/v1/teams/{team}/dataplanes", post(create_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}/bootstrap", get(get_dataplane_bootstrap_handler))
         // Aggregated schema endpoints (API catalog)
         .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
@@ -413,6 +468,28 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
+        // MCP protocol endpoints - Control Plane tools (HTTP and SSE transport)
+        .route("/api/v1/mcp/cp", post(crate::mcp::mcp_http_handler))
+        .route("/api/v1/mcp/cp/sse", get(crate::mcp::mcp_sse_handler))
+        .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
+        // MCP protocol endpoints - API tools (gateway API tools with different scopes)
+        .route("/api/v1/mcp/api", post(crate::mcp::mcp_api_http_handler))
+        .route("/api/v1/mcp/api/sse", get(crate::mcp::mcp_api_sse_handler))
+        // MCP tools management endpoints
+        .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
+        .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))
+        .route("/api/v1/teams/{team}/mcp/tools/{name}", patch(update_mcp_tool_handler))
+        // MCP route enablement endpoints
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/status", get(get_mcp_status_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/enable", post(enable_mcp_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/disable", post(disable_mcp_handler))
+        .route("/api/v1/teams/{team}/routes/{route_id}/mcp/refresh", post(refresh_mcp_schema_handler))
+        // MCP bulk operations
+        .route("/api/v1/teams/{team}/mcp/bulk-enable", post(bulk_enable_mcp_handler))
+        .route("/api/v1/teams/{team}/mcp/bulk-disable", post(bulk_disable_mcp_handler))
+        // MCP learned schema operations
+        .route("/api/v1/teams/{team}/mcp/routes/{route_id}/learned-schema", get(check_learned_schema_handler))
+        .route("/api/v1/teams/{team}/mcp/routes/{route_id}/apply-learned", post(apply_learned_schema_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
@@ -480,5 +557,23 @@ mod tests {
         // The CorsLayer is built successfully with default localhost
         // Actual CORS behavior is tested via integration tests with HTTP requests
         drop(cors_layer);
+    }
+
+    #[test]
+    fn test_cors_layer_allows_multiple_origins() {
+        // Set environment variable with multiple origins
+        std::env::set_var(
+            "FLOWPLANE_UI_ORIGIN",
+            "http://localhost:3000,http://localhost:6274,https://app.example.com",
+        );
+
+        let cors_layer = build_cors_layer();
+
+        // The CorsLayer is built successfully with multiple origins
+        // Actual CORS behavior is tested via integration tests with HTTP requests
+        drop(cors_layer);
+
+        // Clean up
+        std::env::remove_var("FLOWPLANE_UI_ORIGIN");
     }
 }

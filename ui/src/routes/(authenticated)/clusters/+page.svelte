@@ -50,17 +50,32 @@
 		}
 	}
 
-	// Extract endpoints from cluster config (handles both simple and xDS format)
+	// Extract endpoints from cluster config (handles string, object, and xDS formats)
 	function extractEndpoints(config: Record<string, unknown>): { host: string; port: number }[] {
 		// Simple format: endpoints directly on config
 		if (Array.isArray(config.endpoints)) {
-			const endpoints = config.endpoints as { host?: string; port?: number }[];
-			return endpoints
-				.filter(ep => ep.host && ep.host !== '')
-				.map(ep => ({
-					host: ep.host as string,
-					port: ep.port || 8080
-				}));
+			return (config.endpoints as unknown[])
+				.map((ep) => {
+					// Handle string format: "host:port"
+					if (typeof ep === 'string') {
+						const parts = ep.split(':');
+						if (parts.length >= 2) {
+							const port = parseInt(parts[parts.length - 1], 10);
+							const host = parts.slice(0, -1).join(':'); // Handle IPv6
+							return { host, port: isNaN(port) ? 8080 : port };
+						}
+						return { host: ep, port: 8080 };
+					}
+					// Handle object format: { host, port }
+					if (typeof ep === 'object' && ep !== null) {
+						const obj = ep as { host?: string; port?: number };
+						if (obj.host && obj.host !== '') {
+							return { host: obj.host, port: obj.port || 8080 };
+						}
+					}
+					return null;
+				})
+				.filter((ep): ep is { host: string; port: number } => ep !== null);
 		}
 
 		// xDS format: nested in loadAssignment

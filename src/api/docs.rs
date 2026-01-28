@@ -54,6 +54,9 @@ use crate::xds::{
         crate::api::handlers::route_configs::get_route_config_handler,
         crate::api::handlers::route_configs::update_route_config_handler,
         crate::api::handlers::route_configs::delete_route_config_handler,
+        // Route views endpoints (UI flattened view)
+        crate::api::handlers::route_views::list_route_views_handler,
+        crate::api::handlers::route_views::get_route_stats_handler,
         // Listener endpoints
         crate::api::handlers::listeners::create_listener_handler,
         crate::api::handlers::listeners::list_listeners_handler,
@@ -181,6 +184,12 @@ use crate::xds::{
             crate::api::handlers::route_configs::RouteActionDefinition,
             crate::api::handlers::route_configs::WeightedClusterDefinition,
             crate::api::handlers::route_configs::RouteConfigResponse,
+            // Route views schemas (UI flattened view)
+            crate::api::dto::route_view::RouteListViewDto,
+            crate::api::dto::route_view::RouteListStatsDto,
+            crate::api::dto::route_view::RouteListResponseDto,
+            crate::api::dto::route_view::PaginationDto,
+            crate::domain::RouteMatchType,
             // Listener schemas
             crate::api::handlers::listeners::ListenerResponse,
             crate::api::handlers::listeners::CreateListenerBody,

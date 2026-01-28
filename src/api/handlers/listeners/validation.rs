@@ -5,9 +5,9 @@ use std::convert::TryFrom;
 use serde_json::Value;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::error::ApiError,
     errors::Error,
-    storage::{ListenerData, ListenerRepository},
+    storage::ListenerData,
     xds::listener::{
         AccessLogConfig, FilterChainConfig, FilterConfig, FilterType, ListenerConfig,
         TlsContextConfig, TracingConfig,
@@ -20,18 +20,6 @@ use super::types::{
     ListenerFilterTypeInput, ListenerResponse, ListenerTlsContextInput, ListenerTracingInput,
     UpdateListenerBody,
 };
-
-/// Extract listener repository from API state
-pub(super) fn require_listener_repository(
-    state: &ApiState,
-) -> Result<ListenerRepository, ApiError> {
-    state
-        .xds_state
-        .listener_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Listener repository not configured"))
-}
 
 /// Convert database listener data to API response
 pub(super) fn listener_response_from_data(
@@ -61,6 +49,7 @@ pub(super) fn listener_response_from_data(
         protocol: data.protocol,
         version: data.version,
         import_id: data.import_id,
+        dataplane_id: data.dataplane_id,
         config,
     })
 }
@@ -205,6 +194,11 @@ pub(super) fn validate_create_listener_body(body: &CreateListenerBody) -> Result
     }
     if body.name.trim().is_empty() {
         return Err(ApiError::from(Error::validation("Listener name cannot be empty")));
+    }
+    if body.dataplane_id.trim().is_empty() {
+        return Err(ApiError::from(Error::validation(
+            "dataplane_id is required - create a dataplane first",
+        )));
     }
     validate_listener_common(&body.address, body.port, &body.filter_chains)
 }

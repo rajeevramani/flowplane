@@ -13,9 +13,11 @@ pub mod learning_session_service;
 pub mod listener_filter_chain;
 pub mod listener_route_config_sync;
 pub mod listener_service;
+pub mod mcp_service;
 pub mod path_normalizer;
 pub mod route_hierarchy_sync;
 pub mod route_service;
+pub mod route_view_extractor;
 pub mod schema_aggregator;
 pub mod schema_diff;
 pub mod secret_encryption;
@@ -35,9 +37,13 @@ pub use filter_validation::{
 pub use learning_session_service::LearningSessionService;
 pub use listener_route_config_sync::ListenerRouteSyncService;
 pub use listener_service::ListenerService;
+pub use mcp_service::{
+    EnableMcpRequest, McpService, McpServiceError, McpStatusResponse, RefreshSchemaResult,
+};
 pub use path_normalizer::{normalize_path, PathNormalizationConfig};
 pub use route_hierarchy_sync::RouteHierarchySyncService;
 pub use route_service::RouteService;
+pub use route_view_extractor::RouteViewExtractor;
 pub use schema_aggregator::SchemaAggregator;
 pub use schema_diff::{detect_breaking_changes, BreakingChange, BreakingChangeType, SchemaDiff};
 pub use secret_encryption::{SecretEncryption, SecretEncryptionConfig};

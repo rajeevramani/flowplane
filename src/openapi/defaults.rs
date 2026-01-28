@@ -187,10 +187,14 @@ pub async fn ensure_default_gateway_resources(state: &XdsState) -> Result<(), Er
             configuration: listener_configuration,
             team: None, // Default gateway listener is not team-scoped
             import_id: None,
+            dataplane_id: None,
         };
 
         listener_repo.create(request).await?;
-        info!("Created default gateway listener");
+        info!(
+            listener_name = DEFAULT_GATEWAY_LISTENER,
+            "Created default gateway listener (no dataplane - MCP tool execution unavailable)"
+        );
     }
 
     state.refresh_clusters_from_repository().await?;

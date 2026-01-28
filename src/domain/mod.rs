@@ -29,6 +29,7 @@ pub mod filter;
 pub mod filter_schema;
 pub mod id;
 pub mod listener;
+pub mod mcp;
 pub mod route;
 pub mod route_hierarchy;
 pub mod secret;
@@ -53,15 +54,21 @@ pub use filter::{
 pub use filter_schema::{
     create_shared_registry, create_shared_registry_from_dir, EnvoyFilterMetadata,
     FilterCapabilities, FilterSchemaDefinition, FilterSchemaRegistry, FormLayout, FormSection,
-    SchemaLoadError, SchemaSource, SchemaValidationError, SharedFilterSchemaRegistry, UiHints,
+    SchemaLoadError, SchemaSource as FilterSchemaSource, SchemaValidationError,
+    SharedFilterSchemaRegistry, UiHints,
 };
 pub use id::{
-    ClusterId, CustomWasmFilterId, EndpointId, FilterId, ListenerId, ProxyCertificateId,
-    RouteConfigId, RouteId, ScopeId, SecretId, TeamId, TokenId, UserId, VirtualHostId,
+    ClusterId, CustomWasmFilterId, DataplaneId, EndpointId, FilterId, ListenerId, McpToolId,
+    ProxyCertificateId, RouteConfigId, RouteId, RouteMetadataId, ScopeId, SecretId, TeamId,
+    TokenId, UserId, VirtualHostId,
 };
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,
     TlsConfig as ListenerTlsConfig, TlsVersion as ListenerTlsVersion,
+};
+pub use mcp::{
+    McpTool, McpToolCategory, McpToolSourceType, RouteMetadata, RouteMetadataSourceType,
+    SchemaSource as McpSchemaSource,
 };
 pub use route::{
     HeaderMatch, HeaderMatcher, PathMatchStrategy, PathRewrite, QueryParameterMatch,

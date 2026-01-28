@@ -499,6 +499,13 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return Some(sub_resource);
         }
 
+        // Special case: /api/v1/mcp - MCP endpoints implement method-level authorization
+        // The HTTP method is always POST (JSON-RPC), but the actual operation is in the request body.
+        // The mcp_http_handler has its own comprehensive authorization based on the method field.
+        if parts[2] == "mcp" {
+            return None;
+        }
+
         // Special case: /api/v1/openapi/* routes use "openapi-import" resource
         // The scope naming convention uses "openapi-import" (e.g., team:X:openapi-import:write)
         // but the URL structure is /api/v1/openapi/import, /api/v1/openapi/imports, etc.
@@ -511,6 +518,20 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
         // remains "routes" for backwards compatibility and consistency
         if parts[2] == "route-configs" {
             return Some("routes");
+        }
+
+        // Special case: /api/v1/route-views/* uses "routes" resource
+        // This endpoint provides flattened route views for UI consumption
+        // but uses the same authorization scope as route-configs
+        if parts[2] == "route-views" {
+            return Some("routes");
+        }
+
+        // Special case: /api/v1/filter-types/* uses "filters" resource
+        // Filter types are metadata about available filter schemas
+        // and share the same authorization scope as filters management
+        if parts[2] == "filter-types" {
+            return Some("filters");
         }
 
         Some(parts[2])
@@ -951,6 +972,23 @@ mod tests {
         // route-configs API path maps to "routes" scope
         assert_eq!(resource_from_path("/api/v1/route-configs"), Some("routes"));
         assert_eq!(resource_from_path("/api/v1/route-configs/123"), Some("routes"));
+
+        // route-views API path also maps to "routes" scope
+        assert_eq!(resource_from_path("/api/v1/route-views"), Some("routes"));
+        assert_eq!(resource_from_path("/api/v1/route-views/stats"), Some("routes"));
+
+        // filter-types API path maps to "filters" scope
+        assert_eq!(
+            resource_from_path("/api/v1/filter-types"),
+            Some("filters"),
+            "filter-types list endpoint should map to filters resource"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/filter-types/header_mutation"),
+            Some("filters"),
+            "filter-types detail endpoint should map to filters resource"
+        );
+
         assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
         assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
         assert_eq!(resource_from_path("/api/v1/api-definitions"), Some("api-definitions"));
@@ -1020,6 +1058,30 @@ mod tests {
             resource_from_path("/api/v1/teams/eng/stats/overview"),
             Some("stats"),
             "team-scoped stats sub-path should return stats"
+        );
+
+        // MCP endpoints use method-level authorization (JSON-RPC style)
+        // The HTTP method is always POST but the actual operation is in the request body
+        // The handler implements its own authorization based on the JSON-RPC method field
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/cp"),
+            None,
+            "MCP CP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/cp/sse"),
+            None,
+            "MCP CP SSE endpoint should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/cp/connections"),
+            None,
+            "MCP CP connections endpoint should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/mcp/api"),
+            None,
+            "MCP API tools endpoint should bypass resource-level auth"
         );
 
         // OpenAPI import routes should map to "openapi-import" resource

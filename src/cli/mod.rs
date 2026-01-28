@@ -9,6 +9,7 @@ pub mod clusters;
 pub mod config;
 pub mod config_cmd;
 pub mod listeners;
+pub mod mcp;
 pub mod output;
 pub mod routes;
 pub mod teams;
@@ -94,6 +95,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: teams::TeamCommands,
     },
+
+    /// MCP server operations
+    Mcp {
+        #[command(subcommand)]
+        command: mcp::McpCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +177,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
             )?;
             teams::handle_team_command(command, &client).await?
         }
+        Commands::Mcp { command } => mcp::handle_mcp_command(command, &database).await?,
     }
 
     Ok(())
