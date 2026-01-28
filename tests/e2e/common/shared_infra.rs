@@ -152,6 +152,20 @@ impl SharedInfrastructure {
             info!("Shared infrastructure bootstrap complete");
         }
 
+        // Clean up stale dataplanes from previous test runs
+        // This ensures a clean slate for tests that create dataplanes
+        info!("Cleaning up stale dataplanes from previous runs...");
+        let session =
+            api.login(TEST_EMAIL, TEST_PASSWORD).await.expect("Login should succeed for cleanup");
+        let token_resp = api
+            .create_token(&session, "cleanup-token", vec!["admin:all".to_string()])
+            .await
+            .expect("Token creation should succeed for cleanup");
+        let deleted = api.delete_all_dataplanes(&token_resp.token).await.unwrap_or(0);
+        if deleted > 0 {
+            info!(count = deleted, "Deleted stale dataplanes");
+        }
+
         // Start Envoy if available
         let envoy = if EnvoyHandle::is_available() {
             let envoy_config = EnvoyConfig::new(SHARED_ENVOY_ADMIN_PORT, SHARED_XDS_PORT);

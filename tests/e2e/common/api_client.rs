@@ -583,6 +583,143 @@ impl ApiClient {
         Ok(result)
     }
 
+    /// Create a dataplane idempotently - returns existing if already exists
+    pub async fn create_dataplane_idempotent(
+        &self,
+        token: &str,
+        req: &CreateDataplaneRequest,
+    ) -> anyhow::Result<DataplaneResponse> {
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let result: DataplaneResponse = resp.json().await?;
+            return Ok(result);
+        }
+
+        // If conflict (409), list dataplanes and find by name
+        if status == StatusCode::CONFLICT {
+            if let Ok(dataplanes) = self.list_dataplanes(token, &req.team).await {
+                for dp in dataplanes {
+                    if dp.name == req.name {
+                        return Ok(dp);
+                    }
+                }
+            }
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Create dataplane failed: {} - {}", status, text);
+    }
+
+    /// List dataplanes for a team
+    pub async fn list_dataplanes(
+        &self,
+        token: &str,
+        team: &str,
+    ) -> anyhow::Result<Vec<DataplaneResponse>> {
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, team);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List dataplanes failed: {} - {}", status, text);
+        }
+
+        let result: Vec<DataplaneResponse> = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Delete a dataplane by team and name
+    pub async fn delete_dataplane(
+        &self,
+        token: &str,
+        team: &str,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/teams/{}/dataplanes/{}", self.base_url, team, name);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NOT_FOUND {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Delete dataplane failed: {} - {}", status, text);
+        }
+
+        Ok(())
+    }
+
+    /// List all teams (for cleanup purposes)
+    pub async fn list_teams(&self, token: &str) -> anyhow::Result<Vec<TeamResponse>> {
+        let url = format!("{}/api/v1/admin/teams", self.base_url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List teams failed: {} - {}", status, text);
+        }
+
+        // Response is paginated: {"teams": [...], "total": N, ...}
+        let body: Value = resp.json().await?;
+        let teams = body
+            .get("teams")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value::<TeamResponse>(v.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(teams)
+    }
+
+    /// Delete all dataplanes across all teams (for test cleanup)
+    pub async fn delete_all_dataplanes(&self, token: &str) -> anyhow::Result<u32> {
+        let teams = self.list_teams(token).await?;
+        let mut deleted = 0;
+
+        for team in teams {
+            if let Ok(dataplanes) = self.list_dataplanes(token, &team.name).await {
+                for dp in dataplanes {
+                    if self.delete_dataplane(token, &team.name, &dp.name).await.is_ok() {
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
     /// Create a filter
     pub async fn create_filter(
         &self,
@@ -1056,9 +1193,9 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     })
     .await?;
 
-    // Create dataplane for Team A
+    // Create dataplane for Team A (idempotent - handles re-runs)
     let dataplane_a = with_timeout(TestTimeout::default_with_label("Create Dataplane A"), async {
-        api.create_dataplane(
+        api.create_dataplane_idempotent(
             &admin_token,
             &CreateDataplaneRequest {
                 team: team_a.name.clone(),
@@ -1071,9 +1208,9 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     })
     .await?;
 
-    // Create dataplane for Team B
+    // Create dataplane for Team B (idempotent - handles re-runs)
     let dataplane_b = with_timeout(TestTimeout::default_with_label("Create Dataplane B"), async {
-        api.create_dataplane(
+        api.create_dataplane_idempotent(
             &admin_token,
             &CreateDataplaneRequest {
                 team: team_b.name.clone(),
