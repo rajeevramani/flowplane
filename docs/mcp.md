@@ -661,6 +661,50 @@ To use Flowplane with Claude Desktop, add the following to your MCP configuratio
 
 Restart Claude Desktop to activate the MCP server. Claude will now have access to all CP tools, resources, and prompts for managing your Flowplane configuration.
 
+## Using MCP Inspector
+
+The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) provides an interactive UI for testing MCP servers. Use it to discover tools, execute them, and inspect responses.
+
+### Connecting to Flowplane
+
+Connect using SSE transport with your API token in the Authorization header:
+
+```bash
+# Control Plane tools
+npx @modelcontextprotocol/inspector sse \
+  "http://localhost:8080/api/v1/mcp/cp/sse?team=engineering" \
+  --header "Authorization: Bearer <your-token>"
+
+# Gateway API tools
+npx @modelcontextprotocol/inspector sse \
+  "http://localhost:8080/api/v1/mcp/api/sse?team=engineering" \
+  --header "Authorization: Bearer <your-token>"
+```
+
+### Authentication
+
+The SSE connection requires a Bearer token. In the Inspector, expand **Authentication** to configure the `Authorization` header with your token:
+
+![MCP Inspector - Authentication](images/mcp-inspector-auth.png)
+
+### Discovering and Executing Tools
+
+Once connected, the Inspector shows available tools with descriptions and input schemas. Select a tool, configure parameters, and click **Run Tool** to execute:
+
+![MCP Inspector - CP Tools](images/mcp-inspector-cp-tools.png)
+
+Results are displayed inline with syntax highlighting:
+
+![MCP Inspector - Tool Result](images/mcp-inspector-tool-result.png)
+
+### CP vs API Endpoints
+
+The **CP endpoint** (`/api/v1/mcp/cp`) exposes Resources, Prompts, and Tools tabs for full control plane management.
+
+The **API endpoint** (`/api/v1/mcp/api`) exposes only Tools - dynamically generated from routes with MCP enabled:
+
+![MCP Inspector - API Endpoint](images/mcp-inspector-api-endpoint.png)
+
 ## Quick Start Example
 
 ### 1. Create an MCP Token
@@ -905,17 +949,13 @@ When enabling MCP for a route, the system:
 
 **Single Listener Requirement**: Currently, if a route_config has multiple listeners, the system picks the first one by `route_order`. This may not always be the intended listener for MCP execution.
 
-**Required Port Configuration**: Listeners MUST have a port configured. The enable operation will fail if:
+### Port Validation
+
+Listeners MUST have a port configured. The system validates port configuration and returns explicit errors if:
 - No listeners are bound to the route's route_config
 - The listener has a NULL port value
 
-### Known Issue: Port Validation
-
-**Issue**: The current implementation has a fallback to port 10000 when listener data is invalid. This masks configuration errors.
-
-**Impact**: Tools may be created with incorrect ports, causing HTTP requests to fail.
-
-**Recommendation**: The fallback behavior should be replaced with proper error handling. See `src/services/mcp_service.rs::get_listener_port_for_route_config()` for details.
+If validation fails, MCP enablement is rejected with a descriptive error message indicating the specific configuration issue.
 
 ### Multiple Listeners
 

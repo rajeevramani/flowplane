@@ -1,6 +1,6 @@
 # Flowplane
 
-![Version](https://img.shields.io/badge/version-0.0.11-blue)
+![Version](https://img.shields.io/badge/version-0.0.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
@@ -21,7 +21,7 @@ Multi-tenant Isolation: Shared proxy infrastructure needs proper team boundaries
 
 The system provides three core capabilities: Configure (REST API and Web UI for managing xDS resources), Import (OpenAPI specifications materialized directly into routes and clusters), and Learn (traffic-based schema inference through learning sessions). These translate into Envoy configuration delivered via a Tonic-based gRPC xDS server supporting ADS, LDS, RDS, CDS, EDS, and SDS protocols.
 
-Flowplane supports 13 HTTP filter types including JWT authentication, OAuth2, CORS, local and distributed rate limiting, header mutation, custom response handling, external authorization, RBAC, and health checks—all configurable through structured JSON rather than protobuf.
+Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CORS, local and distributed rate limiting, header mutation, custom response handling, external authorization, RBAC, and health checks—all configurable through structured JSON rather than protobuf.
 
 ## Features
 
@@ -72,6 +72,30 @@ docker run -d \
 
 > **Ports are configurable**: `FLOWPLANE_API_PORT` (default: 8080), `FLOWPLANE_XDS_PORT` (default: 50051 in Docker, 18000 for local dev). See [Configuration](docs/configuration.md).
 
+
+### Development with Docker Compose
+
+If you've cloned the repository, use `make` for easier management:
+
+```bash
+# Start backend + UI
+make up
+
+# Start with tracing (Jaeger)
+make up-tracing
+
+# Start with mTLS (Vault)
+make up-mtls
+
+# Add httpbin test service
+make up HTTPBIN=1
+
+# Stop all services
+make down
+
+# View all options
+make help
+```
 
 ### Binary
 
@@ -130,12 +154,26 @@ curl --request POST \
 
 ```
 
-### Boot Envoy
+### Create Dataplane and Boot Envoy
+
+A **Dataplane** represents an Envoy proxy instance. Create one first, then generate bootstrap config.
 
 ```bash
-# Generate Envoy bootstrap config
+# Create a dataplane
+curl --request POST \
+  --url http://localhost:8080/api/v1/teams/platform-admin/dataplanes \
+  --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
+  --header 'content-type: application/json' \
+  --data '{
+  "team": "platform-admin",
+  "name": "default",
+  "gatewayHost": "127.0.0.1",
+  "description": "Default dataplane for local development"
+}'
+
+# Generate Envoy bootstrap config from the dataplane
 curl --request GET \
-  --url 'http://localhost:8080/api/v1/teams/platform-admin/bootstrap' \
+  --url 'http://localhost:8080/api/v1/teams/platform-admin/dataplanes/default/bootstrap' \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   > envoy.yaml
 
@@ -201,7 +239,7 @@ curl --request POST \
   ]
 }'
 
-# Create a listener
+# Create a listener (associated with the dataplane)
 curl --request POST \
   --url http://localhost:8080/api/v1/listeners \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
@@ -211,6 +249,7 @@ curl --request POST \
   "address": "0.0.0.0",
   "port": 10000,
   "team": "platform-admin",
+  "dataplaneId": "DATAPLANE_ID_FROM_CREATE_RESPONSE",
   "protocol": "HTTP",
   "filterChains": [
     {

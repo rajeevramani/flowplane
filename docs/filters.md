@@ -22,6 +22,7 @@ All filters support both global (listener-level) and per-route configuration via
 | **Credential Injector** | `envoy.filters.http.credential_injector` | OAuth2/API key credential injection | No | Coming soon |
 | **External Processor** | `envoy.filters.http.ext_proc` | External request/response processing | No | Coming soon |
 | **Compressor** | `envoy.filters.http.compressor` | Response compression (gzip, brotli) | Yes | [compressor.md](filters/compressor.md) |
+| **MCP** | `envoy.filters.http.ext_proc` | AI/LLM gateway traffic inspection for JSON-RPC 2.0 and SSE | No | Coming soon |
 | **Router** | `envoy.filters.http.router` | Terminal filter for request routing (auto-appended) | N/A | Coming soon |
 
 ## Filter Categories
