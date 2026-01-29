@@ -28,6 +28,11 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ListAggregatedSchemasQuery {
+    /// Team to filter schemas by (required for team-scoped users, optional for admins)
+    #[serde(default)]
+    #[schema(example = "engineering")]
+    pub team: Option<String>,
+
     /// Text search in API path (substring match)
     #[serde(default)]
     #[schema(example = "users")]
@@ -245,14 +250,25 @@ pub async fn list_aggregated_schemas_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ListAggregatedSchemasQuery>,
 ) -> Result<Json<Vec<AggregatedSchemaResponse>>, ApiError> {
-    // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
-
-    // Extract team from context
-    let team_scopes = extract_team_scopes(&context);
-    let team = team_scopes.first().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for aggregated schemas".to_string())
-    })?;
+    // Determine team: use query parameter if provided, otherwise fall back to first team scope
+    let team = if let Some(ref requested_team) = query.team {
+        // Verify user has access to the requested team
+        require_resource_access(&context, "aggregated-schemas", "read", Some(requested_team))?;
+        requested_team.clone()
+    } else {
+        // Fall back to first team scope from auth context
+        require_resource_access(&context, "aggregated-schemas", "read", None)?;
+        let team_scopes = extract_team_scopes(&context);
+        team_scopes
+            .first()
+            .ok_or_else(|| {
+                ApiError::BadRequest(
+                    "Team scope required for aggregated schemas. Provide 'team' query parameter."
+                        .to_string(),
+                )
+            })?
+            .clone()
+    };
 
     // Validate min_confidence bounds
     if let Some(min_conf) = query.min_confidence {
@@ -273,7 +289,7 @@ pub async fn list_aggregated_schemas_handler(
     // List schemas with filters
     let schemas = repo
         .list_filtered(
-            team,
+            &team,
             query.path.as_deref(),
             query.http_method.as_deref(),
             query.min_confidence,

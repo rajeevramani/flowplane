@@ -1058,6 +1058,7 @@ class ApiClient {
 	 */
 	async listAggregatedSchemas(query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
 		const params = new URLSearchParams();
+		if (query?.team) params.append('team', query.team);
 		if (query?.path) params.append('path', query.path);
 		if (query?.httpMethod) params.append('http_method', query.httpMethod);
 		if (query?.minConfidence) params.append('min_confidence', query.minConfidence.toString());

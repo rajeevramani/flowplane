@@ -2,10 +2,12 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import type { CreateLearningSessionRequest, SessionInfoResponse } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { canWriteLearningSessions } from '$lib/utils/permissions';
 	import { handleApiError } from '$lib/utils/errorHandling';
+	import { selectedTeam } from '$lib/stores/team';
 
 	let isSubmitting = $state(false);
 	let error = $state<string | null>(null);
@@ -88,7 +90,15 @@
 		isSubmitting = true;
 
 		try {
+			// Get the currently selected team from the store
+			const team = get(selectedTeam);
+			if (!team) {
+				error = 'No team selected. Please select a team from the navigation.';
+				return;
+			}
+
 			const request: CreateLearningSessionRequest = {
+				team,
 				routePattern: routePattern.trim(),
 				targetSampleCount
 			};

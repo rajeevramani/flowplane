@@ -44,7 +44,9 @@
 		error = null;
 
 		try {
-			const query: { path?: string; httpMethod?: string } = {};
+			const query: { team?: string; path?: string; httpMethod?: string } = {};
+			// Pass the selected team to filter schemas
+			if (currentTeam) query.team = currentTeam;
 			if (searchQuery) query.path = searchQuery;
 			if (methodFilter) query.httpMethod = methodFilter;
 

@@ -1441,6 +1441,8 @@ export interface LearningSessionResponse {
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
+	/** Team identifier for the learning session */
+	team: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];
@@ -1491,6 +1493,8 @@ export interface AggregatedSchemaResponse {
 
 /** Query parameters for listing aggregated schemas */
 export interface ListAggregatedSchemasQuery {
+	/** Team to filter schemas by (required for proper filtering) */
+	team?: string;
 	path?: string;
 	httpMethod?: string;
 	minConfidence?: number;
