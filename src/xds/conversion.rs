@@ -16,9 +16,12 @@ use super::{
 
 use envoy_types::pb::envoy::config::{
     cluster::v3::Cluster,
-    route::v3::RouteConfiguration,
     listener::v3::Listener,
+    route::v3::{
+        route::Action as RouteActionEnum, route_action::ClusterSpecifier, RouteConfiguration,
+    },
 };
+use prost::Message;
 
 /// Central configuration manager that handles conversions and caching
 #[derive(Debug)]
@@ -250,14 +253,133 @@ impl ConfigurationManager {
         Ok(report)
     }
 
-    fn validate_route_cluster_references(&self, route: &RouteConfiguration, report: &mut ValidationReport) {
-        // TODO: Implement cluster reference validation in routes
-        // This would check that all cluster references in route actions exist
+    fn validate_route_cluster_references(
+        &self,
+        route: &RouteConfiguration,
+        report: &mut ValidationReport,
+    ) {
+        // Extract all cluster names referenced in this route configuration
+        for vhost in &route.virtual_hosts {
+            for route_entry in &vhost.routes {
+                if let Some(RouteActionEnum::Route(route_action)) = &route_entry.action {
+                    self.validate_cluster_specifier(
+                        &route.name,
+                        &vhost.name,
+                        &route_action.cluster_specifier,
+                        report,
+                    );
+                }
+            }
+        }
     }
 
-    fn validate_listener_route_references(&self, listener: &Listener, report: &mut ValidationReport) {
-        // TODO: Implement route reference validation in listeners
-        // This would check that all route config references in HTTP connection managers exist
+    fn validate_cluster_specifier(
+        &self,
+        route_name: &str,
+        vhost_name: &str,
+        cluster_specifier: &Option<ClusterSpecifier>,
+        report: &mut ValidationReport,
+    ) {
+        match cluster_specifier {
+            Some(ClusterSpecifier::Cluster(cluster_name)) => {
+                if !self.cache.clusters.contains_key(cluster_name) {
+                    report.add_error(format!(
+                        "Route '{}' (vhost '{}') references non-existent cluster '{}'",
+                        route_name, vhost_name, cluster_name
+                    ));
+                }
+            }
+            Some(ClusterSpecifier::WeightedClusters(weighted)) => {
+                for cluster in &weighted.clusters {
+                    if !self.cache.clusters.contains_key(&cluster.name) {
+                        report.add_error(format!(
+                            "Route '{}' (vhost '{}') references non-existent cluster '{}' in weighted clusters",
+                            route_name, vhost_name, cluster.name
+                        ));
+                    }
+                }
+            }
+            Some(ClusterSpecifier::ClusterHeader(_)) => {
+                // Header-based routing cannot be validated statically
+                report.add_warning(format!(
+                    "Route '{}' (vhost '{}') uses header-based cluster routing (cannot validate statically)",
+                    route_name, vhost_name
+                ));
+            }
+            Some(ClusterSpecifier::ClusterSpecifierPlugin(_)) => {
+                // Plugin-based routing cannot be validated statically
+                report.add_warning(format!(
+                    "Route '{}' (vhost '{}') uses plugin-based cluster routing (cannot validate statically)",
+                    route_name, vhost_name
+                ));
+            }
+            None => {
+                // No cluster specifier - this may be intentional for redirect/direct_response routes
+            }
+        }
+    }
+
+    fn validate_listener_route_references(
+        &self,
+        listener: &Listener,
+        report: &mut ValidationReport,
+    ) {
+        // Extract route config references from HTTP connection manager filters
+        for filter_chain in &listener.filter_chains {
+            for filter in &filter_chain.filters {
+                // Check if this is an HTTP connection manager
+                if filter.name == "envoy.filters.network.http_connection_manager" {
+                    if let Some(typed_config) = &filter.config_type {
+                        self.validate_hcm_route_reference(&listener.name, typed_config, report);
+                    }
+                }
+            }
+        }
+    }
+
+    fn validate_hcm_route_reference(
+        &self,
+        listener_name: &str,
+        config_type: &envoy_types::pb::envoy::config::listener::v3::filter::ConfigType,
+        report: &mut ValidationReport,
+    ) {
+        use envoy_types::pb::envoy::config::listener::v3::filter::ConfigType;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::RouteSpecifier;
+
+        if let ConfigType::TypedConfig(any) = config_type {
+            // Try to decode the HTTP connection manager
+            if any.type_url
+                == "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            {
+                if let Ok(hcm) = HttpConnectionManager::decode(any.value.as_slice()) {
+                    match &hcm.route_specifier {
+                        Some(RouteSpecifier::Rds(rds)) => {
+                            // Check if the route config exists
+                            if !self.cache.routes.contains_key(&rds.route_config_name) {
+                                report.add_error(format!(
+                                    "Listener '{}' references non-existent route config '{}'",
+                                    listener_name, rds.route_config_name
+                                ));
+                            }
+                        }
+                        Some(RouteSpecifier::RouteConfig(_)) => {
+                            // Inline route config - no reference to validate
+                        }
+                        Some(RouteSpecifier::ScopedRoutes(_)) => {
+                            // Scoped routes - complex validation not implemented
+                            report.add_warning(format!(
+                                "Listener '{}' uses scoped routes (validation not implemented)",
+                                listener_name
+                            ));
+                        }
+                        None => {
+                            // No route specifier - may be valid for certain configurations
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -414,5 +536,97 @@ mod tests {
         assert_eq!(snapshot.clusters.len(), 2);
         assert_eq!(snapshot.routes.len(), 0);
         assert_eq!(snapshot.listeners.len(), 0);
+    }
+
+    #[test]
+    fn test_validation_detects_missing_cluster() {
+        let mut manager = ConfigurationManager::new();
+
+        // Add a route that references a non-existent cluster
+        let route_config = RouteConfig {
+            name: "test-route".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("default".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "non-existent-cluster".to_string(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                        retry_policy: None,
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        manager.upsert_route(route_config).expect("Failed to add route");
+
+        // Validate - should report missing cluster
+        let report = manager.validate_configuration().expect("Validation failed");
+        assert!(!report.is_valid);
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].contains("non-existent-cluster"));
+    }
+
+    #[test]
+    fn test_validation_passes_with_valid_references() {
+        let mut manager = ConfigurationManager::new();
+
+        // Add a cluster
+        let cluster_config = ClusterConfig {
+            name: "valid-cluster".to_string(),
+            endpoints: vec![EndpointConfig {
+                address: "127.0.0.1".to_string(),
+                port: 8080,
+                weight: Some(100),
+            }],
+            load_balancing_policy: LoadBalancingPolicy::RoundRobin,
+            connect_timeout: Some(5),
+            health_checks: None,
+        };
+
+        manager.upsert_cluster(cluster_config).expect("Failed to add cluster");
+
+        // Add a route that references the existing cluster
+        let route_config = RouteConfig {
+            name: "test-route".to_string(),
+            virtual_hosts: vec![VirtualHostConfig {
+                name: "test-vhost".to_string(),
+                domains: vec!["example.com".to_string()],
+                routes: vec![RouteRule {
+                    name: Some("default".to_string()),
+                    r#match: RouteMatchConfig {
+                        path: PathMatch::Prefix("/".to_string()),
+                        headers: None,
+                        query_parameters: None,
+                    },
+                    action: RouteActionConfig::Cluster {
+                        name: "valid-cluster".to_string(),
+                        timeout: None,
+                        prefix_rewrite: None,
+                        path_template_rewrite: None,
+                        retry_policy: None,
+                    },
+                    typed_per_filter_config: HashMap::new(),
+                }],
+                typed_per_filter_config: HashMap::new(),
+            }],
+        };
+
+        manager.upsert_route(route_config).expect("Failed to add route");
+
+        // Validate - should pass
+        let report = manager.validate_configuration().expect("Validation failed");
+        assert!(report.is_valid);
+        assert!(report.errors.is_empty());
     }
 }

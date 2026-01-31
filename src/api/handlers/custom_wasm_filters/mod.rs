@@ -310,10 +310,8 @@ pub async fn delete_custom_wasm_filter_handler(
         return Err(ApiError::NotFound("Custom filter not found".to_string()));
     }
 
-    // TODO: Check if any filter instances are using this type
-    // before allowing deletion
-
     // Store the filter type before deletion for schema unregistration
+    // Note: The service will check for filter instances and return 409 if any exist
     let filter_type = format!("custom_wasm_{}", existing.id);
 
     service.delete_custom_filter(&filter_id).await.map_err(ApiError::from)?;

@@ -380,6 +380,28 @@ impl FilterRepository {
         Ok(count > 0)
     }
 
+    /// Count filters by filter type
+    ///
+    /// Used to check if any filter instances exist for a given custom WASM filter type
+    /// before allowing deletion of the custom filter definition.
+    #[instrument(skip(self), fields(filter_type = %filter_type), name = "db_count_filters_by_type")]
+    pub async fn count_by_filter_type(&self, filter_type: &str) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM filters WHERE filter_type = $1")
+                .bind(filter_type)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, filter_type = %filter_type, "Failed to count filters by type");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: format!("Failed to count filters by type: {}", filter_type),
+                    }
+                })?;
+
+        Ok(count)
+    }
+
     // Filter attachment methods
 
     #[instrument(skip(self), fields(route_id = %route_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_route")]
