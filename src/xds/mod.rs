@@ -7,7 +7,6 @@
 //! - LDS (Listener Discovery Service)
 
 pub mod access_log;
-pub mod cluster;
 mod cluster_spec;
 pub mod filters;
 pub mod helpers;
