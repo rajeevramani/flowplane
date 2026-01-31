@@ -9,4 +9,8 @@ pub mod handlers;
 pub mod routes;
 pub mod server;
 
+// Test utilities for handler testing - available in tests
+#[cfg(test)]
+pub mod test_utils;
+
 pub use server::start_api_server;

@@ -243,71 +243,32 @@ mod tests {
     use axum::response::IntoResponse;
     use axum::{Extension, Json};
     use serde_json::Value;
-    use sqlx::Executor;
-    use std::sync::Arc;
 
-    use crate::auth::models::AuthContext;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use crate::xds::XdsState;
+    use crate::api::test_utils::{admin_auth_context, create_test_state};
 
     use types::{
         CircuitBreakerThresholdsRequest, CircuitBreakersRequest, CreateClusterBody,
         EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
     };
 
-    /// Create an admin AuthContext for testing with full permissions
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            "test-admin".to_string(),
-            vec!["admin:all".to_string()],
-        )
-    }
-
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
+    // Use test_utils::create_test_state() which runs full migrations
+    // and test_utils::admin_auth_context() for admin permissions
 
     async fn setup_state() -> ApiState {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
+        use crate::api::test_utils::TestTeamBuilder;
 
-        // Create clusters table for repository usage.
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            )
-        "#,
-        )
-        .await
-        .expect("create table");
+        let state = create_test_state().await;
 
-        let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
-        let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
-        let mcp_connection_manager = crate::mcp::create_connection_manager();
-        let mcp_session_manager = crate::mcp::create_session_manager();
-        ApiState {
-            xds_state: Arc::new(state),
-            filter_schema_registry: None,
-            stats_cache,
-            mcp_connection_manager,
-            mcp_session_manager,
+        // Create commonly used teams for tests
+        let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let pool = cluster_repo.pool().clone();
+
+        // Create teams that tests commonly reference
+        for team_name in &["test-team", "team-a", "team-b", "platform"] {
+            TestTeamBuilder::new(team_name).insert(&pool).await;
         }
+
+        state
     }
 
     fn sample_request() -> CreateClusterBody {
@@ -359,7 +320,7 @@ mod tests {
 
         let response = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(body.clone()),
         )
         .await
@@ -386,7 +347,7 @@ mod tests {
         let mut body = sample_request();
         body.endpoints.clear();
 
-        let err = create_cluster_handler(State(state), Extension(admin_context()), Json(body))
+        let err = create_cluster_handler(State(state), Extension(admin_auth_context()), Json(body))
             .await
             .expect_err("expected validation error");
 
@@ -399,15 +360,18 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = list_clusters_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Query(ListClustersQuery::default()),
         )
         .await
@@ -423,15 +387,18 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = get_cluster_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("api-cluster".to_string()),
         )
         .await
@@ -449,7 +416,7 @@ mod tests {
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(body.clone()),
         )
         .await
@@ -461,7 +428,7 @@ mod tests {
 
         let response = update_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("api-cluster".to_string()),
             Json(body),
         )
@@ -482,15 +449,18 @@ mod tests {
         let state = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let status = delete_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("api-cluster".to_string()),
         )
         .await
@@ -592,7 +562,7 @@ mod tests {
         // Admin should see all clusters
         let response = list_clusters_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Query(ListClustersQuery::default()),
         )
         .await
@@ -795,10 +765,13 @@ mod tests {
         body.team = "platform".to_string(); // Admin explicitly specifies team
 
         // Admin creates a cluster for a specific team
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
 
         // Verify the cluster is owned by the platform team
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();

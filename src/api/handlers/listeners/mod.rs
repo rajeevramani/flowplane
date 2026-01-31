@@ -241,7 +241,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        auth::models::AuthContext,
+        api::test_utils::{
+            admin_auth_context, minimal_auth_context, readonly_resource_auth_context,
+            resource_auth_context,
+        },
         config::SimpleXdsConfig,
         storage::DbPool,
         xds::resources::LISTENER_TYPE_URL,
@@ -251,7 +254,7 @@ mod tests {
         },
         xds::XdsState,
     };
-    use axum::Extension;
+    use axum::{response::IntoResponse, Extension};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::time::{sleep, Duration};
 
@@ -261,14 +264,7 @@ mod tests {
     };
     use validation::convert_filter_type;
 
-    /// Create an admin AuthContext for testing with full permissions
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            "test-admin".to_string(),
-            vec!["admin:all".to_string()],
-        )
-    }
+    // Use test_utils::admin_auth_context() for admin permissions
 
     async fn create_test_pool() -> DbPool {
         let pool = SqlitePoolOptions::new()
@@ -475,7 +471,7 @@ mod tests {
 
         let (status, Json(resp)) = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload),
         )
         .await
@@ -522,7 +518,7 @@ mod tests {
 
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(initial),
         )
         .await
@@ -551,7 +547,7 @@ mod tests {
 
         let Json(updated) = update_listener_handler(
             State(api_state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("edge-listener".to_string()),
             Json(update_payload),
         )
@@ -568,5 +564,432 @@ mod tests {
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].name, "edge-listener");
         assert_eq!(cached[0].version, state.get_version_number());
+    }
+
+    // === Sample Data Helpers ===
+
+    fn sample_create_listener() -> CreateListenerBody {
+        CreateListenerBody {
+            team: "test-team".to_string(),
+            name: "edge-listener".to_string(),
+            address: "0.0.0.0".to_string(),
+            port: 10000,
+            protocol: Some("HTTP".to_string()),
+            filter_chains: vec![ListenerFilterChainInput {
+                name: Some("default".to_string()),
+                filters: vec![ListenerFilterInput {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: ListenerFilterTypeInput::HttpConnectionManager {
+                        route_config_name: Some("primary-routes".to_string()),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                        http_filters: Vec::new(),
+                    },
+                }],
+                tls_context: None,
+            }],
+            dataplane_id: "dp-test-123".to_string(),
+        }
+    }
+
+    fn sample_update_listener() -> UpdateListenerBody {
+        UpdateListenerBody {
+            address: "127.0.0.1".to_string(),
+            port: 11000,
+            protocol: Some("HTTP".to_string()),
+            filter_chains: vec![ListenerFilterChainInput {
+                name: Some("default".to_string()),
+                filters: vec![ListenerFilterInput {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: ListenerFilterTypeInput::HttpConnectionManager {
+                        route_config_name: Some("secondary-routes".to_string()),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                        http_filters: Vec::new(),
+                    },
+                }],
+                tls_context: None,
+            }],
+            dataplane_id: None,
+        }
+    }
+
+    // === CRUD Tests ===
+
+    #[tokio::test]
+    async fn list_listeners_returns_entries() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
+
+        let result = list_listeners_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Query(types::ListListenersQuery::default()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let listeners = result.unwrap().0;
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0].name, "edge-listener");
+    }
+
+    #[tokio::test]
+    async fn get_listener_returns_details() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
+
+        let result = get_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Path("edge-listener".to_string()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let listener = result.unwrap().0;
+        assert_eq!(listener.name, "edge-listener");
+        assert_eq!(listener.port, Some(10000));
+    }
+
+    #[tokio::test]
+    async fn delete_listener_removes_record() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
+
+        let status = delete_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Path("edge-listener".to_string()),
+        )
+        .await
+        .expect("delete listener");
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Verify it's gone
+        let result = get_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Path("edge-listener".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    // === Authorization Tests ===
+
+    #[tokio::test]
+    async fn create_listener_with_listeners_write_scope() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let result = create_listener_handler(
+            State(api_state),
+            Extension(resource_auth_context("listeners")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn create_listener_fails_without_write_scope() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let result = create_listener_handler(
+            State(api_state),
+            Extension(readonly_resource_auth_context("listeners")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_listener_fails_with_no_permissions() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        let result = create_listener_handler(
+            State(api_state),
+            Extension(minimal_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_listeners_requires_read_scope() {
+        let (_state, api_state) = build_state().await;
+
+        let result = list_listeners_handler(
+            State(api_state),
+            Extension(minimal_auth_context()),
+            Query(types::ListListenersQuery::default()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_listener_requires_read_scope() {
+        let (_state, api_state) = build_state().await;
+
+        let result = get_listener_handler(
+            State(api_state),
+            Extension(minimal_auth_context()),
+            Path("any-listener".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_listener_requires_write_scope() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        // Create first with admin
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
+
+        // Try to update with readonly scope
+        let update = sample_update_listener();
+        let result = update_listener_handler(
+            State(api_state),
+            Extension(readonly_resource_auth_context("listeners")),
+            Path("edge-listener".to_string()),
+            Json(update),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn delete_listener_requires_write_scope() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        // Create first with admin
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create listener");
+
+        // Try to delete with readonly scope
+        let result = delete_listener_handler(
+            State(api_state),
+            Extension(readonly_resource_auth_context("listeners")),
+            Path("edge-listener".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // === Error Handling Tests ===
+
+    #[tokio::test]
+    async fn get_listener_not_found() {
+        let (_state, api_state) = build_state().await;
+
+        let result = get_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Path("non-existent-listener".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_listener_not_found() {
+        let (_state, api_state) = build_state().await;
+        let update = sample_update_listener();
+
+        let result = update_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Path("non-existent-listener".to_string()),
+            Json(update),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_listener_not_found() {
+        let (_state, api_state) = build_state().await;
+
+        let result = delete_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Path("non-existent-listener".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_listener_duplicate_name_returns_error() {
+        let (_state, api_state) = build_state().await;
+        let payload = sample_create_listener();
+
+        // Create first listener
+        let _ = create_listener_handler(
+            State(api_state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create first listener");
+
+        // Try to create duplicate - should fail
+        let result = create_listener_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        // The exact status code depends on the internal error mapping
+    }
+
+    // === Pagination Tests ===
+
+    #[tokio::test]
+    async fn list_listeners_with_pagination() {
+        let (_state, api_state) = build_state().await;
+
+        // Create multiple listeners
+        for i in 0..5 {
+            let mut payload = sample_create_listener();
+            payload.name = format!("listener-{}", i);
+            let _ = create_listener_handler(
+                State(api_state.clone()),
+                Extension(admin_auth_context()),
+                Json(payload),
+            )
+            .await
+            .expect("create listener");
+        }
+
+        // List with limit
+        let result = list_listeners_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Query(types::ListListenersQuery { limit: Some(2), offset: Some(0) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let listeners = result.unwrap().0;
+        assert_eq!(listeners.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_listeners_with_offset() {
+        let (_state, api_state) = build_state().await;
+
+        // Create multiple listeners
+        for i in 0..5 {
+            let mut payload = sample_create_listener();
+            payload.name = format!("listener-{}", i);
+            let _ = create_listener_handler(
+                State(api_state.clone()),
+                Extension(admin_auth_context()),
+                Json(payload),
+            )
+            .await
+            .expect("create listener");
+        }
+
+        // List with offset
+        let result = list_listeners_handler(
+            State(api_state),
+            Extension(admin_auth_context()),
+            Query(types::ListListenersQuery { limit: Some(10), offset: Some(2) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let listeners = result.unwrap().0;
+        assert_eq!(listeners.len(), 3); // 5 total - 2 offset = 3 remaining
     }
 }

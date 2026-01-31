@@ -1064,3 +1064,467 @@ pub async fn get_filter_status_handler(
 
     Ok(Json(response))
 }
+
+// === Tests ===
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, Query, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+
+    use crate::api::test_utils::{
+        admin_auth_context, create_test_state, minimal_auth_context,
+        readonly_resource_auth_context, team_auth_context,
+    };
+    use crate::domain::filter::{FilterConfig, HeaderMutationEntry, HeaderMutationFilterConfig};
+
+    // Use test_utils helpers:
+    // - admin_auth_context() -> admin_auth_context()
+    // - team_auth_context(team) -> team_auth_context(team)
+    // - readonly_resource_auth_context("filters") -> readonly_resource_auth_context("filters")
+    // - minimal_auth_context() -> minimal_auth_context()
+
+    async fn setup_state_with_team(team_name: &str) -> ApiState {
+        use crate::auth::team::CreateTeamRequest;
+        use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
+
+        let state = create_test_state().await;
+
+        // Create the team
+        let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let pool = cluster_repo.pool().clone();
+        let team_repo = SqlxTeamRepository::new(pool);
+
+        team_repo
+            .create_team(CreateTeamRequest {
+                name: team_name.to_string(),
+                display_name: format!("Test Team {}", team_name),
+                description: Some("Test team".to_string()),
+                owner_user_id: None,
+                settings: None,
+            })
+            .await
+            .expect("create team");
+
+        state
+    }
+
+    fn sample_create_filter_request(team: &str) -> CreateFilterRequest {
+        CreateFilterRequest {
+            team: team.to_string(),
+            name: "test-filter".to_string(),
+            filter_type: "header_mutation".to_string(),
+            description: Some("A test header mutation filter".to_string()),
+            config: FilterConfig::HeaderMutation(HeaderMutationFilterConfig {
+                request_headers_to_add: vec![HeaderMutationEntry {
+                    key: "X-Test-Header".to_string(),
+                    value: "test-value".to_string(),
+                    append: false,
+                }],
+                request_headers_to_remove: vec![],
+                response_headers_to_add: vec![],
+                response_headers_to_remove: vec![],
+            }),
+            cluster_config: None,
+        }
+    }
+
+    fn empty_list_query() -> ListFiltersQuery {
+        ListFiltersQuery { limit: None, offset: None }
+    }
+
+    // === Filter CRUD Tests ===
+
+    #[tokio::test]
+    async fn test_list_filters_empty() {
+        let state = create_test_state().await;
+
+        let result = list_filters_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(empty_list_query()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(filters) = result.unwrap();
+        assert!(filters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_filters_requires_read_scope() {
+        let state = create_test_state().await;
+
+        let result = list_filters_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Query(empty_list_query()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_filter_with_admin_auth_context() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        let result =
+            create_filter_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_ok());
+        let (status, Json(response)) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(response.name, "test-filter");
+        assert_eq!(response.filter_type, "header_mutation");
+    }
+
+    #[tokio::test]
+    async fn test_create_filter_with_team_auth_context() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        let result = create_filter_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_create_filter_fails_without_write_scope() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        let result = create_filter_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("filters")),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_filter_validates_team_exists() {
+        let state = create_test_state().await; // No team created
+        let body = sample_create_filter_request("non-existent-team");
+
+        let result =
+            create_filter_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        // Should fail because team doesn't exist
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_filter_returns_details() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Get the filter
+        let result = get_filter_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(filter) = result.unwrap();
+        assert_eq!(filter.id, created.id);
+        assert_eq!(filter.name, "test-filter");
+    }
+
+    #[tokio::test]
+    async fn test_get_filter_not_found() {
+        let state = create_test_state().await;
+
+        let result = get_filter_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-filter-id".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_update_filter_changes_description() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Update the filter
+        let update_body = UpdateFilterRequest {
+            name: None,
+            description: Some("Updated description".to_string()),
+            config: None,
+        };
+
+        let result = update_filter_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(filter) = result.unwrap();
+        assert_eq!(filter.description, Some("Updated description".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_filter_requires_write_scope() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Try to update with readonly context
+        let update_body = UpdateFilterRequest { name: None, description: None, config: None };
+
+        let result = update_filter_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("filters")),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_delete_filter_removes_record() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Delete the filter
+        let result = delete_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), StatusCode::NO_CONTENT);
+
+        // Verify it's gone
+        let get_result =
+            get_filter_handler(State(state), Extension(admin_auth_context()), Path(created.id))
+                .await;
+
+        assert!(get_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_filter_requires_write_scope() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Try to delete with readonly context
+        let result = delete_filter_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("filters")),
+            Path(created.id),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_delete_filter_not_found() {
+        let state = create_test_state().await;
+
+        let result = delete_filter_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-filter-id".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_filters_returns_created_filters() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let _ = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // List filters
+        let result = list_filters_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(empty_list_query()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(filters) = result.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].name, "test-filter");
+    }
+
+    #[tokio::test]
+    async fn test_list_filters_with_pagination() {
+        let state = setup_state_with_team("test-team").await;
+
+        // Create multiple filters
+        for i in 0..5 {
+            let mut body = sample_create_filter_request("test-team");
+            body.name = format!("test-filter-{}", i);
+            let _ = create_filter_handler(
+                State(state.clone()),
+                Extension(admin_auth_context()),
+                Json(body),
+            )
+            .await
+            .expect("create filter");
+        }
+
+        // List with limit
+        let result = list_filters_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(ListFiltersQuery { limit: Some(2), offset: Some(0) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(filters) = result.unwrap();
+        assert_eq!(filters.len(), 2);
+    }
+
+    // === Filter Status Tests ===
+
+    #[tokio::test]
+    async fn test_get_filter_status_returns_installations_and_configurations() {
+        let state = setup_state_with_team("test-team").await;
+        let body = sample_create_filter_request("test-team");
+
+        // Create filter
+        let (_, Json(created)) = create_filter_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(body),
+        )
+        .await
+        .expect("create filter");
+
+        // Get status
+        let result = get_filter_status_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(status) = result.unwrap();
+        assert_eq!(status.filter_id, created.id);
+        assert_eq!(status.filter_name, "test-filter");
+        assert!(status.installations.is_empty());
+        assert!(status.configurations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_filter_status_not_found() {
+        let state = create_test_state().await;
+
+        let result = get_filter_status_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-filter-id".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}

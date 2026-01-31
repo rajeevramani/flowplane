@@ -258,13 +258,16 @@ pub async fn delete_route_config_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State, Extension, Json};
+    use axum::{extract::State, response::IntoResponse, Extension, Json};
     use serde_json::json;
     use sqlx::Executor;
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::auth::models::AuthContext;
+    use crate::api::test_utils::{
+        admin_auth_context, minimal_auth_context, readonly_resource_auth_context,
+        resource_auth_context,
+    };
     use crate::config::SimpleXdsConfig;
     use crate::storage::{create_pool, CreateClusterRequest, DatabaseConfig};
     use crate::xds::filters::http::{
@@ -282,14 +285,7 @@ mod tests {
         RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
     };
 
-    /// Create an admin AuthContext for testing with full permissions
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            "test-admin".to_string(),
-            vec!["admin:all".to_string()],
-        )
-    }
+    // Use test_utils::admin_auth_context() for admin permissions
 
     async fn setup_state() -> ApiState {
         let pool = create_pool(&DatabaseConfig {
@@ -417,7 +413,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload.clone()),
         )
         .await
@@ -441,7 +437,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload),
         )
         .await
@@ -450,7 +446,7 @@ mod tests {
 
         let response = list_route_configs_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Query(types::ListRouteConfigsQuery::default()),
         )
         .await
@@ -466,7 +462,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload),
         )
         .await
@@ -475,7 +471,7 @@ mod tests {
 
         let response = get_route_config_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("primary-routes".into()),
         )
         .await
@@ -491,7 +487,7 @@ mod tests {
         let mut payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload.clone()),
         )
         .await
@@ -542,7 +538,7 @@ mod tests {
 
         let response = update_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("primary-routes".into()),
             Json(payload.clone()),
         )
@@ -578,7 +574,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload),
         )
         .await
@@ -587,7 +583,7 @@ mod tests {
 
         let status = delete_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Path("primary-routes".into()),
         )
         .await
@@ -618,7 +614,7 @@ mod tests {
 
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(admin_auth_context()),
             Json(payload.clone()),
         )
         .await
@@ -638,5 +634,359 @@ mod tests {
             state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
         let stored = repo.get_by_name("template-route").await.expect("stored template route");
         assert_eq!(stored.path_prefix, "template:/api/v1/users/{user_id}".to_string());
+    }
+
+    // === Authorization Tests ===
+
+    #[tokio::test]
+    async fn create_route_config_with_routes_write_scope() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(resource_auth_context("routes")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_fails_without_write_scope() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_fails_with_no_permissions() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_route_configs_requires_read_scope() {
+        let state = setup_state().await;
+
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Query(types::ListRouteConfigsQuery::default()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_route_config_requires_read_scope() {
+        let state = setup_state().await;
+
+        let result = get_route_config_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Path("any-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_route_config_requires_write_scope() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first with admin
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create route config");
+
+        // Try to update with readonly scope
+        let result = update_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Path("primary-routes".into()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn delete_route_config_requires_write_scope() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first with admin
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await
+        .expect("create route config");
+
+        // Try to delete with readonly scope
+        let result = delete_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Path("primary-routes".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // === Error Handling Tests ===
+
+    #[tokio::test]
+    async fn get_route_config_not_found() {
+        let state = setup_state().await;
+
+        let result = get_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_route_config_not_found() {
+        let state = setup_state().await;
+        let mut payload = sample_route_config_definition();
+        // Set the payload name to match the path parameter
+        payload.name = "non-existent-route".to_string();
+
+        let result = update_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-route".into()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_route_config_not_found() {
+        let state = setup_state().await;
+
+        let result = delete_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_duplicate_name_returns_error() {
+        let state = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first route config
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create first route config");
+
+        // Try to create duplicate - should fail
+        let result = create_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        // The exact status code depends on the internal error mapping
+        // What matters is that the duplicate is rejected
+    }
+
+    // === Validation Tests ===
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_virtual_hosts() {
+        let state = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_routes() {
+        let state = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts[0].routes = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_domains() {
+        let state = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts[0].domains = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // === Edge Case Tests ===
+
+    #[tokio::test]
+    async fn list_route_configs_with_pagination() {
+        let state = setup_state().await;
+
+        // Create multiple route configs
+        for i in 0..5 {
+            let mut payload = sample_route_config_definition();
+            payload.name = format!("route-{}", i);
+            let _ = create_route_config_handler(
+                State(state.clone()),
+                Extension(admin_auth_context()),
+                Json(payload),
+            )
+            .await
+            .expect("create route config");
+        }
+
+        // List with limit
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(types::ListRouteConfigsQuery { limit: Some(2), offset: Some(0) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let routes = result.unwrap().0;
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_route_configs_with_offset() {
+        let state = setup_state().await;
+
+        // Create multiple route configs
+        for i in 0..5 {
+            let mut payload = sample_route_config_definition();
+            payload.name = format!("route-{}", i);
+            let _ = create_route_config_handler(
+                State(state.clone()),
+                Extension(admin_auth_context()),
+                Json(payload),
+            )
+            .await
+            .expect("create route config");
+        }
+
+        // List with offset
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(types::ListRouteConfigsQuery { limit: Some(10), offset: Some(2) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let routes = result.unwrap().0;
+        assert_eq!(routes.len(), 3); // 5 total - 2 offset = 3 remaining
     }
 }

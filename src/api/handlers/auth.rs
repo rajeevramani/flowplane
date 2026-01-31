@@ -843,3 +843,485 @@ pub async fn change_password_handler(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+// === Tests ===
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, Query, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use chrono::{Duration, Utc};
+
+    use crate::api::test_utils::{
+        admin_auth_context, create_test_state, minimal_auth_context,
+        readonly_resource_auth_context, resource_auth_context,
+    };
+
+    // Use test_utils helpers for auth contexts:
+    // - admin_auth_context() -> admin_auth_context()
+    // - resource_auth_context("tokens") -> resource_auth_context("tokens")
+    // - readonly_resource_auth_context("tokens") -> readonly_resource_auth_context("tokens")
+    // - minimal_auth_context() -> minimal_auth_context()
+
+    fn sample_create_token_body() -> CreateTokenBody {
+        CreateTokenBody {
+            name: "test-token".to_string(),
+            description: Some("A test token".to_string()),
+            expires_at: Some(Utc::now() + Duration::days(30)),
+            scopes: vec!["clusters:read".to_string(), "routes:read".to_string()],
+        }
+    }
+
+    // === Token Handler Tests ===
+
+    #[tokio::test]
+    async fn test_create_token_with_admin_auth_context() {
+        let state = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_ok());
+        let (status, Json(response)) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        // TokenSecretResponse has id (token id) and token (the secret)
+        assert!(!response.id.is_empty());
+        assert!(!response.token.is_empty());
+        assert!(response.token.starts_with("fp_"));
+    }
+
+    #[tokio::test]
+    async fn test_create_token_with_tokens_write_scope() {
+        let state = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result = create_token_handler(
+            State(state),
+            Extension(resource_auth_context("tokens")),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_fails_without_write_scope() {
+        let state = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result = create_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_fails_with_no_permissions() {
+        let state = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result =
+            create_token_handler(State(state), Extension(minimal_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_validates_name_length() {
+        let state = create_test_state().await;
+        let mut body = sample_create_token_body();
+        body.name = "ab".to_string(); // Too short (min is 3)
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_validates_empty_scopes() {
+        let state = create_test_state().await;
+        let mut body = sample_create_token_body();
+        body.scopes = vec![]; // Empty scopes (min is 1)
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_returns_created_tokens() {
+        let state = create_test_state().await;
+
+        // Create a token first
+        let body = sample_create_token_body();
+        let _ =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // List tokens
+        let result = list_tokens_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(ListTokensQuery::default()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(tokens) = result.unwrap();
+        assert!(!tokens.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_requires_read_scope() {
+        let state = create_test_state().await;
+
+        let result = list_tokens_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Query(ListTokensQuery::default()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_with_pagination() {
+        let state = create_test_state().await;
+
+        // Create multiple tokens
+        for i in 0..5 {
+            let mut body = sample_create_token_body();
+            body.name = format!("test-token-{}", i);
+            let _ = create_token_handler(
+                State(state.clone()),
+                Extension(admin_auth_context()),
+                Json(body),
+            )
+            .await
+            .expect("create token");
+        }
+
+        // List with limit
+        let result = list_tokens_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(ListTokensQuery { limit: Some(2), offset: Some(0) }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(tokens) = result.unwrap();
+        assert_eq!(tokens.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_returns_token_details() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Get the token using the id from the response
+        let result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.name, "test-token");
+        assert_eq!(token.id.to_string(), created.id);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_not_found() {
+        let state = create_test_state().await;
+
+        let result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-token-id".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_update_token_changes_name() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Update the token
+        let update_body = UpdateTokenBody {
+            name: Some("updated-token-name".to_string()),
+            description: None,
+            status: None,
+            expires_at: None,
+            scopes: None,
+        };
+
+        let result = update_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.name, "updated-token-name");
+    }
+
+    #[tokio::test]
+    async fn test_update_token_requires_write_scope() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Try to update with readonly context
+        let update_body = UpdateTokenBody::default();
+
+        let result = update_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_token_changes_status() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Revoke the token
+        let result = revoke_token_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.status.as_str(), "revoked");
+
+        // Verify we can still get the revoked token
+        let get_result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(get_result.is_ok());
+        let Json(fetched) = get_result.unwrap();
+        assert_eq!(fetched.status.as_str(), "revoked");
+    }
+
+    #[tokio::test]
+    async fn test_rotate_token_returns_new_secret() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        let original_secret = created.token.clone();
+
+        // Rotate the token
+        let result = rotate_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(rotated) = result.unwrap();
+        assert!(!rotated.token.is_empty());
+        assert_ne!(rotated.token, original_secret);
+        assert!(rotated.token.starts_with("fp_"));
+    }
+
+    #[tokio::test]
+    async fn test_rotate_token_requires_write_scope() {
+        let state = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Try to rotate with readonly context
+        let result = rotate_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // === Helper Function Tests ===
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "192.168.1.1, 10.0.0.1".parse().unwrap());
+
+        let ip = extract_client_ip(&headers);
+        assert_eq!(ip, Some("192.168.1.1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_client_ip_single_ip() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "192.168.1.1".parse().unwrap());
+
+        let ip = extract_client_ip(&headers);
+        assert_eq!(ip, Some("192.168.1.1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_client_ip_no_header() {
+        let headers = axum::http::HeaderMap::new();
+
+        let ip = extract_client_ip(&headers);
+        assert_eq!(ip, None);
+    }
+
+    #[test]
+    fn test_extract_user_agent() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::USER_AGENT, "Mozilla/5.0 (Test)".parse().unwrap());
+
+        let ua = extract_user_agent(&headers);
+        assert_eq!(ua, Some("Mozilla/5.0 (Test)".to_string()));
+    }
+
+    #[test]
+    fn test_extract_user_agent_no_header() {
+        let headers = axum::http::HeaderMap::new();
+
+        let ua = extract_user_agent(&headers);
+        assert_eq!(ua, None);
+    }
+
+    // === CreateTokenBody Tests ===
+
+    #[test]
+    fn test_create_token_body_into_request() {
+        let body = CreateTokenBody {
+            name: "my-token".to_string(),
+            description: Some("Test description".to_string()),
+            expires_at: None,
+            scopes: vec!["clusters:read".to_string()],
+        };
+
+        // Create a context with user_id
+        let mut context = admin_auth_context();
+        context.user_id = Some(UserId::from_string("user-123".to_string()));
+        context.user_email = Some("test@example.com".to_string());
+
+        let request = body.into_request(&context);
+
+        assert_eq!(request.name, "my-token");
+        assert_eq!(request.description, Some("Test description".to_string()));
+        assert_eq!(request.scopes, vec!["clusters:read".to_string()]);
+        assert_eq!(request.created_by, Some("user:user-123".to_string()));
+        assert_eq!(request.user_id, Some(UserId::from_string("user-123".to_string())));
+        assert_eq!(request.user_email, Some("test@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_update_token_body_into_request() {
+        let body = UpdateTokenBody {
+            name: Some("new-name".to_string()),
+            description: Some("new-description".to_string()),
+            status: Some("active".to_string()),
+            expires_at: None,
+            scopes: Some(vec!["clusters:write".to_string()]),
+        };
+
+        let request = body.into_request();
+
+        assert_eq!(request.name, Some("new-name".to_string()));
+        assert_eq!(request.description, Some("new-description".to_string()));
+        assert_eq!(request.status, Some("active".to_string()));
+        assert_eq!(request.scopes, Some(vec!["clusters:write".to_string()]));
+    }
+}
