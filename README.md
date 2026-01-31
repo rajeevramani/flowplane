@@ -343,15 +343,27 @@ graph TD
 
 ## Documentation
 
+### Getting Started
 - [Getting Started](docs/getting-started.md)
-- [CLI](docs/cli.md)
 - [Configuration](docs/configuration.md)
-- [Operations](docs/operations.md)
+- [CLI](docs/cli.md)
+
+### Features
 - [HTTP Filters](docs/filters.md)
+- [Custom WASM Filters](docs/wasm-filters.md)
 - [TLS](docs/tls.md)
 - [Secrets Management (SDS)](docs/secrets-sds.md)
 - [Learning Gateway](docs/learning-manual/README.md)
 - [MCP Integration](docs/mcp.md)
+
+### Deployment
+- [Kubernetes](docs/deployment/kubernetes.md)
+- [Multi-Region](docs/deployment/multi-region.md)
+- [Multi-Dataplane](docs/deployment/multi-dataplane.md)
+
+### Architecture
+- [Architecture Overview](docs/architecture.md)
+- [Architecture Decision Records](docs/adr/README.md)
 
 ## Acknowledgments
 

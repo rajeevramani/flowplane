@@ -46,6 +46,7 @@ logs/
 # Documentation build artifacts
 book/
 docs/build/
+docs/adr/
 
 # Test coverage and reports
 coverage/
