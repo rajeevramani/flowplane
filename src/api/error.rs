@@ -146,6 +146,9 @@ impl From<FlowplaneError> for ApiError {
                 "Operation '{}' timed out after {}ms",
                 operation, duration_ms
             )),
+            FlowplaneError::Parse { context, .. } => ApiError::BadRequest(context),
+            FlowplaneError::Sync { context } => ApiError::Internal(context),
+            FlowplaneError::Conversion { context, .. } => ApiError::BadRequest(context),
         }
     }
 }

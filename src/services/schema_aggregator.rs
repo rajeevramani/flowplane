@@ -141,10 +141,16 @@ impl SchemaAggregator {
         // Calculate sample count
         let sample_count = observations.len() as i64;
 
-        // Calculate time range
-        let first_observed = observations.iter().map(|obs| obs.first_seen_at).min().unwrap(); // Safe because we checked observations is not empty
+        // Calculate time range - guard verified by observations.is_empty() check above
+        let first_observed =
+            observations.iter().map(|obs| obs.first_seen_at).min().ok_or_else(|| {
+                FlowplaneError::internal("Cannot compute min on empty observations")
+            })?;
 
-        let last_observed = observations.iter().map(|obs| obs.last_seen_at).max().unwrap();
+        let last_observed =
+            observations.iter().map(|obs| obs.last_seen_at).max().ok_or_else(|| {
+                FlowplaneError::internal("Cannot compute max on empty observations")
+            })?;
 
         // Task 6.4: Calculate comprehensive confidence score (before serializing response_schemas_map)
         let confidence_score =

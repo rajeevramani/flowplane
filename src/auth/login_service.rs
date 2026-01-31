@@ -64,16 +64,18 @@ impl LoginService {
         let email = User::normalize_email(&request.email);
 
         // Fetch user with password hash
-        let user_result = self.user_repository.get_user_with_password(&email).await?;
-        if user_result.is_none() {
-            warn!(email = %email, "login attempt for non-existent user");
-            metrics::record_authentication("invalid_credentials").await;
-            return Err(Error::auth(
-                "Invalid email or password",
-                AuthErrorType::InvalidCredentials,
-            ));
-        }
-        let (user, password_hash) = user_result.unwrap();
+        let (user, password_hash) =
+            match self.user_repository.get_user_with_password(&email).await? {
+                Some(result) => result,
+                None => {
+                    warn!(email = %email, "login attempt for non-existent user");
+                    metrics::record_authentication("invalid_credentials").await;
+                    return Err(Error::auth(
+                        "Invalid email or password",
+                        AuthErrorType::InvalidCredentials,
+                    ));
+                }
+            };
 
         // Verify password
         let password_matches = hashing::verify_password(&request.password, &password_hash)?;

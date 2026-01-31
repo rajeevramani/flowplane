@@ -316,12 +316,13 @@ fn process_filters(
 
         // Try to use strongly-typed FilterConfig conversion first (proper protobuf),
         // fall back to dynamic Struct-based conversion for unknown filter types
+        // Note: or_else always returns Some, so expect is safe here
         let any_result = try_typed_conversion(filter_type, &inner_config)
             .or_else(|| {
                 // Fall back to dynamic conversion for unknown filter types
                 Some(converter.to_listener_any(filter_type, &inner_config))
             })
-            .unwrap();
+            .expect("BUG: or_else guarantees Some - this should never fail");
 
         match any_result {
             Ok(any) => {

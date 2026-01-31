@@ -476,10 +476,11 @@ pub async fn get_dataplane_bootstrap_handler(
     // Add transport_socket for mTLS if enabled
     if mtls_enabled {
         let transport_socket = build_mtls_transport_socket(cert_path, key_path, ca_path);
-        xds_cluster
-            .as_object_mut()
-            .expect("xds_cluster should be an object")
-            .insert("transport_socket".to_string(), transport_socket);
+        let cluster_obj = xds_cluster.as_object_mut().ok_or_else(|| {
+            tracing::error!("Invalid xDS cluster structure: expected JSON object");
+            ApiError::Internal("Failed to configure mTLS: invalid cluster structure".to_string())
+        })?;
+        cluster_obj.insert("transport_socket".to_string(), transport_socket);
 
         tracing::debug!(
             cert_path = %cert_path,

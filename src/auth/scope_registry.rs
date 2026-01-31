@@ -6,7 +6,7 @@
 //! - Provides both sync and async validation methods
 //! - Supports team-scoped patterns with wildcards
 
-use crate::errors::Result;
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::repositories::{ScopeDefinition, ScopeRepository, SqlxScopeRepository};
 use crate::storage::DbPool;
 use lazy_static::lazy_static;
@@ -16,13 +16,15 @@ use std::sync::{Arc, RwLock};
 
 lazy_static! {
     /// Regex for validating team name format
+    /// NOTE: expect() acceptable - pattern is validated by tests
     static ref TEAM_NAME_REGEX: Regex = Regex::new(r"^[a-z0-9-]+$")
-        .expect("TEAM_NAME_REGEX should be valid");
+        .expect("BUG: TEAM_NAME_REGEX pattern is invalid - validated by tests");
 
     /// Regex for validating scope format (basic structure check)
+    /// NOTE: expect() acceptable - pattern is validated by tests
     static ref SCOPE_FORMAT_REGEX: Regex = Regex::new(
         r"^(team:[a-z0-9-]+:[a-z0-9-]+:[a-z]+|team:[a-z0-9-]+:\*:\*|[a-z0-9-]+:[a-z]+)$"
-    ).expect("SCOPE_FORMAT_REGEX should be valid");
+    ).expect("BUG: SCOPE_FORMAT_REGEX pattern is invalid - validated by tests");
 }
 
 /// Cached scope data for fast synchronous validation
@@ -79,7 +81,10 @@ impl ScopeRegistry {
                 .insert(scope.action.clone());
         }
 
-        let mut cache = self.cache.write().expect("RwLock poisoned");
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| FlowplaneError::sync("Scope registry cache lock poisoned"))?;
         cache.valid_scopes = valid_scopes;
         cache.valid_resources = valid_resources;
         cache.resource_actions = resource_actions;
@@ -101,8 +106,14 @@ impl ScopeRegistry {
             return self.is_valid_team_scope(scope);
         }
 
-        // Check against cached scopes
-        let cache = self.cache.read().expect("RwLock poisoned");
+        // Check against cached scopes - fail closed on lock failure
+        let cache = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - denying access");
+                return false;
+            }
+        };
         cache.valid_scopes.contains(scope)
     }
 
@@ -124,7 +135,14 @@ impl ScopeRegistry {
             return false;
         }
 
-        let cache = self.cache.read().expect("RwLock poisoned");
+        // Fail closed on lock failure
+        let cache = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - denying access");
+                return false;
+            }
+        };
 
         // Handle wildcards
         if resource == "*" && action == "*" {
@@ -146,18 +164,39 @@ impl ScopeRegistry {
     }
 
     /// Get all enabled scope definitions (for admin API)
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_all_scopes(&self) -> Vec<ScopeDefinition> {
-        self.cache.read().expect("RwLock poisoned").definitions.clone()
+        match self.cache.read() {
+            Ok(cache) => cache.definitions.clone(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Get UI-visible scope definitions (for public API)
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_ui_scopes(&self) -> Vec<ScopeDefinition> {
-        self.cache.read().expect("RwLock poisoned").ui_definitions.clone()
+        match self.cache.read() {
+            Ok(cache) => cache.ui_definitions.clone(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Get valid resources
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_resources(&self) -> Vec<String> {
-        self.cache.read().expect("RwLock poisoned").valid_resources.iter().cloned().collect()
+        match self.cache.read() {
+            Ok(cache) => cache.valid_resources.iter().cloned().collect(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Validate a scope and return detailed error if invalid
@@ -179,7 +218,10 @@ impl ScopeRegistry {
                 let resource = parts[2];
                 let action = parts[3];
 
-                let cache = self.cache.read().expect("RwLock poisoned");
+                let cache = self
+                    .cache
+                    .read()
+                    .map_err(|_| "Scope registry unavailable - cache lock poisoned".to_string())?;
                 if resource != "*" && !cache.valid_resources.contains(resource) {
                     return Err(format!(
                         "Unknown resource '{}' in scope '{}'. Valid resources: {:?}",
@@ -257,9 +299,14 @@ pub async fn init_scope_registry(pool: DbPool) -> Result<()> {
 }
 
 /// Get the global scope registry
-/// Panics if not initialized - call `init_scope_registry()` first
+///
+/// # Panics
+/// Panics if not initialized - call `init_scope_registry()` first.
+/// This is a programming error, not a runtime failure.
 pub fn get_scope_registry() -> &'static Arc<ScopeRegistry> {
-    SCOPE_REGISTRY.get().expect("Scope registry not initialized. Call init_scope_registry() first.")
+    SCOPE_REGISTRY
+        .get()
+        .expect("BUG: Scope registry not initialized - call init_scope_registry() first")
 }
 
 /// Check if scope registry is initialized

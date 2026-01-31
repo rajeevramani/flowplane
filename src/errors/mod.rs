@@ -98,6 +98,26 @@ pub enum FlowplaneError {
     /// Network transport errors (gRPC, HTTP) - retained for backward compatibility
     #[error("Transport error: {0}")]
     Transport(String),
+
+    /// Parsing/decoding errors (replaces unwrap on parse operations)
+    #[error("Parse error: {context}")]
+    Parse {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    /// Lock/concurrency errors (replaces expect on RwLock/Mutex)
+    #[error("Synchronization error: {context}")]
+    Sync { context: String },
+
+    /// Type conversion errors (replaces unwrap on TryFrom/TryInto)
+    #[error("Conversion error: {context}")]
+    Conversion {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 }
 
 /// Authentication error subtypes
@@ -209,6 +229,37 @@ impl FlowplaneError {
         Self::Database { source, context }
     }
 
+    /// Create a parse error
+    pub fn parse<S: Into<String>>(context: S) -> Self {
+        Self::Parse { context: context.into(), source: None }
+    }
+
+    /// Create a parse error with source
+    pub fn parse_with_source<S: Into<String>>(
+        context: S,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self::Parse { context: context.into(), source: Some(source) }
+    }
+
+    /// Create a sync/lock error
+    pub fn sync<S: Into<String>>(context: S) -> Self {
+        Self::Sync { context: context.into() }
+    }
+
+    /// Create a conversion error
+    pub fn conversion<S: Into<String>>(context: S) -> Self {
+        Self::Conversion { context: context.into(), source: None }
+    }
+
+    /// Create a conversion error with source
+    pub fn conversion_with_source<S: Into<String>>(
+        context: S,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self::Conversion { context: context.into(), source: Some(source) }
+    }
+
     /// Create a serialization error with custom context
     pub fn serialization<S: Into<String>>(source: serde_json::Error, context: S) -> Self {
         Self::Serialization { source, context: context.into() }
@@ -252,6 +303,9 @@ impl FlowplaneError {
             FlowplaneError::Timeout { .. } => 408,
             FlowplaneError::ConstraintViolation { .. } => 409,
             FlowplaneError::Transport(_) => 500,
+            FlowplaneError::Parse { .. } => 400,
+            FlowplaneError::Sync { .. } => 500,
+            FlowplaneError::Conversion { .. } => 400,
         }
     }
 
@@ -333,6 +387,30 @@ impl From<TlsError> for FlowplaneError {
     }
 }
 
+impl From<std::num::ParseIntError> for FlowplaneError {
+    fn from(error: std::num::ParseIntError) -> Self {
+        Self::parse_with_source("Integer parsing failed", Box::new(error))
+    }
+}
+
+impl From<std::num::ParseFloatError> for FlowplaneError {
+    fn from(error: std::num::ParseFloatError) -> Self {
+        Self::parse_with_source("Float parsing failed", Box::new(error))
+    }
+}
+
+impl From<url::ParseError> for FlowplaneError {
+    fn from(error: url::ParseError) -> Self {
+        Self::parse_with_source("URL parsing failed", Box::new(error))
+    }
+}
+
+impl From<uuid::Error> for FlowplaneError {
+    fn from(error: uuid::Error) -> Self {
+        Self::parse_with_source("UUID parsing failed", Box::new(error))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +485,47 @@ mod tests {
         let _transport = FlowplaneError::transport("test");
         let _internal = FlowplaneError::internal("test");
         let _validation = FlowplaneError::validation("test");
+    }
+
+    #[test]
+    fn test_parse_error() {
+        let error = FlowplaneError::parse("Invalid format");
+        assert!(matches!(error, FlowplaneError::Parse { .. }));
+        assert_eq!(error.status_code(), 400);
+        assert_eq!(error.to_string(), "Parse error: Invalid format");
+    }
+
+    #[test]
+    fn test_sync_error() {
+        let error = FlowplaneError::sync("Lock poisoned");
+        assert!(matches!(error, FlowplaneError::Sync { .. }));
+        assert_eq!(error.status_code(), 500);
+        assert_eq!(error.to_string(), "Synchronization error: Lock poisoned");
+    }
+
+    #[test]
+    fn test_conversion_error() {
+        let error = FlowplaneError::conversion("Value out of range");
+        assert!(matches!(error, FlowplaneError::Conversion { .. }));
+        assert_eq!(error.status_code(), 400);
+        assert_eq!(error.to_string(), "Conversion error: Value out of range");
+    }
+
+    #[test]
+    fn test_parse_error_conversions() {
+        // Test ParseIntError conversion
+        let int_error = "not_a_number".parse::<i64>().unwrap_err();
+        let flowplane_error: FlowplaneError = int_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
+
+        // Test UUID parse error conversion
+        let uuid_error = uuid::Uuid::parse_str("not-a-uuid").unwrap_err();
+        let flowplane_error: FlowplaneError = uuid_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
+
+        // Test URL parse error conversion
+        let url_error = url::Url::parse("not a valid url").unwrap_err();
+        let flowplane_error: FlowplaneError = url_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
     }
 }

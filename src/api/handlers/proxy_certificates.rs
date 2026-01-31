@@ -42,8 +42,12 @@ pub struct GenerateCertificateRequest {
     pub proxy_id: String,
 }
 
-static PROXY_ID_REGEX: once_cell::sync::Lazy<regex::Regex> =
-    once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$").unwrap());
+/// Regex for validating proxy IDs: starts with alphanumeric, followed by alphanumeric/hyphen/underscore.
+/// NOTE: expect() acceptable for static regex - validated by test_proxy_id_regex_compiles test.
+static PROXY_ID_REGEX: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+        .expect("BUG: PROXY_ID_REGEX pattern is invalid - validated by tests")
+});
 
 /// Response after successfully generating a certificate.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -425,4 +429,21 @@ fn get_certificate_repository(
 
 fn convert_error(error: Error) -> ApiError {
     ApiError::from(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Validates that the PROXY_ID_REGEX pattern compiles successfully.
+    #[test]
+    fn test_proxy_id_regex_compiles() {
+        // Force lazy initialization - will panic if pattern is invalid
+        assert!(PROXY_ID_REGEX.is_match("proxy-1"));
+        assert!(PROXY_ID_REGEX.is_match("my_proxy_123"));
+        assert!(PROXY_ID_REGEX.is_match("a"));
+        assert!(!PROXY_ID_REGEX.is_match("-invalid")); // Can't start with hyphen
+        assert!(!PROXY_ID_REGEX.is_match("_invalid")); // Can't start with underscore
+        assert!(!PROXY_ID_REGEX.is_match("")); // Empty not allowed
+    }
 }

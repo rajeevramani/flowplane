@@ -4,7 +4,7 @@
 //! from cluster configuration JSON into the cluster_endpoints table.
 
 use crate::domain::{ClusterId, EndpointHealthStatus};
-use crate::errors::Result;
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::{
     ClusterEndpointRepository, CreateEndpointRequest, DbPool, UpdateEndpointRequest,
 };
@@ -51,7 +51,12 @@ impl ClusterEndpointSyncService {
                 let existing = existing_endpoints
                     .iter()
                     .find(|e| e.address == endpoint.address && e.port as i32 == endpoint.port)
-                    .expect("Endpoint must exist if key is in existing_keys");
+                    .ok_or_else(|| {
+                        FlowplaneError::internal(format!(
+                            "Endpoint inconsistency: {:?} found in keys but not in list",
+                            key
+                        ))
+                    })?;
 
                 if existing.weight != endpoint.weight as u32
                     || existing.priority != endpoint.priority as u32

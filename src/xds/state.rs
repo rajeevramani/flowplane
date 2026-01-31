@@ -238,6 +238,10 @@ impl XdsState {
     }
 
     /// Create a new XdsState with services (builder pattern)
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned (indicates a previous panic in a thread
+    /// holding the lock - unrecoverable state).
     pub fn with_services(
         mut self,
         access_log_service: Arc<FlowplaneAccessLogService>,
@@ -246,14 +250,28 @@ impl XdsState {
     ) -> Self {
         self.access_log_service = Some(access_log_service);
         self.ext_proc_service = Some(ext_proc_service);
-        *self.learning_session_service.write().expect("lock poisoned") =
-            Some(learning_session_service);
+        match self.learning_session_service.write() {
+            Ok(mut guard) => *guard = Some(learning_session_service),
+            Err(e) => {
+                tracing::error!("BUG: learning_session_service lock poisoned: {}", e);
+                panic!("BUG: learning_session_service lock poisoned - indicates previous panic");
+            }
+        }
         self
     }
 
     /// Set the learning session service (safe mutation)
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned (indicates a previous panic).
     pub fn set_learning_session_service(&self, service: Arc<LearningSessionService>) {
-        *self.learning_session_service.write().expect("lock poisoned") = Some(service);
+        match self.learning_session_service.write() {
+            Ok(mut guard) => *guard = Some(service),
+            Err(e) => {
+                tracing::error!("BUG: learning_session_service lock poisoned: {}", e);
+                panic!("BUG: learning_session_service lock poisoned - indicates previous panic");
+            }
+        }
     }
 
     /// Get the learning session service if available
@@ -263,13 +281,22 @@ impl XdsState {
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
     /// Returns `Some(ResourceUpdate)` when a delta was published.
+    ///
+    /// # Panics
+    /// Panics if the resource cache lock is poisoned (indicates a previous panic).
     #[instrument(skip(self, built_resources), fields(type_url = %type_url, resource_count = built_resources.len()), name = "xds_apply_resources")]
     pub fn apply_built_resources(
         &self,
         type_url: &str,
         built_resources: Vec<BuiltResource>,
     ) -> Option<Arc<ResourceUpdate>> {
-        let mut caches = self.resource_caches.write().expect("resource cache lock poisoned");
+        let mut caches = match self.resource_caches.write() {
+            Ok(guard) => guard,
+            Err(e) => {
+                tracing::error!("BUG: resource_caches lock poisoned during apply: {}", e);
+                panic!("BUG: resource_caches lock poisoned - indicates previous panic");
+            }
+        };
         let cache = caches.entry(type_url.to_string()).or_default();
 
         let incoming_names: HashSet<String> =
@@ -325,9 +352,18 @@ impl XdsState {
     }
 
     /// Return a clone of the cached resources for the provided type URL.
+    /// Returns empty Vec if lock is unavailable (degraded mode).
     pub fn cached_resources(&self, type_url: &str) -> Vec<CachedResource> {
-        let caches = self.resource_caches.read().expect("resource cache lock poisoned");
-        caches.get(type_url).map(|cache| cache.values().cloned().collect()).unwrap_or_default()
+        match self.resource_caches.read() {
+            Ok(caches) => caches
+                .get(type_url)
+                .map(|cache| cache.values().cloned().collect())
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::error!("resource_caches lock poisoned during read: {}", e);
+                Vec::new()
+            }
+        }
     }
 
     /// Refresh the cluster cache from the backing repository (if available).

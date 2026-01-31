@@ -517,11 +517,11 @@ impl SessionService {
         }
 
         let id_part = parts[0];
-        if !id_part.starts_with("fp_setup_") {
-            return Err(Error::auth("Invalid setup token prefix", AuthErrorType::InvalidToken));
-        }
-
-        let id = id_part.strip_prefix("fp_setup_").unwrap().to_string();
+        // Note: strip_prefix is safe after starts_with check, but using ok_or_else for consistency
+        let id = id_part
+            .strip_prefix("fp_setup_")
+            .ok_or_else(|| Error::auth("Invalid setup token prefix", AuthErrorType::InvalidToken))?
+            .to_string();
         let secret = parts[1].to_string();
 
         Ok((id, secret))
@@ -535,11 +535,13 @@ impl SessionService {
         }
 
         let id_part = parts[0];
-        if !id_part.starts_with("fp_session_") {
-            return Err(Error::auth("Invalid session token prefix", AuthErrorType::InvalidToken));
-        }
-
-        let id = id_part.strip_prefix("fp_session_").unwrap().to_string();
+        // Note: strip_prefix is safe after starts_with check, but using ok_or_else for consistency
+        let id = id_part
+            .strip_prefix("fp_session_")
+            .ok_or_else(|| {
+                Error::auth("Invalid session token prefix", AuthErrorType::InvalidToken)
+            })?
+            .to_string();
         let secret = parts[1].to_string();
 
         Ok((id, secret))
