@@ -5,6 +5,7 @@
 
 pub mod clusters;
 pub mod dataplanes;
+pub mod devops_agent;
 pub mod filter_types;
 pub mod filters;
 pub mod learning;
@@ -101,6 +102,18 @@ pub use dataplanes::{
 pub use filter_types::{cp_get_filter_type_tool, cp_list_filter_types_tool};
 pub use filter_types::{execute_get_filter_type, execute_list_filter_types};
 
+// Re-export DevOps agent tools
+pub use devops_agent::{
+    devops_configure_cors_tool, devops_configure_rate_limiting_tool,
+    devops_create_canary_deployment_tool, devops_deploy_api_tool, devops_enable_jwt_auth_tool,
+    devops_get_deployment_status_tool,
+};
+pub use devops_agent::{
+    execute_devops_configure_cors, execute_devops_configure_rate_limiting,
+    execute_devops_create_canary_deployment, execute_devops_deploy_api,
+    execute_devops_enable_jwt_auth, execute_devops_get_deployment_status,
+};
+
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
 use serde_json::Value;
@@ -170,6 +183,13 @@ pub fn get_all_tools() -> Vec<Tool> {
         // Filter type tools
         cp_list_filter_types_tool(),
         cp_get_filter_type_tool(),
+        // DevOps agent workflow tools
+        devops_deploy_api_tool(),
+        devops_configure_rate_limiting_tool(),
+        devops_enable_jwt_auth_tool(),
+        devops_configure_cors_tool(),
+        devops_create_canary_deployment_tool(),
+        devops_get_deployment_status_tool(),
     ]
 }
 
@@ -211,8 +231,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types = 46 total
-        assert_eq!(tools.len(), 46);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 6 devops = 52 total
+        assert_eq!(tools.len(), 52);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

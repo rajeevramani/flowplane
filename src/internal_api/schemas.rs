@@ -90,16 +90,30 @@ impl AggregatedSchemaOperations {
             repository.list_by_team(team).await.map_err(InternalError::from)?
         };
 
-        let count = schemas.len();
+        // Apply pagination
+        let limit = req.limit.map(|l| l as usize);
+        let offset = req.offset.unwrap_or(0) as usize;
+
+        let paginated_schemas: Vec<_> =
+            schemas.into_iter().skip(offset).take(limit.unwrap_or(usize::MAX)).collect();
+
+        let count = paginated_schemas.len();
 
         info!(
             team = %team,
             count = count,
+            limit = ?req.limit,
+            offset = offset,
             latest_only = req.latest_only.unwrap_or(false),
             "Listed aggregated schemas"
         );
 
-        Ok(ListSchemasResponse { schemas, count })
+        Ok(ListSchemasResponse {
+            schemas: paginated_schemas,
+            count,
+            limit: req.limit,
+            offset: req.offset,
+        })
     }
 
     /// Get a single aggregated schema by ID

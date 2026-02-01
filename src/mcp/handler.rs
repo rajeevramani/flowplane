@@ -273,6 +273,13 @@ impl McpHandler {
             // Filter type tools
             tools::cp_list_filter_types_tool(),
             tools::cp_get_filter_type_tool(),
+            // DevOps agent workflow tools
+            tools::devops_deploy_api_tool(),
+            tools::devops_configure_rate_limiting_tool(),
+            tools::devops_enable_jwt_auth_tool(),
+            tools::devops_configure_cors_tool(),
+            tools::devops_create_canary_deployment_tool(),
+            tools::devops_get_deployment_status_tool(),
         ];
 
         let result = ToolsListResult { tools, next_cursor: None };
@@ -360,7 +367,13 @@ impl McpHandler {
             | "cp_update_dataplane"
             | "cp_delete_dataplane"
             | "cp_list_filter_types"
-            | "cp_get_filter_type" => {
+            | "cp_get_filter_type"
+            | "devops_deploy_api"
+            | "devops_configure_rate_limiting"
+            | "devops_enable_jwt_auth"
+            | "devops_configure_cors"
+            | "devops_create_canary_deployment"
+            | "devops_get_deployment_status" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -515,6 +528,28 @@ impl McpHandler {
                     }
                     "cp_get_filter_type" => {
                         tools::execute_get_filter_type(xds_state, &self.team, args).await
+                    }
+                    // DevOps agent workflow operations
+                    "devops_deploy_api" => {
+                        tools::execute_devops_deploy_api(xds_state, &self.team, args).await
+                    }
+                    "devops_configure_rate_limiting" => {
+                        tools::execute_devops_configure_rate_limiting(xds_state, &self.team, args)
+                            .await
+                    }
+                    "devops_enable_jwt_auth" => {
+                        tools::execute_devops_enable_jwt_auth(xds_state, &self.team, args).await
+                    }
+                    "devops_configure_cors" => {
+                        tools::execute_devops_configure_cors(xds_state, &self.team, args).await
+                    }
+                    "devops_create_canary_deployment" => {
+                        tools::execute_devops_create_canary_deployment(xds_state, &self.team, args)
+                            .await
+                    }
+                    "devops_get_deployment_status" => {
+                        tools::execute_devops_get_deployment_status(xds_state, &self.team, args)
+                            .await
                     }
                     _ => unreachable!(),
                 }

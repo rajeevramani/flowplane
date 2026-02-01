@@ -140,7 +140,24 @@ Team identity is resolved in the following priority order:
 
 ## Control Plane (CP) Tools
 
-The CP endpoint exposes 19 built-in tools for managing Flowplane infrastructure.
+The CP endpoint exposes 52 built-in tools for managing Flowplane infrastructure (~60% CP API coverage).
+
+### Tool Categories
+
+| Category | Tools | Coverage |
+|----------|-------|----------|
+| Clusters | 5 (list, get, create, update, delete) | 100% |
+| Listeners | 5 (list, get, create, update, delete) | 100% |
+| Route Configs | 3 (create, update, delete) | 100% |
+| Routes | 5 (list, get, create, update, delete) | 100% |
+| Virtual Hosts | 5 (list, get, create, update, delete) | 100% |
+| Filters | 8 (list, get, create, update, delete, attach, detach, list attachments) | 100% |
+| Learning Sessions | 4 (list, get, create, delete) | 100% |
+| Aggregated Schemas | 2 (list, get) | 100% |
+| OpenAPI Imports | 2 (list, get) | 100% |
+| Dataplanes | 5 (list, get, create, update, delete) | 100% |
+| Filter Types | 2 (list, get) | 100% |
+| DevOps Agent | 6 (deploy_api, rate_limiting, jwt_auth, cors, canary, status) | 100% |
 
 ### Read-Only Tools
 
@@ -242,6 +259,131 @@ Retrieves filter configuration and metadata.
 **`cp_update_filter`** - Update filter configuration and enabled status.
 
 **`cp_delete_filter`** - Delete a filter.
+
+#### Virtual Host Operations
+
+**`cp_list_virtual_hosts`** - List virtual hosts within a route configuration.
+
+**`cp_get_virtual_host`** - Get detailed virtual host configuration.
+
+**`cp_create_virtual_host`** - Create a new virtual host with domains and routes.
+
+**`cp_update_virtual_host`** - Update virtual host domains and configuration.
+
+**`cp_delete_virtual_host`** - Delete a virtual host (cascades to routes).
+
+#### Individual Route Operations
+
+**`cp_get_route`** - Get route details within virtual host hierarchy.
+
+**`cp_create_route`** - Create a route with path matching and action.
+
+**`cp_update_route`** - Update route configuration.
+
+**`cp_delete_route`** - Delete a route.
+
+#### Filter Attachment Operations
+
+**`cp_attach_filter`** - Attach a filter to a listener or route configuration.
+
+**`cp_detach_filter`** - Detach a filter from a resource.
+
+**`cp_list_filter_attachments`** - List all attachments for a filter.
+
+#### Learning Session Operations
+
+**`cp_list_learning_sessions`** - List API learning sessions.
+
+**`cp_get_learning_session`** - Get learning session details.
+
+**`cp_create_learning_session`** - Start a new learning session for traffic analysis.
+
+**`cp_delete_learning_session`** - Delete a learning session.
+
+#### Aggregated Schema Operations
+
+**`cp_list_aggregated_schemas`** - List discovered API schemas from traffic.
+
+**`cp_get_aggregated_schema`** - Get detailed schema information.
+
+#### OpenAPI Import Operations
+
+**`cp_list_openapi_imports`** - List OpenAPI specification imports.
+
+**`cp_get_openapi_import`** - Get import details and status.
+
+#### Dataplane Operations
+
+**`cp_list_dataplanes`** - List registered dataplanes.
+
+**`cp_get_dataplane`** - Get dataplane configuration and status.
+
+**`cp_create_dataplane`** - Register a new dataplane instance.
+
+**`cp_update_dataplane`** - Update dataplane configuration.
+
+**`cp_delete_dataplane`** - Unregister a dataplane.
+
+#### Filter Type Discovery
+
+**`cp_list_filter_types`** - List available filter types with schemas.
+
+**`cp_get_filter_type`** - Get filter type schema and capabilities.
+
+### DevOps Agent Tools
+
+High-level workflow automation tools that orchestrate multiple operations:
+
+#### `devops_deploy_api`
+Deploy an API endpoint with cluster, route config, and listener in one operation.
+
+**Input schema:**
+```json
+{
+  "cluster_name": "user-service",
+  "endpoints": [{"address": "10.0.1.1", "port": 8080}],
+  "route_config_name": "user-api-routes",
+  "path_prefix": "/api/users",
+  "domains": ["api.example.com"]
+}
+```
+
+#### `devops_configure_rate_limiting`
+Create and attach a rate limiting filter.
+
+**Input schema:**
+```json
+{
+  "filter_name": "api-rate-limit",
+  "max_requests": 100,
+  "window_seconds": 60,
+  "target_type": "listener",
+  "target_name": "http-ingress"
+}
+```
+
+#### `devops_enable_jwt_auth`
+Create and attach a JWT authentication filter.
+
+#### `devops_configure_cors`
+Create and attach a CORS filter.
+
+#### `devops_create_canary_deployment`
+Set up weighted traffic splitting for canary deployments.
+
+**Input schema:**
+```json
+{
+  "deployment_name": "user-service",
+  "stable_endpoints": [{"address": "10.0.1.1", "port": 8080}],
+  "canary_endpoints": [{"address": "10.0.2.1", "port": 8080}],
+  "canary_weight": 10,
+  "route_config_name": "user-api-routes"
+}
+```
+
+#### `devops_get_deployment_status`
+Get aggregated status across clusters, listeners, and filters.
 
 ## Resources
 

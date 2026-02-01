@@ -55,6 +55,19 @@ RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#
                     "type": "string",
                     "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
                     "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of filters to return (1-1000, default: 100)",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Offset for pagination (default: 0)",
+                    "minimum": 0,
+                    "default": 0
                 }
             }
         }),
@@ -116,12 +129,14 @@ pub async fn execute_list_filters(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let filter_type = args["filter_type"].as_str().map(|s| s.to_string());
+    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     // Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let req = ListFiltersRequest { filter_type, include_defaults: true, ..Default::default() };
+    let req = ListFiltersRequest { filter_type, limit, offset, include_defaults: true };
 
     let response = ops.list(req, &auth).await?;
 

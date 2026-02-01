@@ -447,6 +447,10 @@ pub struct ListSchemasRequest {
     pub min_confidence: Option<f64>,
     /// Return only latest versions of each endpoint
     pub latest_only: Option<bool>,
+    /// Maximum number of schemas to return
+    pub limit: Option<i32>,
+    /// Offset for pagination
+    pub offset: Option<i32>,
 }
 
 /// Response for listing aggregated schemas
@@ -454,8 +458,12 @@ pub struct ListSchemasRequest {
 pub struct ListSchemasResponse {
     /// List of schemas
     pub schemas: Vec<crate::storage::repositories::aggregated_schema::AggregatedSchemaData>,
-    /// Total count of schemas matching the query
+    /// Total count of schemas returned
     pub count: usize,
+    /// Limit used for pagination
+    pub limit: Option<i32>,
+    /// Offset used for pagination
+    pub offset: Option<i32>,
 }
 
 // =============================================================================

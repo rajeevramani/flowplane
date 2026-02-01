@@ -74,6 +74,19 @@ RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#
                 "latest_only": {
                     "type": "boolean",
                     "description": "If true, only return the latest version of each endpoint (default: true)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of schemas to return (1-1000, default: 100)",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Offset for pagination (default: 0)",
+                    "minimum": 0,
+                    "default": 0
                 }
             }
         }),
@@ -146,12 +159,14 @@ pub async fn execute_list_aggregated_schemas(
     let http_method = args.get("http_method").and_then(|v| v.as_str()).map(String::from);
     let min_confidence = args.get("min_confidence").and_then(|v| v.as_f64());
     let latest_only = args.get("latest_only").and_then(|v| v.as_bool());
+    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     // Use internal API layer
     let ops = AggregatedSchemaOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let req = ListSchemasRequest { path, http_method, min_confidence, latest_only };
+    let req = ListSchemasRequest { path, http_method, min_confidence, latest_only, limit, offset };
 
     let response = ops.list(req, &auth).await?;
 
