@@ -270,7 +270,10 @@ pub async fn mcp_http_handler(
     };
 
     // Create MCP handler with xds_state for full read/write capabilities
-    let mut handler = McpHandler::with_xds_state(db_pool, state.xds_state.clone(), team.clone());
+    // Pass scopes for tool-level authorization checks
+    let scopes: Vec<String> = context.scopes().map(|s| s.to_string()).collect();
+    let mut handler =
+        McpHandler::with_xds_state(db_pool, state.xds_state.clone(), team.clone(), scopes);
     let response = handler.handle_request(request).await;
 
     // On successful initialize, update metadata

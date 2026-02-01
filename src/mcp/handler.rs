@@ -5,12 +5,13 @@
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::mcp::error::McpError;
 use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
 use crate::mcp::resources;
+use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_authorization};
 use crate::mcp::tools;
 use crate::xds::XdsState;
 
@@ -36,22 +37,36 @@ pub struct McpHandler {
     db_pool: Arc<SqlitePool>,
     xds_state: Option<Arc<XdsState>>,
     team: String,
+    /// Scopes from the authenticated token for tool-level authorization
+    scopes: Vec<String>,
     initialized: bool,
 }
 
 impl McpHandler {
     /// Create a new MCP handler with read-only capabilities
-    pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
-        Self { db_pool, xds_state: None, team, initialized: false }
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `team` - Team context for multi-tenancy
+    /// * `scopes` - Authorization scopes from the authenticated token
+    pub fn new(db_pool: Arc<SqlitePool>, team: String, scopes: Vec<String>) -> Self {
+        Self { db_pool, xds_state: None, team, scopes, initialized: false }
     }
 
     /// Create a new MCP handler with full read/write capabilities
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `xds_state` - XDS state for control plane operations
+    /// * `team` - Team context for multi-tenancy
+    /// * `scopes` - Authorization scopes from the authenticated token
     pub fn with_xds_state(
         db_pool: Arc<SqlitePool>,
         xds_state: Arc<XdsState>,
         team: String,
+        scopes: Vec<String>,
     ) -> Self {
-        Self { db_pool, xds_state: Some(xds_state), team, initialized: false }
+        Self { db_pool, xds_state: Some(xds_state), team, scopes, initialized: false }
     }
 
     /// Handle an incoming JSON-RPC request
@@ -251,6 +266,17 @@ impl McpHandler {
         };
 
         debug!(tool_name = %params.name, "Executing tool call");
+
+        // Check tool-level authorization
+        if let Err(auth_error) = self.check_tool_authorization(&params.name) {
+            warn!(
+                tool_name = %params.name,
+                team = %self.team,
+                error = %auth_error,
+                "Tool authorization failed"
+            );
+            return self.error_response(id, auth_error);
+        }
 
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
@@ -502,6 +528,49 @@ impl McpHandler {
         }
     }
 
+    /// Check if the current token has authorization to execute the given tool
+    ///
+    /// Uses the tool registry to lookup required scopes and checks against
+    /// the token's scopes. Implements hierarchical scope matching:
+    /// - `admin:all` grants all access
+    /// - `cp:read` grants all CP read operations
+    /// - `cp:write` grants all CP write/delete operations
+    /// - Specific scopes like `clusters:read` for granular control
+    fn check_tool_authorization(&self, tool_name: &str) -> Result<(), McpError> {
+        // Lookup tool authorization requirements
+        let auth = get_tool_authorization(tool_name).ok_or_else(|| {
+            McpError::ToolNotFound(format!(
+                "Tool '{}' is not registered in the authorization registry",
+                tool_name
+            ))
+        })?;
+
+        // Check if any scope grants the required authorization
+        if check_scope_grants_authorization(self.scopes.iter().map(|s| s.as_str()), auth) {
+            debug!(
+                tool_name = %tool_name,
+                resource = %auth.resource,
+                action = %auth.action,
+                "Tool authorization granted"
+            );
+            return Ok(());
+        }
+
+        // Build helpful error message
+        let required_scope = format!("{}:{}", auth.resource, auth.action);
+        let fallback_info =
+            if ["clusters", "listeners", "routes", "filters"].contains(&auth.resource) {
+                format!(" Alternatively, 'cp:{}' grants access to all core resources.", auth.action)
+            } else {
+                String::new()
+            };
+
+        Err(McpError::Forbidden(format!(
+            "Access denied: Tool '{}' requires scope '{}' or 'admin:all'.{} Your token has scopes: {:?}",
+            tool_name, required_scope, fallback_info, self.scopes
+        )))
+    }
+
     fn method_not_found(&self, id: Option<JsonRpcId>, method: &str) -> JsonRpcResponse {
         error!(method = %method, "Method not found");
 
@@ -545,7 +614,8 @@ mod tests {
             auto_migrate: false,
         };
         let pool = create_pool(&config).await.expect("Failed to create pool");
-        McpHandler::new(Arc::new(pool), "test-team".to_string())
+        // Use admin:all scope for tests to bypass authorization
+        McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()])
     }
 
     #[tokio::test]

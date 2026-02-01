@@ -20,6 +20,7 @@ pub mod resources;
 pub mod server;
 pub mod session;
 pub mod sse;
+pub mod tool_registry;
 pub mod tools;
 
 pub use api_handler::McpApiHandler;
@@ -48,3 +49,6 @@ pub use session::{
     SharedSessionManager,
 };
 pub use sse::{mcp_api_sse_handler, mcp_sse_handler};
+pub use tool_registry::{
+    check_scope_grants_authorization, get_tool_authorization, ToolAuthorization,
+};

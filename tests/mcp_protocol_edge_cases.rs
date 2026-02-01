@@ -30,7 +30,8 @@ async fn create_test_handler() -> McpHandler {
         auto_migrate: false,
     };
     let pool = create_pool(&config).await.expect("Failed to create pool");
-    McpHandler::new(Arc::new(pool), "test-team".to_string())
+    // Use admin:all scope for tests to bypass authorization
+    McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()])
 }
 
 fn create_test_session_manager() -> SessionManager {

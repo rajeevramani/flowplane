@@ -16,8 +16,17 @@ pub struct McpStdioServer {
 }
 
 impl McpStdioServer {
+    /// Create a new MCP stdio server
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `team` - Team context for multi-tenancy
+    ///
+    /// Note: CLI access grants admin:all scope since the user has direct machine access
     pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
-        Self { handler: McpHandler::new(db_pool, team) }
+        // CLI access grants full permissions - user has direct machine access
+        let scopes = vec!["admin:all".to_string()];
+        Self { handler: McpHandler::new(db_pool, team, scopes) }
     }
 
     /// Run the stdio server
