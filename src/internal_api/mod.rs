@@ -12,10 +12,12 @@
 
 pub mod auth;
 pub mod clusters;
+pub mod dataplanes;
 pub mod error;
 pub mod filters;
 pub mod learning;
 pub mod listeners;
+pub mod openapi;
 pub mod routes;
 pub mod schemas;
 pub mod types;
@@ -26,10 +28,12 @@ mod tests;
 
 pub use auth::InternalAuthContext;
 pub use clusters::ClusterOperations;
+pub use dataplanes::DataplaneOperations;
 pub use error::InternalError;
 pub use filters::FilterOperations;
 pub use learning::LearningSessionOperations;
 pub use listeners::ListenerOperations;
+pub use openapi::OpenApiOperations;
 pub use routes::{RouteConfigOperations, RouteOperations};
 pub use schemas::AggregatedSchemaOperations;
 pub use types::*;

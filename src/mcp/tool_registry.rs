@@ -565,6 +565,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
         m.insert(
+            "cp_create_dataplane",
+            ToolAuthorization {
+                resource: "dataplanes",
+                action: "write",
+                description: "Create dataplane requires dataplanes:write",
+            },
+        );
+        m.insert(
             "cp_update_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
@@ -578,6 +586,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 resource: "dataplanes",
                 action: "write",
                 description: "Deregister dataplane requires dataplanes:write",
+            },
+        );
+        m.insert(
+            "cp_delete_dataplane",
+            ToolAuthorization {
+                resource: "dataplanes",
+                action: "delete",
+                description: "Delete dataplane requires dataplanes:delete or dataplanes:write",
             },
         );
 
@@ -618,6 +634,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 resource: "routes",
                 action: "read",
                 description: "List OpenAPI imports requires routes:read or cp:read",
+            },
+        );
+        m.insert(
+            "cp_get_openapi_import",
+            ToolAuthorization {
+                resource: "routes",
+                action: "read",
+                description: "Get OpenAPI import details requires routes:read or cp:read",
             },
         );
 

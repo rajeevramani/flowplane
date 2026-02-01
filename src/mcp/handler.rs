@@ -256,6 +256,23 @@ impl McpHandler {
             tools::cp_attach_filter_tool(),
             tools::cp_detach_filter_tool(),
             tools::cp_list_filter_attachments_tool(),
+            // Learning session tools
+            tools::cp_list_learning_sessions_tool(),
+            tools::cp_get_learning_session_tool(),
+            tools::cp_create_learning_session_tool(),
+            tools::cp_delete_learning_session_tool(),
+            // OpenAPI import tools
+            tools::cp_list_openapi_imports_tool(),
+            tools::cp_get_openapi_import_tool(),
+            // Dataplane CRUD tools
+            tools::cp_list_dataplanes_tool(),
+            tools::cp_get_dataplane_tool(),
+            tools::cp_create_dataplane_tool(),
+            tools::cp_update_dataplane_tool(),
+            tools::cp_delete_dataplane_tool(),
+            // Filter type tools
+            tools::cp_list_filter_types_tool(),
+            tools::cp_get_filter_type_tool(),
         ];
 
         let result = ToolsListResult { tools, next_cursor: None };
@@ -334,7 +351,16 @@ impl McpHandler {
             | "cp_delete_filter"
             | "cp_attach_filter"
             | "cp_detach_filter"
-            | "cp_list_filter_attachments" => {
+            | "cp_list_filter_attachments"
+            | "cp_list_openapi_imports"
+            | "cp_get_openapi_import"
+            | "cp_list_dataplanes"
+            | "cp_get_dataplane"
+            | "cp_create_dataplane"
+            | "cp_update_dataplane"
+            | "cp_delete_dataplane"
+            | "cp_list_filter_types"
+            | "cp_get_filter_type" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -459,6 +485,36 @@ impl McpHandler {
                     }
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(xds_state, &self.team, args).await
+                    }
+                    // OpenAPI import operations
+                    "cp_list_openapi_imports" => {
+                        tools::execute_list_openapi_imports(xds_state, &self.team, args).await
+                    }
+                    "cp_get_openapi_import" => {
+                        tools::execute_get_openapi_import(xds_state, &self.team, args).await
+                    }
+                    // Dataplane operations
+                    "cp_list_dataplanes" => {
+                        tools::execute_list_dataplanes(xds_state, &self.team, args).await
+                    }
+                    "cp_get_dataplane" => {
+                        tools::execute_get_dataplane(xds_state, &self.team, args).await
+                    }
+                    "cp_create_dataplane" => {
+                        tools::execute_create_dataplane(xds_state, &self.team, args).await
+                    }
+                    "cp_update_dataplane" => {
+                        tools::execute_update_dataplane(xds_state, &self.team, args).await
+                    }
+                    "cp_delete_dataplane" => {
+                        tools::execute_delete_dataplane(xds_state, &self.team, args).await
+                    }
+                    // Filter type operations
+                    "cp_list_filter_types" => {
+                        tools::execute_list_filter_types(xds_state, &self.team, args).await
+                    }
+                    "cp_get_filter_type" => {
+                        tools::execute_get_filter_type(xds_state, &self.team, args).await
                     }
                     _ => unreachable!(),
                 }

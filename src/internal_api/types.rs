@@ -457,3 +457,51 @@ pub struct ListSchemasResponse {
     /// Total count of schemas matching the query
     pub count: usize,
 }
+
+// =============================================================================
+// Dataplane Types
+// =============================================================================
+
+/// Request to list dataplanes with pagination
+#[derive(Debug, Clone, Default)]
+pub struct ListDataplanesInternalRequest {
+    /// Maximum number of dataplanes to return
+    pub limit: Option<i32>,
+    /// Offset for pagination
+    pub offset: Option<i32>,
+}
+
+/// Request to create a new dataplane
+#[derive(Debug, Clone)]
+pub struct CreateDataplaneInternalRequest {
+    /// Team that owns this dataplane
+    pub team: String,
+    /// Dataplane name (unique within team)
+    pub name: String,
+    /// Optional gateway host URL for MCP tool execution
+    pub gateway_host: Option<String>,
+    /// Optional human-readable description
+    pub description: Option<String>,
+}
+
+/// Request to update an existing dataplane
+#[derive(Debug, Clone)]
+pub struct UpdateDataplaneInternalRequest {
+    /// New gateway host (optional)
+    pub gateway_host: Option<String>,
+    /// New description (optional)
+    pub description: Option<String>,
+}
+
+// =============================================================================
+// OpenAPI Import Types
+// =============================================================================
+
+/// Request to list OpenAPI imports with pagination
+#[derive(Debug, Clone, Default)]
+pub struct ListOpenApiImportsRequest {
+    /// Maximum number of imports to return
+    pub limit: Option<i32>,
+    /// Offset for pagination
+    pub offset: Option<i32>,
+}

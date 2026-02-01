@@ -4,9 +4,12 @@
 //! Each tool allows AI assistants to inspect and query the control plane state.
 
 pub mod clusters;
+pub mod dataplanes;
+pub mod filter_types;
 pub mod filters;
 pub mod learning;
 pub mod listeners;
+pub mod openapi;
 pub mod routes;
 pub mod schemas;
 pub mod virtual_hosts;
@@ -80,6 +83,24 @@ pub use learning::{
     execute_list_learning_sessions,
 };
 
+// Re-export OpenAPI import tools
+pub use openapi::{cp_get_openapi_import_tool, cp_list_openapi_imports_tool};
+pub use openapi::{execute_get_openapi_import, execute_list_openapi_imports};
+
+// Re-export dataplane tools
+pub use dataplanes::{
+    cp_create_dataplane_tool, cp_delete_dataplane_tool, cp_get_dataplane_tool,
+    cp_list_dataplanes_tool, cp_update_dataplane_tool,
+};
+pub use dataplanes::{
+    execute_create_dataplane, execute_delete_dataplane, execute_get_dataplane,
+    execute_list_dataplanes, execute_update_dataplane,
+};
+
+// Re-export filter type tools
+pub use filter_types::{cp_get_filter_type_tool, cp_list_filter_types_tool};
+pub use filter_types::{execute_get_filter_type, execute_list_filter_types};
+
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
 use serde_json::Value;
@@ -137,6 +158,18 @@ pub fn get_all_tools() -> Vec<Tool> {
         // Learning session tools
         cp_create_learning_session_tool(),
         cp_delete_learning_session_tool(),
+        // OpenAPI import tools
+        cp_list_openapi_imports_tool(),
+        cp_get_openapi_import_tool(),
+        // Dataplane CRUD tools
+        cp_list_dataplanes_tool(),
+        cp_get_dataplane_tool(),
+        cp_create_dataplane_tool(),
+        cp_update_dataplane_tool(),
+        cp_delete_dataplane_tool(),
+        // Filter type tools
+        cp_list_filter_types_tool(),
+        cp_get_filter_type_tool(),
     ]
 }
 
@@ -178,8 +211,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment tools + 2 learning session tools = 37 total
-        assert_eq!(tools.len(), 37);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types = 46 total
+        assert_eq!(tools.len(), 46);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
