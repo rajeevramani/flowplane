@@ -588,6 +588,433 @@ pub async fn execute_delete_filter(
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
+// =============================================================================
+// FILTER ATTACHMENT TOOLS
+// =============================================================================
+
+/// Returns the MCP tool definition for attaching a filter to a resource.
+pub fn cp_attach_filter_tool() -> Tool {
+    Tool {
+        name: "cp_attach_filter".to_string(),
+        description: r#"Attach a filter to a resource (listener or route configuration).
+
+RESOURCE ORDER: Filters must be created BEFORE they can be attached.
+
+ATTACHMENT HIERARCHY:
+  Listener Level    - Filter applies to ALL traffic through the listener
+  RouteConfig Level - Filter applies to ALL routes in the configuration
+  VirtualHost Level - Filter applies to ALL routes in the virtual host
+  Route Level       - Filter applies to SINGLE route only
+
+ATTACHMENT BEHAVIOR:
+- Filters are executed in order (lower numbers first)
+- If no order is specified, filter is added at the end
+- Same filter can be attached to multiple resources
+- Attachments take effect immediately via xDS push
+
+SUPPORTED TARGETS:
+1. Listener: Attach to a named listener (affects all traffic)
+   - Provide: filter, listener
+
+2. RouteConfig: Attach to a route configuration (affects all routes in config)
+   - Provide: filter, route_config
+   - Optional: settings (per-scope configuration override)
+
+COMMON USE CASES:
+- Attach JWT auth filter to listener for API-wide authentication
+- Attach CORS filter to specific route config for API endpoints
+- Attach rate limiting to high-traffic routes
+
+EXAMPLE (attach to listener):
+{
+  "filter": "api-jwt-auth",
+  "listener": "main-listener",
+  "order": 10
+}
+
+EXAMPLE (attach to route config with settings override):
+{
+  "filter": "rate-limit",
+  "route_config": "api-routes",
+  "order": 20,
+  "settings": {"max_requests": 1000}
+}
+
+Authorization: Requires filters:write or cp:write scope.
+"#
+        .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to attach"
+                },
+                "listener": {
+                    "type": "string",
+                    "description": "Name of the listener to attach to (for listener-level attachment)"
+                },
+                "route_config": {
+                    "type": "string",
+                    "description": "Name of the route configuration to attach to (for route-config-level attachment)"
+                },
+                "order": {
+                    "type": "integer",
+                    "description": "Execution order (lower numbers execute first, default: append at end)",
+                    "minimum": 0
+                },
+                "settings": {
+                    "type": "object",
+                    "description": "Per-scope configuration override (only for route_config attachments)"
+                }
+            },
+            "required": ["filter"]
+        }),
+    }
+}
+
+/// Returns the MCP tool definition for detaching a filter from a resource.
+pub fn cp_detach_filter_tool() -> Tool {
+    Tool {
+        name: "cp_detach_filter".to_string(),
+        description: r#"Detach a filter from a resource (listener or route configuration).
+
+PURPOSE: Remove a filter attachment from a resource. The filter itself is not deleted,
+only the association is removed.
+
+IMPORTANT: Detaching takes effect immediately via xDS push.
+
+SUPPORTED TARGETS:
+1. Listener: Detach from a named listener
+   - Provide: filter, listener
+
+2. RouteConfig: Detach from a route configuration
+   - Provide: filter, route_config
+
+WORKFLOW:
+1. Use cp_get_filter to see current attachments
+2. Identify the resource to detach from
+3. Call this tool with filter and target resource
+4. Changes propagate immediately to Envoy
+
+NOTE: Must specify exactly one target (listener OR route_config).
+
+EXAMPLE:
+{
+  "filter": "api-jwt-auth",
+  "listener": "main-listener"
+}
+
+Authorization: Requires filters:write or cp:write scope.
+"#
+        .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to detach"
+                },
+                "listener": {
+                    "type": "string",
+                    "description": "Name of the listener to detach from"
+                },
+                "route_config": {
+                    "type": "string",
+                    "description": "Name of the route configuration to detach from"
+                }
+            },
+            "required": ["filter"]
+        }),
+    }
+}
+
+/// Returns the MCP tool definition for listing filter attachments.
+pub fn cp_list_filter_attachments_tool() -> Tool {
+    Tool {
+        name: "cp_list_filter_attachments".to_string(),
+        description: r#"List all attachments for a specific filter.
+
+PURPOSE: See where a filter is currently attached (listeners and route configs).
+This is useful before modifying or deleting a filter.
+
+RETURNS:
+- filter: Full filter details (id, name, type, configuration)
+- listener_attachments: Array of listener attachments with order
+- route_config_attachments: Array of route config attachments with settings
+
+ATTACHMENT INFO:
+- resource_id: Internal ID of the attached resource
+- resource_name: Name of the attached resource (listener/route_config)
+- order: Execution order in the filter chain
+- settings: Per-scope configuration override (route_config only)
+
+WHEN TO USE:
+- Before deleting a filter (check if it's attached anywhere)
+- To audit filter usage across resources
+- To understand filter execution order
+- Before modifying filter configuration
+
+EXAMPLE:
+{
+  "filter": "api-jwt-auth"
+}
+
+Authorization: Requires filters:read or cp:read scope.
+"#
+        .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to list attachments for"
+                }
+            },
+            "required": ["filter"]
+        }),
+    }
+}
+
+/// Execute the cp_attach_filter tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_attach_filter")]
+pub async fn execute_attach_filter(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    let listener = args.get("listener").and_then(|v| v.as_str());
+    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let order = args.get("order").and_then(|v| v.as_i64());
+    let settings = args.get("settings").cloned();
+
+    // 2. Validate exactly one target is specified
+    if listener.is_none() && route_config.is_none() {
+        return Err(McpError::InvalidParams(
+            "Must specify either 'listener' or 'route_config' as attachment target".to_string(),
+        ));
+    }
+    if listener.is_some() && route_config.is_some() {
+        return Err(McpError::InvalidParams(
+            "Cannot specify both 'listener' and 'route_config'. Choose one target.".to_string(),
+        ));
+    }
+
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    // 3. Execute appropriate attachment
+    let (target_type, target_name) = if let Some(listener_name) = listener {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            listener = %listener_name,
+            order = ?order,
+            "Attaching filter to listener via MCP"
+        );
+
+        ops.attach_to_listener(filter, listener_name, order, &auth).await?;
+        ("listener", listener_name)
+    } else if let Some(route_config_name) = route_config {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            route_config = %route_config_name,
+            order = ?order,
+            "Attaching filter to route config via MCP"
+        );
+
+        ops.attach_to_route_config(filter, route_config_name, order, settings, &auth).await?;
+        ("route_config", route_config_name)
+    } else {
+        unreachable!()
+    };
+
+    // 4. Format success response
+    let output = json!({
+        "success": true,
+        "attachment": {
+            "filter": filter,
+            "target_type": target_type,
+            "target_name": target_name,
+            "order": order
+        },
+        "message": format!(
+            "Filter '{}' attached to {} '{}' successfully. xDS configuration has been refreshed.",
+            filter, target_type, target_name
+        ),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter = %filter,
+        target_type = %target_type,
+        target_name = %target_name,
+        "Successfully attached filter via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_detach_filter tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_detach_filter")]
+pub async fn execute_detach_filter(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    let listener = args.get("listener").and_then(|v| v.as_str());
+    let route_config = args.get("route_config").and_then(|v| v.as_str());
+
+    // 2. Validate exactly one target is specified
+    if listener.is_none() && route_config.is_none() {
+        return Err(McpError::InvalidParams(
+            "Must specify either 'listener' or 'route_config' as detachment target".to_string(),
+        ));
+    }
+    if listener.is_some() && route_config.is_some() {
+        return Err(McpError::InvalidParams(
+            "Cannot specify both 'listener' and 'route_config'. Choose one target.".to_string(),
+        ));
+    }
+
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    // 3. Execute appropriate detachment
+    let (target_type, target_name) = if let Some(listener_name) = listener {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            listener = %listener_name,
+            "Detaching filter from listener via MCP"
+        );
+
+        ops.detach_from_listener(filter, listener_name, &auth).await?;
+        ("listener", listener_name)
+    } else if let Some(route_config_name) = route_config {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            route_config = %route_config_name,
+            "Detaching filter from route config via MCP"
+        );
+
+        ops.detach_from_route_config(filter, route_config_name, &auth).await?;
+        ("route_config", route_config_name)
+    } else {
+        unreachable!()
+    };
+
+    // 4. Format success response
+    let output = json!({
+        "success": true,
+        "detachment": {
+            "filter": filter,
+            "target_type": target_type,
+            "target_name": target_name
+        },
+        "message": format!(
+            "Filter '{}' detached from {} '{}' successfully. xDS configuration has been refreshed.",
+            filter, target_type, target_name
+        ),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter = %filter,
+        target_type = %target_type,
+        target_name = %target_name,
+        "Successfully detached filter via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_list_filter_attachments tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_filter_attachments")]
+pub async fn execute_list_filter_attachments(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    tracing::debug!(
+        team = %team,
+        filter = %filter,
+        "Listing filter attachments via MCP"
+    );
+
+    // 2. Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let filter_with_installations = ops.get_with_installations(filter, &auth).await?;
+    let filter_data = &filter_with_installations.filter;
+
+    // Parse configuration JSON
+    let config: Value = serde_json::from_str(&filter_data.configuration).unwrap_or_else(|e| {
+        tracing::warn!(filter_id = %filter_data.id, error = %e, "Failed to parse filter configuration");
+        json!({"_parse_error": format!("Failed to parse configuration: {}", e)})
+    });
+
+    // 3. Format response
+    let output = json!({
+        "filter": {
+            "id": filter_data.id.to_string(),
+            "name": filter_data.name,
+            "filter_type": filter_data.filter_type,
+            "description": filter_data.description,
+            "configuration": config,
+            "version": filter_data.version,
+            "team": filter_data.team
+        },
+        "listener_attachments": filter_with_installations.listener_installations.iter().map(|i| json!({
+            "resource_id": i.resource_id,
+            "resource_name": i.resource_name,
+            "order": i.order
+        })).collect::<Vec<_>>(),
+        "route_config_attachments": filter_with_installations.route_config_installations.iter().map(|i| json!({
+            "resource_id": i.resource_id,
+            "resource_name": i.resource_name
+        })).collect::<Vec<_>>(),
+        "total_attachments": filter_with_installations.listener_installations.len() + filter_with_installations.route_config_installations.len()
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter = %filter,
+        listener_count = filter_with_installations.listener_installations.len(),
+        route_config_count = filter_with_installations.route_config_installations.len(),
+        "Successfully listed filter attachments via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +1062,40 @@ mod tests {
         let tool = cp_delete_filter_tool();
         assert_eq!(tool.name, "cp_delete_filter");
         assert!(tool.description.contains("Delete"));
+    }
+
+    #[test]
+    fn test_cp_attach_filter_tool_definition() {
+        let tool = cp_attach_filter_tool();
+        assert_eq!(tool.name, "cp_attach_filter");
+        assert!(tool.description.contains("Attach"));
+        assert!(tool.description.contains("listener"));
+        assert!(tool.description.contains("route_config"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
+    }
+
+    #[test]
+    fn test_cp_detach_filter_tool_definition() {
+        let tool = cp_detach_filter_tool();
+        assert_eq!(tool.name, "cp_detach_filter");
+        assert!(tool.description.contains("Detach"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
+    }
+
+    #[test]
+    fn test_cp_list_filter_attachments_tool_definition() {
+        let tool = cp_list_filter_attachments_tool();
+        assert_eq!(tool.name, "cp_list_filter_attachments");
+        assert!(tool.description.contains("attachments"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
     }
 }

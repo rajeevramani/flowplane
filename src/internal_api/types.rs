@@ -287,3 +287,173 @@ pub struct FilterInstallation {
     /// Order/priority of the filter on this resource
     pub order: i64,
 }
+
+// =============================================================================
+// Virtual Host Types
+// =============================================================================
+
+/// Request to create a new virtual host
+#[derive(Debug, Clone)]
+pub struct CreateVirtualHostRequest {
+    /// Route config name this virtual host belongs to
+    pub route_config: String,
+    /// Virtual host name (unique within route config)
+    pub name: String,
+    /// Domain patterns this virtual host matches
+    pub domains: Vec<String>,
+    /// Rule order for deterministic matching (default: 0)
+    pub rule_order: Option<i32>,
+}
+
+/// Request to list virtual hosts with pagination
+#[derive(Debug, Clone, Default)]
+pub struct ListVirtualHostsRequest {
+    /// Filter by route config name (optional)
+    pub route_config: Option<String>,
+    /// Maximum number of virtual hosts to return
+    pub limit: Option<i32>,
+    /// Offset for pagination
+    pub offset: Option<i32>,
+}
+
+/// Response for listing virtual hosts
+#[derive(Debug)]
+pub struct ListVirtualHostsResponse {
+    /// List of virtual hosts
+    pub virtual_hosts: Vec<crate::storage::VirtualHostData>,
+    /// Total count of virtual hosts matching the query
+    pub count: usize,
+    /// Applied limit
+    pub limit: Option<i32>,
+    /// Applied offset
+    pub offset: Option<i32>,
+}
+
+/// Request to update an existing virtual host
+#[derive(Debug, Clone)]
+pub struct UpdateVirtualHostRequest {
+    /// New domain patterns (optional)
+    pub domains: Option<Vec<String>>,
+    /// New rule order (optional)
+    pub rule_order: Option<i32>,
+}
+
+// =============================================================================
+// Route Types (individual routes within virtual hosts)
+// =============================================================================
+
+/// Request to create a new route
+#[derive(Debug, Clone)]
+pub struct CreateRouteRequest {
+    /// Route config name that contains the virtual host
+    pub route_config: String,
+    /// Virtual host name that contains this route
+    pub virtual_host: String,
+    /// Route name (unique within the virtual host)
+    pub name: String,
+    /// Path pattern (e.g., "/api", "/users/{id}")
+    pub path_pattern: String,
+    /// Match type (prefix, exact, regex, template)
+    pub match_type: String,
+    /// Rule order (lower values = higher priority)
+    pub rule_order: Option<i32>,
+    /// Route action (forward, redirect, weighted)
+    pub action: serde_json::Value,
+}
+
+/// Request to list routes with pagination
+#[derive(Debug, Clone, Default)]
+pub struct ListRoutesRequest {
+    /// Filter by route config name (optional)
+    pub route_config: Option<String>,
+    /// Filter by virtual host name within the route config (optional)
+    pub virtual_host: Option<String>,
+    /// Maximum number of routes to return
+    pub limit: Option<i32>,
+    /// Offset for pagination
+    pub offset: Option<i32>,
+}
+
+/// Response for listing routes
+#[derive(Debug)]
+pub struct ListRoutesResponse {
+    /// List of routes
+    pub routes: Vec<crate::storage::RouteData>,
+    /// Total count of routes matching the query
+    pub count: usize,
+    /// Applied limit
+    pub limit: Option<i32>,
+    /// Applied offset
+    pub offset: Option<i32>,
+}
+
+/// Request to update an existing route
+#[derive(Debug, Clone)]
+pub struct UpdateRouteRequest {
+    /// New path pattern (optional)
+    pub path_pattern: Option<String>,
+    /// New match type (optional)
+    pub match_type: Option<String>,
+    /// New rule order (optional)
+    pub rule_order: Option<i32>,
+    /// New action (optional)
+    pub action: Option<serde_json::Value>,
+}
+
+// =============================================================================
+// Learning Session Types
+// =============================================================================
+
+/// Request to create a new learning session
+#[derive(Debug, Clone)]
+pub struct CreateLearningSessionInternalRequest {
+    /// Team that owns this learning session (optional, defaults to auth team)
+    pub team: Option<String>,
+    /// Route pattern to match for learning
+    pub route_pattern: String,
+    /// Cluster name to filter by (optional)
+    pub cluster_name: Option<String>,
+    /// HTTP methods to filter by (optional)
+    pub http_methods: Option<Vec<String>>,
+    /// Number of samples to collect before completing
+    pub target_sample_count: i64,
+    /// Whether to automatically start the session after creation
+    pub auto_start: Option<bool>,
+}
+
+/// Request to list learning sessions with pagination
+#[derive(Debug, Clone, Default)]
+pub struct ListLearningSessionsRequest {
+    /// Filter by status (optional)
+    pub status: Option<String>,
+    /// Maximum number of sessions to return
+    pub limit: Option<i64>,
+    /// Offset for pagination
+    pub offset: Option<i64>,
+}
+
+// =============================================================================
+// Aggregated Schema Types
+// =============================================================================
+
+/// Request to list aggregated schemas with optional filters
+#[derive(Debug, Clone, Default)]
+pub struct ListSchemasRequest {
+    /// Filter by path pattern (supports LIKE matching)
+    pub path: Option<String>,
+    /// Filter by HTTP method
+    pub http_method: Option<String>,
+    /// Filter by minimum confidence score
+    pub min_confidence: Option<f64>,
+    /// Return only latest versions of each endpoint
+    pub latest_only: Option<bool>,
+}
+
+/// Response for listing aggregated schemas
+#[derive(Debug)]
+pub struct ListSchemasResponse {
+    /// List of schemas
+    pub schemas: Vec<crate::storage::repositories::aggregated_schema::AggregatedSchemaData>,
+    /// Total count of schemas matching the query
+    pub count: usize,
+}

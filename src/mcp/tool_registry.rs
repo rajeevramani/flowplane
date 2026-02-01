@@ -153,6 +153,30 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
         m.insert(
+            "cp_create_route",
+            ToolAuthorization {
+                resource: "routes",
+                action: "write",
+                description: "Create route requires routes:write or cp:write",
+            },
+        );
+        m.insert(
+            "cp_update_route",
+            ToolAuthorization {
+                resource: "routes",
+                action: "write",
+                description: "Update route requires routes:write or cp:write",
+            },
+        );
+        m.insert(
+            "cp_delete_route",
+            ToolAuthorization {
+                resource: "routes",
+                action: "delete",
+                description: "Delete route requires routes:delete or cp:write",
+            },
+        );
+        m.insert(
             "cp_create_route_config",
             ToolAuthorization {
                 resource: "routes",
@@ -445,6 +469,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
         m.insert(
+            "cp_create_learning_session",
+            ToolAuthorization {
+                resource: "learning-sessions",
+                action: "write",
+                description: "Create learning session requires learning-sessions:write",
+            },
+        );
+        m.insert(
             "cp_stop_learning",
             ToolAuthorization {
                 resource: "learning-sessions",
@@ -473,11 +505,27 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
         m.insert(
+            "cp_list_aggregated_schemas",
+            ToolAuthorization {
+                resource: "aggregated-schemas",
+                action: "read",
+                description: "List aggregated schemas requires aggregated-schemas:read",
+            },
+        );
+        m.insert(
             "cp_get_schema",
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
                 description: "Get schema requires aggregated-schemas:read",
+            },
+        );
+        m.insert(
+            "cp_get_aggregated_schema",
+            ToolAuthorization {
+                resource: "aggregated-schemas",
+                action: "read",
+                description: "Get aggregated schema requires aggregated-schemas:read",
             },
         );
         m.insert(

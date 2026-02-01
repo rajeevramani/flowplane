@@ -683,6 +683,571 @@ pub async fn execute_delete_route_config(
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
+// =============================================================================
+// Individual Route CRUD Tools
+// =============================================================================
+
+/// Returns the MCP tool definition for getting a route by hierarchy
+pub fn cp_get_route_tool() -> Tool {
+    Tool {
+        name: "cp_get_route".to_string(),
+        description: r#"Get a specific route by hierarchy (route_config → virtual_host → route).
+
+RESOURCE ORDER: Routes are within virtual hosts, which are within route configs (order 2 of 4).
+
+DEPENDENCY GRAPH:
+  [Clusters] ─────► [Route Configs] ─────► [Listeners]
+                         │
+                    contains virtual hosts
+                         │
+                    contains routes
+
+HIERARCHY: route_config → virtual_host → route
+Routes are path-level matching rules within a virtual host.
+
+PURPOSE: Retrieve complete route details including:
+- name: Route identifier (unique within virtual host)
+- path_pattern: URL path pattern (e.g., "/api", "/users/{id}")
+- match_type: Type of matching (prefix, exact, regex, template)
+- rule_order: Priority order (lower values match first)
+- virtual_host_id: Parent virtual host
+- created_at/updated_at: Timestamps
+
+MATCH TYPES:
+- prefix: Matches if path starts with pattern (e.g., "/api" matches "/api/users")
+- exact: Matches only the exact path
+- regex: Regular expression matching
+- template: Path template with variables (e.g., "/users/{id}")
+
+Required Parameters:
+- route_config: Name of the route configuration
+- virtual_host: Name of the virtual host within the route config
+- name: Name of the route
+
+Authorization: Requires cp:read scope."#
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "route_config": {
+                    "type": "string",
+                    "description": "Route configuration name"
+                },
+                "virtual_host": {
+                    "type": "string",
+                    "description": "Virtual host name within the route config"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Route name"
+                }
+            },
+            "required": ["route_config", "virtual_host", "name"]
+        }),
+    }
+}
+
+/// Returns the MCP tool definition for creating a route
+pub fn cp_create_route_tool() -> Tool {
+    Tool {
+        name: "cp_create_route".to_string(),
+        description: r#"Create a new route within a virtual host.
+
+RESOURCE ORDER: Routes are within virtual hosts, which are within route configs (order 2 of 4).
+PREREQUISITES: The route config and virtual host MUST exist first.
+
+DEPENDENCY GRAPH:
+  [Clusters] ─────► [Route Configs] ─────► [Listeners]
+                         │
+                    contains virtual hosts
+                         │
+                    contains routes (you are here)
+
+CREATION WORKFLOW:
+1. First, ensure route config exists (cp_create_route_config)
+2. Ensure virtual host exists within route config
+3. Create this route within the virtual host
+4. Update the route config to sync to xDS (route changes require route config update)
+
+STRUCTURE:
+Route Config → Virtual Hosts → Routes
+- Routes define path-level matching and actions
+- Multiple routes can exist in a virtual host
+- Routes are evaluated in rule_order (lower numbers first)
+
+MATCH TYPES:
+- prefix: Matches if path starts with pattern (e.g., "/api" matches "/api/users")
+- exact: Matches only the exact path
+- regex: Regular expression matching
+- template: Path template with variables (e.g., "/users/{id}")
+
+ACTION TYPES (must be provided in action parameter):
+- forward: {"type": "forward", "cluster": "cluster-name"}
+- weighted: {"type": "weighted", "clusters": [{"name": "a", "weight": 90}, {"name": "b", "weight": 10}]}
+- redirect: {"type": "redirect", "hostRedirect": "example.com", "responseCode": 301}
+
+Required Parameters:
+- route_config: Name of the route configuration
+- virtual_host: Name of the virtual host
+- name: Unique route name (within virtual host)
+- path_pattern: URL path pattern (e.g., "/api", "/users/{id}")
+- match_type: Type of matching (prefix, exact, regex, template)
+- action: Route action (forward, weighted, redirect)
+
+Optional Parameters:
+- rule_order: Priority order (default: 100, lower values match first)
+
+IMPORTANT: After creating routes, you must update the route config to sync changes to xDS.
+
+Authorization: Requires cp:write scope."#
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "route_config": {
+                    "type": "string",
+                    "description": "Route configuration name"
+                },
+                "virtual_host": {
+                    "type": "string",
+                    "description": "Virtual host name within the route config"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Unique route name (within virtual host)"
+                },
+                "path_pattern": {
+                    "type": "string",
+                    "description": "URL path pattern (e.g., '/api', '/users/{id}')"
+                },
+                "match_type": {
+                    "type": "string",
+                    "enum": ["prefix", "exact", "regex", "template"],
+                    "description": "Type of path matching"
+                },
+                "action": {
+                    "type": "object",
+                    "description": "Route action (forward, weighted, or redirect)"
+                },
+                "rule_order": {
+                    "type": "integer",
+                    "description": "Priority order (default: 100, lower values match first)",
+                    "default": 100
+                }
+            },
+            "required": ["route_config", "virtual_host", "name", "path_pattern", "match_type", "action"]
+        }),
+    }
+}
+
+/// Returns the MCP tool definition for updating a route
+pub fn cp_update_route_tool() -> Tool {
+    Tool {
+        name: "cp_update_route".to_string(),
+        description: r#"Update an existing route within a virtual host.
+
+IMPORTANT: This is a PARTIAL update. Only provide fields you want to change.
+Route name cannot be changed.
+
+PREREQUISITES:
+- Route config, virtual host, and route must exist
+- All clusters referenced in new action must exist
+
+SAFE TO UPDATE: Route updates modify the normalized routes table.
+To sync changes to xDS, you must update the parent route config afterward.
+
+COMMON USE CASES:
+- Change path pattern or match type
+- Update rule order for priority changes
+- Modify action (change target cluster, add traffic splitting)
+
+WORKFLOW:
+1. Use cp_get_route to see current configuration
+2. Call this tool with only the fields you want to change
+3. Update the parent route config to sync to xDS
+
+Required Parameters:
+- route_config: Name of the route configuration
+- virtual_host: Name of the virtual host
+- name: Route name to update
+
+Optional Parameters (provide only what you want to change):
+- path_pattern: New URL path pattern
+- match_type: New match type (prefix, exact, regex, template)
+- rule_order: New priority order
+- action: New route action
+
+IMPORTANT: After updating routes, you must update the route config to sync changes to xDS.
+
+Authorization: Requires cp:write scope."#
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "route_config": {
+                    "type": "string",
+                    "description": "Route configuration name"
+                },
+                "virtual_host": {
+                    "type": "string",
+                    "description": "Virtual host name within the route config"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Route name to update"
+                },
+                "path_pattern": {
+                    "type": "string",
+                    "description": "New URL path pattern (optional)"
+                },
+                "match_type": {
+                    "type": "string",
+                    "enum": ["prefix", "exact", "regex", "template"],
+                    "description": "New match type (optional)"
+                },
+                "rule_order": {
+                    "type": "integer",
+                    "description": "New priority order (optional)"
+                },
+                "action": {
+                    "type": "object",
+                    "description": "New route action (optional)"
+                }
+            },
+            "required": ["route_config", "virtual_host", "name"]
+        }),
+    }
+}
+
+/// Returns the MCP tool definition for deleting a route
+pub fn cp_delete_route_tool() -> Tool {
+    Tool {
+        name: "cp_delete_route".to_string(),
+        description: r#"Delete a route from a virtual host.
+
+DELETION ORDER: Delete routes before deleting their parent virtual host or route config.
+
+PREREQUISITES FOR DELETION:
+- Route must exist
+- Have write access to the parent route config
+
+WORKFLOW:
+1. Identify the route to delete by hierarchy (route_config → virtual_host → route)
+2. Call this tool to delete the route
+3. Update the parent route config to sync the deletion to xDS
+
+CASCADING EFFECTS:
+When deleted, the route is removed from the normalized routes table.
+To sync the deletion to xDS, you must update the parent route config.
+
+Required Parameters:
+- route_config: Name of the route configuration
+- virtual_host: Name of the virtual host
+- name: Route name to delete
+
+IMPORTANT: After deleting routes, you must update the route config to sync changes to xDS.
+
+Authorization: Requires cp:write scope."#
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "route_config": {
+                    "type": "string",
+                    "description": "Route configuration name"
+                },
+                "virtual_host": {
+                    "type": "string",
+                    "description": "Virtual host name within the route config"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Route name to delete"
+                }
+            },
+            "required": ["route_config", "virtual_host", "name"]
+        }),
+    }
+}
+
+/// Execute the cp_get_route tool
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_route")]
+pub async fn execute_get_route(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    use crate::internal_api::{InternalAuthContext, RouteOperations};
+
+    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    })?;
+
+    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    })?;
+
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Getting route by hierarchy"
+    );
+
+    let ops = RouteOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let route = ops.get(route_config, virtual_host, name, &auth).await?;
+
+    let output = json!({
+        "id": route.id.to_string(),
+        "name": route.name,
+        "virtual_host_id": route.virtual_host_id.to_string(),
+        "path_pattern": route.path_pattern,
+        "match_type": route.match_type.to_string(),
+        "rule_order": route.rule_order,
+        "created_at": route.created_at.to_rfc3339(),
+        "updated_at": route.updated_at.to_rfc3339(),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Successfully retrieved route"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_create_route tool
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_create_route")]
+pub async fn execute_create_route(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    use crate::internal_api::{CreateRouteRequest, InternalAuthContext, RouteOperations};
+
+    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    })?;
+
+    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    })?;
+
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: path_pattern".to_string())
+    })?;
+
+    let match_type = args.get("match_type").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: match_type".to_string())
+    })?;
+
+    let action = args
+        .get("action")
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: action".to_string()))?;
+
+    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+
+    tracing::debug!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Creating route via MCP"
+    );
+
+    let ops = RouteOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let req = CreateRouteRequest {
+        route_config: route_config.to_string(),
+        virtual_host: virtual_host.to_string(),
+        name: name.to_string(),
+        path_pattern: path_pattern.to_string(),
+        match_type: match_type.to_string(),
+        rule_order,
+        action: action.clone(),
+    };
+
+    let result = ops.create(req, &auth).await?;
+
+    let output = json!({
+        "success": true,
+        "route": {
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "virtual_host_id": result.data.virtual_host_id.to_string(),
+            "path_pattern": result.data.path_pattern,
+            "match_type": result.data.match_type.to_string(),
+            "rule_order": result.data.rule_order,
+            "created_at": result.data.created_at.to_rfc3339(),
+        },
+        "message": result.message.unwrap_or_else(|| format!(
+            "Route '{}' created successfully in virtual host '{}'. Note: Route config update required to sync to xDS.",
+            result.data.name, virtual_host
+        )),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %result.data.name,
+        route_id = %result.data.id,
+        "Successfully created route via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_update_route tool
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_update_route")]
+pub async fn execute_update_route(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    use crate::internal_api::{InternalAuthContext, RouteOperations, UpdateRouteRequest};
+
+    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    })?;
+
+    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    })?;
+
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let match_type = args.get("match_type").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let action = args.get("action").cloned();
+
+    tracing::debug!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Updating route via MCP"
+    );
+
+    let ops = RouteOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action };
+
+    let result = ops.update(route_config, virtual_host, name, req, &auth).await?;
+
+    let output = json!({
+        "success": true,
+        "route": {
+            "id": result.data.id.to_string(),
+            "name": result.data.name,
+            "virtual_host_id": result.data.virtual_host_id.to_string(),
+            "path_pattern": result.data.path_pattern,
+            "match_type": result.data.match_type.to_string(),
+            "rule_order": result.data.rule_order,
+            "updated_at": result.data.updated_at.to_rfc3339(),
+        },
+        "message": result.message.unwrap_or_else(|| format!(
+            "Route '{}' updated successfully. Note: Route config update required to sync to xDS.",
+            result.data.name
+        )),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %result.data.name,
+        route_id = %result.data.id,
+        "Successfully updated route via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_delete_route tool
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_delete_route")]
+pub async fn execute_delete_route(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    use crate::internal_api::{InternalAuthContext, RouteOperations};
+
+    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    })?;
+
+    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    })?;
+
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Deleting route via MCP"
+    );
+
+    let ops = RouteOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+
+    let result = ops.delete(route_config, virtual_host, name, &auth).await?;
+
+    let output = json!({
+        "success": true,
+        "message": result.message.unwrap_or_else(|| format!(
+            "Route '{}' deleted successfully from virtual host '{}'. Note: Route config update required to sync to xDS.",
+            name, virtual_host
+        )),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        route_config = %route_config,
+        virtual_host = %virtual_host,
+        route_name = %name,
+        "Successfully deleted route via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,5 +1283,57 @@ mod tests {
         let tool = cp_delete_route_config_tool();
         assert_eq!(tool.name, "cp_delete_route_config");
         assert!(tool.description.contains("Delete"));
+    }
+
+    #[test]
+    fn test_cp_get_route_tool_definition() {
+        let tool = cp_get_route_tool();
+        assert_eq!(tool.name, "cp_get_route");
+        assert!(tool.description.contains("Get a specific route"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("name")));
+    }
+
+    #[test]
+    fn test_cp_create_route_tool_definition() {
+        let tool = cp_create_route_tool();
+        assert_eq!(tool.name, "cp_create_route");
+        assert!(tool.description.contains("Create a new route"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("name")));
+        assert!(required.contains(&json!("path_pattern")));
+        assert!(required.contains(&json!("match_type")));
+        assert!(required.contains(&json!("action")));
+    }
+
+    #[test]
+    fn test_cp_update_route_tool_definition() {
+        let tool = cp_update_route_tool();
+        assert_eq!(tool.name, "cp_update_route");
+        assert!(tool.description.contains("Update an existing route"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("name")));
+        assert_eq!(required.len(), 3); // Only 3 required, rest optional
+    }
+
+    #[test]
+    fn test_cp_delete_route_tool_definition() {
+        let tool = cp_delete_route_tool();
+        assert_eq!(tool.name, "cp_delete_route");
+        assert!(tool.description.contains("Delete a route"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("name")));
     }
 }

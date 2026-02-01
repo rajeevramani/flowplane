@@ -222,8 +222,11 @@ impl McpHandler {
             tools::cp_list_listeners_tool(),
             tools::cp_get_listener_tool(),
             tools::cp_list_routes_tool(),
+            tools::cp_get_route_tool(),
             tools::cp_list_filters_tool(),
             tools::cp_get_filter_tool(),
+            tools::cp_list_virtual_hosts_tool(),
+            tools::cp_get_virtual_host_tool(),
             // Write operations (requires xds_state)
             // Cluster CRUD
             tools::cp_create_cluster_tool(),
@@ -237,10 +240,22 @@ impl McpHandler {
             tools::cp_create_route_config_tool(),
             tools::cp_update_route_config_tool(),
             tools::cp_delete_route_config_tool(),
+            // Individual route CRUD
+            tools::cp_create_route_tool(),
+            tools::cp_update_route_tool(),
+            tools::cp_delete_route_tool(),
+            // Virtual host CRUD
+            tools::cp_create_virtual_host_tool(),
+            tools::cp_update_virtual_host_tool(),
+            tools::cp_delete_virtual_host_tool(),
             // Filter CRUD
             tools::cp_create_filter_tool(),
             tools::cp_update_filter_tool(),
             tools::cp_delete_filter_tool(),
+            // Filter attachment tools
+            tools::cp_attach_filter_tool(),
+            tools::cp_detach_filter_tool(),
+            tools::cp_list_filter_attachments_tool(),
         ];
 
         let result = ToolsListResult { tools, next_cursor: None };
@@ -290,6 +305,14 @@ impl McpHandler {
             | "cp_get_listener"
             | "cp_list_filters"
             | "cp_get_filter"
+            | "cp_list_virtual_hosts"
+            | "cp_get_virtual_host"
+            | "cp_list_aggregated_schemas"
+            | "cp_get_aggregated_schema"
+            | "cp_list_learning_sessions"
+            | "cp_get_learning_session"
+            | "cp_create_learning_session"
+            | "cp_delete_learning_session"
             | "cp_create_cluster"
             | "cp_update_cluster"
             | "cp_delete_cluster"
@@ -299,9 +322,19 @@ impl McpHandler {
             | "cp_create_route_config"
             | "cp_update_route_config"
             | "cp_delete_route_config"
+            | "cp_get_route"
+            | "cp_create_route"
+            | "cp_update_route"
+            | "cp_delete_route"
+            | "cp_create_virtual_host"
+            | "cp_update_virtual_host"
+            | "cp_delete_virtual_host"
             | "cp_create_filter"
             | "cp_update_filter"
-            | "cp_delete_filter" => {
+            | "cp_delete_filter"
+            | "cp_attach_filter"
+            | "cp_detach_filter"
+            | "cp_list_filter_attachments" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -356,6 +389,17 @@ impl McpHandler {
                     "cp_delete_route_config" => {
                         tools::execute_delete_route_config(xds_state, &self.team, args).await
                     }
+                    // Individual route CRUD (use internal API layer)
+                    "cp_get_route" => tools::execute_get_route(xds_state, &self.team, args).await,
+                    "cp_create_route" => {
+                        tools::execute_create_route(xds_state, &self.team, args).await
+                    }
+                    "cp_update_route" => {
+                        tools::execute_update_route(xds_state, &self.team, args).await
+                    }
+                    "cp_delete_route" => {
+                        tools::execute_delete_route(xds_state, &self.team, args).await
+                    }
                     // Filter operations (use internal API layer)
                     "cp_list_filters" => {
                         tools::execute_list_filters(xds_state, &self.team, args).await
@@ -369,6 +413,52 @@ impl McpHandler {
                     }
                     "cp_delete_filter" => {
                         tools::execute_delete_filter(xds_state, &self.team, args).await
+                    }
+                    // Filter attachment operations
+                    "cp_attach_filter" => {
+                        tools::execute_attach_filter(xds_state, &self.team, args).await
+                    }
+                    "cp_detach_filter" => {
+                        tools::execute_detach_filter(xds_state, &self.team, args).await
+                    }
+                    "cp_list_filter_attachments" => {
+                        tools::execute_list_filter_attachments(xds_state, &self.team, args).await
+                    }
+                    // Virtual host operations (use internal API layer)
+                    "cp_list_virtual_hosts" => {
+                        tools::execute_list_virtual_hosts(xds_state, &self.team, args).await
+                    }
+                    "cp_get_virtual_host" => {
+                        tools::execute_get_virtual_host(xds_state, &self.team, args).await
+                    }
+                    "cp_create_virtual_host" => {
+                        tools::execute_create_virtual_host(xds_state, &self.team, args).await
+                    }
+                    "cp_update_virtual_host" => {
+                        tools::execute_update_virtual_host(xds_state, &self.team, args).await
+                    }
+                    "cp_delete_virtual_host" => {
+                        tools::execute_delete_virtual_host(xds_state, &self.team, args).await
+                    }
+                    // Aggregated schema operations (use internal API layer)
+                    "cp_list_aggregated_schemas" => {
+                        tools::execute_list_aggregated_schemas(xds_state, &self.team, args).await
+                    }
+                    "cp_get_aggregated_schema" => {
+                        tools::execute_get_aggregated_schema(xds_state, &self.team, args).await
+                    }
+                    // Learning session operations (use internal API layer)
+                    "cp_list_learning_sessions" => {
+                        tools::execute_list_learning_sessions(xds_state, &self.team, args).await
+                    }
+                    "cp_get_learning_session" => {
+                        tools::execute_get_learning_session(xds_state, &self.team, args).await
+                    }
+                    "cp_create_learning_session" => {
+                        tools::execute_create_learning_session(xds_state, &self.team, args).await
+                    }
+                    "cp_delete_learning_session" => {
+                        tools::execute_delete_learning_session(xds_state, &self.team, args).await
                     }
                     _ => unreachable!(),
                 }

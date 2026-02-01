@@ -5,8 +5,11 @@
 
 pub mod clusters;
 pub mod filters;
+pub mod learning;
 pub mod listeners;
 pub mod routes;
+pub mod schemas;
+pub mod virtual_hosts;
 
 // Re-export tool definitions for convenience
 pub use clusters::{cp_get_cluster_tool, cp_list_clusters_tool};
@@ -22,6 +25,10 @@ pub use filters::{execute_get_filter, execute_list_filters};
 // Re-export filter CRUD tools
 pub use filters::{cp_create_filter_tool, cp_delete_filter_tool, cp_update_filter_tool};
 pub use filters::{execute_create_filter, execute_delete_filter, execute_update_filter};
+
+// Re-export filter attachment tools
+pub use filters::{cp_attach_filter_tool, cp_detach_filter_tool, cp_list_filter_attachments_tool};
+pub use filters::{execute_attach_filter, execute_detach_filter, execute_list_filter_attachments};
 
 pub use listeners::{cp_get_listener_tool, cp_list_listeners_tool};
 pub use listeners::{execute_get_listener, execute_list_listeners};
@@ -41,6 +48,38 @@ pub use routes::{
     execute_create_route_config, execute_delete_route_config, execute_update_route_config,
 };
 
+// Re-export individual route CRUD tools
+pub use routes::{
+    cp_create_route_tool, cp_delete_route_tool, cp_get_route_tool, cp_update_route_tool,
+};
+pub use routes::{
+    execute_create_route, execute_delete_route, execute_get_route, execute_update_route,
+};
+
+// Re-export virtual host tools
+pub use virtual_hosts::{
+    cp_create_virtual_host_tool, cp_delete_virtual_host_tool, cp_get_virtual_host_tool,
+    cp_list_virtual_hosts_tool, cp_update_virtual_host_tool,
+};
+pub use virtual_hosts::{
+    execute_create_virtual_host, execute_delete_virtual_host, execute_get_virtual_host,
+    execute_list_virtual_hosts, execute_update_virtual_host,
+};
+
+// Re-export aggregated schema tools
+pub use schemas::{cp_get_aggregated_schema_tool, cp_list_aggregated_schemas_tool};
+pub use schemas::{execute_get_aggregated_schema, execute_list_aggregated_schemas};
+
+// Re-export learning session tools
+pub use learning::{
+    cp_create_learning_session_tool, cp_delete_learning_session_tool, cp_get_learning_session_tool,
+    cp_list_learning_sessions_tool,
+};
+pub use learning::{
+    execute_create_learning_session, execute_delete_learning_session, execute_get_learning_session,
+    execute_list_learning_sessions,
+};
+
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
 use serde_json::Value;
@@ -58,8 +97,15 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_list_listeners_tool(),
         cp_get_listener_tool(),
         cp_list_routes_tool(),
+        cp_get_route_tool(),
         cp_list_filters_tool(),
         cp_get_filter_tool(),
+        cp_list_virtual_hosts_tool(),
+        cp_get_virtual_host_tool(),
+        cp_list_aggregated_schemas_tool(),
+        cp_get_aggregated_schema_tool(),
+        cp_list_learning_sessions_tool(),
+        cp_get_learning_session_tool(),
         // Cluster CRUD tools
         cp_create_cluster_tool(),
         cp_update_cluster_tool(),
@@ -72,10 +118,25 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_create_route_config_tool(),
         cp_update_route_config_tool(),
         cp_delete_route_config_tool(),
+        // Individual route CRUD tools
+        cp_create_route_tool(),
+        cp_update_route_tool(),
+        cp_delete_route_tool(),
+        // Virtual host CRUD tools
+        cp_create_virtual_host_tool(),
+        cp_update_virtual_host_tool(),
+        cp_delete_virtual_host_tool(),
         // Filter CRUD tools
         cp_create_filter_tool(),
         cp_update_filter_tool(),
         cp_delete_filter_tool(),
+        // Filter attachment tools
+        cp_attach_filter_tool(),
+        cp_detach_filter_tool(),
+        cp_list_filter_attachments_tool(),
+        // Learning session tools
+        cp_create_learning_session_tool(),
+        cp_delete_learning_session_tool(),
     ]
 }
 
@@ -117,8 +178,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 7 read-only tools + 12 CRUD tools = 19 total
-        assert_eq!(tools.len(), 19);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment tools + 2 learning session tools = 37 total
+        assert_eq!(tools.len(), 37);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
@@ -128,8 +189,13 @@ mod tests {
         assert!(tool_names.contains(&"cp_list_listeners"));
         assert!(tool_names.contains(&"cp_get_listener"));
         assert!(tool_names.contains(&"cp_list_routes"));
+        assert!(tool_names.contains(&"cp_get_route"));
         assert!(tool_names.contains(&"cp_list_filters"));
         assert!(tool_names.contains(&"cp_get_filter"));
+        assert!(tool_names.contains(&"cp_list_virtual_hosts"));
+        assert!(tool_names.contains(&"cp_get_virtual_host"));
+        assert!(tool_names.contains(&"cp_list_aggregated_schemas"));
+        assert!(tool_names.contains(&"cp_get_aggregated_schema"));
 
         // Cluster CRUD tools
         assert!(tool_names.contains(&"cp_create_cluster"));
@@ -146,10 +212,31 @@ mod tests {
         assert!(tool_names.contains(&"cp_update_route_config"));
         assert!(tool_names.contains(&"cp_delete_route_config"));
 
+        // Individual route CRUD tools
+        assert!(tool_names.contains(&"cp_create_route"));
+        assert!(tool_names.contains(&"cp_update_route"));
+        assert!(tool_names.contains(&"cp_delete_route"));
+
+        // Virtual host CRUD tools
+        assert!(tool_names.contains(&"cp_create_virtual_host"));
+        assert!(tool_names.contains(&"cp_update_virtual_host"));
+        assert!(tool_names.contains(&"cp_delete_virtual_host"));
+
         // Filter CRUD tools
         assert!(tool_names.contains(&"cp_create_filter"));
         assert!(tool_names.contains(&"cp_update_filter"));
         assert!(tool_names.contains(&"cp_delete_filter"));
+
+        // Filter attachment tools
+        assert!(tool_names.contains(&"cp_attach_filter"));
+        assert!(tool_names.contains(&"cp_detach_filter"));
+        assert!(tool_names.contains(&"cp_list_filter_attachments"));
+
+        // Learning session tools
+        assert!(tool_names.contains(&"cp_list_learning_sessions"));
+        assert!(tool_names.contains(&"cp_get_learning_session"));
+        assert!(tool_names.contains(&"cp_create_learning_session"));
+        assert!(tool_names.contains(&"cp_delete_learning_session"));
     }
 
     #[tokio::test]
