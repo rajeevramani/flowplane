@@ -16,9 +16,9 @@ use tracing::instrument;
 
 /// Tool definition for listing routes
 pub fn cp_list_routes_tool() -> Tool {
-    Tool {
-        name: "cp_list_routes".to_string(),
-        description: r#"List all routes with their metadata and configuration.
+    Tool::new(
+        "cp_list_routes",
+        r#"List all routes with their metadata and configuration.
 
 RESOURCE ORDER: Routes are part of Route Configurations (order 2 of 4).
 Routes are created within route configs, which depend on clusters.
@@ -50,9 +50,8 @@ HIERARCHY:
   - Virtual hosts match domains and contain routes
   - Routes match paths and forward to clusters
 
-RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"#,
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -72,7 +71,7 @@ RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"
                 }
             }
         }),
-    }
+    )
 }
 
 /// Execute list routes operation
@@ -197,9 +196,9 @@ pub async fn execute_list_routes(
 
 /// Returns the MCP tool definition for creating a route config.
 pub fn cp_create_route_config_tool() -> Tool {
-    Tool {
-        name: "cp_create_route_config".to_string(),
-        description: r#"Create a new route configuration in the Flowplane control plane.
+    Tool::new(
+        "cp_create_route_config",
+        r#"Create a new route configuration in the Flowplane control plane.
 
 RESOURCE ORDER: Route configs are order 2 of 4.
 PREREQUISITE: Clusters referenced in route actions MUST exist first.
@@ -286,9 +285,8 @@ EXAMPLE WITH WEIGHTED ROUTING (canary/A-B testing):
   }]
 }
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -385,14 +383,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name", "virtualHosts"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a route config.
 pub fn cp_update_route_config_tool() -> Tool {
-    Tool {
-        name: "cp_update_route_config".to_string(),
-        description: r#"Update an existing route configuration.
+    Tool::new(
+        "cp_update_route_config",
+        r#"Update an existing route configuration.
 
 IMPORTANT: This is a FULL REPLACEMENT, not a partial update.
 Provide the complete new virtualHosts configuration.
@@ -418,9 +416,8 @@ WORKFLOW:
 
 TIP: Copy current config, modify it, then submit the complete updated version.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -443,14 +440,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name", "virtualHosts"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a route config.
 pub fn cp_delete_route_config_tool() -> Tool {
-    Tool {
-        name: "cp_delete_route_config".to_string(),
-        description: r#"Delete a route configuration from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_route_config",
+        r#"Delete a route configuration from the Flowplane control plane.
 
 DELETION ORDER: Delete in REVERSE order of creation.
 Delete listeners referencing this route config FIRST.
@@ -477,9 +474,8 @@ This is safe if no listeners reference the config.
 Required Parameters:
 - name: Name of the route config to delete
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -489,7 +485,7 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_create_route_config tool using the internal API layer.
@@ -689,9 +685,9 @@ pub async fn execute_delete_route_config(
 
 /// Returns the MCP tool definition for getting a route by hierarchy
 pub fn cp_get_route_tool() -> Tool {
-    Tool {
-        name: "cp_get_route".to_string(),
-        description: r#"Get a specific route by hierarchy (route_config → virtual_host → route).
+    Tool::new(
+        "cp_get_route",
+        r#"Get a specific route by hierarchy (route_config → virtual_host → route).
 
 RESOURCE ORDER: Routes are within virtual hosts, which are within route configs (order 2 of 4).
 
@@ -724,9 +720,8 @@ Required Parameters:
 - virtual_host: Name of the virtual host within the route config
 - name: Name of the route
 
-Authorization: Requires cp:read scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:read scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -744,14 +739,14 @@ Authorization: Requires cp:read scope."#
             },
             "required": ["route_config", "virtual_host", "name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for creating a route
 pub fn cp_create_route_tool() -> Tool {
-    Tool {
-        name: "cp_create_route".to_string(),
-        description: r#"Create a new route within a virtual host.
+    Tool::new(
+        "cp_create_route",
+        r#"Create a new route within a virtual host.
 
 RESOURCE ORDER: Routes are within virtual hosts, which are within route configs (order 2 of 4).
 PREREQUISITES: The route config and virtual host MUST exist first.
@@ -799,9 +794,8 @@ Optional Parameters:
 
 IMPORTANT: After creating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -837,14 +831,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "virtual_host", "name", "path_pattern", "match_type", "action"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a route
 pub fn cp_update_route_tool() -> Tool {
-    Tool {
-        name: "cp_update_route".to_string(),
-        description: r#"Update an existing route within a virtual host.
+    Tool::new(
+        "cp_update_route",
+        r#"Update an existing route within a virtual host.
 
 IMPORTANT: This is a PARTIAL update. Only provide fields you want to change.
 Route name cannot be changed.
@@ -879,9 +873,8 @@ Optional Parameters (provide only what you want to change):
 
 IMPORTANT: After updating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -916,14 +909,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "virtual_host", "name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a route
 pub fn cp_delete_route_tool() -> Tool {
-    Tool {
-        name: "cp_delete_route".to_string(),
-        description: r#"Delete a route from a virtual host.
+    Tool::new(
+        "cp_delete_route",
+        r#"Delete a route from a virtual host.
 
 DELETION ORDER: Delete routes before deleting their parent virtual host or route config.
 
@@ -947,9 +940,8 @@ Required Parameters:
 
 IMPORTANT: After deleting routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -967,7 +959,7 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "virtual_host", "name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_get_route tool
@@ -1256,14 +1248,14 @@ mod tests {
     fn test_cp_list_routes_tool_definition() {
         let tool = cp_list_routes_tool();
         assert_eq!(tool.name, "cp_list_routes");
-        assert!(tool.description.contains("routes"));
+        assert!(tool.description.as_ref().unwrap().contains("routes"));
     }
 
     #[test]
     fn test_cp_create_route_config_tool_definition() {
         let tool = cp_create_route_config_tool();
         assert_eq!(tool.name, "cp_create_route_config");
-        assert!(tool.description.contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
 
         // Check required fields in schema
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -1275,21 +1267,21 @@ mod tests {
     fn test_cp_update_route_config_tool_definition() {
         let tool = cp_update_route_config_tool();
         assert_eq!(tool.name, "cp_update_route_config");
-        assert!(tool.description.contains("Update"));
+        assert!(tool.description.as_ref().unwrap().contains("Update"));
     }
 
     #[test]
     fn test_cp_delete_route_config_tool_definition() {
         let tool = cp_delete_route_config_tool();
         assert_eq!(tool.name, "cp_delete_route_config");
-        assert!(tool.description.contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
     }
 
     #[test]
     fn test_cp_get_route_tool_definition() {
         let tool = cp_get_route_tool();
         assert_eq!(tool.name, "cp_get_route");
-        assert!(tool.description.contains("Get a specific route"));
+        assert!(tool.description.as_ref().unwrap().contains("Get a specific route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -1301,7 +1293,7 @@ mod tests {
     fn test_cp_create_route_tool_definition() {
         let tool = cp_create_route_tool();
         assert_eq!(tool.name, "cp_create_route");
-        assert!(tool.description.contains("Create a new route"));
+        assert!(tool.description.as_ref().unwrap().contains("Create a new route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -1316,7 +1308,7 @@ mod tests {
     fn test_cp_update_route_tool_definition() {
         let tool = cp_update_route_tool();
         assert_eq!(tool.name, "cp_update_route");
-        assert!(tool.description.contains("Update an existing route"));
+        assert!(tool.description.as_ref().unwrap().contains("Update an existing route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -1329,7 +1321,7 @@ mod tests {
     fn test_cp_delete_route_tool_definition() {
         let tool = cp_delete_route_tool();
         assert_eq!(tool.name, "cp_delete_route");
-        assert!(tool.description.contains("Delete a route"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete a route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));

@@ -501,7 +501,7 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
 
         // Special case: /api/v1/mcp - MCP endpoints implement method-level authorization
         // The HTTP method is always POST (JSON-RPC), but the actual operation is in the request body.
-        // The mcp_http_handler has its own comprehensive authorization based on the method field.
+        // The MCP streamable HTTP handlers have their own comprehensive authorization based on the method field.
         if parts[2] == "mcp" {
             return None;
         }
@@ -1067,11 +1067,6 @@ mod tests {
             resource_from_path("/api/v1/mcp/cp"),
             None,
             "MCP CP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/mcp/cp/sse"),
-            None,
-            "MCP CP SSE endpoint should bypass resource-level auth"
         );
         assert_eq!(
             resource_from_path("/api/v1/mcp/cp/connections"),

@@ -65,6 +65,22 @@ pub enum McpError {
     /// Configuration error - missing or invalid configuration
     #[error("Configuration error: {0}")]
     Configuration(String),
+
+    /// Invalid origin header - not in allowlist (CSRF protection)
+    #[error("Invalid origin: {0}")]
+    InvalidOrigin(String),
+
+    /// Missing required Origin header
+    #[error("Missing required Origin header")]
+    MissingOrigin,
+
+    /// Malformed session ID format
+    #[error("Malformed session ID: {0}")]
+    MalformedSessionId(String),
+
+    /// Invalid event ID format for SSE resumability
+    #[error("Invalid event ID: {0}")]
+    InvalidEventId(String),
 }
 
 impl McpError {
@@ -89,6 +105,10 @@ impl McpError {
             McpError::ValidationError(_) => error_codes::INVALID_PARAMS,
             McpError::Conflict(_) => error_codes::INVALID_PARAMS,
             McpError::Configuration(_) => error_codes::INTERNAL_ERROR, // Configuration issues are internal
+            McpError::InvalidOrigin(_) => error_codes::INVALID_REQUEST, // 403 Forbidden intent
+            McpError::MissingOrigin => error_codes::INVALID_REQUEST,
+            McpError::MalformedSessionId(_) => error_codes::INVALID_REQUEST, // 400 Bad Request intent
+            McpError::InvalidEventId(_) => error_codes::INVALID_REQUEST, // 400 Bad Request intent
         }
     }
 
@@ -190,5 +210,33 @@ mod tests {
         assert_eq!(error.error_code(), error_codes::INVALID_PARAMS);
         assert!(error.to_string().contains("Conflict"));
         assert!(error.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_invalid_origin_error() {
+        let error = McpError::InvalidOrigin("http://evil.com not allowed".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_REQUEST);
+        assert!(error.to_string().contains("Invalid origin"));
+    }
+
+    #[test]
+    fn test_missing_origin_error() {
+        let error = McpError::MissingOrigin;
+        assert_eq!(error.error_code(), error_codes::INVALID_REQUEST);
+        assert!(error.to_string().contains("Missing required Origin"));
+    }
+
+    #[test]
+    fn test_malformed_session_id_error() {
+        let error = McpError::MalformedSessionId("bad-id".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_REQUEST);
+        assert!(error.to_string().contains("Malformed session ID"));
+    }
+
+    #[test]
+    fn test_invalid_event_id_error() {
+        let error = McpError::InvalidEventId("missing sequence".to_string());
+        assert_eq!(error.error_code(), error_codes::INVALID_REQUEST);
+        assert!(error.to_string().contains("Invalid event ID"));
     }
 }

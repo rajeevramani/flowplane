@@ -180,11 +180,11 @@ async fn test_version_negotiation_empty_string() {
 
     let response = handler.handle_request(request).await;
 
-    // Empty version should default to oldest supported version
-    assert!(response.error.is_none());
-    assert!(response.result.is_some());
-    let result = response.result.unwrap();
-    assert_eq!(result["protocolVersion"], "2024-11-05");
+    // Empty version is rejected - only exact "2025-11-25" is accepted
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    assert!(error.message.contains("Unsupported protocol version"));
 }
 
 #[tokio::test]
@@ -236,11 +236,11 @@ async fn test_version_negotiation_malformed_version() {
 
     let response = handler.handle_request(request).await;
 
-    // Malformed version: "not-a-date" > "2024-11-05" in lexicographic comparison
-    // so it gets negotiated down to latest supported version
-    assert!(response.error.is_none());
-    let result = response.result.unwrap();
-    assert_eq!(result["protocolVersion"], "2025-11-25");
+    // Malformed version is rejected - only exact "2025-11-25" is accepted
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    assert!(error.message.contains("Unsupported protocol version"));
 }
 
 #[tokio::test]
@@ -263,17 +263,18 @@ async fn test_version_negotiation_future_version() {
 
     let response = handler.handle_request(request).await;
 
-    // Should negotiate down to our latest supported version
-    assert!(response.error.is_none());
-    let result = response.result.unwrap();
-    assert_eq!(result["protocolVersion"], "2025-11-25");
+    // Future version is rejected - only exact "2025-11-25" is accepted
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    assert!(error.message.contains("Unsupported protocol version"));
 }
 
 #[tokio::test]
 async fn test_version_negotiation_exact_boundary() {
     let mut handler = create_test_handler().await;
 
-    // Test exact match with oldest supported version
+    // Test old version - should be rejected (only 2025-11-25 is accepted)
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         id: Some(JsonRpcId::Number(1)),
@@ -290,9 +291,11 @@ async fn test_version_negotiation_exact_boundary() {
 
     let response = handler.handle_request(request).await;
 
-    assert!(response.error.is_none());
-    let result = response.result.unwrap();
-    assert_eq!(result["protocolVersion"], "2024-11-05");
+    // Old version is rejected - only exact "2025-11-25" is accepted
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    assert!(error.message.contains("Unsupported protocol version"));
 }
 
 // -----------------------------------------------------------------------------
@@ -309,7 +312,14 @@ async fn test_session_id_collision() {
     assert!(!session1.initialized);
 
     // Mark as initialized
-    let client_info = ClientInfo { name: "client-1".to_string(), version: "1.0.0".to_string() };
+    let client_info = ClientInfo {
+        name: "client-1".to_string(),
+        version: "1.0.0".to_string(),
+        title: None,
+        description: None,
+        icons: None,
+        website_url: None,
+    };
     manager.mark_initialized(&id, "2025-11-25".to_string(), client_info);
 
     // Try to create/get again with same ID
@@ -376,8 +386,14 @@ async fn test_concurrent_session_initialization() {
             let manager = Arc::clone(&manager);
             let id = id.clone();
             tokio::spawn(async move {
-                let client_info =
-                    ClientInfo { name: format!("client-{}", i), version: "1.0.0".to_string() };
+                let client_info = ClientInfo {
+                    name: format!("client-{}", i),
+                    version: "1.0.0".to_string(),
+                    title: None,
+                    description: None,
+                    icons: None,
+                    website_url: None,
+                };
                 manager.mark_initialized(&id, "2025-11-25".to_string(), client_info);
             })
         })

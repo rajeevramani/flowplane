@@ -21,9 +21,9 @@ use tracing::instrument;
 
 /// DevOps tool for deploying an API with cluster, route config, and listener
 pub fn devops_deploy_api_tool() -> Tool {
-    Tool {
-        name: "devops_deploy_api".to_string(),
-        description: r#"Deploy an API endpoint with all required infrastructure in one operation.
+    Tool::new(
+        "devops_deploy_api",
+        r#"Deploy an API endpoint with all required infrastructure in one operation.
 
 ORCHESTRATION: Creates cluster, route configuration, and optionally a listener in the correct order.
 This is a high-level workflow tool that replaces multiple manual steps.
@@ -58,9 +58,8 @@ EXAMPLE:
 
 RETURNS: Summary of created resources with their IDs and names.
 
-Authorization: Requires cp:write or clusters:write + routes:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write or clusters:write + routes:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "cluster_name": {
@@ -112,14 +111,14 @@ Authorization: Requires cp:write or clusters:write + routes:write scope."#
             },
             "required": ["cluster_name", "endpoints", "route_config_name"]
         }),
-    }
+    )
 }
 
 /// DevOps tool for configuring rate limiting
 pub fn devops_configure_rate_limiting_tool() -> Tool {
-    Tool {
-        name: "devops_configure_rate_limiting".to_string(),
-        description: r#"Configure rate limiting for an API endpoint.
+    Tool::new(
+        "devops_configure_rate_limiting",
+        r#"Configure rate limiting for an API endpoint.
 
 ORCHESTRATION: Creates a rate limiting filter and attaches it to the specified target.
 Simplifies the process of adding rate limits to protect your APIs.
@@ -149,9 +148,8 @@ EXAMPLE:
 
 RETURNS: Created filter details and attachment confirmation.
 
-Authorization: Requires cp:write or filters:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write or filters:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "filter_name": {
@@ -195,14 +193,14 @@ Authorization: Requires cp:write or filters:write scope."#
             },
             "required": ["filter_name", "max_requests", "target_type", "target_name"]
         }),
-    }
+    )
 }
 
 /// DevOps tool for enabling JWT authentication
 pub fn devops_enable_jwt_auth_tool() -> Tool {
-    Tool {
-        name: "devops_enable_jwt_auth".to_string(),
-        description: r#"Enable JWT authentication for an API endpoint.
+    Tool::new(
+        "devops_enable_jwt_auth",
+        r#"Enable JWT authentication for an API endpoint.
 
 ORCHESTRATION: Creates a JWT authentication filter with provider configuration
 and attaches it to the specified target.
@@ -235,9 +233,8 @@ EXAMPLE:
 
 RETURNS: Created filter details and attachment confirmation.
 
-Authorization: Requires cp:write or filters:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write or filters:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "filter_name": {
@@ -288,14 +285,14 @@ Authorization: Requires cp:write or filters:write scope."#
             },
             "required": ["filter_name", "issuer", "audiences", "jwks_uri", "target_type", "target_name"]
         }),
-    }
+    )
 }
 
 /// DevOps tool for configuring CORS
 pub fn devops_configure_cors_tool() -> Tool {
-    Tool {
-        name: "devops_configure_cors".to_string(),
-        description: r#"Configure Cross-Origin Resource Sharing (CORS) for an API endpoint.
+    Tool::new(
+        "devops_configure_cors",
+        r#"Configure Cross-Origin Resource Sharing (CORS) for an API endpoint.
 
 ORCHESTRATION: Creates a CORS filter with the specified policy
 and attaches it to the specified target.
@@ -327,8 +324,8 @@ EXAMPLE:
 
 RETURNS: Created filter details and attachment confirmation.
 
-Authorization: Requires cp:write or filters:write scope."#.to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write or filters:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "filter_name": {
@@ -384,14 +381,14 @@ Authorization: Requires cp:write or filters:write scope."#.to_string(),
             },
             "required": ["filter_name", "allowed_origins", "target_type", "target_name"]
         }),
-    }
+    )
 }
 
 /// DevOps tool for creating canary deployments
 pub fn devops_create_canary_deployment_tool() -> Tool {
-    Tool {
-        name: "devops_create_canary_deployment".to_string(),
-        description: r#"Create a canary deployment with weighted traffic splitting.
+    Tool::new(
+        "devops_create_canary_deployment",
+        r#"Create a canary deployment with weighted traffic splitting.
 
 ORCHESTRATION: Creates or updates clusters for stable and canary versions,
 then configures weighted routing to split traffic between them.
@@ -426,9 +423,8 @@ This creates:
 
 RETURNS: Created clusters and routing configuration details.
 
-Authorization: Requires cp:write or clusters:write + routes:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write or clusters:write + routes:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "deployment_name": {
@@ -484,14 +480,14 @@ Authorization: Requires cp:write or clusters:write + routes:write scope."#
             },
             "required": ["deployment_name", "stable_endpoints", "canary_endpoints", "route_config_name"]
         }),
-    }
+    )
 }
 
 /// DevOps tool for getting deployment status
 pub fn devops_get_deployment_status_tool() -> Tool {
-    Tool {
-        name: "devops_get_deployment_status".to_string(),
-        description: r#"Get aggregated deployment status across clusters, listeners, and filters.
+    Tool::new(
+        "devops_get_deployment_status",
+        r#"Get aggregated deployment status across clusters, listeners, and filters.
 
 PURPOSE: Provides a comprehensive view of deployment health by aggregating
 status from multiple resources.
@@ -521,9 +517,8 @@ RETURNS: Aggregated status with:
 - filters: List of filters with installation points
 - summary: Overall health indicators
 
-Authorization: Requires cp:read scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:read scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "cluster_names": {
@@ -548,7 +543,7 @@ Authorization: Requires cp:read scope."#
                 }
             }
         }),
-    }
+    )
 }
 
 // =============================================================================
@@ -1522,7 +1517,7 @@ mod tests {
     fn test_devops_deploy_api_tool_definition() {
         let tool = devops_deploy_api_tool();
         assert_eq!(tool.name, "devops_deploy_api");
-        assert!(tool.description.contains("Deploy an API endpoint"));
+        assert!(tool.description.as_ref().unwrap().contains("Deploy an API endpoint"));
 
         let schema = tool.input_schema;
         let required = schema["required"].as_array().unwrap();
@@ -1535,7 +1530,7 @@ mod tests {
     fn test_devops_configure_rate_limiting_tool_definition() {
         let tool = devops_configure_rate_limiting_tool();
         assert_eq!(tool.name, "devops_configure_rate_limiting");
-        assert!(tool.description.contains("rate limiting"));
+        assert!(tool.description.as_ref().unwrap().contains("rate limiting"));
 
         let schema = tool.input_schema;
         let required = schema["required"].as_array().unwrap();
@@ -1549,7 +1544,7 @@ mod tests {
     fn test_devops_enable_jwt_auth_tool_definition() {
         let tool = devops_enable_jwt_auth_tool();
         assert_eq!(tool.name, "devops_enable_jwt_auth");
-        assert!(tool.description.contains("JWT authentication"));
+        assert!(tool.description.as_ref().unwrap().contains("JWT authentication"));
 
         let schema = tool.input_schema;
         let required = schema["required"].as_array().unwrap();
@@ -1563,7 +1558,7 @@ mod tests {
     fn test_devops_configure_cors_tool_definition() {
         let tool = devops_configure_cors_tool();
         assert_eq!(tool.name, "devops_configure_cors");
-        assert!(tool.description.contains("CORS"));
+        assert!(tool.description.as_ref().unwrap().contains("CORS"));
 
         let schema = tool.input_schema;
         let required = schema["required"].as_array().unwrap();
@@ -1577,7 +1572,7 @@ mod tests {
     fn test_devops_create_canary_deployment_tool_definition() {
         let tool = devops_create_canary_deployment_tool();
         assert_eq!(tool.name, "devops_create_canary_deployment");
-        assert!(tool.description.contains("canary deployment"));
+        assert!(tool.description.as_ref().unwrap().contains("canary deployment"));
 
         let schema = tool.input_schema;
         let required = schema["required"].as_array().unwrap();
@@ -1591,7 +1586,7 @@ mod tests {
     fn test_devops_get_deployment_status_tool_definition() {
         let tool = devops_get_deployment_status_tool();
         assert_eq!(tool.name, "devops_get_deployment_status");
-        assert!(tool.description.contains("deployment status"));
+        assert!(tool.description.as_ref().unwrap().contains("deployment status"));
 
         let schema = tool.input_schema;
         // All parameters are optional for status check
@@ -1615,7 +1610,10 @@ mod tests {
         for tool in tools {
             // Verify tool has name and description
             assert!(!tool.name.is_empty(), "Tool name should not be empty");
-            assert!(!tool.description.is_empty(), "Tool description should not be empty");
+            assert!(
+                tool.description.as_ref().is_some_and(|d| !d.is_empty()),
+                "Tool description should not be empty"
+            );
 
             // Verify schema is valid JSON object
             assert!(tool.input_schema.is_object(), "Tool schema should be an object");

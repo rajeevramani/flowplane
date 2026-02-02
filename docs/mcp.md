@@ -11,13 +11,13 @@ Flowplane implements MCP with two distinct endpoints serving different purposes:
 
 ### Protocol Support
 
-Flowplane implements MCP protocol versions: `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`
+Flowplane implements MCP protocol version: **`2025-11-25`** (exclusive, no backward compatibility)
 
-The server automatically negotiates the highest compatible version with the client.
+Older protocol versions (2024-11-05, 2025-03-26, 2025-06-18) are not supported. For clients that don't support 2025-11-25 yet (e.g., Claude Desktop), use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a protocol bridge.
 
 ## Transport Options
 
-Flowplane supports three transport mechanisms for MCP communication:
+Flowplane supports two transport mechanisms for MCP communication:
 
 ### 1. Stdio (CLI)
 
@@ -32,77 +32,140 @@ flowplane mcp serve --team <team-name>
 - Integration with CLI tools
 - Claude Desktop configuration
 
-### 2. HTTP
+### 2. Streamable HTTP (MCP 2025-11-25)
 
-Stateless HTTP transport for single request-response operations.
+Unified HTTP transport supporting stateful sessions, streaming, and standard request-response patterns. A single endpoint handles POST (requests), GET (SSE streaming), and DELETE (session termination).
 
-**Control Plane endpoint:**
+**Endpoints:**
+- `/api/v1/mcp/cp` - Control Plane tools
+- `/api/v1/mcp/api` - Gateway API tools
+
+#### Required Headers
+
+| Header | Direction | Required | Description |
+|--------|-----------|----------|-------------|
+| `MCP-Protocol-Version` | Request | Yes | Must be `2025-11-25` |
+| `MCP-Session-Id` | Request | After init | Session identifier (UUID v4) |
+| `MCP-Session-Id` | Response | Yes | Echo/assign session ID |
+| `Accept` | Request | For SSE | `text/event-stream` for SSE, `application/json` for JSON |
+
+#### Session Lifecycle
+
+**1. Initialize Session (POST)**
 ```bash
 POST /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
 Authorization: Bearer <token>
 Content-Type: application/json
 
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "tools/list",
-  "params": {}
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": { "name": "my-client", "version": "1.0.0" }
+  }
 }
 ```
 
-**Gateway API endpoint:**
-```bash
-POST /api/v1/mcp/api?team=<team-name>
-Authorization: Bearer <token>
+**Response:**
+```
+HTTP/1.1 200 OK
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Content-Type: application/json
 
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "serverInfo": { "name": "flowplane", "version": "0.0.3" },
+    "capabilities": { ... }
+  }
+}
+```
+
+**2. Subsequent Requests (POST)**
+```bash
+POST /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "method": "tools/list",
   "params": {}
 }
 ```
 
-**Use cases:**
-- Stateless AI agent interactions
-- Programmatic integrations
-- Testing and debugging
-
-### 3. Server-Sent Events (SSE)
-
-SSE transport provides real-time streaming for progress updates, logs, and responses.
-
-**Establish SSE connection:**
+**3. Open SSE Stream (GET)**
 ```bash
-GET /api/v1/mcp/cp/sse?team=<team-name>
+GET /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+Authorization: Bearer <token>
+Accept: text/event-stream
+```
+
+**Response:**
+```
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+
+event: endpoint
+data: {"sessionId":"mcp-550e8400-e29b-41d4-a716-446655440000"}
+
+event: ping
+data: {}
+```
+
+**4. Terminate Session (DELETE)**
+```bash
+DELETE /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Authorization: Bearer <token>
 ```
 
-**Response headers:**
+**Response:**
 ```
-Mcp-Connection-Id: <connection-id>
+HTTP/1.1 204 No Content
 ```
 
-Use the `Mcp-Connection-Id` header value in subsequent HTTP POST requests to `/api/v1/mcp/cp` to link them to the SSE stream.
+#### SSE Resumability
 
-**Example HTTP request with SSE linkage:**
+Clients can resume SSE streams after disconnection using `Last-Event-ID`:
+
 ```bash
-POST /api/v1/mcp/cp?team=<team-name>
+GET /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: <session-id>
+Last-Event-ID: <connection-id>:<sequence>
 Authorization: Bearer <token>
-Mcp-Connection-Id: <connection-id>
+Accept: text/event-stream
 ```
 
-**Use cases:**
-- Long-running operations requiring progress updates
-- Real-time log streaming
-- Interactive AI agent sessions
+The server replays buffered messages (up to 500) with sequence numbers greater than the provided ID.
 
-**SSE Events:**
+#### SSE Events
+
+- `endpoint` - Initial connection established with session info
 - `message` - JSON-RPC response messages
 - `progress` - Progress notifications for long-running operations
 - `log` - Server log messages
 - `ping` - Heartbeat (every 10 seconds)
+
+**Use cases:**
+- Stateful AI agent sessions
+- Long-running operations requiring progress updates
+- Real-time log streaming
+- Programmatic integrations
 
 ## Authentication & Authorization
 
@@ -721,7 +784,7 @@ Authorization: Bearer <token>
 {
   "connections": [
     {
-      "connection_id": "conn_abc123",
+      "connection_id": "conn-production-550e8400-e29b-41d4-a716-446655440000",
       "team": "production",
       "created_at": "2026-01-25T10:00:00Z",
       "last_activity": "2026-01-25T10:15:00Z",
@@ -738,6 +801,14 @@ Authorization: Bearer <token>
   "total_count": 1
 }
 ```
+
+### Session IDs
+
+Session IDs in MCP 2025-11-25 use cryptographically secure UUID v4 format:
+- Format: `mcp-{uuid}` (e.g., `mcp-550e8400-e29b-41d4-a716-446655440000`)
+- Generated on first `initialize` request
+- Must be included in `MCP-Session-Id` header for all subsequent requests
+- Sessions expire after 1 hour (configurable via `MCP_SESSION_TTL_SECS`)
 
 ## Server Capabilities
 
@@ -809,18 +880,20 @@ The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) provides 
 
 ### Connecting to Flowplane
 
-Connect using SSE transport with your API token in the Authorization header:
+Connect using HTTP transport with the required MCP 2025-11-25 headers:
 
 ```bash
 # Control Plane tools
-npx @modelcontextprotocol/inspector sse \
-  "http://localhost:8080/api/v1/mcp/cp/sse?team=engineering" \
-  --header "Authorization: Bearer <your-token>"
+npx @modelcontextprotocol/inspector http \
+  "http://localhost:8080/api/v1/mcp/cp?team=engineering" \
+  --header "Authorization: Bearer <your-token>" \
+  --header "MCP-Protocol-Version: 2025-11-25"
 
 # Gateway API tools
-npx @modelcontextprotocol/inspector sse \
-  "http://localhost:8080/api/v1/mcp/api/sse?team=engineering" \
-  --header "Authorization: Bearer <your-token>"
+npx @modelcontextprotocol/inspector http \
+  "http://localhost:8080/api/v1/mcp/api?team=engineering" \
+  --header "Authorization: Bearer <your-token>" \
+  --header "MCP-Protocol-Version: 2025-11-25"
 ```
 
 ### Authentication
@@ -866,12 +939,15 @@ POST /api/v1/auth/tokens
 }
 ```
 
-### 2. Initialize MCP Connection (HTTP)
+### 2. Initialize MCP Connection (Streamable HTTP)
 
 ```bash
+# Initialize and save the session ID from response header
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
   -H "Content-Type: application/json" \
+  -D - \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -885,13 +961,17 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
       }
     }
   }'
+# Response includes: MCP-Session-Id: mcp-<uuid>
 ```
 
 ### 3. List Available Tools
 
 ```bash
+# Use the MCP-Session-Id from the initialize response
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "MCP-Session-Id: <session-id-from-step-2>" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -906,6 +986,8 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
 ```bash
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "MCP-Session-Id: <session-id>" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -1039,9 +1121,19 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 **Problem:** `Unsupported protocol version` error.
 
 **Solution:**
-- Check client is requesting a supported version (2024-11-05 through 2025-11-25)
-- Update client or server to compatible versions
-- Use an empty version string to default to oldest supported version
+- Flowplane only supports protocol version `2025-11-25`
+- Ensure `MCP-Protocol-Version: 2025-11-25` header is included in all requests
+- For clients using older versions, use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a bridge
+
+### Session Management Errors
+
+**Problem:** `Session not found` or `Invalid session ID` errors.
+
+**Solution:**
+- Ensure you're including `MCP-Session-Id` header after initialization
+- Session IDs must match the UUID v4 format: `mcp-{uuid}`
+- Sessions expire after 1 hour of inactivity
+- Re-initialize if session has expired
 
 ### SSE Connection Drops
 
@@ -1052,6 +1144,7 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 - Verify no proxy/firewall is terminating long-lived connections
 - Monitor heartbeat pings (every 10 seconds)
 - Check connection limit hasn't been reached
+- Use `Last-Event-ID` header to resume and replay missed messages
 
 ### Tool Not Found
 

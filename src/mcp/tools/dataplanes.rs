@@ -15,9 +15,9 @@ use tracing::instrument;
 
 /// Tool definition for listing dataplanes
 pub fn cp_list_dataplanes_tool() -> Tool {
-    Tool {
-        name: "cp_list_dataplanes".to_string(),
-        description: r#"List dataplanes (Envoy instances) for managing API gateways.
+    Tool::new(
+        "cp_list_dataplanes",
+        r#"List dataplanes (Envoy instances) for managing API gateways.
 
 PURPOSE: View all configured dataplanes to understand your gateway topology.
 
@@ -43,9 +43,8 @@ RETURNS: Array of dataplane objects with:
 - description: Optional description
 - created_at, updated_at: Lifecycle timestamps
 
-RELATED TOOLS: cp_get_dataplane (details), cp_create_dataplane (new dataplane)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_dataplane (details), cp_create_dataplane (new dataplane)"#,
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -61,14 +60,14 @@ RELATED TOOLS: cp_get_dataplane (details), cp_create_dataplane (new dataplane)"#
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific dataplane
 pub fn cp_get_dataplane_tool() -> Tool {
-    Tool {
-        name: "cp_get_dataplane".to_string(),
-        description: r#"Get detailed information about a specific dataplane by team and name.
+    Tool::new(
+        "cp_get_dataplane",
+        r#"Get detailed information about a specific dataplane by team and name.
 
 PURPOSE: Retrieve complete dataplane details including configuration and metadata.
 
@@ -91,9 +90,8 @@ REQUIRED PARAMETERS:
 - team: Team that owns the dataplane
 - name: Dataplane name
 
-RELATED TOOLS: cp_list_dataplanes (discovery), cp_create_dataplane (new dataplane)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_dataplanes (discovery), cp_create_dataplane (new dataplane)"#,
+        json!({
             "type": "object",
             "properties": {
                 "team": {
@@ -107,14 +105,14 @@ RELATED TOOLS: cp_list_dataplanes (discovery), cp_create_dataplane (new dataplan
             },
             "required": ["team", "name"]
         }),
-    }
+    )
 }
 
 /// Tool definition for creating a dataplane
 pub fn cp_create_dataplane_tool() -> Tool {
-    Tool {
-        name: "cp_create_dataplane".to_string(),
-        description: r#"Create a new dataplane (Envoy instance) for routing traffic.
+    Tool::new(
+        "cp_create_dataplane",
+        r#"Create a new dataplane (Envoy instance) for routing traffic.
 
 PURPOSE: Set up a new dataplane to host listeners, routes, and filters.
 
@@ -149,9 +147,8 @@ EXAMPLE DATAPLANES:
 - "canary-proxy" - Canary deployment testing
 
 Authorization: Requires cp:write scope and team access.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "team": {
@@ -173,14 +170,14 @@ Authorization: Requires cp:write scope and team access.
             },
             "required": ["team", "name"]
         }),
-    }
+    )
 }
 
 /// Tool definition for updating a dataplane
 pub fn cp_update_dataplane_tool() -> Tool {
-    Tool {
-        name: "cp_update_dataplane".to_string(),
-        description: r#"Update an existing dataplane's configuration.
+    Tool::new(
+        "cp_update_dataplane",
+        r#"Update an existing dataplane's configuration.
 
 PURPOSE: Modify dataplane settings like gateway_host or description.
 
@@ -211,9 +208,8 @@ EXAMPLE USE CASES:
 - Update gateway_host after infrastructure changes
 
 Authorization: Requires cp:write scope and team access.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "team": {
@@ -235,14 +231,14 @@ Authorization: Requires cp:write scope and team access.
             },
             "required": ["team", "name"]
         }),
-    }
+    )
 }
 
 /// Tool definition for deleting a dataplane
 pub fn cp_delete_dataplane_tool() -> Tool {
-    Tool {
-        name: "cp_delete_dataplane".to_string(),
-        description: r#"Delete a dataplane and all associated resources.
+    Tool::new(
+        "cp_delete_dataplane",
+        r#"Delete a dataplane and all associated resources.
 
 PURPOSE: Remove a dataplane that is no longer needed.
 
@@ -276,9 +272,8 @@ CANNOT DELETE:
 - Dataplanes with dependent resources (remove dependencies first)
 
 Authorization: Requires cp:write scope and team access.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "team": {
@@ -292,7 +287,7 @@ Authorization: Requires cp:write scope and team access.
             },
             "required": ["team", "name"]
         }),
-    }
+    )
 }
 
 /// Execute list dataplanes operation using the internal API layer.
@@ -574,15 +569,15 @@ mod tests {
     fn test_cp_list_dataplanes_tool_definition() {
         let tool = cp_list_dataplanes_tool();
         assert_eq!(tool.name, "cp_list_dataplanes");
-        assert!(tool.description.contains("dataplane"));
-        assert!(tool.description.contains("Envoy"));
+        assert!(tool.description.as_ref().unwrap().contains("dataplane"));
+        assert!(tool.description.as_ref().unwrap().contains("Envoy"));
     }
 
     #[test]
     fn test_cp_get_dataplane_tool_definition() {
         let tool = cp_get_dataplane_tool();
         assert_eq!(tool.name, "cp_get_dataplane");
-        assert!(tool.description.contains("detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("detailed information"));
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -594,8 +589,8 @@ mod tests {
     fn test_cp_create_dataplane_tool_definition() {
         let tool = cp_create_dataplane_tool();
         assert_eq!(tool.name, "cp_create_dataplane");
-        assert!(tool.description.contains("Create"));
-        assert!(tool.description.contains("Envoy"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("Envoy"));
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -607,7 +602,7 @@ mod tests {
     fn test_cp_update_dataplane_tool_definition() {
         let tool = cp_update_dataplane_tool();
         assert_eq!(tool.name, "cp_update_dataplane");
-        assert!(tool.description.contains("Update"));
+        assert!(tool.description.as_ref().unwrap().contains("Update"));
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -619,8 +614,8 @@ mod tests {
     fn test_cp_delete_dataplane_tool_definition() {
         let tool = cp_delete_dataplane_tool();
         assert_eq!(tool.name, "cp_delete_dataplane");
-        assert!(tool.description.contains("Delete"));
-        assert!(tool.description.contains("DESTRUCTIVE"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("DESTRUCTIVE"));
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -652,15 +647,15 @@ mod tests {
         let update_tool = cp_update_dataplane_tool();
         let delete_tool = cp_delete_dataplane_tool();
 
-        assert!(create_tool.description.contains("Authorization"));
-        assert!(update_tool.description.contains("Authorization"));
-        assert!(delete_tool.description.contains("Authorization"));
+        assert!(create_tool.description.as_ref().unwrap().contains("Authorization"));
+        assert!(update_tool.description.as_ref().unwrap().contains("Authorization"));
+        assert!(delete_tool.description.as_ref().unwrap().contains("Authorization"));
     }
 
     #[test]
     fn test_delete_tool_has_warning() {
         let tool = cp_delete_dataplane_tool();
-        assert!(tool.description.contains("WARNING"));
-        assert!(tool.description.contains("DESTRUCTIVE"));
+        assert!(tool.description.as_ref().unwrap().contains("WARNING"));
+        assert!(tool.description.as_ref().unwrap().contains("DESTRUCTIVE"));
     }
 }

@@ -15,9 +15,9 @@ use tracing::instrument;
 
 /// Tool definition for listing filters
 pub fn cp_list_filters_tool() -> Tool {
-    Tool {
-        name: "cp_list_filters".to_string(),
-        description: r#"List all filters available in the Flowplane control plane.
+    Tool::new(
+        "cp_list_filters",
+        r#"List all filters available in the Flowplane control plane.
 
 RESOURCE ORDER: Filters are independent resources (order 1 of 4).
 Create filters BEFORE attaching them to listeners or routes.
@@ -46,9 +46,8 @@ FILTER TYPES:
 
 RETURNS: Array of filter objects with name, filter_type, configuration, and metadata.
 
-RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#,
+        json!({
             "type": "object",
             "properties": {
                 "filter_type": {
@@ -71,14 +70,14 @@ RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific filter
 pub fn cp_get_filter_tool() -> Tool {
-    Tool {
-        name: "cp_get_filter".to_string(),
-        description: r#"Get detailed information about a specific filter by name.
+    Tool::new(
+        "cp_get_filter",
+        r#"Get detailed information about a specific filter by name.
 
 PURPOSE: Retrieve complete filter configuration and see where it's installed.
 
@@ -106,9 +105,8 @@ CONFIGURATION VARIES BY TYPE:
 - rate_limit: {statPrefix, domain, rateLimits: [...]}
 - header_mutation: {requestHeadersToAdd: [...], responseHeadersToAdd: [...]}
 
-RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete_filter (remove)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete_filter (remove)"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -118,7 +116,7 @@ RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute list filters operation using the internal API layer.
@@ -226,9 +224,9 @@ pub async fn execute_get_filter(
 
 /// Returns the MCP tool definition for creating a filter.
 pub fn cp_create_filter_tool() -> Tool {
-    Tool {
-        name: "cp_create_filter".to_string(),
-        description: r#"Create a new filter in the Flowplane control plane.
+    Tool::new(
+        "cp_create_filter",
+        r#"Create a new filter in the Flowplane control plane.
 
 RESOURCE ORDER: Filters are independent resources (order 1 of 4).
 Create filters BEFORE attaching them to listeners or route configurations.
@@ -286,9 +284,8 @@ ext_authz - External Authorization:
 }
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -311,14 +308,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name", "filterType", "configuration"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a filter.
 pub fn cp_update_filter_tool() -> Tool {
-    Tool {
-        name: "cp_update_filter".to_string(),
-        description: r#"Update an existing filter's configuration.
+    Tool::new(
+        "cp_update_filter",
+        r#"Update an existing filter's configuration.
 
 PURPOSE: Modify filter settings. Changes are automatically pushed to Envoy via xDS.
 
@@ -344,8 +341,8 @@ Optional Parameters:
 TIP: Use cp_get_filter first to see current configuration and installations.
 
 Authorization: Requires cp:write scope.
-"#.to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -367,14 +364,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a filter.
 pub fn cp_delete_filter_tool() -> Tool {
-    Tool {
-        name: "cp_delete_filter".to_string(),
-        description: r#"Delete a filter from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_filter",
+        r#"Delete a filter from the Flowplane control plane.
 
 PREREQUISITES FOR DELETION:
 - Filter must NOT be attached to any listeners
@@ -395,9 +392,8 @@ Required Parameters:
 - name: Name of the filter to delete
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -407,7 +403,7 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_create_filter tool using the internal API layer.
@@ -609,9 +605,9 @@ pub async fn execute_delete_filter(
 
 /// Returns the MCP tool definition for attaching a filter to a resource.
 pub fn cp_attach_filter_tool() -> Tool {
-    Tool {
-        name: "cp_attach_filter".to_string(),
-        description: r#"Attach a filter to a resource (listener or route configuration).
+    Tool::new(
+        "cp_attach_filter",
+        r#"Attach a filter to a resource (listener or route configuration).
 
 RESOURCE ORDER: Filters must be created BEFORE they can be attached.
 
@@ -656,9 +652,8 @@ EXAMPLE (attach to route config with settings override):
 }
 
 Authorization: Requires filters:write or cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -685,14 +680,14 @@ Authorization: Requires filters:write or cp:write scope.
             },
             "required": ["filter"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for detaching a filter from a resource.
 pub fn cp_detach_filter_tool() -> Tool {
-    Tool {
-        name: "cp_detach_filter".to_string(),
-        description: r#"Detach a filter from a resource (listener or route configuration).
+    Tool::new(
+        "cp_detach_filter",
+        r#"Detach a filter from a resource (listener or route configuration).
 
 PURPOSE: Remove a filter attachment from a resource. The filter itself is not deleted,
 only the association is removed.
@@ -721,9 +716,8 @@ EXAMPLE:
 }
 
 Authorization: Requires filters:write or cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -741,14 +735,14 @@ Authorization: Requires filters:write or cp:write scope.
             },
             "required": ["filter"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for listing filter attachments.
 pub fn cp_list_filter_attachments_tool() -> Tool {
-    Tool {
-        name: "cp_list_filter_attachments".to_string(),
-        description: r#"List all attachments for a specific filter.
+    Tool::new(
+        "cp_list_filter_attachments",
+        r#"List all attachments for a specific filter.
 
 PURPOSE: See where a filter is currently attached (listeners and route configs).
 This is useful before modifying or deleting a filter.
@@ -776,9 +770,8 @@ EXAMPLE:
 }
 
 Authorization: Requires filters:read or cp:read scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -788,7 +781,7 @@ Authorization: Requires filters:read or cp:read scope.
             },
             "required": ["filter"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_attach_filter tool.
@@ -1038,14 +1031,14 @@ mod tests {
     fn test_cp_list_filters_tool_definition() {
         let tool = cp_list_filters_tool();
         assert_eq!(tool.name, "cp_list_filters");
-        assert!(tool.description.contains("filters"));
+        assert!(tool.description.as_ref().unwrap().contains("filters"));
     }
 
     #[test]
     fn test_cp_get_filter_tool_definition() {
         let tool = cp_get_filter_tool();
         assert_eq!(tool.name, "cp_get_filter");
-        assert!(tool.description.contains("detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("detailed information"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -1056,7 +1049,7 @@ mod tests {
     fn test_cp_create_filter_tool_definition() {
         let tool = cp_create_filter_tool();
         assert_eq!(tool.name, "cp_create_filter");
-        assert!(tool.description.contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
 
         // Check required fields in schema
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -1069,23 +1062,23 @@ mod tests {
     fn test_cp_update_filter_tool_definition() {
         let tool = cp_update_filter_tool();
         assert_eq!(tool.name, "cp_update_filter");
-        assert!(tool.description.contains("Update"));
+        assert!(tool.description.as_ref().unwrap().contains("Update"));
     }
 
     #[test]
     fn test_cp_delete_filter_tool_definition() {
         let tool = cp_delete_filter_tool();
         assert_eq!(tool.name, "cp_delete_filter");
-        assert!(tool.description.contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
     }
 
     #[test]
     fn test_cp_attach_filter_tool_definition() {
         let tool = cp_attach_filter_tool();
         assert_eq!(tool.name, "cp_attach_filter");
-        assert!(tool.description.contains("Attach"));
-        assert!(tool.description.contains("listener"));
-        assert!(tool.description.contains("route_config"));
+        assert!(tool.description.as_ref().unwrap().contains("Attach"));
+        assert!(tool.description.as_ref().unwrap().contains("listener"));
+        assert!(tool.description.as_ref().unwrap().contains("route_config"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -1096,7 +1089,7 @@ mod tests {
     fn test_cp_detach_filter_tool_definition() {
         let tool = cp_detach_filter_tool();
         assert_eq!(tool.name, "cp_detach_filter");
-        assert!(tool.description.contains("Detach"));
+        assert!(tool.description.as_ref().unwrap().contains("Detach"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -1107,7 +1100,7 @@ mod tests {
     fn test_cp_list_filter_attachments_tool_definition() {
         let tool = cp_list_filter_attachments_tool();
         assert_eq!(tool.name, "cp_list_filter_attachments");
-        assert!(tool.description.contains("attachments"));
+        assert!(tool.description.as_ref().unwrap().contains("attachments"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();

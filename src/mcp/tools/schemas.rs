@@ -12,9 +12,9 @@ use tracing::instrument;
 
 /// Tool definition for listing aggregated schemas
 pub fn cp_list_aggregated_schemas_tool() -> Tool {
-    Tool {
-        name: "cp_list_aggregated_schemas".to_string(),
-        description: r#"List aggregated API schemas discovered through learning sessions.
+    Tool::new(
+        "cp_list_aggregated_schemas",
+        r#"List aggregated API schemas discovered through learning sessions.
 
 PURPOSE: Discover API endpoints and their structures as learned from actual traffic patterns.
 These schemas represent the consensus view of API structure based on observed requests and responses.
@@ -51,9 +51,8 @@ CONFIDENCE SCORES:
 - 0.5-0.7: Moderate confidence, may need review
 - Below 0.5: Low confidence, recently observed or inconsistent
 
-RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#,
+        json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -90,14 +89,14 @@ RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific aggregated schema
 pub fn cp_get_aggregated_schema_tool() -> Tool {
-    Tool {
-        name: "cp_get_aggregated_schema".to_string(),
-        description: r#"Get a specific aggregated API schema by ID.
+    Tool::new(
+        "cp_get_aggregated_schema",
+        r#"Get a specific aggregated API schema by ID.
 
 PURPOSE: Retrieve detailed schema information for a specific API endpoint version.
 
@@ -133,9 +132,8 @@ After listing schemas, get detailed structure for a specific endpoint to underst
 its request/response format, validate against actual implementation, or generate
 client code.
 
-RELATED TOOLS: cp_list_aggregated_schemas (discover schemas)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_aggregated_schemas (discover schemas)"#,
+        json!({
             "type": "object",
             "properties": {
                 "id": {
@@ -145,7 +143,7 @@ RELATED TOOLS: cp_list_aggregated_schemas (discover schemas)"#
             },
             "required": ["id"]
         }),
-    }
+    )
 }
 
 /// Execute list aggregated schemas operation using the internal API layer.
@@ -270,9 +268,9 @@ mod tests {
     fn test_cp_list_aggregated_schemas_tool_definition() {
         let tool = cp_list_aggregated_schemas_tool();
         assert_eq!(tool.name, "cp_list_aggregated_schemas");
-        assert!(tool.description.contains("aggregated"));
-        assert!(tool.description.contains("schema"));
-        assert!(tool.description.contains("API"));
+        assert!(tool.description.as_ref().unwrap().contains("aggregated"));
+        assert!(tool.description.as_ref().unwrap().contains("schema"));
+        assert!(tool.description.as_ref().unwrap().contains("API"));
 
         // Verify input schema has expected properties
         let properties = &tool.input_schema["properties"];
@@ -292,8 +290,8 @@ mod tests {
     fn test_cp_get_aggregated_schema_tool_definition() {
         let tool = cp_get_aggregated_schema_tool();
         assert_eq!(tool.name, "cp_get_aggregated_schema");
-        assert!(tool.description.contains("specific"));
-        assert!(tool.description.contains("schema"));
+        assert!(tool.description.as_ref().unwrap().contains("specific"));
+        assert!(tool.description.as_ref().unwrap().contains("schema"));
 
         // Verify required parameters
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -311,8 +309,8 @@ mod tests {
         let get_tool = cp_get_aggregated_schema_tool();
 
         // Both tools should explain confidence scores
-        assert!(list_tool.description.contains("confidence"));
-        assert!(get_tool.description.contains("confidence"));
+        assert!(list_tool.description.as_ref().unwrap().contains("confidence"));
+        assert!(get_tool.description.as_ref().unwrap().contains("confidence"));
     }
 
     #[test]

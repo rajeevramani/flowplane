@@ -136,7 +136,7 @@ impl McpToolResponse {
             id: format!("builtin:{}", tool.name),
             team: team.to_string(),
             name: tool.name.clone(),
-            description: Some(tool.description.clone()),
+            description: tool.description.clone(),
             category: McpToolCategory::ControlPlane,
             source_type: McpToolSourceType::Builtin,
             is_builtin: true,

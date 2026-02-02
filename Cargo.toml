@@ -93,7 +93,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 x509-parser = "0.16"
 
 # Utilities
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.0", features = ["v4", "fast-rng", "serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 time = "0.3.41"
 regex = "1.10"

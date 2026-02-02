@@ -15,21 +15,18 @@ use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_autho
 use crate::mcp::tools;
 use crate::xds::XdsState;
 
-/// Negotiate MCP protocol version
+/// Validate MCP protocol version (2025-11-25 only)
 ///
-/// Finds the highest version we support that is <= client's version.
-/// This ensures backward compatibility while preventing clients from
-/// requesting features we don't support.
-fn negotiate_version(client_version: &str) -> Result<String, McpError> {
-    // Find highest version we support that's <= client's version
-    let negotiated = SUPPORTED_VERSIONS.iter().rev().find(|&&v| v <= client_version).copied();
-
-    match negotiated {
-        Some(v) => Ok(v.to_string()),
-        None => Err(McpError::UnsupportedProtocolVersion {
+/// We only support the 2025-11-25 protocol version. Older versions are rejected
+/// with an error message suggesting mcp-remote bridge for backward compatibility.
+fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
+    if client_version == PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(McpError::UnsupportedProtocolVersion {
             client: client_version.to_string(),
-            supported: SUPPORTED_VERSIONS.iter().map(|s| s.to_string()).collect(),
-        }),
+            supported: vec![PROTOCOL_VERSION.to_string()],
+        })
     }
 }
 
@@ -148,35 +145,25 @@ impl McpHandler {
             "Received initialize request"
         );
 
-        // Negotiate protocol version with strict validation
-        let client_version = if params.protocol_version.is_empty() {
-            "2024-11-05" // Default to oldest supported version for backwards compatibility
-        } else {
-            &params.protocol_version
-        };
-
-        let negotiated_version = match negotiate_version(client_version) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(
-                    client_version = %client_version,
-                    error = %e,
-                    "Protocol version negotiation failed"
-                );
-                return self.error_response(id, e);
-            }
-        };
+        // Validate protocol version - only 2025-11-25 is supported
+        if let Err(e) = validate_protocol_version(&params.protocol_version) {
+            error!(
+                client_version = %params.protocol_version,
+                supported_version = %PROTOCOL_VERSION,
+                "Unsupported protocol version - only 2025-11-25 is supported"
+            );
+            return self.error_response(id, e);
+        }
 
         debug!(
-            client_version = %client_version,
-            negotiated_version = %negotiated_version,
-            "Protocol version negotiated"
+            protocol_version = %PROTOCOL_VERSION,
+            "Protocol version validated"
         );
 
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: negotiated_version,
+            protocol_version: PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
@@ -185,12 +172,24 @@ impl McpHandler {
                 }),
                 prompts: Some(PromptsCapability { list_changed: Some(false) }),
                 logging: Some(LoggingCapability {}),
+                completions: None,
+                tasks: None,
                 experimental: None,
+                roots: None,       // Client-only capability
+                sampling: None,    // Client-only capability
+                elicitation: None, // Client-only capability
             },
             server_info: ServerInfo {
                 name: "flowplane-mcp".to_string(),
                 version: crate::VERSION.to_string(),
+                title: Some("Flowplane MCP Server".to_string()),
+                description: Some(
+                    "Envoy control plane management via Model Context Protocol".to_string(),
+                ),
+                icons: None,
+                website_url: None,
             },
+            instructions: None,
         };
 
         match serde_json::to_value(result) {
@@ -897,51 +896,53 @@ mod tests {
     }
 
     #[test]
-    fn test_version_negotiation_exact_match() {
-        // Test exact match with a supported version
-        let result = negotiate_version("2025-11-25");
+    fn test_version_validation_exact_match() {
+        // Only 2025-11-25 is accepted
+        let result = validate_protocol_version("2025-11-25");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-11-25");
     }
 
     #[test]
-    fn test_version_negotiation_newer_client() {
-        // Client has newer version than we support - should get our newest
-        let result = negotiate_version("2026-01-01");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-11-25");
-    }
-
-    #[test]
-    fn test_version_negotiation_older_client() {
-        // Client has older supported version - should get their version
-        let result = negotiate_version("2025-03-26");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-03-26");
-    }
-
-    #[test]
-    fn test_version_negotiation_oldest_supported() {
-        // Client requests oldest supported version
-        let result = negotiate_version("2024-11-05");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2024-11-05");
-    }
-
-    #[test]
-    fn test_version_negotiation_failure() {
-        // Client has version older than any we support
-        let result = negotiate_version("2024-01-01");
+    fn test_version_validation_rejects_older_version() {
+        // Older versions are rejected - no backward compatibility
+        let result = validate_protocol_version("2025-06-18");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
-                assert_eq!(client, "2024-01-01");
-                assert_eq!(supported.len(), 4);
-                assert!(supported.contains(&"2024-11-05".to_string()));
-                assert!(supported.contains(&"2025-03-26".to_string()));
-                assert!(supported.contains(&"2025-06-18".to_string()));
-                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert_eq!(client, "2025-06-18");
+                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+            }
+            _ => panic!("Expected UnsupportedProtocolVersion error"),
+        }
+    }
+
+    #[test]
+    fn test_version_validation_rejects_newer_version() {
+        // Newer versions are also rejected - exact match only
+        let result = validate_protocol_version("2026-01-01");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            McpError::UnsupportedProtocolVersion { client, supported } => {
+                assert_eq!(client, "2026-01-01");
+                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+            }
+            _ => panic!("Expected UnsupportedProtocolVersion error"),
+        }
+    }
+
+    #[test]
+    fn test_version_validation_rejects_ancient_version() {
+        // Very old versions are rejected
+        let result = validate_protocol_version("2024-11-05");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            McpError::UnsupportedProtocolVersion { client, supported } => {
+                assert_eq!(client, "2024-11-05");
+                assert_eq!(supported.len(), 1);
+                assert_eq!(supported[0], "2025-11-25");
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -949,20 +950,19 @@ mod tests {
 
     #[test]
     fn test_unsupported_version_error_message() {
-        let result = negotiate_version("2023-12-31");
+        let result = validate_protocol_version("2023-12-31");
         assert!(result.is_err());
 
         let error = result.unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("2023-12-31"));
-        assert!(message.contains("2024-11-05"));
         assert!(message.contains("2025-11-25"));
     }
 
     #[test]
     fn test_unsupported_version_json_rpc_error() {
-        let result = negotiate_version("2020-01-01");
+        let result = validate_protocol_version("2020-01-01");
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -977,7 +977,8 @@ mod tests {
         assert!(data.get("supportedVersions").is_some());
 
         let supported = data["supportedVersions"].as_array().unwrap();
-        assert_eq!(supported.len(), 4);
+        assert_eq!(supported.len(), 1);
+        assert_eq!(supported[0], "2025-11-25");
     }
 
     #[tokio::test]
@@ -1013,9 +1014,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_with_supported_version() {
+    async fn test_initialize_with_older_version_rejected() {
         let mut handler = create_test_handler().await;
 
+        // 2025-06-18 was previously supported but is now rejected
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -1032,18 +1034,20 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.error.is_none());
-        assert!(response.result.is_some());
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
 
-        let result = response.result.unwrap();
-        assert_eq!(result["protocolVersion"], "2025-06-18");
-        assert!(handler.initialized);
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(error.message.contains("Unsupported protocol version"));
+        assert!(!handler.initialized);
     }
 
     #[tokio::test]
-    async fn test_initialize_with_newer_version() {
+    async fn test_initialize_with_newer_version_rejected() {
         let mut handler = create_test_handler().await;
 
+        // Future versions are rejected - no negotiation
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -1060,12 +1064,13 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.error.is_none());
-        assert!(response.result.is_some());
+        // Newer versions are rejected - exact match only
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
 
-        let result = response.result.unwrap();
-        // Should negotiate down to our newest supported version
-        assert_eq!(result["protocolVersion"], "2025-11-25");
-        assert!(handler.initialized);
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(error.message.contains("Unsupported protocol version"));
+        assert!(!handler.initialized);
     }
 }

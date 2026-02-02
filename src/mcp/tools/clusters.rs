@@ -21,9 +21,7 @@ use tracing::instrument;
 ///
 /// This tool supports pagination via `limit` and `offset` parameters.
 pub fn cp_list_clusters_tool() -> Tool {
-    Tool {
-        name: "cp_list_clusters".to_string(),
-        description: r#"List all upstream clusters in the Flowplane control plane.
+    Tool::new("cp_list_clusters", r#"List all upstream clusters in the Flowplane control plane.
 
 RESOURCE ORDER: Clusters are foundational resources (order 1 of 4). Create clusters BEFORE route configurations.
 
@@ -42,8 +40,7 @@ WORKFLOW CONTEXT:
 2. Use cluster names when creating route configs with "action": {"type": "forward", "cluster": "<cluster-name>"}
 3. Create new clusters with cp_create_cluster if needed
 
-RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(), json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -60,17 +57,15 @@ RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_rou
                     "default": 0
                 }
             }
-        }),
-    }
+        }))
 }
 
 /// Returns the MCP tool definition for getting a cluster by name.
 ///
 /// Requires a `name` parameter to identify the cluster.
 pub fn cp_get_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_get_cluster".to_string(),
-        description: r#"Get detailed information about a specific cluster by name.
+    Tool::new("cp_get_cluster",
+        r#"Get detailed information about a specific cluster by name.
 
 PURPOSE: Retrieve complete cluster configuration to understand backend setup before modifying or
 referencing it in route configurations.
@@ -97,7 +92,7 @@ WHEN TO USE:
 - Before referencing cluster in a new route config
 
 RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_create_route_config (reference)"#.to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -106,8 +101,7 @@ RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_crea
                 }
             },
             "required": ["name"]
-        }),
-    }
+        }))
 }
 
 /// Execute the cp_list_clusters tool.
@@ -227,10 +221,9 @@ pub async fn execute_get_cluster(
 ///
 /// This tool creates a new upstream cluster with the specified configuration.
 pub fn cp_create_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_create_cluster".to_string(),
-        description:
-            r#"Create a new upstream cluster (backend service) in the Flowplane control plane.
+    Tool::new(
+        "cp_create_cluster",
+        r#"Create a new upstream cluster (backend service) in the Flowplane control plane.
 
 RESOURCE ORDER: Clusters are foundational resources (order 1 of 4).
 CREATE CLUSTERS FIRST, before route configurations that reference them.
@@ -294,8 +287,8 @@ Example:
 
 Authorization: Requires cp:write scope.
 "#
-            .to_string(),
-        input_schema: json!({
+        .to_string(),
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -411,14 +404,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name", "serviceName", "endpoints"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a cluster.
 pub fn cp_update_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_update_cluster".to_string(),
-        description: r#"Update an existing cluster in the Flowplane control plane.
+    Tool::new(
+        "cp_update_cluster".to_string(),
+        r#"Update an existing cluster in the Flowplane control plane.
 
 PURPOSE: Modify cluster configuration (endpoints, load balancing, health checks).
 Changes are automatically pushed to Envoy proxies via xDS.
@@ -450,7 +443,7 @@ TIP: Use cp_get_cluster first to see current configuration before updating.
 Authorization: Requires cp:write scope.
 "#
         .to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -510,14 +503,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a cluster.
 pub fn cp_delete_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_delete_cluster".to_string(),
-        description: r#"Delete a cluster from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_cluster",
+        r#"Delete a cluster from the Flowplane control plane.
 
 DELETION ORDER: Delete in REVERSE order of creation.
 Delete route configs referencing this cluster FIRST, then delete the cluster.
@@ -543,7 +536,7 @@ Required Parameters:
 Authorization: Requires cp:write scope.
 "#
         .to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -554,7 +547,7 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_create_cluster tool.
@@ -903,8 +896,8 @@ mod tests {
     async fn test_cp_list_clusters_tool_definition() {
         let tool = cp_list_clusters_tool();
         assert_eq!(tool.name, "cp_list_clusters");
-        assert!(tool.description.contains("List all upstream clusters"));
-        assert!(tool.description.contains("RESOURCE ORDER")); // AI-agent friendly description
+        assert!(tool.description.as_ref().unwrap().contains("List all upstream clusters"));
+        assert!(tool.description.as_ref().unwrap().contains("RESOURCE ORDER")); // AI-agent friendly description
         assert!(tool.input_schema.get("properties").is_some());
     }
 
@@ -912,7 +905,7 @@ mod tests {
     async fn test_cp_get_cluster_tool_definition() {
         let tool = cp_get_cluster_tool();
         assert_eq!(tool.name, "cp_get_cluster");
-        assert!(tool.description.contains("Get detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
         assert!(tool.input_schema.get("required").is_some());
     }
 

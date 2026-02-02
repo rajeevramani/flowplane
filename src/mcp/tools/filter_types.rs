@@ -11,9 +11,9 @@ use tracing::instrument;
 
 /// Tool definition for listing filter types
 pub fn cp_list_filter_types_tool() -> Tool {
-    Tool {
-        name: "cp_list_filter_types".to_string(),
-        description: r#"List all available filter types with their configuration schemas.
+    Tool::new(
+        "cp_list_filter_types",
+        r#"List all available filter types with their configuration schemas.
 
 PURPOSE: Discover what filter types can be used when creating filters.
 
@@ -47,20 +47,19 @@ FILTERING:
 - Use is_implemented field to filter production-ready filters
 - Use source field to distinguish built-in from custom filters
 
-RELATED TOOLS: cp_get_filter_type (detailed info), cp_create_filter (use a filter type)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_filter_type (detailed info), cp_create_filter (use a filter type)"#,
+        json!({
             "type": "object",
             "properties": {}
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific filter type
 pub fn cp_get_filter_type_tool() -> Tool {
-    Tool {
-        name: "cp_get_filter_type".to_string(),
-        description: r#"Get detailed information about a specific filter type by name.
+    Tool::new(
+        "cp_get_filter_type",
+        r#"Get detailed information about a specific filter type by name.
 
 PURPOSE: Retrieve complete schema definition and metadata for a filter type.
 
@@ -109,9 +108,8 @@ To create a JWT filter, first get the schema:
 2. Review config_schema to understand required fields
 3. Use cp_create_filter with validated configuration
 
-RELATED TOOLS: cp_list_filter_types (discovery), cp_create_filter (use this type)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_filter_types (discovery), cp_create_filter (use this type)"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -121,7 +119,7 @@ RELATED TOOLS: cp_list_filter_types (discovery), cp_create_filter (use this type
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute list filter types operation
@@ -248,9 +246,9 @@ mod tests {
     fn test_cp_list_filter_types_tool_definition() {
         let tool = cp_list_filter_types_tool();
         assert_eq!(tool.name, "cp_list_filter_types");
-        assert!(tool.description.contains("filter type"));
-        assert!(tool.description.contains("configuration schemas"));
-        assert!(tool.description.contains("WHEN TO USE"));
+        assert!(tool.description.as_ref().unwrap().contains("filter type"));
+        assert!(tool.description.as_ref().unwrap().contains("configuration schemas"));
+        assert!(tool.description.as_ref().unwrap().contains("WHEN TO USE"));
 
         // Should have no required parameters
         let schema = &tool.input_schema;
@@ -261,8 +259,8 @@ mod tests {
     fn test_cp_get_filter_type_tool_definition() {
         let tool = cp_get_filter_type_tool();
         assert_eq!(tool.name, "cp_get_filter_type");
-        assert!(tool.description.contains("specific filter type"));
-        assert!(tool.description.contains("name"));
+        assert!(tool.description.as_ref().unwrap().contains("specific filter type"));
+        assert!(tool.description.as_ref().unwrap().contains("name"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -292,7 +290,7 @@ mod tests {
 
         for tool in &tools {
             assert!(
-                tool.description.contains("PURPOSE:"),
+                tool.description.as_ref().unwrap().contains("PURPOSE:"),
                 "Tool {} should have PURPOSE section",
                 tool.name
             );
@@ -305,7 +303,7 @@ mod tests {
 
         for tool in &tools {
             assert!(
-                tool.description.contains("RELATED TOOLS:"),
+                tool.description.as_ref().unwrap().contains("RELATED TOOLS:"),
                 "Tool {} should have RELATED TOOLS section",
                 tool.name
             );

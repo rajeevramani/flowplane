@@ -101,12 +101,22 @@ impl McpApiHandler {
                 resources: None, // API tools don't expose resources
                 prompts: None,   // API tools don't expose prompts
                 logging: None,   // Simplified for API tools
+                completions: None,
+                tasks: None,
                 experimental: None,
+                roots: None,       // Client-only capability
+                sampling: None,    // Client-only capability
+                elicitation: None, // Client-only capability
             },
             server_info: ServerInfo {
                 name: "flowplane-mcp-api".to_string(),
                 version: crate::VERSION.to_string(),
+                title: Some("Flowplane Gateway MCP Server".to_string()),
+                description: Some("Gateway API management via Model Context Protocol".to_string()),
+                icons: None,
+                website_url: None,
             },
+            instructions: None,
         };
 
         match serde_json::to_value(result) {
@@ -149,19 +159,21 @@ impl McpApiHandler {
         // MCP spec requires inputSchema to always be a valid JSON object
         let tools: Vec<Tool> = tools_data
             .into_iter()
-            .map(|t| Tool {
-                name: t.name.clone(),
-                description: t.description.clone().unwrap_or_default(),
-                input_schema: if t.input_schema.is_null() || !t.input_schema.is_object() {
-                    // Fallback to empty object schema if stored value is null or not an object
-                    serde_json::json!({
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": false
-                    })
-                } else {
-                    t.input_schema.clone()
-                },
+            .map(|t| {
+                Tool::new(
+                    t.name.clone(),
+                    t.description.clone().unwrap_or_default(),
+                    if t.input_schema.is_null() || !t.input_schema.is_object() {
+                        // Fallback to empty object schema if stored value is null or not an object
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false
+                        })
+                    } else {
+                        t.input_schema.clone()
+                    },
+                )
             })
             .collect();
 
@@ -325,16 +337,14 @@ impl McpApiHandler {
     }
 
     fn negotiate_version(&self, client_version: &str) -> Result<String, McpError> {
-        let client_version = if client_version.is_empty() { "2024-11-05" } else { client_version };
-
-        let negotiated = SUPPORTED_VERSIONS.iter().rev().find(|&&v| v <= client_version).copied();
-
-        match negotiated {
-            Some(v) => Ok(v.to_string()),
-            None => Err(McpError::UnsupportedProtocolVersion {
+        // Only support MCP 2025-11-25 per Phase 1.1 (Single Version Support)
+        if client_version == PROTOCOL_VERSION {
+            Ok(PROTOCOL_VERSION.to_string())
+        } else {
+            Err(McpError::UnsupportedProtocolVersion {
                 client: client_version.to_string(),
-                supported: SUPPORTED_VERSIONS.iter().map(|s| s.to_string()).collect(),
-            }),
+                supported: vec![PROTOCOL_VERSION.to_string()],
+            })
         }
     }
 }

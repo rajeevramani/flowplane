@@ -15,9 +15,9 @@ use tracing::instrument;
 
 /// Tool definition for listing learning sessions
 pub fn cp_list_learning_sessions_tool() -> Tool {
-    Tool {
-        name: "cp_list_learning_sessions".to_string(),
-        description: r#"List learning sessions for API schema discovery. Filter by status to find active, pending, or completed sessions.
+    Tool::new(
+        "cp_list_learning_sessions",
+        r#"List learning sessions for API schema discovery. Filter by status to find active, pending, or completed sessions.
 
 PURPOSE: View all learning sessions to track API schema discovery progress.
 
@@ -51,9 +51,8 @@ RETURNS: Array of learning session objects with:
 - current_sample_count: Samples collected so far
 - created_at, started_at, completed_at: Lifecycle timestamps
 
-RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (new session)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (new session)"#,
+        json!({
             "type": "object",
             "properties": {
                 "status": {
@@ -74,14 +73,14 @@ RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (ne
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific learning session
 pub fn cp_get_learning_session_tool() -> Tool {
-    Tool {
-        name: "cp_get_learning_session".to_string(),
-        description: r#"Get detailed information about a specific learning session by ID.
+    Tool::new(
+        "cp_get_learning_session",
+        r#"Get detailed information about a specific learning session by ID.
 
 PURPOSE: Retrieve complete session details including progress, configuration, and metadata.
 
@@ -108,9 +107,8 @@ WHEN TO USE:
 - Investigate failed sessions
 - Get completion timestamp for schema lookup
 
-RELATED TOOLS: cp_list_learning_sessions (discovery), cp_create_learning_session (new session)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_learning_sessions (discovery), cp_create_learning_session (new session)"#,
+        json!({
             "type": "object",
             "properties": {
                 "id": {
@@ -120,14 +118,14 @@ RELATED TOOLS: cp_list_learning_sessions (discovery), cp_create_learning_session
             },
             "required": ["id"]
         }),
-    }
+    )
 }
 
 /// Tool definition for creating a learning session
 pub fn cp_create_learning_session_tool() -> Tool {
-    Tool {
-        name: "cp_create_learning_session".to_string(),
-        description: r#"Create a new learning session to discover API schemas from live traffic.
+    Tool::new(
+        "cp_create_learning_session",
+        r#"Create a new learning session to discover API schemas from live traffic.
 
 PURPOSE: Start collecting traffic samples to automatically generate OpenAPI schemas.
 
@@ -168,9 +166,8 @@ AFTER CREATION:
 - When complete, find generated schemas with cp_list_schemas
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "route_pattern": {
@@ -202,14 +199,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["route_pattern", "target_sample_count"]
         }),
-    }
+    )
 }
 
 /// Tool definition for deleting a learning session
 pub fn cp_delete_learning_session_tool() -> Tool {
-    Tool {
-        name: "cp_delete_learning_session".to_string(),
-        description: r#"Delete (cancel) a learning session.
+    Tool::new(
+        "cp_delete_learning_session",
+        r#"Delete (cancel) a learning session.
 
 PURPOSE: Cancel an active or pending learning session. Completed sessions cannot be deleted.
 
@@ -241,9 +238,8 @@ WORKFLOW TO DELETE:
 3. Session is cancelled and removed
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "id": {
@@ -253,7 +249,7 @@ Authorization: Requires cp:write scope.
             },
             "required": ["id"]
         }),
-    }
+    )
 }
 
 /// Execute list learning sessions operation using the internal API layer.
@@ -484,15 +480,15 @@ mod tests {
     fn test_cp_list_learning_sessions_tool_definition() {
         let tool = cp_list_learning_sessions_tool();
         assert_eq!(tool.name, "cp_list_learning_sessions");
-        assert!(tool.description.contains("learning session"));
-        assert!(tool.description.contains("schema discovery"));
+        assert!(tool.description.as_ref().unwrap().contains("learning session"));
+        assert!(tool.description.as_ref().unwrap().contains("schema discovery"));
     }
 
     #[test]
     fn test_cp_get_learning_session_tool_definition() {
         let tool = cp_get_learning_session_tool();
         assert_eq!(tool.name, "cp_get_learning_session");
-        assert!(tool.description.contains("detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("detailed information"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -503,8 +499,8 @@ mod tests {
     fn test_cp_create_learning_session_tool_definition() {
         let tool = cp_create_learning_session_tool();
         assert_eq!(tool.name, "cp_create_learning_session");
-        assert!(tool.description.contains("Create"));
-        assert!(tool.description.contains("traffic"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("traffic"));
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -516,8 +512,8 @@ mod tests {
     fn test_cp_delete_learning_session_tool_definition() {
         let tool = cp_delete_learning_session_tool();
         assert_eq!(tool.name, "cp_delete_learning_session");
-        assert!(tool.description.contains("Delete"));
-        assert!(tool.description.contains("cancel"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("cancel"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();

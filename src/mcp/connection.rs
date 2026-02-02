@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, warn};
 
 use crate::mcp::error::McpError;
+use crate::mcp::message_buffer::MessageBuffer;
 use crate::mcp::notifications::{LogLevel, NotificationMessage};
 use crate::mcp::protocol::{ClientInfo, ConnectionInfo, ConnectionType};
 
@@ -59,6 +60,8 @@ pub struct Connection {
     pub protocol_version: Arc<RwLock<Option<String>>>,
     /// Whether the connection has completed initialization
     pub initialized: Arc<RwLock<bool>>,
+    /// Message buffer for SSE resumability (MCP 2025-11-25)
+    pub message_buffer: Arc<MessageBuffer>,
 }
 
 /// Connection manager for SSE streaming
@@ -118,6 +121,7 @@ impl ConnectionManager {
             client_info: Arc::new(RwLock::new(None)),
             protocol_version: Arc::new(RwLock::new(None)),
             initialized: Arc::new(RwLock::new(false)),
+            message_buffer: Arc::new(MessageBuffer::new()),
         };
 
         // Insert connection
@@ -175,9 +179,11 @@ impl ConnectionManager {
     /// Broadcast a message to all connections for a team
     ///
     /// Uses non-blocking sends; slow clients will miss messages.
+    /// Messages are buffered for SSE resumability (MCP 2025-11-25).
     pub async fn broadcast_to_team(&self, team: &str, message: NotificationMessage) {
         let mut sent_count = 0;
         let mut failed_count = 0;
+        let mut buffered_count = 0;
 
         for conn_ref in self.connections.iter() {
             if conn_ref.team == team {
@@ -188,17 +194,21 @@ impl ConnectionManager {
                     }
                 }
 
+                // Buffer the message for resumability (regardless of send success)
+                conn_ref.message_buffer.push(message.clone()).await;
+                buffered_count += 1;
+
                 match conn_ref.sender.try_send(message.clone()) {
                     Ok(_) => sent_count += 1,
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         warn!(
                             connection_id = %conn_ref.key(),
-                            "Connection channel full, dropping message"
+                            "Connection channel full, message buffered only"
                         );
                         failed_count += 1;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        // Connection closed, will be cleaned up
+                        // Connection closed, message still buffered for potential reconnect
                         failed_count += 1;
                     }
                 }
@@ -209,11 +219,14 @@ impl ConnectionManager {
             team = %team,
             sent = sent_count,
             failed = failed_count,
+            buffered = buffered_count,
             "Broadcast message to team"
         );
     }
 
-    /// Broadcast a message to a specific connection
+    /// Send a message to a specific connection
+    ///
+    /// Messages are buffered for SSE resumability (MCP 2025-11-25).
     pub async fn send_to_connection(
         &self,
         connection_id: &ConnectionId,
@@ -222,6 +235,9 @@ impl ConnectionManager {
         let conn = self.connections.get(connection_id).ok_or_else(|| {
             McpError::InvalidParams(format!("Connection not found: {}", connection_id))
         })?;
+
+        // Buffer the message for resumability
+        conn.message_buffer.push(message.clone()).await;
 
         conn.sender
             .send(message)
@@ -247,6 +263,14 @@ impl ConnectionManager {
     /// Get team for a connection
     pub fn get_team(&self, connection_id: &ConnectionId) -> Option<String> {
         self.connections.get(connection_id).map(|c| c.team.clone())
+    }
+
+    /// Get message buffer for a connection (for resumability)
+    ///
+    /// Used to retrieve the message buffer for replaying messages
+    /// when a client reconnects with `Last-Event-ID` header.
+    pub fn get_message_buffer(&self, connection_id: &ConnectionId) -> Option<Arc<MessageBuffer>> {
+        self.connections.get(connection_id).map(|c| c.message_buffer.clone())
     }
 
     /// List all connections for a specific team
@@ -507,5 +531,173 @@ mod tests {
 
         manager.unregister(&id1);
         assert_eq!(manager.total_connections(), 1);
+    }
+
+    // Message buffer integration tests
+    mod buffer_integration_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_connection_has_message_buffer() {
+            let manager = ConnectionManager::new();
+            let (id, _rx) = manager.register("test-team".to_string()).unwrap();
+
+            let buffer = manager.get_message_buffer(&id);
+            assert!(buffer.is_some());
+
+            let buffer = buffer.unwrap();
+            assert!(buffer.is_empty().await);
+        }
+
+        #[tokio::test]
+        async fn test_get_message_buffer_nonexistent() {
+            let manager = ConnectionManager::new();
+            let unknown_id = ConnectionId::new("unknown-id".to_string());
+
+            let buffer = manager.get_message_buffer(&unknown_id);
+            assert!(buffer.is_none());
+        }
+
+        #[tokio::test]
+        async fn test_buffer_push_and_replay() {
+            let manager = ConnectionManager::new();
+            let (id, _rx) = manager.register("test-team".to_string()).unwrap();
+
+            let buffer = manager.get_message_buffer(&id).unwrap();
+
+            // Push messages
+            let msg1 = NotificationMessage::ping();
+            let msg2 = NotificationMessage::ping();
+            let msg3 = NotificationMessage::ping();
+
+            let seq1 = buffer.push(msg1).await;
+            let seq2 = buffer.push(msg2).await;
+            let seq3 = buffer.push(msg3).await;
+
+            assert_eq!(seq1, 0);
+            assert_eq!(seq2, 1);
+            assert_eq!(seq3, 2);
+
+            // Replay from seq 1
+            let replayed = buffer.replay_from(seq1).await;
+            assert_eq!(replayed.len(), 2);
+            assert_eq!(replayed[0].0, seq2);
+            assert_eq!(replayed[1].0, seq3);
+        }
+
+        #[tokio::test]
+        async fn test_buffer_isolation_between_connections() {
+            let manager = ConnectionManager::new();
+            let (id1, _rx1) = manager.register("team-a".to_string()).unwrap();
+            let (id2, _rx2) = manager.register("team-b".to_string()).unwrap();
+
+            let buffer1 = manager.get_message_buffer(&id1).unwrap();
+            let buffer2 = manager.get_message_buffer(&id2).unwrap();
+
+            // Push to buffer1
+            buffer1.push(NotificationMessage::ping()).await;
+            buffer1.push(NotificationMessage::ping()).await;
+
+            // Push to buffer2
+            buffer2.push(NotificationMessage::ping()).await;
+
+            // Verify isolation
+            assert_eq!(buffer1.len().await, 2);
+            assert_eq!(buffer2.len().await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_buffer_persists_during_connection_lifetime() {
+            let manager = ConnectionManager::new();
+            let (id, _rx) = manager.register("test-team".to_string()).unwrap();
+
+            // Get buffer and push
+            {
+                let buffer = manager.get_message_buffer(&id).unwrap();
+                buffer.push(NotificationMessage::ping()).await;
+            }
+
+            // Get buffer again and verify message persists
+            let buffer = manager.get_message_buffer(&id).unwrap();
+            assert_eq!(buffer.len().await, 1);
+
+            // Replay works
+            let replayed = buffer.replay_from(0).await;
+            assert_eq!(replayed.len(), 0); // seq 0 was pushed, replay from 0 returns > 0
+        }
+
+        #[tokio::test]
+        async fn test_buffer_cleared_on_unregister() {
+            let manager = ConnectionManager::new();
+            let (id, _rx) = manager.register("test-team".to_string()).unwrap();
+
+            let buffer = manager.get_message_buffer(&id).unwrap();
+            buffer.push(NotificationMessage::ping()).await;
+            assert_eq!(buffer.len().await, 1);
+
+            // Unregister removes connection and its buffer
+            manager.unregister(&id);
+            assert!(manager.get_message_buffer(&id).is_none());
+        }
+
+        #[tokio::test]
+        async fn test_send_to_connection_buffers_message() {
+            let manager = ConnectionManager::new();
+            let (id, mut rx) = manager.register("test-team".to_string()).unwrap();
+
+            // Send a message
+            let msg = NotificationMessage::ping();
+            manager.send_to_connection(&id, msg).await.unwrap();
+
+            // Verify message was received
+            let received = rx.try_recv();
+            assert!(received.is_ok());
+
+            // Verify message was also buffered
+            let buffer = manager.get_message_buffer(&id).unwrap();
+            assert_eq!(buffer.len().await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_broadcast_to_team_buffers_messages() {
+            let manager = ConnectionManager::new();
+            let (id1, mut rx1) = manager.register("team-a".to_string()).unwrap();
+            let (id2, mut rx2) = manager.register("team-a".to_string()).unwrap();
+            let (_id3, mut rx3) = manager.register("team-b".to_string()).unwrap();
+
+            // Broadcast to team-a
+            let msg = NotificationMessage::ping();
+            manager.broadcast_to_team("team-a", msg).await;
+
+            // Verify team-a connections received
+            assert!(rx1.try_recv().is_ok());
+            assert!(rx2.try_recv().is_ok());
+            // team-b should not receive
+            assert!(rx3.try_recv().is_err());
+
+            // Verify messages were buffered for team-a connections
+            let buffer1 = manager.get_message_buffer(&id1).unwrap();
+            let buffer2 = manager.get_message_buffer(&id2).unwrap();
+            assert_eq!(buffer1.len().await, 1);
+            assert_eq!(buffer2.len().await, 1);
+        }
+
+        #[tokio::test]
+        async fn test_buffer_replay_after_send() {
+            let manager = ConnectionManager::new();
+            let (id, _rx) = manager.register("test-team".to_string()).unwrap();
+
+            // Send multiple messages
+            for _ in 0..5 {
+                manager.send_to_connection(&id, NotificationMessage::ping()).await.unwrap();
+            }
+
+            // Replay from sequence 2 should return sequences 3, 4
+            let buffer = manager.get_message_buffer(&id).unwrap();
+            let replayed = buffer.replay_from(2).await;
+            assert_eq!(replayed.len(), 2);
+            assert_eq!(replayed[0].0, 3);
+            assert_eq!(replayed[1].0, 4);
+        }
     }
 }

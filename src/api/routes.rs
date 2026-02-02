@@ -184,9 +184,10 @@ fn get_ui_static_dir() -> Option<PathBuf> {
 /// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
 /// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
-    // Read allowed origins from environment variable, default to localhost for development
+    // Read allowed origins from environment variable
+    // Default includes localhost:3000 (UI) and localhost:6274 (MCP Inspector)
     let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
-        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
 
     // Parse comma-separated origins into a list
     let allowed_origins: Vec<String> = allowed_origins_str
@@ -220,14 +221,23 @@ fn build_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        // Allow headers needed for authentication and CSRF protection
+        // Allow headers needed for authentication, CSRF, and MCP protocol
         .allow_headers([
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
+            header::ACCEPT,
             HeaderName::from_static("x-csrf-token"),
+            // MCP 2025-11-25 protocol headers
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("last-event-id"),
         ])
-        // Expose CSRF token header so UI can read it
-        .expose_headers([HeaderName::from_static("x-csrf-token")])
+        // Expose headers so clients can read them
+        .expose_headers([
+            HeaderName::from_static("x-csrf-token"),
+            // MCP session ID must be readable by clients
+            HeaderName::from_static("mcp-session-id"),
+        ])
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
@@ -468,13 +478,21 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
-        // MCP protocol endpoints - Control Plane tools (HTTP and SSE transport)
-        .route("/api/v1/mcp/cp", post(crate::mcp::mcp_http_handler))
-        .route("/api/v1/mcp/cp/sse", get(crate::mcp::mcp_sse_handler))
+        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-11-25)
+        .route(
+            "/api/v1/mcp/cp",
+            post(crate::mcp::post_handler_cp)
+                .get(crate::mcp::get_handler_cp)
+                .delete(crate::mcp::delete_handler_cp),
+        )
         .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
-        // MCP protocol endpoints - API tools (gateway API tools with different scopes)
-        .route("/api/v1/mcp/api", post(crate::mcp::mcp_api_http_handler))
-        .route("/api/v1/mcp/api/sse", get(crate::mcp::mcp_api_sse_handler))
+        // MCP protocol endpoints - API tools (Streamable HTTP 2025-11-25)
+        .route(
+            "/api/v1/mcp/api",
+            post(crate::mcp::post_handler_api)
+                .get(crate::mcp::get_handler_api)
+                .delete(crate::mcp::delete_handler_api),
+        )
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))

@@ -14,9 +14,9 @@ use tracing::instrument;
 
 /// Tool definition for listing virtual hosts
 pub fn cp_list_virtual_hosts_tool() -> Tool {
-    Tool {
-        name: "cp_list_virtual_hosts".to_string(),
-        description: r#"List all virtual hosts within route configurations.
+    Tool::new(
+        "cp_list_virtual_hosts",
+        r#"List all virtual hosts within route configurations.
 
 RESOURCE ORDER: Virtual hosts are within Route Configurations (order 2.5 of 4).
 Virtual hosts are created within route configs, which depend on clusters.
@@ -48,9 +48,8 @@ RETURNS: Array of virtual host objects with:
 - rule_order: Priority order (lower numbers match first)
 - created_at/updated_at: Timestamps
 
-RELATED TOOLS: cp_get_virtual_host (details), cp_create_virtual_host (create), cp_list_routes (routes within virtual hosts)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_virtual_host (details), cp_create_virtual_host (create), cp_list_routes (routes within virtual hosts)"#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -70,14 +69,14 @@ RELATED TOOLS: cp_get_virtual_host (details), cp_create_virtual_host (create), c
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a virtual host by name
 pub fn cp_get_virtual_host_tool() -> Tool {
-    Tool {
-        name: "cp_get_virtual_host".to_string(),
-        description: r#"Get detailed information about a specific virtual host.
+    Tool::new(
+        "cp_get_virtual_host",
+        r#"Get detailed information about a specific virtual host.
 
 PURPOSE: Retrieve complete virtual host configuration to understand domain matching
 before modifying or adding routes to it.
@@ -101,9 +100,8 @@ WHEN TO USE:
 - To verify virtual host exists before referencing it
 - Before updating a virtual host
 
-RELATED TOOLS: cp_list_virtual_hosts (discovery), cp_update_virtual_host (modify), cp_list_routes (routes within)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_virtual_hosts (discovery), cp_update_virtual_host (modify), cp_list_routes (routes within)"#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -117,14 +115,14 @@ RELATED TOOLS: cp_list_virtual_hosts (discovery), cp_update_virtual_host (modify
             },
             "required": ["route_config", "name"]
         }),
-    }
+    )
 }
 
 /// Tool definition for creating a virtual host
 pub fn cp_create_virtual_host_tool() -> Tool {
-    Tool {
-        name: "cp_create_virtual_host".to_string(),
-        description: r#"Create a new virtual host within a route configuration.
+    Tool::new(
+        "cp_create_virtual_host",
+        r#"Create a new virtual host within a route configuration.
 
 RESOURCE ORDER: Virtual hosts are within Route Configurations (order 2.5 of 4).
 PREREQUISITE: The route config must exist first.
@@ -166,9 +164,8 @@ NEXT STEPS:
 After creating a virtual host, create routes within it using cp_create_route
 (when that tool becomes available) or update the route config to include routes.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -193,14 +190,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "name", "domains"]
         }),
-    }
+    )
 }
 
 /// Tool definition for updating a virtual host
 pub fn cp_update_virtual_host_tool() -> Tool {
-    Tool {
-        name: "cp_update_virtual_host".to_string(),
-        description: r#"Update an existing virtual host.
+    Tool::new(
+        "cp_update_virtual_host",
+        r#"Update an existing virtual host.
 
 PURPOSE: Modify virtual host configuration (domains, rule_order).
 Changes take effect immediately for all routes within the virtual host.
@@ -227,9 +224,8 @@ Optional Parameters (provide at least one):
 
 TIP: Use cp_get_virtual_host first to see current configuration before updating.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -254,14 +250,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "name"]
         }),
-    }
+    )
 }
 
 /// Tool definition for deleting a virtual host
 pub fn cp_delete_virtual_host_tool() -> Tool {
-    Tool {
-        name: "cp_delete_virtual_host".to_string(),
-        description: r#"Delete a virtual host from a route configuration.
+    Tool::new(
+        "cp_delete_virtual_host",
+        r#"Delete a virtual host from a route configuration.
 
 DELETION ORDER: Delete in REVERSE order of creation.
 Delete routes within the virtual host FIRST, then delete the virtual host.
@@ -284,9 +280,8 @@ Required Parameters:
 - route_config: Name of the route configuration
 - name: Name of the virtual host to delete
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "route_config": {
@@ -300,7 +295,7 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["route_config", "name"]
         }),
-    }
+    )
 }
 
 /// Execute list virtual hosts operation
@@ -667,15 +662,15 @@ mod tests {
     fn test_cp_list_virtual_hosts_tool_definition() {
         let tool = cp_list_virtual_hosts_tool();
         assert_eq!(tool.name, "cp_list_virtual_hosts");
-        assert!(tool.description.contains("virtual hosts"));
-        assert!(tool.description.contains("RESOURCE ORDER"));
+        assert!(tool.description.as_ref().unwrap().contains("virtual hosts"));
+        assert!(tool.description.as_ref().unwrap().contains("RESOURCE ORDER"));
     }
 
     #[test]
     fn test_cp_get_virtual_host_tool_definition() {
         let tool = cp_get_virtual_host_tool();
         assert_eq!(tool.name, "cp_get_virtual_host");
-        assert!(tool.description.contains("Get detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -686,7 +681,7 @@ mod tests {
     fn test_cp_create_virtual_host_tool_definition() {
         let tool = cp_create_virtual_host_tool();
         assert_eq!(tool.name, "cp_create_virtual_host");
-        assert!(tool.description.contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -698,7 +693,7 @@ mod tests {
     fn test_cp_update_virtual_host_tool_definition() {
         let tool = cp_update_virtual_host_tool();
         assert_eq!(tool.name, "cp_update_virtual_host");
-        assert!(tool.description.contains("Update"));
+        assert!(tool.description.as_ref().unwrap().contains("Update"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));
@@ -709,7 +704,7 @@ mod tests {
     fn test_cp_delete_virtual_host_tool_definition() {
         let tool = cp_delete_virtual_host_tool();
         assert_eq!(tool.name, "cp_delete_virtual_host");
-        assert!(tool.description.contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("route_config")));

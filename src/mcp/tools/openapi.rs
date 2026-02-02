@@ -12,9 +12,9 @@ use tracing::instrument;
 
 /// Tool definition for listing OpenAPI imports
 pub fn cp_list_openapi_imports_tool() -> Tool {
-    Tool {
-        name: "cp_list_openapi_imports".to_string(),
-        description: r#"List OpenAPI import records to track which specs have been imported into the Control Plane.
+    Tool::new(
+        "cp_list_openapi_imports",
+        r#"List OpenAPI import records to track which specs have been imported into the Control Plane.
 
 PURPOSE: View all OpenAPI specifications that have been imported, including metadata about when they were imported and what resources were created.
 
@@ -50,9 +50,8 @@ TEAM SCOPING:
 
 RETURNS: Array of import metadata objects sorted by imported_at (newest first).
 
-RELATED TOOLS: cp_get_openapi_import (detailed view of single import)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_openapi_import (detailed view of single import)"#,
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -68,14 +67,14 @@ RELATED TOOLS: cp_get_openapi_import (detailed view of single import)"#
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific OpenAPI import
 pub fn cp_get_openapi_import_tool() -> Tool {
-    Tool {
-        name: "cp_get_openapi_import".to_string(),
-        description: r#"Get detailed information about a specific OpenAPI import by ID.
+    Tool::new(
+        "cp_get_openapi_import",
+        r#"Get detailed information about a specific OpenAPI import by ID.
 
 PURPOSE: Retrieve complete import metadata including the full spec content, checksums, and resource linkages.
 
@@ -109,9 +108,8 @@ TEAM SCOPING:
 - Users can only access imports for their allowed teams
 - Attempting to access another team's import returns NotFound error
 
-RELATED TOOLS: cp_list_openapi_imports (discover imports)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_openapi_imports (discover imports)"#,
+        json!({
             "type": "object",
             "properties": {
                 "id": {
@@ -121,7 +119,7 @@ RELATED TOOLS: cp_list_openapi_imports (discover imports)"#
             },
             "required": ["id"]
         }),
-    }
+    )
 }
 
 /// Execute list OpenAPI imports operation using the internal API layer.
@@ -221,8 +219,8 @@ mod tests {
     fn test_cp_list_openapi_imports_tool_definition() {
         let tool = cp_list_openapi_imports_tool();
         assert_eq!(tool.name, "cp_list_openapi_imports");
-        assert!(tool.description.contains("OpenAPI import"));
-        assert!(tool.description.contains("import records"));
+        assert!(tool.description.as_ref().unwrap().contains("OpenAPI import"));
+        assert!(tool.description.as_ref().unwrap().contains("import records"));
 
         // Check that limit and offset are supported
         assert!(tool.input_schema["properties"]["limit"].is_object());
@@ -239,8 +237,8 @@ mod tests {
     fn test_cp_get_openapi_import_tool_definition() {
         let tool = cp_get_openapi_import_tool();
         assert_eq!(tool.name, "cp_get_openapi_import");
-        assert!(tool.description.contains("detailed information"));
-        assert!(tool.description.contains("OpenAPI import"));
+        assert!(tool.description.as_ref().unwrap().contains("detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("OpenAPI import"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -263,17 +261,17 @@ mod tests {
     fn test_tool_descriptions_are_comprehensive() {
         // List tool should explain pagination
         let list_tool = cp_list_openapi_imports_tool();
-        assert!(list_tool.description.contains("limit"));
-        assert!(list_tool.description.contains("offset"));
-        assert!(list_tool.description.contains("WHEN TO USE"));
+        assert!(list_tool.description.as_ref().unwrap().contains("limit"));
+        assert!(list_tool.description.as_ref().unwrap().contains("offset"));
+        assert!(list_tool.description.as_ref().unwrap().contains("WHEN TO USE"));
 
         // Get tool should explain all fields
         let get_tool = cp_get_openapi_import_tool();
-        assert!(get_tool.description.contains("spec_name"));
-        assert!(get_tool.description.contains("spec_version"));
-        assert!(get_tool.description.contains("spec_checksum"));
-        assert!(get_tool.description.contains("source_content"));
-        assert!(get_tool.description.contains("listener_name"));
+        assert!(get_tool.description.as_ref().unwrap().contains("spec_name"));
+        assert!(get_tool.description.as_ref().unwrap().contains("spec_version"));
+        assert!(get_tool.description.as_ref().unwrap().contains("spec_checksum"));
+        assert!(get_tool.description.as_ref().unwrap().contains("source_content"));
+        assert!(get_tool.description.as_ref().unwrap().contains("listener_name"));
     }
 
     #[test]

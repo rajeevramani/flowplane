@@ -22,9 +22,9 @@ use tracing::instrument;
 ///
 /// This tool supports pagination via `limit` and `offset` parameters.
 pub fn cp_list_listeners_tool() -> Tool {
-    Tool {
-        name: "cp_list_listeners".to_string(),
-        description: r#"List all listeners in the Flowplane control plane.
+    Tool::new(
+        "cp_list_listeners",
+        r#"List all listeners in the Flowplane control plane.
 
 RESOURCE ORDER: Listeners are the final resource (order 4 of 4).
 Create listeners AFTER clusters and route configurations exist.
@@ -51,8 +51,8 @@ RETURNS: Array of listener summaries with:
 TRAFFIC FLOW:
   Client → [Listener:port] → [Route Config] → [Cluster] → Backend
 
-RELATED TOOLS: cp_get_listener (details), cp_create_listener (create), cp_list_route_configs (routes)"#.to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_listener (details), cp_create_listener (create), cp_list_route_configs (routes)"#,
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -70,16 +70,16 @@ RELATED TOOLS: cp_get_listener (details), cp_create_listener (create), cp_list_r
                 }
             }
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for getting a listener by name.
 ///
 /// Requires a `name` parameter to identify the listener.
 pub fn cp_get_listener_tool() -> Tool {
-    Tool {
-        name: "cp_get_listener".to_string(),
-        description: r#"Get detailed information about a specific listener by name.
+    Tool::new(
+        "cp_get_listener",
+        r#"Get detailed information about a specific listener by name.
 
 PURPOSE: Retrieve complete listener configuration including filter chains and attached routes.
 
@@ -108,8 +108,8 @@ TRAFFIC FLOW CONTEXT:
 This listener receives traffic on address:port, processes through filter chains,
 matches routes in the attached route config, and forwards to clusters.
 
-RELATED TOOLS: cp_list_listeners (discovery), cp_update_listener (modify), cp_create_listener (create)"#.to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_listeners (discovery), cp_update_listener (modify), cp_create_listener (create)"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -119,14 +119,14 @@ RELATED TOOLS: cp_list_listeners (discovery), cp_update_listener (modify), cp_cr
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for creating a listener.
 pub fn cp_create_listener_tool() -> Tool {
-    Tool {
-        name: "cp_create_listener".to_string(),
-        description: r#"Create a new listener (network entry point) in the Flowplane control plane.
+    Tool::new(
+        "cp_create_listener",
+        r#"Create a new listener (network entry point) in the Flowplane control plane.
 
 RESOURCE ORDER: Listeners are the FINAL resource (order 4 of 4).
 PREREQUISITE: Route configurations MUST exist first.
@@ -168,9 +168,8 @@ EXAMPLE WITH ALL OPTIONS:
 
 ADVANCED: For custom filter chains (TLS, tracing, etc.), use filterChains parameter instead of routeConfigName.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -226,14 +225,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name", "port", "dataplaneId"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a listener.
 pub fn cp_update_listener_tool() -> Tool {
-    Tool {
-        name: "cp_update_listener".to_string(),
-        description: r#"Update an existing listener's configuration.
+    Tool::new(
+        "cp_update_listener",
+        r#"Update an existing listener's configuration.
 
 PURPOSE: Modify listener settings such as port, address, protocol, or filter chains.
 Changes are automatically pushed to Envoy via xDS.
@@ -262,9 +261,8 @@ Optional Parameters:
 
 TIP: Use cp_get_listener first to see current configuration.
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -297,14 +295,14 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a listener.
 pub fn cp_delete_listener_tool() -> Tool {
-    Tool {
-        name: "cp_delete_listener".to_string(),
-        description: r#"Delete a listener from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_listener",
+        r#"Delete a listener from the Flowplane control plane.
 
 DELETION ORDER: Listeners are deleted FIRST in the reverse dependency order.
 
@@ -332,9 +330,8 @@ WORKFLOW TO FULLY REMOVE AN API:
 Required Parameters:
 - name: Name of the listener to delete
 
-Authorization: Requires cp:write scope."#
-            .to_string(),
-        input_schema: json!({
+Authorization: Requires cp:write scope."#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -344,7 +341,7 @@ Authorization: Requires cp:write scope."#
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 // =============================================================================
@@ -716,7 +713,7 @@ mod tests {
     fn test_cp_list_listeners_tool_definition() {
         let tool = cp_list_listeners_tool();
         assert_eq!(tool.name, "cp_list_listeners");
-        assert!(tool.description.contains("List all listeners"));
+        assert!(tool.description.as_ref().unwrap().contains("List all listeners"));
         assert!(tool.input_schema.get("properties").is_some());
     }
 
@@ -724,7 +721,7 @@ mod tests {
     fn test_cp_get_listener_tool_definition() {
         let tool = cp_get_listener_tool();
         assert_eq!(tool.name, "cp_get_listener");
-        assert!(tool.description.contains("Get detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
         assert!(tool.input_schema.get("required").is_some());
     }
 
@@ -732,7 +729,7 @@ mod tests {
     fn test_cp_create_listener_tool_definition() {
         let tool = cp_create_listener_tool();
         assert_eq!(tool.name, "cp_create_listener");
-        assert!(tool.description.contains("Create a new listener"));
+        assert!(tool.description.as_ref().unwrap().contains("Create a new listener"));
         assert!(tool.input_schema.get("required").is_some());
     }
 
@@ -740,7 +737,7 @@ mod tests {
     fn test_cp_update_listener_tool_definition() {
         let tool = cp_update_listener_tool();
         assert_eq!(tool.name, "cp_update_listener");
-        assert!(tool.description.contains("Update an existing"));
+        assert!(tool.description.as_ref().unwrap().contains("Update an existing"));
         assert!(tool.input_schema.get("required").is_some());
     }
 
@@ -748,7 +745,7 @@ mod tests {
     fn test_cp_delete_listener_tool_definition() {
         let tool = cp_delete_listener_tool();
         assert_eq!(tool.name, "cp_delete_listener");
-        assert!(tool.description.contains("Delete a listener"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete a listener"));
         assert!(tool.input_schema.get("required").is_some());
     }
 }
