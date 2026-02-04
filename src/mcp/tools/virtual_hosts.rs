@@ -7,6 +7,9 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_create_response, build_delete_response, build_update_response,
+};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -474,24 +477,10 @@ pub async fn execute_create_virtual_host(
 
     let result = ops.create(req, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "virtual_host": {
-            "id": result.data.id.to_string(),
-            "route_config_id": result.data.route_config_id.to_string(),
-            "name": result.data.name,
-            "domains": result.data.domains,
-            "rule_order": result.data.rule_order,
-            "created_at": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Virtual host '{}' created successfully in route config '{}'.",
-            result.data.name, route_config
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_create_response("virtual_host", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -573,24 +562,10 @@ pub async fn execute_update_virtual_host(
 
     let result = ops.update(route_config, name, req, &auth).await?;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "virtual_host": {
-            "id": result.data.id.to_string(),
-            "route_config_id": result.data.route_config_id.to_string(),
-            "name": result.data.name,
-            "domains": result.data.domains,
-            "rule_order": result.data.rule_order,
-            "updated_at": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Virtual host '{}' updated successfully in route config '{}'.",
-            result.data.name, route_config
-        )),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_update_response("virtual_host", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -631,18 +606,12 @@ pub async fn execute_delete_virtual_host(
     let ops = VirtualHostOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let result = ops.delete(route_config, name, &auth).await?;
+    ops.delete(route_config, name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Virtual host '{}' deleted successfully from route config '{}'.",
-            name, route_config
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,

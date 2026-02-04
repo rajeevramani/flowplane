@@ -298,10 +298,11 @@ async fn test_mcp_create_virtual_host_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert_eq!(response["virtual_host"]["name"], "api");
-        assert_eq!(response["virtual_host"]["rule_order"], 10);
-        assert!(response["message"].as_str().unwrap().contains("created"));
+        // New minimal response format: {"ok": true, "ref": {"type": "...", "name": "...", "id": "..."}}
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "virtual_host");
+        assert_eq!(response["ref"]["name"], "api");
+        assert!(response["ref"]["id"].as_str().is_some());
     } else {
         panic!("Expected text content");
     }
@@ -399,12 +400,10 @@ async fn test_mcp_update_virtual_host_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert_eq!(
-            response["virtual_host"]["domains"].as_array().unwrap(),
-            &vec![json!("new.example.com"), json!("*.new.example.com")]
-        );
-        assert_eq!(response["virtual_host"]["rule_order"], 20);
+        // New minimal response format: {"ok": true, "ref": {"type": "...", "name": "...", "id": "..."}}
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "virtual_host");
+        assert_eq!(response["ref"]["name"], "api");
     } else {
         panic!("Expected text content");
     }
@@ -432,9 +431,9 @@ async fn test_mcp_update_virtual_host_partial_update() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["virtual_host"]["rule_order"], 30);
-        // Domains should remain unchanged
-        assert_eq!(response["virtual_host"]["domains"].as_array().unwrap().len(), 1);
+        // New minimal response format: {"ok": true, "ref": {"type": "...", "name": "...", "id": "..."}}
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "virtual_host");
     } else {
         panic!("Expected text content");
     }
@@ -485,8 +484,7 @@ async fn test_mcp_delete_virtual_host_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert!(response["message"].as_str().unwrap().contains("deleted"));
+        assert_eq!(response["ok"], true);
     } else {
         panic!("Expected text content");
     }
@@ -665,11 +663,9 @@ async fn test_mcp_create_route_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert_eq!(response["route"]["name"], "new-route");
-        assert_eq!(response["route"]["path_pattern"], "/api/v2");
-        assert_eq!(response["route"]["match_type"], "prefix");
-        assert_eq!(response["route"]["rule_order"], 20);
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "route");
+        assert_eq!(response["ref"]["name"], "new-route");
     } else {
         panic!("Expected text content");
     }
@@ -752,10 +748,9 @@ async fn test_mcp_update_route_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert_eq!(response["route"]["path_pattern"], "/new");
-        assert_eq!(response["route"]["match_type"], "exact");
-        assert_eq!(response["route"]["rule_order"], 30);
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "route");
+        assert_eq!(response["ref"]["name"], "update-me");
     } else {
         panic!("Expected text content");
     }
@@ -797,9 +792,9 @@ async fn test_mcp_update_route_partial() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["route"]["rule_order"], 50);
-        // path_pattern should remain unchanged
-        assert_eq!(response["route"]["path_pattern"], "/api");
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "route");
+        assert_eq!(response["ref"]["name"], "partial-update");
     } else {
         panic!("Expected text content");
     }
@@ -841,8 +836,7 @@ async fn test_mcp_delete_route_success() {
     let content_text = &tool_result.content[0];
     if let crate::mcp::protocol::ContentBlock::Text { text } = content_text {
         let response: serde_json::Value = serde_json::from_str(text).expect("Invalid JSON");
-        assert_eq!(response["success"], true);
-        assert!(response["message"].as_str().unwrap().contains("deleted"));
+        assert_eq!(response["ok"], true);
     } else {
         panic!("Expected text content");
     }

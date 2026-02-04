@@ -16,6 +16,7 @@ pub mod progress;
 pub mod prompts;
 pub mod protocol;
 pub mod resources;
+pub mod response_builders;
 pub mod security;
 pub mod server;
 pub mod session;

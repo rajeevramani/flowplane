@@ -395,58 +395,19 @@ Retrieves filter configuration and metadata.
 
 ### DevOps Agent Tools
 
-High-level workflow automation tools that orchestrate multiple operations:
-
-#### `devops_deploy_api`
-Deploy an API endpoint with cluster, route config, and listener in one operation.
-
-**Input schema:**
-```json
-{
-  "cluster_name": "user-service",
-  "endpoints": [{"address": "10.0.1.1", "port": 8080}],
-  "route_config_name": "user-api-routes",
-  "path_prefix": "/api/users",
-  "domains": ["api.example.com"]
-}
-```
-
-#### `devops_configure_rate_limiting`
-Create and attach a rate limiting filter.
-
-**Input schema:**
-```json
-{
-  "filter_name": "api-rate-limit",
-  "max_requests": 100,
-  "window_seconds": 60,
-  "target_type": "listener",
-  "target_name": "http-ingress"
-}
-```
-
-#### `devops_enable_jwt_auth`
-Create and attach a JWT authentication filter.
-
-#### `devops_configure_cors`
-Create and attach a CORS filter.
-
-#### `devops_create_canary_deployment`
-Set up weighted traffic splitting for canary deployments.
-
-**Input schema:**
-```json
-{
-  "deployment_name": "user-service",
-  "stable_endpoints": [{"address": "10.0.1.1", "port": 8080}],
-  "canary_endpoints": [{"address": "10.0.2.1", "port": 8080}],
-  "canary_weight": 10,
-  "route_config_name": "user-api-routes"
-}
-```
+Status aggregation tools for deployment monitoring:
 
 #### `devops_get_deployment_status`
 Get aggregated status across clusters, listeners, and filters.
+
+**Input schema:**
+```json
+{
+  "include_details": true
+}
+```
+
+**Returns:** Summary of all resources with health status counts.
 
 ## Resources
 

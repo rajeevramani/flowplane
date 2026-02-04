@@ -11,10 +11,15 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_create_response, build_delete_response, build_query_response, build_update_response,
+    ResourceRef,
+};
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind};
 use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -344,6 +349,80 @@ Authorization: Requires cp:write scope."#,
     )
 }
 
+/// Returns the MCP tool definition for querying port availability.
+///
+/// This is a query-first tool that checks if a port is already in use.
+pub fn cp_query_port_tool() -> Tool {
+    Tool::new(
+        "cp_query_port",
+        r#"Check if a port is already in use by a listener.
+
+PURPOSE: Query-first design - check state before creating listeners.
+
+RETURNS:
+- Not found: {"found": false} (port available)
+- Found: {"found": true, "ref": {type, name, id}, "data": {address, route_config}}
+
+EXAMPLE:
+  cp_query_port({"port": 8080})
+  → {"found": true, "ref": {"type": "listener", "name": "api-gateway", "id": "l-123"},
+     "data": {"address": "0.0.0.0", "route_config": "api-routes"}}
+
+USE CASE:
+  Before creating listener: cp_query_port → if found, reuse or choose different port
+
+TOKEN BUDGET: <80 tokens response
+
+Authorization: Requires listeners:read or cp:read scope."#,
+        json!({
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "description": "Port number to check (1-65535)",
+                    "minimum": 1,
+                    "maximum": 65535
+                }
+            },
+            "required": ["port"]
+        }),
+    )
+}
+
+/// Returns the MCP tool definition for getting listener status.
+///
+/// Returns status information including route config count.
+pub fn cp_get_listener_status_tool() -> Tool {
+    Tool::new(
+        "cp_get_listener_status",
+        r#"Get status information for a specific listener.
+
+PURPOSE: Check listener health and configuration before modifications.
+
+RETURNS: Status summary with:
+- active_connections: Active connection count (placeholder for future metrics)
+- route_config_count: Number of route configs attached
+- address: Bind address
+- port: Listen port
+- protocol: Protocol type
+
+TOKEN BUDGET: <80 tokens response
+
+Authorization: Requires listeners:read or cp:read scope."#
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the listener to get status for"
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
 // =============================================================================
 // Execute Functions - Using Internal API Layer
 // =============================================================================
@@ -557,26 +636,10 @@ pub async fn execute_create_listener(
     let result = ops.create(create_req, &auth).await?;
     let created = result.data;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "listener": {
-            "id": created.id.to_string(),
-            "name": created.name,
-            "address": created.address,
-            "port": created.port,
-            "protocol": created.protocol,
-            "team": created.team,
-            "version": created.version,
-            "createdAt": created.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Listener '{}' created successfully. xDS configuration has been refreshed.",
-            created.name
-        )),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_create_response("listener", &created.name, created.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -638,26 +701,10 @@ pub async fn execute_update_listener(
     let result = ops.update(name, update_req, &auth).await?;
     let updated = result.data;
 
-    // 6. Format success response
-    let output = json!({
-        "success": true,
-        "listener": {
-            "id": updated.id.to_string(),
-            "name": updated.name,
-            "address": updated.address,
-            "port": updated.port,
-            "protocol": updated.protocol,
-            "team": updated.team,
-            "version": updated.version,
-            "updatedAt": updated.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Listener '{}' updated successfully. xDS configuration has been refreshed.",
-            updated.name
-        )),
-    });
+    // 6. Format success response (minimal token-efficient format)
+    let output = build_update_response("listener", &updated.name, updated.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -687,20 +734,156 @@ pub async fn execute_delete_listener(
     // 2. Delete via internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
-    let result = ops.delete(name, &auth).await?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Listener '{}' deleted successfully. xDS configuration has been refreshed.",
-            name
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, listener_name = %name, "Successfully deleted listener via MCP");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_query_port tool.
+///
+/// Query-first tool that checks if a port is already in use by a listener.
+/// Returns minimal response format for token efficiency.
+#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_port")]
+pub async fn execute_query_port(
+    db_pool: &SqlitePool,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let port =
+        args.get("port").and_then(|v| v.as_i64()).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: port".to_string())
+        })? as i32;
+
+    tracing::debug!(team = %team, port = %port, "Querying port availability");
+
+    // Query database for listener using this port
+    #[derive(sqlx::FromRow)]
+    struct PortQueryRow {
+        id: String,
+        name: String,
+        address: String,
+        route_config_name: Option<String>,
+    }
+
+    // Query listeners table with optional join to get route config name
+    // The route_config_name comes from the listener_routes junction table
+    let query = r#"
+        SELECT l.id, l.name, l.address, rc.name as route_config_name
+        FROM listeners l
+        LEFT JOIN listener_routes lr ON l.id = lr.listener_id
+        LEFT JOIN route_configs rc ON lr.route_config_id = rc.id
+        WHERE l.port = $1 AND (l.team = $2 OR l.team IS NULL)
+        LIMIT 1
+    "#;
+
+    let result = sqlx::query_as::<_, PortQueryRow>(query)
+        .bind(port)
+        .bind(team)
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, port = %port, "Failed to query port");
+            McpError::DatabaseError(e)
+        })?;
+
+    let found = result.is_some();
+
+    let response = if let Some(row) = result {
+        let ref_ = ResourceRef::listener(&row.name, &row.id);
+        let data = json!({
+            "address": row.address,
+            "route_config": row.route_config_name
+        });
+        build_query_response(true, Some(ref_), Some(data))
+    } else {
+        build_query_response(false, None, None)
+    };
+
+    let text = serde_json::to_string(&response).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, port = %port, found = found, "Port query completed");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_get_listener_status tool.
+///
+/// Returns status information for a listener including route config count.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_listener_status")]
+pub async fn execute_get_listener_status(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(team = %team, listener_name = %name, "Getting listener status");
+
+    // Verify listener exists
+    let ops = ListenerOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let listener = ops.get(name, &auth).await?;
+
+    // Query route config count
+    let pool = xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
+        .pool();
+
+    let route_count_query = r#"
+        SELECT COUNT(*) as count
+        FROM listener_route_configs
+        WHERE listener_id = $1
+    "#;
+
+    #[derive(sqlx::FromRow)]
+    struct CountRow {
+        count: i64,
+    }
+
+    let count_row = sqlx::query_as::<_, CountRow>(route_count_query)
+        .bind(&listener.id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, listener_id = %listener.id, "Failed to query route count");
+            McpError::DatabaseError(e)
+        })?;
+
+    // Build response
+    let data = json!({
+        "active_connections": 0,  // Placeholder for future metrics integration
+        "route_config_count": count_row.count,
+        "address": listener.address,
+        "port": listener.port,
+        "protocol": listener.protocol
+    });
+
+    let response = build_query_response(
+        true,
+        Some(ResourceRef::listener(&listener.name, listener.id.to_string())),
+        Some(data),
+    );
+
+    let text = serde_json::to_string(&response).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        listener_name = %name,
+        route_count = count_row.count,
+        "Successfully retrieved listener status"
+    );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
@@ -747,5 +930,37 @@ mod tests {
         assert_eq!(tool.name, "cp_delete_listener");
         assert!(tool.description.as_ref().unwrap().contains("Delete a listener"));
         assert!(tool.input_schema.get("required").is_some());
+    }
+
+    #[test]
+    fn test_cp_query_port_tool_definition() {
+        let tool = cp_query_port_tool();
+        assert_eq!(tool.name, "cp_query_port");
+        assert!(tool.description.as_ref().unwrap().contains("Check if a port is already in use"));
+        assert!(tool.input_schema.get("required").is_some());
+
+        // Verify required parameters
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("port")));
+        assert_eq!(required.len(), 1); // Only port is required
+
+        // Verify port constraints
+        let port_schema = &tool.input_schema["properties"]["port"];
+        assert_eq!(port_schema["type"], "integer");
+        assert_eq!(port_schema["minimum"], 1);
+        assert_eq!(port_schema["maximum"], 65535);
+    }
+
+    #[test]
+    fn test_cp_get_listener_status_tool_definition() {
+        let tool = cp_get_listener_status_tool();
+        assert_eq!(tool.name, "cp_get_listener_status");
+        assert!(tool.description.as_ref().unwrap().contains("status information"));
+        assert!(tool.input_schema.get("required").is_some());
+
+        // Verify required parameters
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+        assert_eq!(required.len(), 1); // Only name is required
     }
 }

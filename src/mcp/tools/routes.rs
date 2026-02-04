@@ -8,6 +8,10 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_create_response, build_delete_response, build_query_response, build_update_response,
+    ResourceRef,
+};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -70,6 +74,59 @@ RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"
                     "description": "Filter by route configuration name to see routes in a specific config"
                 }
             }
+        }),
+    )
+}
+
+/// Returns the MCP tool definition for querying path routing.
+///
+/// This is a query-first tool that checks if a path is already routed.
+pub fn cp_query_path_tool() -> Tool {
+    Tool::new(
+        "cp_query_path",
+        r#"Check if a path is already routed to a cluster.
+
+PURPOSE: Query-first design - check if path exists before creating routes.
+
+PARAMS:
+- path: URL path to check (e.g., "/api/users")
+- port: Optional port to scope search to specific listener
+
+RETURNS:
+- Not found: {"found": false} (path available)
+- Found: {"found": true, "ref": {type, name, id}, "data": {cluster, route_config, match_type}}
+
+EXAMPLE:
+  cp_query_path({"path": "/api/users", "port": 8080})
+  → {"found": true, "ref": {"type": "route", "name": "users-route", "id": "r-456"},
+     "data": {"cluster": "user-svc", "route_config": "api-routes", "match_type": "prefix"}}
+
+USE CASE:
+  Before creating route: cp_query_path → if found, update existing or choose different path
+
+PATH MATCHING:
+- Checks exact matches first
+- Then checks prefix matches (path starts with pattern)
+- Returns first matching route in priority order
+
+TOKEN BUDGET: <80 tokens response
+
+Authorization: Requires routes:read or cp:read scope."#,
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "URL path to check (e.g., '/api', '/users/{id}')"
+                },
+                "port": {
+                    "type": "integer",
+                    "description": "Optional port to scope search to specific listener",
+                    "minimum": 1,
+                    "maximum": 65535
+                }
+            },
+            "required": ["path"]
         }),
     )
 }
@@ -188,6 +245,117 @@ pub async fn execute_list_routes(
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+}
+
+/// Execute the cp_query_path tool.
+///
+/// Query-first tool that checks if a path is already routed.
+/// Returns minimal response format for token efficiency.
+#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_path")]
+pub async fn execute_query_path(
+    db_pool: &SqlitePool,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let query_path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: path".to_string()))?;
+
+    let port = args.get("port").and_then(|v| v.as_i64()).map(|p| p as i32);
+
+    tracing::debug!(team = %team, path = %query_path, port = ?port, "Querying path routing");
+
+    // Query for matching routes
+    // We need to check both exact matches and prefix matches
+    #[derive(sqlx::FromRow)]
+    struct PathQueryRow {
+        route_id: String,
+        route_name: String,
+        path_pattern: String,
+        match_type: String,
+        route_config_name: String,
+        cluster_name: String,
+    }
+
+    // Build query based on whether port is specified
+    // The query joins routes -> virtual_hosts -> route_configs
+    // and optionally to listener_routes -> listeners for port filtering
+    let (query, result) = if let Some(p) = port {
+        let query = r#"
+            SELECT r.id as route_id, r.name as route_name, r.path_pattern, r.match_type,
+                   rc.name as route_config_name, rc.cluster_name
+            FROM routes r
+            INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
+            INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            INNER JOIN listener_routes lr ON rc.id = lr.route_config_id
+            INNER JOIN listeners l ON lr.listener_id = l.id
+            WHERE (rc.team = $1 OR rc.team IS NULL)
+              AND l.port = $2
+              AND (
+                  r.path_pattern = $3
+                  OR (r.match_type = 'prefix' AND $3 LIKE r.path_pattern || '%')
+                  OR (r.match_type = 'prefix' AND r.path_pattern LIKE $3 || '%')
+              )
+            ORDER BY r.rule_order ASC
+            LIMIT 1
+        "#;
+        let res = sqlx::query_as::<_, PathQueryRow>(query)
+            .bind(team)
+            .bind(p)
+            .bind(query_path)
+            .fetch_optional(db_pool)
+            .await;
+        (query, res)
+    } else {
+        let query = r#"
+            SELECT r.id as route_id, r.name as route_name, r.path_pattern, r.match_type,
+                   rc.name as route_config_name, rc.cluster_name
+            FROM routes r
+            INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
+            INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            WHERE (rc.team = $1 OR rc.team IS NULL)
+              AND (
+                  r.path_pattern = $2
+                  OR (r.match_type = 'prefix' AND $2 LIKE r.path_pattern || '%')
+                  OR (r.match_type = 'prefix' AND r.path_pattern LIKE $2 || '%')
+              )
+            ORDER BY r.rule_order ASC
+            LIMIT 1
+        "#;
+        let res = sqlx::query_as::<_, PathQueryRow>(query)
+            .bind(team)
+            .bind(query_path)
+            .fetch_optional(db_pool)
+            .await;
+        (query, res)
+    };
+
+    let result = result.map_err(|e| {
+        tracing::error!(error = %e, team = %team, path = %query_path, query = %query, "Failed to query path");
+        McpError::DatabaseError(e)
+    })?;
+
+    let found = result.is_some();
+
+    let response = if let Some(row) = result {
+        let ref_ = ResourceRef::route(&row.route_name, &row.route_id);
+        let data = json!({
+            "cluster": row.cluster_name,
+            "route_config": row.route_config_name,
+            "match_type": row.match_type,
+            "path_pattern": row.path_pattern
+        });
+        build_query_response(true, Some(ref_), Some(data))
+    } else {
+        build_query_response(false, None, None)
+    };
+
+    let text = serde_json::to_string(&response).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, path = %query_path, port = ?port, found = found, "Path query completed");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
 // =============================================================================
@@ -534,25 +702,10 @@ pub async fn execute_create_route_config(
 
     let result = ops.create(req, &auth).await?;
 
-    // 5. Format success response
-    let output = json!({
-        "success": true,
-        "routeConfig": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "pathPrefix": result.data.path_prefix,
-            "clusterTargets": result.data.cluster_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "createdAt": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route config '{}' created successfully. xDS configuration has been refreshed.",
-            result.data.name
-        )),
-    });
+    // 5. Format success response (minimal token-efficient format)
+    let output = build_create_response("route_config", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -604,25 +757,10 @@ pub async fn execute_update_route_config(
 
     let result = ops.update(name, req, &auth).await?;
 
-    // 5. Format success response
-    let output = json!({
-        "success": true,
-        "routeConfig": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "pathPrefix": result.data.path_prefix,
-            "clusterTargets": result.data.cluster_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "updatedAt": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route config '{}' updated successfully. xDS configuration has been refreshed.",
-            result.data.name
-        )),
-    });
+    // 5. Format success response (minimal token-efficient format)
+    let output = build_update_response("route_config", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -657,18 +795,12 @@ pub async fn execute_delete_route_config(
     let ops = RouteConfigOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let result = ops.delete(name, &auth).await?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route config '{}' deleted successfully. xDS configuration has been refreshed.",
-            name
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -1080,24 +1212,10 @@ pub async fn execute_create_route(
 
     let result = ops.create(req, &auth).await?;
 
-    let output = json!({
-        "success": true,
-        "route": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "virtual_host_id": result.data.virtual_host_id.to_string(),
-            "path_pattern": result.data.path_pattern,
-            "match_type": result.data.match_type.to_string(),
-            "rule_order": result.data.rule_order,
-            "created_at": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route '{}' created successfully in virtual host '{}'. Note: Route config update required to sync to xDS.",
-            result.data.name, virtual_host
-        )),
-    });
+    // Format success response (minimal token-efficient format)
+    let output = build_create_response("route", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -1153,24 +1271,10 @@ pub async fn execute_update_route(
 
     let result = ops.update(route_config, virtual_host, name, req, &auth).await?;
 
-    let output = json!({
-        "success": true,
-        "route": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "virtual_host_id": result.data.virtual_host_id.to_string(),
-            "path_pattern": result.data.path_pattern,
-            "match_type": result.data.match_type.to_string(),
-            "rule_order": result.data.rule_order,
-            "updated_at": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route '{}' updated successfully. Note: Route config update required to sync to xDS.",
-            result.data.name
-        )),
-    });
+    // Format success response (minimal token-efficient format)
+    let output = build_update_response("route", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -1217,17 +1321,12 @@ pub async fn execute_delete_route(
     let ops = RouteOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let result = ops.delete(route_config, virtual_host, name, &auth).await?;
+    ops.delete(route_config, virtual_host, name, &auth).await?;
 
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Route '{}' deleted successfully from virtual host '{}'. Note: Route config update required to sync to xDS.",
-            name, virtual_host
-        )),
-    });
+    // Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -1327,5 +1426,25 @@ mod tests {
         assert!(required.contains(&json!("route_config")));
         assert!(required.contains(&json!("virtual_host")));
         assert!(required.contains(&json!("name")));
+    }
+
+    #[test]
+    fn test_cp_query_path_tool_definition() {
+        let tool = cp_query_path_tool();
+        assert_eq!(tool.name, "cp_query_path");
+        assert!(tool.description.as_ref().unwrap().contains("Check if a path is already routed"));
+        assert!(tool.input_schema.get("required").is_some());
+
+        // Verify required parameters
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("path")));
+        assert_eq!(required.len(), 1); // Only path is required, port is optional
+
+        // Verify properties
+        let props = &tool.input_schema["properties"];
+        assert_eq!(props["path"]["type"], "string");
+        assert_eq!(props["port"]["type"], "integer");
+        assert_eq!(props["port"]["minimum"], 1);
+        assert_eq!(props["port"]["maximum"], 65535);
     }
 }

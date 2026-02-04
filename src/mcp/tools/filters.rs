@@ -8,6 +8,9 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_create_response, build_delete_response, build_update_response,
+};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -454,25 +457,10 @@ pub async fn execute_create_filter(
 
     let result = ops.create(req, &auth).await?;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "filter": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "filterType": result.data.filter_type,
-            "description": result.data.description,
-            "team": result.data.team,
-            "version": result.data.version,
-            "createdAt": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' created successfully. xDS configuration has been refreshed.",
-            result.data.name
-        )),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_create_response("filter", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -524,25 +512,10 @@ pub async fn execute_update_filter(
 
     let result = ops.update(name, req, &auth).await?;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "filter": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "filterType": result.data.filter_type,
-            "description": result.data.description,
-            "team": result.data.team,
-            "version": result.data.version,
-            "updatedAt": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' updated successfully. xDS configuration has been refreshed.",
-            result.data.name
-        )),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_update_response("filter", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -577,18 +550,12 @@ pub async fn execute_delete_filter(
     let ops = FilterOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let result = ops.delete(name, &auth).await?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' deleted successfully. xDS configuration has been refreshed.",
-            name
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -844,22 +811,11 @@ pub async fn execute_attach_filter(
         unreachable!()
     };
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "attachment": {
-            "filter": filter,
-            "target_type": target_type,
-            "target_name": target_name,
-            "order": order
-        },
-        "message": format!(
-            "Filter '{}' attached to {} '{}' successfully. xDS configuration has been refreshed.",
-            filter, target_type, target_name
-        ),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let attachment_id = format!("{}-{}", filter, target_name);
+    let output = build_create_response("filter_attachment", filter, &attachment_id);
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -928,21 +884,10 @@ pub async fn execute_detach_filter(
         unreachable!()
     };
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "detachment": {
-            "filter": filter,
-            "target_type": target_type,
-            "target_name": target_name
-        },
-        "message": format!(
-            "Filter '{}' detached from {} '{}' successfully. xDS configuration has been refreshed.",
-            filter, target_type, target_name
-        ),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,

@@ -12,6 +12,11 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_create_response, build_delete_response, build_query_response, build_update_response,
+    ResourceRef,
+};
+use crate::storage::repositories::ClusterEndpointRepository;
 use crate::xds::{ClusterSpec, EndpointSpec, XdsState};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -102,6 +107,41 @@ RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_crea
             },
             "required": ["name"]
         }))
+}
+
+/// Returns the MCP tool definition for getting cluster health status.
+///
+/// Aggregates endpoint health for a specific cluster.
+pub fn cp_get_cluster_health_tool() -> Tool {
+    Tool::new(
+        "cp_get_cluster_health",
+        r#"Get aggregated endpoint health status for a cluster.
+
+PURPOSE: Check backend health before deployments or troubleshooting.
+
+RETURNS: Health summary with:
+- total_endpoints: Total endpoint count
+- healthy: Count of healthy endpoints
+- unhealthy: Count of unhealthy endpoints
+- degraded: Count of degraded endpoints
+- unknown: Count of endpoints with unknown status
+- endpoints: Array of individual endpoint health (address, port, status)
+
+TOKEN BUDGET: <80 tokens response
+
+Authorization: Requires clusters:read or cp:read scope."#
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the cluster to check health for"
+                }
+            },
+            "required": ["name"]
+        }),
+    )
 }
 
 /// Execute the cp_list_clusters tool.
@@ -621,21 +661,10 @@ pub async fn execute_create_cluster(
     let auth = InternalAuthContext::from_mcp(team);
     let result = ops.create(internal_req, &auth).await?;
 
-    // 7. Format success response
-    let output = json!({
-        "success": true,
-        "cluster": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "serviceName": result.data.service_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "createdAt": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| "Cluster created successfully".to_string()),
-    });
+    // 7. Format success response (minimal token-efficient format)
+    let output = build_create_response("cluster", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -709,21 +738,10 @@ pub async fn execute_update_cluster(
 
     let result = ops.update(name, internal_req, &auth).await?;
 
-    // 7. Format success response
-    let output = json!({
-        "success": true,
-        "cluster": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "serviceName": result.data.service_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "updatedAt": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| "Cluster updated successfully".to_string()),
-    });
+    // 7. Format success response (minimal token-efficient format)
+    let output = build_update_response("cluster", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -755,17 +773,101 @@ pub async fn execute_delete_cluster(
     // 2. Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
-    let result = ops.delete(name, &auth).await?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!("Cluster '{}' deleted successfully", name)),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully deleted cluster via MCP");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_get_cluster_health tool.
+///
+/// Returns aggregated endpoint health status for a cluster.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_cluster_health")]
+pub async fn execute_get_cluster_health(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(team = %team, cluster_name = %name, "Getting cluster health");
+
+    // Verify cluster exists and get cluster ID
+    let ops = ClusterOperations::new(xds_state.clone());
+    let auth = InternalAuthContext::from_mcp(team);
+    let cluster = ops.get(name, &auth).await?;
+    let cluster_id = cluster.id.clone();
+
+    // Get endpoint health from database
+    let pool = xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
+        .pool();
+
+    let endpoint_repo = ClusterEndpointRepository::new(pool.clone());
+    let endpoints = endpoint_repo
+        .list_by_cluster(&cluster_id)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to query endpoints: {}", e)))?;
+
+    // Aggregate health status counts
+    let mut healthy_count = 0;
+    let mut unhealthy_count = 0;
+    let mut degraded_count = 0;
+    let mut unknown_count = 0;
+
+    let endpoint_details: Vec<Value> = endpoints
+        .iter()
+        .map(|ep| {
+            match ep.health_status {
+                crate::domain::EndpointHealthStatus::Healthy => healthy_count += 1,
+                crate::domain::EndpointHealthStatus::Unhealthy => unhealthy_count += 1,
+                crate::domain::EndpointHealthStatus::Degraded => degraded_count += 1,
+                crate::domain::EndpointHealthStatus::Unknown => unknown_count += 1,
+            }
+            json!({
+                "address": ep.address,
+                "port": ep.port,
+                "status": ep.health_status.as_str()
+            })
+        })
+        .collect();
+
+    // Build response
+    let data = json!({
+        "total_endpoints": endpoints.len(),
+        "healthy": healthy_count,
+        "unhealthy": unhealthy_count,
+        "degraded": degraded_count,
+        "unknown": unknown_count,
+        "endpoints": endpoint_details
+    });
+
+    let response = build_query_response(
+        true,
+        Some(ResourceRef::cluster(&cluster.name, cluster.id.to_string())),
+        Some(data),
+    );
+
+    let text = serde_json::to_string(&response).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        cluster_name = %name,
+        total_endpoints = endpoints.len(),
+        healthy = healthy_count,
+        "Successfully retrieved cluster health"
+    );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
@@ -907,6 +1009,18 @@ mod tests {
         assert_eq!(tool.name, "cp_get_cluster");
         assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
         assert!(tool.input_schema.get("required").is_some());
+    }
+
+    #[test]
+    fn test_cp_get_cluster_health_tool_definition() {
+        let tool = cp_get_cluster_health_tool();
+        assert_eq!(tool.name, "cp_get_cluster_health");
+        assert!(tool.description.as_ref().unwrap().contains("endpoint health"));
+        assert!(tool.input_schema.get("required").is_some());
+
+        // Verify required parameters
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
     }
 
     #[tokio::test]

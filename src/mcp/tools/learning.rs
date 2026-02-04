@@ -8,6 +8,7 @@ use crate::internal_api::{
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{build_create_response, build_delete_response};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -398,33 +399,11 @@ pub async fn execute_create_learning_session(
 
     let result = ops.create(req, &auth).await?;
 
-    // 5. Format success response
-    let output = json!({
-        "success": true,
-        "session": {
-            "id": result.data.id,
-            "team": result.data.team,
-            "route_pattern": result.data.route_pattern,
-            "cluster_name": result.data.cluster_name,
-            "http_methods": result.data.http_methods,
-            "status": result.data.status.to_string(),
-            "target_sample_count": result.data.target_sample_count,
-            "current_sample_count": result.data.current_sample_count,
-            "created_at": result.data.created_at.to_rfc3339(),
-            "started_at": result.data.started_at.map(|dt| dt.to_rfc3339()),
-        },
-        "message": result.message.unwrap_or_else(|| {
-            if result.data.status.to_string() == "active" {
-                format!("Learning session '{}' created and activated. Collecting {} samples for routes matching '{}'.",
-                    result.data.id, result.data.target_sample_count, result.data.route_pattern)
-            } else {
-                format!("Learning session '{}' created in pending state. Use activate to start collecting samples.",
-                    result.data.id)
-            }
-        }),
-    });
+    // 5. Format success response (minimal token-efficient format)
+    let output =
+        build_create_response("learning_session", &result.data.route_pattern, &result.data.id);
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -454,18 +433,12 @@ pub async fn execute_delete_learning_session(
     let ops = LearningSessionOperations::new(xds_state.clone());
     let auth = InternalAuthContext::from_mcp(team);
 
-    let result = ops.delete(id, &auth).await?;
+    ops.delete(id, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Learning session '{}' deleted successfully. Sample collection has stopped.",
-            id
-        )),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, session_id = %id, "Successfully deleted learning session via MCP");
 

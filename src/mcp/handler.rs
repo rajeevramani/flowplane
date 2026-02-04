@@ -220,8 +220,10 @@ impl McpHandler {
             tools::cp_get_cluster_tool(),
             tools::cp_list_listeners_tool(),
             tools::cp_get_listener_tool(),
+            tools::cp_query_port_tool(),
             tools::cp_list_routes_tool(),
             tools::cp_get_route_tool(),
+            tools::cp_query_path_tool(),
             tools::cp_list_filters_tool(),
             tools::cp_get_filter_tool(),
             tools::cp_list_virtual_hosts_tool(),
@@ -273,11 +275,6 @@ impl McpHandler {
             tools::cp_list_filter_types_tool(),
             tools::cp_get_filter_type_tool(),
             // DevOps agent workflow tools
-            tools::devops_deploy_api_tool(),
-            tools::devops_configure_rate_limiting_tool(),
-            tools::devops_enable_jwt_auth_tool(),
-            tools::devops_configure_cors_tool(),
-            tools::devops_create_canary_deployment_tool(),
             tools::devops_get_deployment_status_tool(),
         ];
 
@@ -319,13 +316,18 @@ impl McpHandler {
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
         let result = match params.name.as_str() {
-            // Read operations that only need db_pool (route table query)
+            // Read operations that only need db_pool (direct table query for efficiency)
             "cp_list_routes" => tools::execute_list_routes(&self.db_pool, &self.team, args).await,
+            // Query-first tools (direct db_pool access for token efficiency)
+            "cp_query_port" => tools::execute_query_port(&self.db_pool, &self.team, args).await,
+            "cp_query_path" => tools::execute_query_path(&self.db_pool, &self.team, args).await,
             // Operations that require xds_state (internal API layer)
             "cp_list_clusters"
             | "cp_get_cluster"
+            | "cp_get_cluster_health"
             | "cp_list_listeners"
             | "cp_get_listener"
+            | "cp_get_listener_status"
             | "cp_list_filters"
             | "cp_get_filter"
             | "cp_list_virtual_hosts"
@@ -367,11 +369,6 @@ impl McpHandler {
             | "cp_delete_dataplane"
             | "cp_list_filter_types"
             | "cp_get_filter_type"
-            | "devops_deploy_api"
-            | "devops_configure_rate_limiting"
-            | "devops_enable_jwt_auth"
-            | "devops_configure_cors"
-            | "devops_create_canary_deployment"
             | "devops_get_deployment_status" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
@@ -392,6 +389,9 @@ impl McpHandler {
                     "cp_get_cluster" => {
                         tools::execute_get_cluster(xds_state, &self.team, args).await
                     }
+                    "cp_get_cluster_health" => {
+                        tools::execute_get_cluster_health(xds_state, &self.team, args).await
+                    }
                     "cp_create_cluster" => {
                         tools::execute_create_cluster(xds_state, &self.team, args).await
                     }
@@ -407,6 +407,9 @@ impl McpHandler {
                     }
                     "cp_get_listener" => {
                         tools::execute_get_listener(xds_state, &self.team, args).await
+                    }
+                    "cp_get_listener_status" => {
+                        tools::execute_get_listener_status(xds_state, &self.team, args).await
                     }
                     "cp_create_listener" => {
                         tools::execute_create_listener(xds_state, &self.team, args).await
@@ -529,23 +532,6 @@ impl McpHandler {
                         tools::execute_get_filter_type(xds_state, &self.team, args).await
                     }
                     // DevOps agent workflow operations
-                    "devops_deploy_api" => {
-                        tools::execute_devops_deploy_api(xds_state, &self.team, args).await
-                    }
-                    "devops_configure_rate_limiting" => {
-                        tools::execute_devops_configure_rate_limiting(xds_state, &self.team, args)
-                            .await
-                    }
-                    "devops_enable_jwt_auth" => {
-                        tools::execute_devops_enable_jwt_auth(xds_state, &self.team, args).await
-                    }
-                    "devops_configure_cors" => {
-                        tools::execute_devops_configure_cors(xds_state, &self.team, args).await
-                    }
-                    "devops_create_canary_deployment" => {
-                        tools::execute_devops_create_canary_deployment(xds_state, &self.team, args)
-                            .await
-                    }
                     "devops_get_deployment_status" => {
                         tools::execute_devops_get_deployment_status(xds_state, &self.team, args)
                             .await

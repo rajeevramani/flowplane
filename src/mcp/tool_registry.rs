@@ -88,6 +88,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 description: "Delete cluster requires clusters:delete or cp:write",
             },
         );
+        m.insert(
+            "cp_get_cluster_health",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "Get cluster health requires clusters:read or cp:read",
+            },
+        );
 
         // ============================================================================
         // LISTENER TOOLS
@@ -130,6 +138,22 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 resource: "listeners",
                 action: "delete",
                 description: "Delete listener requires listeners:delete or cp:write",
+            },
+        );
+        m.insert(
+            "cp_query_port",
+            ToolAuthorization {
+                resource: "listeners",
+                action: "read",
+                description: "Query port requires listeners:read or cp:read",
+            },
+        );
+        m.insert(
+            "cp_get_listener_status",
+            ToolAuthorization {
+                resource: "listeners",
+                action: "read",
+                description: "Get listener status requires listeners:read or cp:read",
             },
         );
 
@@ -198,6 +222,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 resource: "routes",
                 action: "delete",
                 description: "Delete route config requires routes:delete or cp:write",
+            },
+        );
+        m.insert(
+            "cp_query_path",
+            ToolAuthorization {
+                resource: "routes",
+                action: "read",
+                description: "Query path requires routes:read or cp:read",
             },
         );
 
@@ -668,47 +700,6 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
         // ============================================================================
         // DEVOPS AGENT WORKFLOW TOOLS
         // ============================================================================
-        m.insert(
-            "devops_deploy_api",
-            ToolAuthorization {
-                resource: "clusters",
-                action: "write",
-                description: "Deploy API requires clusters:write + routes:write or cp:write",
-            },
-        );
-        m.insert(
-            "devops_configure_rate_limiting",
-            ToolAuthorization {
-                resource: "filters",
-                action: "write",
-                description: "Configure rate limiting requires filters:write or cp:write",
-            },
-        );
-        m.insert(
-            "devops_enable_jwt_auth",
-            ToolAuthorization {
-                resource: "filters",
-                action: "write",
-                description: "Enable JWT auth requires filters:write or cp:write",
-            },
-        );
-        m.insert(
-            "devops_configure_cors",
-            ToolAuthorization {
-                resource: "filters",
-                action: "write",
-                description: "Configure CORS requires filters:write or cp:write",
-            },
-        );
-        m.insert(
-            "devops_create_canary_deployment",
-            ToolAuthorization {
-                resource: "clusters",
-                action: "write",
-                description:
-                    "Create canary deployment requires clusters:write + routes:write or cp:write",
-            },
-        );
         m.insert(
             "devops_get_deployment_status",
             ToolAuthorization {

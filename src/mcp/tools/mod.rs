@@ -16,8 +16,8 @@ pub mod schemas;
 pub mod virtual_hosts;
 
 // Re-export tool definitions for convenience
-pub use clusters::{cp_get_cluster_tool, cp_list_clusters_tool};
-pub use clusters::{execute_get_cluster, execute_list_clusters};
+pub use clusters::{cp_get_cluster_health_tool, cp_get_cluster_tool, cp_list_clusters_tool};
+pub use clusters::{execute_get_cluster, execute_get_cluster_health, execute_list_clusters};
 
 // Re-export cluster CRUD tools
 pub use clusters::{cp_create_cluster_tool, cp_delete_cluster_tool, cp_update_cluster_tool};
@@ -34,15 +34,19 @@ pub use filters::{execute_create_filter, execute_delete_filter, execute_update_f
 pub use filters::{cp_attach_filter_tool, cp_detach_filter_tool, cp_list_filter_attachments_tool};
 pub use filters::{execute_attach_filter, execute_detach_filter, execute_list_filter_attachments};
 
-pub use listeners::{cp_get_listener_tool, cp_list_listeners_tool};
-pub use listeners::{execute_get_listener, execute_list_listeners};
+pub use listeners::{
+    cp_get_listener_status_tool, cp_get_listener_tool, cp_list_listeners_tool, cp_query_port_tool,
+};
+pub use listeners::{
+    execute_get_listener, execute_get_listener_status, execute_list_listeners, execute_query_port,
+};
 
 // Re-export listener CRUD tools
 pub use listeners::{cp_create_listener_tool, cp_delete_listener_tool, cp_update_listener_tool};
 pub use listeners::{execute_create_listener, execute_delete_listener, execute_update_listener};
 
-pub use routes::cp_list_routes_tool;
-pub use routes::execute_list_routes;
+pub use routes::{cp_list_routes_tool, cp_query_path_tool};
+pub use routes::{execute_list_routes, execute_query_path};
 
 // Re-export route config CRUD tools
 pub use routes::{
@@ -103,16 +107,8 @@ pub use filter_types::{cp_get_filter_type_tool, cp_list_filter_types_tool};
 pub use filter_types::{execute_get_filter_type, execute_list_filter_types};
 
 // Re-export DevOps agent tools
-pub use devops_agent::{
-    devops_configure_cors_tool, devops_configure_rate_limiting_tool,
-    devops_create_canary_deployment_tool, devops_deploy_api_tool, devops_enable_jwt_auth_tool,
-    devops_get_deployment_status_tool,
-};
-pub use devops_agent::{
-    execute_devops_configure_cors, execute_devops_configure_rate_limiting,
-    execute_devops_create_canary_deployment, execute_devops_deploy_api,
-    execute_devops_enable_jwt_auth, execute_devops_get_deployment_status,
-};
+pub use devops_agent::devops_get_deployment_status_tool;
+pub use devops_agent::execute_devops_get_deployment_status;
 
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
@@ -128,10 +124,14 @@ pub fn get_all_tools() -> Vec<Tool> {
         // Read-only tools
         cp_list_clusters_tool(),
         cp_get_cluster_tool(),
+        cp_get_cluster_health_tool(),
         cp_list_listeners_tool(),
         cp_get_listener_tool(),
+        cp_query_port_tool(),
+        cp_get_listener_status_tool(),
         cp_list_routes_tool(),
         cp_get_route_tool(),
+        cp_query_path_tool(),
         cp_list_filters_tool(),
         cp_get_filter_tool(),
         cp_list_virtual_hosts_tool(),
@@ -184,11 +184,6 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_list_filter_types_tool(),
         cp_get_filter_type_tool(),
         // DevOps agent workflow tools
-        devops_deploy_api_tool(),
-        devops_configure_rate_limiting_tool(),
-        devops_enable_jwt_auth_tool(),
-        devops_configure_cors_tool(),
-        devops_create_canary_deployment_tool(),
         devops_get_deployment_status_tool(),
     ]
 }
@@ -218,8 +213,11 @@ pub async fn execute_tool(
     match tool_name {
         // Note: Cluster, Listener, and Filter tools are handled in handler.rs
         // using the internal API layer with XdsState.
-        // Only cp_list_routes remains here as it queries the routes table directly.
+        // Direct db_pool tools query tables directly for efficiency.
         "cp_list_routes" => execute_list_routes(db_pool, team, args).await,
+        // Query-first tools (direct db_pool access for efficiency)
+        "cp_query_port" => execute_query_port(db_pool, team, args).await,
+        "cp_query_path" => execute_query_path(db_pool, team, args).await,
         _ => Err(McpError::ToolNotFound(format!("Unknown tool: {}", tool_name))),
     }
 }
@@ -231,8 +229,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 6 devops = 52 total
-        assert_eq!(tools.len(), 52);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status = 51 total
+        assert_eq!(tools.len(), 51);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
