@@ -1,6 +1,8 @@
 //! Dataplane API handlers
 //!
 //! CRUD operations for dataplanes (Envoy instances with gateway_host).
+//! Certificates are managed via /proxy-certificates endpoint (shared per dataplane name).
+//! See ADR-008 for certificate model decision.
 
 pub mod types;
 
@@ -357,16 +359,16 @@ fn build_mtls_transport_socket(
     })
 }
 
-/// Get Envoy bootstrap configuration for a specific dataplane
+/// Generate Envoy configuration for a specific dataplane
 ///
 /// This endpoint generates an Envoy bootstrap configuration that enables team-scoped
 /// resource discovery via xDS with dataplane-specific node ID. When Envoy starts with
-/// this bootstrap, it will:
+/// this config, it will:
 /// 1. Connect to the xDS server with team and dataplane metadata
 /// 2. Discover all resources (listeners, routes, clusters) for the team
 /// 3. Include gateway_host in node metadata for MCP tool execution
 ///
-/// The bootstrap includes:
+/// The config includes:
 /// - Admin interface configuration
 /// - Node metadata with team and dataplane information
 /// - Dynamic resource configuration (ADS) pointing to xDS server
@@ -374,7 +376,7 @@ fn build_mtls_transport_socket(
 /// - mTLS transport socket (when enabled)
 #[utoipa::path(
     get,
-    path = "/api/v1/teams/{team}/dataplanes/{name}/bootstrap",
+    path = "/api/v1/teams/{team}/dataplanes/{name}/envoy-config",
     params(
         ("team" = String, Path, description = "Team name"),
         ("name" = String, Path, description = "Dataplane name"),
@@ -389,7 +391,7 @@ fn build_mtls_transport_socket(
     tag = "Dataplanes"
 )]
 #[instrument(skip(state, query), fields(team = %path.0, name = %path.1, user_id = ?context.user_id, format = ?query.format))]
-pub async fn get_dataplane_bootstrap_handler(
+pub async fn generate_envoy_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
@@ -427,8 +429,21 @@ pub async fn get_dataplane_bootstrap_handler(
     let ca_path = query.ca_path.as_deref().unwrap_or(DEFAULT_CA_PATH);
 
     // Build ADS bootstrap with node metadata for team-based filtering
-    let xds_addr = state.xds_state.config.bind_address.clone();
-    let xds_port = state.xds_state.config.port;
+    // Priority: query param > env var > config bind_address
+    let xds_addr = query
+        .xds_host
+        .clone()
+        .or_else(|| std::env::var("FLOWPLANE_XDS_ADVERTISE_ADDRESS").ok())
+        .unwrap_or_else(|| state.xds_state.config.bind_address.clone());
+    let xds_port = query.xds_port.unwrap_or(state.xds_state.config.port);
+
+    tracing::debug!(
+        xds_addr = %xds_addr,
+        xds_port = %xds_port,
+        from_query = %query.xds_host.is_some(),
+        from_env = %std::env::var("FLOWPLANE_XDS_ADVERTISE_ADDRESS").is_ok(),
+        "Using xDS address for bootstrap config"
+    );
 
     // Use dataplane ID in node.id for explicit dataplane identification
     let node_id = format!("team={}/dp-{}", team, dataplane.id);

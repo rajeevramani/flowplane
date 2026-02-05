@@ -12,7 +12,10 @@
 use serde_json::json;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
 };
@@ -154,9 +157,9 @@ async fn test_300_import_openapi() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context with unique teams for this test
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
 
     // Delay between setup and resource creation
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -308,9 +311,10 @@ async fn test_500_full_routing_setup() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context with unique teams for this test
-    let ctx =
-        setup_dev_context(&api, "test_500_full_routing_setup").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_500_full_routing_setup")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();

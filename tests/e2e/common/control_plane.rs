@@ -13,6 +13,7 @@ use tracing::{error, info};
 
 use flowplane::config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig, XdsResourceConfig};
 use flowplane::openapi::defaults::ensure_default_gateway_resources;
+use flowplane::secrets::SecretBackendRegistry;
 use flowplane::storage::{create_pool, run_migrations};
 use flowplane::xds::{start_database_xds_server_with_state, XdsState};
 
@@ -106,7 +107,33 @@ impl ControlPlaneHandle {
             envoy_admin: Default::default(),
         };
 
-        let state = Arc::new(XdsState::with_database(simple_config, pool));
+        // Create state without Arc first so we can initialize the secret backend registry
+        let mut state_struct = XdsState::with_database(simple_config, pool.clone());
+
+        // Enable mock certificate backend for E2E tests
+        // This allows testing the certificate API without requiring Vault
+        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
+
+        // Initialize secret backend registry with mock certificate backend
+        // Note: encryption service may be None in test environment, but we can
+        // still create the registry for certificate backend functionality
+        let encryption = state_struct.encryption_service.clone();
+        match SecretBackendRegistry::from_env(pool.clone(), encryption, None).await {
+            Ok(registry) => {
+                info!(
+                    backends = ?registry.registered_backends(),
+                    has_cert_backend = registry.has_certificate_backend(),
+                    cert_backend_type = ?registry.certificate_backend_type(),
+                    "Initialized secret backend registry for E2E tests"
+                );
+                state_struct.set_secret_backend_registry(registry);
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to initialize secret backend registry");
+            }
+        }
+
+        let state = Arc::new(state_struct);
         ensure_default_gateway_resources(&state).await?;
         info!("Default gateway resources created");
 

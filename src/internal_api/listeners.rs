@@ -307,6 +307,8 @@ mod tests {
                 name TEXT NOT NULL,
                 gateway_host TEXT,
                 description TEXT,
+                certificate_serial TEXT,
+                certificate_expires_at TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(team, name)

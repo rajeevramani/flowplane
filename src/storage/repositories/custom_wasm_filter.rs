@@ -350,7 +350,13 @@ impl CustomWasmFilterRepository {
         rows.into_iter().map(CustomWasmFilterData::try_from).collect()
     }
 
-    /// List custom WASM filters for multiple teams
+    /// List custom WASM filters for multiple teams.
+    ///
+    /// # Security Note
+    ///
+    /// Unlike other repositories, this returns an empty list (not all resources)
+    /// when teams array is empty. This is the security-conscious pattern that
+    /// prevents accidental data leakage.
     #[instrument(skip(self, teams), name = "db_list_custom_wasm_filters_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -358,6 +364,8 @@ impl CustomWasmFilterRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<CustomWasmFilterData>> {
+        // SECURITY: Return empty results for empty teams (no admin bypass).
+        // This is the secure pattern - empty teams = no results, not all results.
         if teams.is_empty() {
             return Ok(vec![]);
         }

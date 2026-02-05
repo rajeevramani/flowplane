@@ -206,6 +206,63 @@ pub struct ListDataplanesResponse {
     pub dataplanes: Vec<DataplaneResponse>,
 }
 
+// ============================================================================
+// Certificate API Response Types
+// ============================================================================
+
+/// Response after generating a proxy certificate
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateCertificateResponse {
+    /// Certificate record ID
+    pub id: String,
+    /// Proxy instance identifier
+    pub proxy_id: String,
+    /// SPIFFE URI embedded in the certificate
+    pub spiffe_uri: String,
+    /// PEM-encoded X.509 certificate
+    pub certificate: String,
+    /// PEM-encoded private key (only returned at generation time)
+    pub private_key: String,
+    /// PEM-encoded CA certificate chain
+    pub ca_chain: String,
+    /// Certificate expiration timestamp (ISO 8601)
+    pub expires_at: String,
+}
+
+/// Certificate metadata (without private key) - returned by list/get operations
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateMetadata {
+    pub id: String,
+    pub proxy_id: String,
+    pub spiffe_uri: String,
+    pub serial_number: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub is_valid: bool,
+    pub is_expired: bool,
+    pub is_revoked: bool,
+    #[serde(default)]
+    pub revoked_at: Option<String>,
+    #[serde(default)]
+    pub revoked_reason: Option<String>,
+}
+
+/// Response for listing certificates with pagination
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCertificatesResponse {
+    /// List of certificates (without private keys)
+    pub certificates: Vec<CertificateMetadata>,
+    /// Total number of certificates for this team
+    pub total: i64,
+    /// Pagination limit used
+    pub limit: i64,
+    /// Pagination offset used
+    pub offset: i64,
+}
+
 // Request types - match backend CreateClusterBody
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1004,6 +1061,151 @@ impl ApiClient {
         }
 
         Ok(())
+    }
+
+    // ========================================================================
+    // Certificate API Methods
+    // ========================================================================
+
+    /// Generate a new proxy certificate for mTLS authentication.
+    ///
+    /// The private key is only returned once at generation time and is not stored.
+    /// Endpoint: POST /api/v1/teams/{team}/proxy-certificates
+    pub async fn generate_proxy_certificate(
+        &self,
+        token: &str,
+        team: &str,
+        proxy_id: &str,
+    ) -> anyhow::Result<GenerateCertificateResponse> {
+        let url = format!("{}/api/v1/teams/{}/proxy-certificates", self.base_url, team);
+        let body = json!({
+            "proxyId": proxy_id
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Generate certificate failed: {} - {}", status, text);
+        }
+
+        let result: GenerateCertificateResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// List proxy certificates for a team with pagination.
+    ///
+    /// Returns certificate metadata without private keys.
+    /// Endpoint: GET /api/v1/teams/{team}/proxy-certificates
+    pub async fn list_proxy_certificates(
+        &self,
+        token: &str,
+        team: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> anyhow::Result<ListCertificatesResponse> {
+        let mut url = format!("{}/api/v1/teams/{}/proxy-certificates", self.base_url, team);
+
+        // Add query parameters if provided
+        let mut params = Vec::new();
+        if let Some(l) = limit {
+            params.push(format!("limit={}", l));
+        }
+        if let Some(o) = offset {
+            params.push(format!("offset={}", o));
+        }
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List certificates failed: {} - {}", status, text);
+        }
+
+        let result: ListCertificatesResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Get a specific proxy certificate by ID.
+    ///
+    /// Returns certificate metadata without the private key.
+    /// Endpoint: GET /api/v1/teams/{team}/proxy-certificates/{id}
+    pub async fn get_proxy_certificate(
+        &self,
+        token: &str,
+        team: &str,
+        cert_id: &str,
+    ) -> anyhow::Result<CertificateMetadata> {
+        let url = format!("{}/api/v1/teams/{}/proxy-certificates/{}", self.base_url, team, cert_id);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Get certificate failed: {} - {}", status, text);
+        }
+
+        let result: CertificateMetadata = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Revoke a proxy certificate.
+    ///
+    /// Marks the certificate as revoked. Revoked certificates should not be trusted.
+    /// Endpoint: POST /api/v1/teams/{team}/proxy-certificates/{id}/revoke
+    pub async fn revoke_proxy_certificate(
+        &self,
+        token: &str,
+        team: &str,
+        cert_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<CertificateMetadata> {
+        let url = format!(
+            "{}/api/v1/teams/{}/proxy-certificates/{}/revoke",
+            self.base_url, team, cert_id
+        );
+        let body = json!({
+            "reason": reason
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Revoke certificate failed: {} - {}", status, text);
+        }
+
+        let result: CertificateMetadata = resp.json().await?;
+        Ok(result)
     }
 
     /// Generic GET request with token auth

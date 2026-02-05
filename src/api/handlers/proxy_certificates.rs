@@ -18,10 +18,10 @@ use crate::{
     auth::{authorization::require_resource_access, models::AuthContext},
     domain::ProxyCertificateId,
     errors::Error,
-    secrets::{PkiConfig, VaultSecretsClient},
     storage::repositories::{
-        CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
-        SqlxProxyCertificateRepository, SqlxTeamRepository, TeamRepository,
+        CreateProxyCertificateRequest, DataplaneRepository, ProxyCertificateData,
+        ProxyCertificateRepository, SqlxProxyCertificateRepository, SqlxTeamRepository,
+        TeamRepository,
     },
 };
 
@@ -198,12 +198,36 @@ pub async fn generate_certificate_handler(
     // Authorization: user must have access to the team
     require_resource_access(&context, "proxy-certificates", "create", Some(&team))?;
 
-    // Check if mTLS is configured
-    let pki_config = PkiConfig::from_env().ok_or_else(|| {
-        ApiError::service_unavailable(
-            "mTLS is not configured. Set FLOWPLANE_VAULT_PKI_MOUNT_PATH to enable certificate generation."
-        )
-    })?;
+    // Rate limiting per team to prevent Vault PKI resource exhaustion
+    // Configured via FLOWPLANE_RATE_LIMIT_CERTS_PER_HOUR (default: 100)
+    if let Err(retry_after_seconds) = state.certificate_rate_limiter.check_rate_limit(&team).await {
+        tracing::warn!(
+            team = %team,
+            user_id = ?context.user_id,
+            retry_after = retry_after_seconds,
+            "Certificate generation rate limit exceeded"
+        );
+        return Err(ApiError::rate_limited(
+            format!("Certificate generation rate limit exceeded for team '{}'", team),
+            retry_after_seconds,
+        ));
+    }
+
+    // Get certificate backend from registry
+    // This supports both real Vault PKI and mock backend for testing
+    let cert_backend = state
+        .xds_state
+        .secret_backend_registry
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::service_unavailable("Secret backend registry not initialized")
+        })?
+        .certificate_backend()
+        .ok_or_else(|| {
+            ApiError::service_unavailable(
+                "mTLS is not configured. Set FLOWPLANE_VAULT_PKI_MOUNT_PATH to enable certificate generation."
+            )
+        })?;
 
     // Verify team exists
     let team_repo = get_team_repository(&state)?;
@@ -213,15 +237,9 @@ pub async fn generate_certificate_handler(
         .map_err(convert_error)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
-    // Generate certificate via Vault
-    let vault_client = VaultSecretsClient::from_env()
-        .await
-        .map_err(|e| ApiError::service_unavailable(format!("Vault unavailable: {}", e)))?;
-
-    let generated = vault_client
-        .generate_proxy_certificate(&pki_config, &team, &payload.proxy_id)
-        .await
-        .map_err(|e| {
+    // Generate certificate via the configured backend (Vault PKI or Mock)
+    let generated =
+        cert_backend.generate_certificate(&team, &payload.proxy_id, None).await.map_err(|e| {
             ApiError::service_unavailable(format!("Certificate generation failed: {}", e))
         })?;
 
@@ -240,6 +258,56 @@ pub async fn generate_certificate_handler(
         .await
         .map_err(convert_error)?;
 
+    // Update dataplane certificate tracking if proxy_id matches a dataplane name.
+    // This is best-effort: certificate issuance succeeds even if tracking update fails.
+    // The proxy_id may not always correspond to a dataplane name.
+    let dataplane_repo = get_dataplane_repository(&state)?;
+    match dataplane_repo.get_by_name(&team, &payload.proxy_id).await {
+        Ok(Some(dataplane)) => {
+            if let Err(e) = dataplane_repo
+                .update_certificate_info(
+                    &dataplane.id,
+                    &generated.serial_number,
+                    generated.expires_at,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    dataplane_id = %dataplane.id,
+                    team = %team,
+                    proxy_id = %payload.proxy_id,
+                    "Failed to update dataplane certificate tracking"
+                );
+            } else {
+                tracing::info!(
+                    dataplane_id = %dataplane.id,
+                    team = %team,
+                    proxy_id = %payload.proxy_id,
+                    serial_number = %generated.serial_number,
+                    expires_at = %generated.expires_at,
+                    "Updated dataplane certificate tracking"
+                );
+            }
+        }
+        Ok(None) => {
+            // Not all proxy_ids correspond to dataplanes - this is expected
+            tracing::debug!(
+                team = %team,
+                proxy_id = %payload.proxy_id,
+                "No matching dataplane found for certificate tracking (proxy may not be a registered dataplane)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                team = %team,
+                proxy_id = %payload.proxy_id,
+                "Failed to look up dataplane for certificate tracking"
+            );
+        }
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(GenerateCertificateResponse {
@@ -247,7 +315,9 @@ pub async fn generate_certificate_handler(
             proxy_id: record.proxy_id,
             spiffe_uri: generated.spiffe_uri,
             certificate: generated.certificate,
-            private_key: generated.private_key,
+            // Intentionally expose secret for API response - this is the only time
+            // the private key is returned to the client
+            private_key: generated.private_key.expose_secret().to_string(),
             ca_chain: generated.ca_chain,
             expires_at: generated.expires_at.to_rfc3339(),
         }),
@@ -334,7 +404,7 @@ pub async fn get_certificate_handler(
 
     // Verify team exists
     let team_repo = get_team_repository(&state)?;
-    let _team_data = team_repo
+    let team_data = team_repo
         .get_team_by_name(&team)
         .await
         .map_err(convert_error)?
@@ -348,6 +418,19 @@ pub async fn get_certificate_handler(
         .await
         .map_err(convert_error)?
         .ok_or_else(|| ApiError::NotFound("Certificate not found".to_string()))?;
+
+    // SECURITY: Verify certificate belongs to the requested team
+    // Prevents cross-team access via certificate ID enumeration
+    if certificate.team_id != team_data.id {
+        tracing::warn!(
+            cert_id = %cert_id,
+            cert_team_id = %certificate.team_id,
+            requested_team = %team,
+            requested_team_id = %team_data.id,
+            "Team isolation violation attempt: certificate belongs to different team"
+        );
+        return Err(ApiError::NotFound("Certificate not found".to_string()));
+    }
 
     Ok(Json(CertificateMetadata::from(certificate)))
 }
@@ -385,15 +468,36 @@ pub async fn revoke_certificate_handler(
 
     // Verify team exists
     let team_repo = get_team_repository(&state)?;
-    let _team_data = team_repo
+    let team_data = team_repo
         .get_team_by_name(&team)
         .await
         .map_err(convert_error)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
-    // Revoke certificate
+    // First fetch the certificate to verify team ownership
     let cert_repo = get_certificate_repository(&state)?;
-    let cert_id = ProxyCertificateId::from_string(id);
+    let cert_id = ProxyCertificateId::from_string(id.clone());
+    let certificate = cert_repo
+        .get_by_id(&cert_id)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound("Certificate not found".to_string()))?;
+
+    // SECURITY: Verify certificate belongs to the requested team
+    // Prevents cross-team revocation via certificate ID enumeration
+    if certificate.team_id != team_data.id {
+        tracing::warn!(
+            cert_id = %cert_id,
+            cert_team_id = %certificate.team_id,
+            requested_team = %team,
+            requested_team_id = %team_data.id,
+            action = "revoke",
+            "Team isolation violation attempt: certificate belongs to different team"
+        );
+        return Err(ApiError::NotFound("Certificate not found".to_string()));
+    }
+
+    // Revoke certificate (team ownership verified above)
     let revoked = cert_repo.revoke(&cert_id, &payload.reason).await.map_err(convert_error)?;
 
     Ok(Json(CertificateMetadata::from(revoked)))
@@ -425,6 +529,17 @@ fn get_certificate_repository(
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let pool = cluster_repo.pool().clone();
     Ok(SqlxProxyCertificateRepository::new(pool))
+}
+
+fn get_dataplane_repository(state: &ApiState) -> Result<DataplaneRepository, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+    Ok(DataplaneRepository::new(pool))
 }
 
 fn convert_error(error: Error) -> ApiError {

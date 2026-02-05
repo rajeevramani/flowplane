@@ -50,15 +50,20 @@ impl DatabaseAggregatedDiscoveryService {
     }
 
     /// Create discovery response with database-backed resources
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
+    ///
+    /// # Arguments
+    /// - `request`: The discovery request from Envoy
+    /// - `mtls_team`: The team extracted from client's mTLS certificate (if mTLS enabled)
+    #[tracing::instrument(skip(self, request, mtls_team), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_resource_response(
         &self,
         request: &DiscoveryRequest,
-    ) -> Result<DiscoveryResponse> {
+        mtls_team: Option<&str>,
+    ) -> std::result::Result<DiscoveryResponse, Status> {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
-        let scope = scope_from_discovery(&request.node);
+        let scope = scope_from_discovery(&request.node, mtls_team)?;
 
         // Record team and scope information in the span
         let span = tracing::Span::current();
@@ -79,7 +84,10 @@ impl DatabaseAggregatedDiscoveryService {
             }
         }
 
-        let built = self.build_resources(request.type_url.as_str(), &scope).await?;
+        let built = self
+            .build_resources(request.type_url.as_str(), &scope)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to build resources: {}", e)))?;
         span.record("resource_count", built.len());
 
         let resources = built.iter().map(|r| r.resource.clone()).collect();
@@ -99,24 +107,41 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_cluster_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.cluster_repository {
-            // Extract teams from scope for filtering
-            // Default resources (team IS NULL) are always included
-            let teams = match scope {
-                Scope::All => vec![], // Admin access includes all resources
-                Scope::Team { team } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to clusters
-            };
+            // Extract teams from scope with fail-safe behavior
+            let teams_result = teams_from_scope(scope, "cluster")
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
+            // Check if Allowlist scope (None = default only) before moving value
+            let is_default_only = teams_result.is_none();
 
             // Record team filtering in span
             let span = tracing::Span::current();
-            if teams.is_empty() {
-                span.record("teams", "all");
-            } else {
-                span.record("teams", format!("{:?}", teams).as_str());
-            }
+            let teams = match teams_result {
+                Some(t) if t.is_empty() => {
+                    span.record("teams", "none");
+                    t
+                }
+                Some(t) => {
+                    span.record("teams", format!("{:?}", t).as_str());
+                    t
+                }
+                None => {
+                    // Allowlist scope - return only default resources
+                    span.record("teams", "default-only");
+                    vec![]
+                }
+            };
 
-            // Always include default resources (include_default = true)
-            match repo.list_by_teams(&teams, true, Some(100), None).await {
+            // If Allowlist scope, query only default resources
+            let cluster_data_list = if is_default_only {
+                // For Allowlist on clusters, return only shared/default clusters
+                repo.list_default_only(Some(100), None).await
+            } else {
+                // Normal team-based filtering
+                repo.list_by_teams(&teams, true, Some(100), None).await
+            };
+
+            match cluster_data_list {
                 Ok(cluster_data_list) => {
                     span.record("filtered_count", cluster_data_list.len());
 
@@ -198,24 +223,39 @@ impl DatabaseAggregatedDiscoveryService {
     #[tracing::instrument(skip(self, scope), fields(teams, filtered_count))]
     async fn create_route_resources_from_db(&self, scope: &Scope) -> Result<Vec<BuiltResource>> {
         let built = if let Some(repo) = &self.state.route_config_repository {
-            // Extract teams from scope for filtering
-            // Default resources (team IS NULL) are always included
-            let teams = match scope {
-                Scope::All => vec![], // Admin access includes all resources
-                Scope::Team { team } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to routes
-            };
+            // Extract teams from scope with fail-safe behavior
+            let teams_result = teams_from_scope(scope, "route")
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
+            // Check if Allowlist scope (None = default only) before moving value
+            let is_default_only = teams_result.is_none();
 
             // Record team filtering in span
             let span = tracing::Span::current();
-            if teams.is_empty() {
-                span.record("teams", "all");
-            } else {
-                span.record("teams", format!("{:?}", teams).as_str());
-            }
+            let teams = match teams_result {
+                Some(t) if t.is_empty() => {
+                    span.record("teams", "none");
+                    t
+                }
+                Some(t) => {
+                    span.record("teams", format!("{:?}", t).as_str());
+                    t
+                }
+                None => {
+                    // Allowlist scope - return only default resources
+                    span.record("teams", "default-only");
+                    vec![]
+                }
+            };
 
-            // Always include default resources (include_default = true)
-            match repo.list_by_teams(&teams, true, Some(100), None).await {
+            // If Allowlist scope, query only default resources
+            let route_data_result = if is_default_only {
+                repo.list_default_only(Some(100), None).await
+            } else {
+                repo.list_by_teams(&teams, true, Some(100), None).await
+            };
+
+            match route_data_result {
                 Ok(mut route_data_list) => {
                     span.record("filtered_count", route_data_list.len());
 
@@ -271,24 +311,40 @@ impl DatabaseAggregatedDiscoveryService {
         scope: &Scope,
     ) -> Result<Vec<BuiltResource>> {
         let mut built = if let Some(repo) = &self.state.listener_repository {
-            // Extract teams from scope for filtering
-            // Default resources (team IS NULL) are always included
-            let teams = match scope {
-                Scope::All => vec![], // Admin access includes all resources
-                Scope::Team { team } => vec![team.clone()],
-                Scope::Allowlist { .. } => vec![], // Allowlist doesn't apply to listeners
-            };
+            // Extract teams from scope with fail-safe behavior
+            let teams_result = teams_from_scope(scope, "listener")
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
+            // Check if Allowlist scope (None = default only) before moving value
+            let is_default_only = teams_result.is_none();
 
             // Record team filtering in span
             let span = tracing::Span::current();
-            if teams.is_empty() {
-                span.record("scope_info", "all");
-            } else {
-                span.record("scope_info", format!("team:{}", teams[0]).as_str());
-            }
+            let teams = match teams_result {
+                Some(t) if t.is_empty() => {
+                    span.record("scope_info", "none");
+                    t
+                }
+                Some(t) => {
+                    span.record("scope_info", format!("team:{}", t[0]).as_str());
+                    t
+                }
+                None => {
+                    // Allowlist scope - for listeners, we still query default resources
+                    // (Allowlist filtering by name happens after retrieval)
+                    span.record("scope_info", "default-only");
+                    vec![]
+                }
+            };
 
-            // Always include default resources (include_default = true)
-            match repo.list_by_teams(&teams, true, Some(100), None).await {
+            // If Allowlist scope, query only default resources
+            let listener_data_result = if is_default_only {
+                repo.list_default_only(Some(100), None).await
+            } else {
+                repo.list_by_teams(&teams, true, Some(100), None).await
+            };
+
+            match listener_data_result {
                 Ok(listener_data_list) => {
                     span.record("filtered_count", listener_data_list.len());
 
@@ -303,15 +359,16 @@ impl DatabaseAggregatedDiscoveryService {
                     }
 
                     if listener_data_list.is_empty() {
-                        // Only provide fallback listener for admin scope (Scope::All)
                         // Team-scoped requests get empty list to enforce explicit listener definition
                         // This prevents port conflicts when multiple teams have no listeners
+                        // Note: Scope::All should never reach here after mTLS auth fix
                         match scope {
                             Scope::All => {
-                                info!(
-                                    "No listeners in database, providing config-based fallback for admin scope"
+                                // SECURITY: This branch should be unreachable after mTLS auth fix
+                                tracing::error!(
+                                    "SECURITY: Scope::All reached in listener fallback - should be unreachable"
                                 );
-                                self.create_fallback_listener_resources()?
+                                vec![] // Fail closed - return empty, not fallback
                             }
                             Scope::Team { team, .. } => {
                                 info!(
@@ -340,11 +397,15 @@ impl DatabaseAggregatedDiscoveryService {
                     }
                 }
                 Err(e) => {
-                    // On database error, only provide fallback for admin scope
+                    // On database error, return empty (fail closed)
                     match scope {
                         Scope::All => {
-                            warn!("Failed to load listeners from database: {}, falling back to config", e);
-                            self.create_fallback_listener_resources()?
+                            // SECURITY: This branch should be unreachable after mTLS auth fix
+                            tracing::error!(
+                                error = %e,
+                                "SECURITY: Scope::All reached in listener error handler - should be unreachable"
+                            );
+                            vec![] // Fail closed - return empty, not fallback
                         }
                         Scope::Team { team, .. } => {
                             warn!(team = %team, error = %e, "Failed to load listeners from database for team, returning empty list");
@@ -423,22 +484,39 @@ impl DatabaseAggregatedDiscoveryService {
             return Ok(Vec::new());
         };
 
-        // Extract teams from scope for filtering
-        let teams = match scope {
-            Scope::All => vec![],
-            Scope::Team { team } => vec![team.clone()],
-            Scope::Allowlist { .. } => vec![],
-        };
+        // Extract teams from scope with fail-safe behavior
+        let teams_result = teams_from_scope(scope, "secret")
+            .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
+        // Check if Allowlist scope (None = default only) before moving value
+        let is_default_only = teams_result.is_none();
 
         // Record team filtering in span
         let span = tracing::Span::current();
-        if teams.is_empty() {
-            span.record("teams", "all");
-        } else {
-            span.record("teams", format!("{:?}", teams).as_str());
-        }
+        let teams = match teams_result {
+            Some(t) if t.is_empty() => {
+                span.record("teams", "none");
+                t
+            }
+            Some(t) => {
+                span.record("teams", format!("{:?}", t).as_str());
+                t
+            }
+            None => {
+                // Allowlist scope - return only default resources (typically empty for secrets)
+                span.record("teams", "default-only");
+                vec![]
+            }
+        };
 
-        match repo.list_by_teams(&teams, Some(100), None).await {
+        // If Allowlist scope, query only default resources
+        let secret_data_result = if is_default_only {
+            repo.list_default_only(Some(100), None).await
+        } else {
+            repo.list_by_teams(&teams, Some(100), None).await
+        };
+
+        match secret_data_result {
             Ok(mut secret_data_list) => {
                 span.record("filtered_count", secret_data_list.len());
 
@@ -576,17 +654,23 @@ impl DatabaseAggregatedDiscoveryService {
         }
     }
 
-    #[tracing::instrument(skip(self, request), fields(type_url = %request.type_url, team, scope_type, resource_count))]
+    /// Create delta discovery response with database-backed resources
+    ///
+    /// # Arguments
+    /// - `request`: The delta discovery request from Envoy
+    /// - `mtls_team`: The team extracted from client's mTLS certificate (if mTLS enabled)
+    #[tracing::instrument(skip(self, request, mtls_team), fields(type_url = %request.type_url, team, scope_type, resource_count))]
     async fn create_delta_response(
         &self,
         request: &DeltaDiscoveryRequest,
-    ) -> Result<DeltaDiscoveryResponse> {
+        mtls_team: Option<&str>,
+    ) -> std::result::Result<DeltaDiscoveryResponse, Status> {
         let version = self.state.get_version();
         let nonce = uuid::Uuid::new_v4().to_string();
 
         // Build all available resources for this type
         // The stream logic will handle proper delta filtering and ACK detection
-        let scope = scope_from_discovery(&request.node);
+        let scope = scope_from_discovery(&request.node, mtls_team)?;
 
         // Record team and scope information in the span
         let span = tracing::Span::current();
@@ -605,7 +689,10 @@ impl DatabaseAggregatedDiscoveryService {
             }
         }
 
-        let built = self.build_resources(&request.type_url, &scope).await?;
+        let built = self
+            .build_resources(&request.type_url, &scope)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to build resources: {}", e)))?;
         span.record("resource_count", built.len());
 
         let resources: Vec<Resource> = built
@@ -894,13 +981,22 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         }
 
         // Store mTLS team override for use in stream processing
+        // SECURITY: This team is cryptographically verified from the client certificate
         let mtls_team_override = mtls_identity.map(|id| id.team);
 
         let state = self.state.clone();
+        // Clone mtls_team for capture in responder closure
+        let mtls_team_for_responder = mtls_team_override.clone();
         let responder = move |state: Arc<XdsState>, request: DiscoveryRequest| {
             let service = DatabaseAggregatedDiscoveryService { state };
-            Box::pin(async move { service.create_resource_response(&request).await })
-                as Pin<Box<dyn Future<Output = Result<DiscoveryResponse>> + Send>>
+            // SECURITY: Pass mTLS team to create_resource_response for authorization
+            let mtls_team = mtls_team_for_responder.clone();
+            Box::pin(async move {
+                service
+                    .create_resource_response(&request, mtls_team.as_deref())
+                    .await
+                    .map_err(|status| crate::errors::FlowplaneError::internal(status.message()))
+            }) as Pin<Box<dyn Future<Output = Result<DiscoveryResponse>> + Send>>
         };
 
         let stream = crate::xds::services::stream::run_stream_loop_with_mtls(
@@ -957,12 +1053,21 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         };
 
         // Store mTLS team override for use in stream processing
+        // SECURITY: This team is cryptographically verified from the client certificate
         let mtls_team_override = mtls_identity.map(|id| id.team);
 
+        // Clone mtls_team for capture in responder closure
+        let mtls_team_for_responder = mtls_team_override.clone();
         let responder = move |state: Arc<XdsState>, request: DeltaDiscoveryRequest| {
             let service = DatabaseAggregatedDiscoveryService { state };
-            Box::pin(async move { service.create_delta_response(&request).await })
-                as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
+            // SECURITY: Pass mTLS team to create_delta_response for authorization
+            let mtls_team = mtls_team_for_responder.clone();
+            Box::pin(async move {
+                service
+                    .create_delta_response(&request, mtls_team.as_deref())
+                    .await
+                    .map_err(|status| crate::errors::FlowplaneError::internal(status.message()))
+            }) as Pin<Box<dyn Future<Output = Result<DeltaDiscoveryResponse>> + Send>>
         };
 
         let stream = crate::xds::services::stream::run_delta_loop_with_mtls(
@@ -977,45 +1082,370 @@ impl AggregatedDiscoveryService for DatabaseAggregatedDiscoveryService {
         Ok(Response::new(Box::pin(stream)))
     }
 }
+/// Scope determines which resources a client can access via xDS.
+///
+/// # Security Model
+/// - `Team`: Client can only access resources belonging to their team (default)
+/// - `Allowlist`: Client can only access specifically named listeners (for shared infrastructure)
+/// - `All`: Admin access to all resources (DEPRECATED - kept for compatibility but never constructed)
+///
+/// As of the mTLS authorization security fix, `Scope::All` is never returned from
+/// `scope_from_discovery()`. Connections without team identity are rejected.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // All variant kept for potential future admin API use
 enum Scope {
+    /// Admin access - DEPRECATED: No longer constructed, kept for backward compatibility
     All,
+    /// Team-scoped access - client sees only their team's resources
     Team { team: String },
+    /// Allowlist - client sees only specifically named listeners
     Allowlist { names: Vec<String> },
 }
 
-fn scope_from_discovery(node: &Option<envoy_types::pb::envoy::config::core::v3::Node>) -> Scope {
-    if let Some(n) = node {
-        if let Some(meta) = &n.metadata {
-            let mut team: Option<String> = None;
-            let mut allow: Vec<String> = Vec::new();
+/// Extract teams from scope for repository filtering.
+///
+/// # Security
+/// This function implements **fail-safe** behavior for deprecated/edge case scopes:
+/// - `Scope::All`: DEPRECATED - logs security error and returns `Err` (fails closed)
+/// - `Scope::Allowlist`: Returns special marker for "default only" access
+/// - `Scope::Team`: Returns the team in a Vec
+///
+/// # Returns
+/// - `Ok(Some(teams))` - Team(s) to filter by (may be empty for default-only access)
+/// - `Ok(None)` - Use default resources only (for Allowlist on non-listener resources)
+/// - `Err` - Scope::All encountered (should never happen after mTLS auth fix)
+fn teams_from_scope(
+    scope: &Scope,
+    resource_type: &str,
+) -> std::result::Result<Option<Vec<String>>, tonic::Status> {
+    match scope {
+        Scope::All => {
+            // SECURITY: Scope::All should never be constructed after mTLS authorization fix.
+            // If it somehow is, this is a security bug - fail closed.
+            tracing::error!(
+                resource_type = %resource_type,
+                "SECURITY: Scope::All encountered but should be unreachable after mTLS auth fix. \
+                 This indicates a potential security vulnerability in scope_from_discovery()."
+            );
+            Err(tonic::Status::internal(
+                "Invalid scope: admin scope is not permitted for xDS connections",
+            ))
+        }
+        Scope::Team { team } => Ok(Some(vec![team.clone()])),
+        Scope::Allowlist { .. } => {
+            // For Allowlist scope on non-listener resources, return None to signal
+            // that only default resources (team IS NULL) should be returned.
+            // This prevents Allowlist from granting access to all teams' resources.
+            Ok(None)
+        }
+    }
+}
 
+/// Determine the scope for xDS resource filtering based on mTLS identity and node metadata.
+///
+/// # Security
+/// - When `mtls_team` is provided (from client certificate), it takes precedence over node metadata
+/// - This prevents attackers from using a valid cert for team-A while requesting team-B resources via metadata
+/// - If neither mTLS identity nor node metadata provides a team, the connection is REJECTED
+///
+/// # Arguments
+/// - `node`: The Envoy node from the discovery request (contains self-reported metadata)
+/// - `mtls_team`: The team extracted from the client's mTLS certificate SPIFFE URI (cryptographically verified)
+///
+/// # Returns
+/// - `Ok(Scope)` - The scope to use for resource filtering
+/// - `Err(Status)` - Permission denied if no team identity is available
+fn scope_from_discovery(
+    node: &Option<envoy_types::pb::envoy::config::core::v3::Node>,
+    mtls_team: Option<&str>,
+) -> std::result::Result<Scope, Status> {
+    // Extract team from node metadata (self-reported, untrusted)
+    let metadata_team = node.as_ref().and_then(|n| {
+        n.metadata.as_ref().and_then(|meta| {
             if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
                 meta.fields.get("team").and_then(|v| v.kind.as_ref())
             {
                 if !s.is_empty() {
-                    team = Some(s.clone());
+                    return Some(s.clone());
                 }
             }
+            None
+        })
+    });
+
+    // SECURITY: Prefer mTLS team (cryptographically verified) over node metadata (self-reported)
+    let effective_team = mtls_team.map(|t| t.to_string()).or(metadata_team);
+
+    // Log warning if mTLS team differs from metadata team (potential attack or misconfiguration)
+    if let (Some(mtls), Some(ref meta)) = (mtls_team, &effective_team) {
+        if mtls != meta.as_str() {
+            warn!(
+                mtls_team = %mtls,
+                metadata_team = %meta,
+                "mTLS team differs from node.metadata.team - using mTLS team (this may indicate an attack or misconfiguration)"
+            );
+        }
+    }
+
+    // Extract allowlist from node metadata (only valid when no team scope)
+    let allowlist = node.as_ref().and_then(|n| {
+        n.metadata.as_ref().and_then(|meta| {
             if let Some(envoy_types::pb::google::protobuf::value::Kind::ListValue(lv)) =
                 meta.fields.get("listener_allowlist").and_then(|v| v.kind.as_ref())
             {
-                for item in &lv.values {
-                    if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(s)) =
-                        item.kind.as_ref()
-                    {
-                        allow.push(s.clone());
-                    }
+                let names: Vec<String> = lv
+                    .values
+                    .iter()
+                    .filter_map(|item| {
+                        if let Some(envoy_types::pb::google::protobuf::value::Kind::StringValue(
+                            s,
+                        )) = item.kind.as_ref()
+                        {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !names.is_empty() {
+                    return Some(names);
                 }
             }
+            None
+        })
+    });
 
-            if !allow.is_empty() {
-                return Scope::Allowlist { names: allow };
+    // Determine scope: allowlist > team > reject
+    // Note: Allowlist is only for specific use cases (e.g., shared infrastructure)
+    if let Some(names) = allowlist {
+        return Ok(Scope::Allowlist { names });
+    }
+
+    if let Some(team) = effective_team {
+        return Ok(Scope::Team { team });
+    }
+
+    // SECURITY: Reject connections without team identity
+    // This prevents accidental admin access when team is missing
+    Err(Status::permission_denied(
+        "Team identity required for xDS connection. Provide either: \
+         (1) mTLS certificate with SPIFFE URI containing team, or \
+         (2) node.metadata.team in Envoy bootstrap configuration",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use envoy_types::pb::envoy::config::core::v3::Node;
+    use envoy_types::pb::google::protobuf::{value::Kind, ListValue, Struct, Value};
+    use std::collections::HashMap;
+
+    fn create_node_with_metadata(team: Option<&str>, allowlist: Option<Vec<&str>>) -> Option<Node> {
+        let mut fields = HashMap::new();
+
+        if let Some(t) = team {
+            fields
+                .insert("team".to_string(), Value { kind: Some(Kind::StringValue(t.to_string())) });
+        }
+
+        if let Some(list) = allowlist {
+            let values = list
+                .into_iter()
+                .map(|s| Value { kind: Some(Kind::StringValue(s.to_string())) })
+                .collect();
+            fields.insert(
+                "listener_allowlist".to_string(),
+                Value { kind: Some(Kind::ListValue(ListValue { values })) },
+            );
+        }
+
+        Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        })
+    }
+
+    // ==========================================================================
+    // Security Tests: mTLS Authorization Fix
+    // ==========================================================================
+
+    #[test]
+    fn test_mtls_team_takes_precedence_over_metadata() {
+        // SECURITY: When mTLS provides team, it should override node.metadata.team
+        // This prevents attackers from using valid cert for team-A while requesting team-B
+        let node = create_node_with_metadata(Some("attacker-requested-team"), None);
+        let mtls_team = Some("actual-cert-team");
+
+        let result = scope_from_discovery(&node, mtls_team);
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Scope::Team { team } => {
+                assert_eq!(team, "actual-cert-team");
             }
-            if let Some(team) = team {
-                return Scope::Team { team };
-            }
+            _ => panic!("Expected Scope::Team"),
         }
     }
-    Scope::All
+
+    #[test]
+    fn test_connection_rejected_without_team_identity() {
+        // SECURITY: Connections without any team identity should be rejected
+        // This prevents accidental admin access
+        let node = create_node_with_metadata(None, None);
+        let mtls_team = None;
+
+        let result = scope_from_discovery(&node, mtls_team);
+
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(status.message().contains("Team identity required"));
+    }
+
+    #[test]
+    fn test_metadata_team_used_when_no_mtls() {
+        // When mTLS is not enabled, node.metadata.team should be used
+        let node = create_node_with_metadata(Some("metadata-team"), None);
+        let mtls_team = None;
+
+        let result = scope_from_discovery(&node, mtls_team);
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Scope::Team { team } => {
+                assert_eq!(team, "metadata-team");
+            }
+            _ => panic!("Expected Scope::Team"),
+        }
+    }
+
+    #[test]
+    fn test_empty_metadata_team_rejected() {
+        // Empty team string should be treated as missing
+        let mut fields = HashMap::new();
+        fields.insert("team".to_string(), Value { kind: Some(Kind::StringValue("".to_string())) });
+        let node = Some(Node {
+            id: "test-node".to_string(),
+            metadata: Some(Struct { fields }),
+            ..Default::default()
+        });
+
+        let result = scope_from_discovery(&node, None);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn test_allowlist_still_works() {
+        // Allowlist should still work for shared infrastructure use cases
+        let node = create_node_with_metadata(None, Some(vec!["listener-1", "listener-2"]));
+        let mtls_team = None;
+
+        let result = scope_from_discovery(&node, mtls_team);
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Scope::Allowlist { names } => {
+                assert_eq!(names, vec!["listener-1", "listener-2"]);
+            }
+            _ => panic!("Expected Scope::Allowlist"),
+        }
+    }
+
+    #[test]
+    fn test_none_node_rejected() {
+        // No node at all should be rejected
+        let result = scope_from_discovery(&None, None);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn test_mtls_team_with_empty_metadata() {
+        // mTLS team should work even when metadata is empty
+        let node = Some(Node { id: "test-node".to_string(), metadata: None, ..Default::default() });
+
+        let result = scope_from_discovery(&node, Some("mtls-team"));
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Scope::Team { team } => {
+                assert_eq!(team, "mtls-team");
+            }
+            _ => panic!("Expected Scope::Team"),
+        }
+    }
+
+    // ==========================================================================
+    // Security Tests: teams_from_scope() fail-safe behavior
+    // ==========================================================================
+
+    #[test]
+    fn test_teams_from_scope_all_returns_error() {
+        // SECURITY: Scope::All should NEVER be constructed after mTLS auth fix
+        // If it somehow is, teams_from_scope() must fail closed (return error)
+        let scope = Scope::All;
+
+        let result = teams_from_scope(&scope, "cluster");
+
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(status.message().contains("admin scope is not permitted"));
+    }
+
+    #[test]
+    fn test_teams_from_scope_team_returns_team() {
+        // Normal team scope should return the team
+        let scope = Scope::Team { team: "my-team".to_string() };
+
+        let result = teams_from_scope(&scope, "cluster");
+
+        assert!(result.is_ok());
+        let teams = result.unwrap();
+        assert!(teams.is_some());
+        assert_eq!(teams.unwrap(), vec!["my-team"]);
+    }
+
+    #[test]
+    fn test_teams_from_scope_allowlist_returns_none() {
+        // Allowlist scope should return None (meaning default-only resources)
+        // This prevents Allowlist from returning ALL resources
+        let scope = Scope::Allowlist { names: vec!["listener-1".to_string()] };
+
+        let result = teams_from_scope(&scope, "cluster");
+
+        assert!(result.is_ok());
+        let teams = result.unwrap();
+        assert!(teams.is_none()); // None means "default only"
+    }
+
+    #[test]
+    fn test_teams_from_scope_logs_error_for_scope_all() {
+        // This test verifies the function doesn't panic and logs appropriately
+        // The actual logging is tested by tracing assertions in integration tests
+        let scope = Scope::All;
+
+        // Should not panic
+        let result = teams_from_scope(&scope, "test_resource");
+
+        // Should return error
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_teams_from_scope_different_resource_types() {
+        // Verify the function works correctly for different resource types
+        let scope = Scope::Team { team: "engineering".to_string() };
+
+        for resource_type in ["cluster", "route", "listener", "secret"] {
+            let result = teams_from_scope(&scope, resource_type);
+            assert!(result.is_ok(), "Failed for resource type: {}", resource_type);
+            assert_eq!(result.unwrap(), Some(vec!["engineering".to_string()]));
+        }
+    }
 }

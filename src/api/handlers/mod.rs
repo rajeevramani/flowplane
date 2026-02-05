@@ -50,7 +50,7 @@ pub use custom_wasm_filters::{
     update_custom_wasm_filter_handler,
 };
 pub use dataplanes::{
-    create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+    create_dataplane_handler, delete_dataplane_handler, generate_envoy_config_handler,
     get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
     update_dataplane_handler,
 };

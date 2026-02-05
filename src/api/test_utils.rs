@@ -96,6 +96,7 @@ impl TestApiStateBuilder {
         let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
         let mcp_connection_manager = crate::mcp::create_connection_manager();
         let mcp_session_manager = crate::mcp::create_session_manager();
+        let certificate_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::from_env());
 
         ApiState {
             xds_state,
@@ -103,6 +104,7 @@ impl TestApiStateBuilder {
             stats_cache,
             mcp_connection_manager,
             mcp_session_manager,
+            certificate_rate_limiter,
         }
     }
 }

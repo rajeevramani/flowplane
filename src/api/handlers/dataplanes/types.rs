@@ -57,6 +57,12 @@ pub struct DataplaneResponse {
     /// Description
     pub description: Option<String>,
 
+    /// Certificate serial number (if a certificate has been issued)
+    pub certificate_serial: Option<String>,
+
+    /// Certificate expiration timestamp
+    pub certificate_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+
     /// Creation timestamp
     pub created_at: chrono::DateTime<chrono::Utc>,
 
@@ -121,6 +127,20 @@ pub struct BootstrapQuery {
     #[serde(default)]
     #[param(required = false)]
     pub ca_path: Option<String>,
+
+    /// xDS server hostname/IP for Envoy to connect to.
+    /// Overrides the bind_address in generated config.
+    /// Falls back to FLOWPLANE_XDS_ADVERTISE_ADDRESS env var if not set.
+    /// Examples: "control-plane" (docker), "flowplane-cp.svc.cluster.local" (k8s)
+    #[serde(default)]
+    #[param(required = false)]
+    pub xds_host: Option<String>,
+
+    /// xDS server port for Envoy to connect to.
+    /// Overrides the default port in generated config.
+    #[serde(default)]
+    #[param(required = false)]
+    pub xds_port: Option<u16>,
 }
 
 impl From<crate::storage::repositories::DataplaneData> for DataplaneResponse {
@@ -131,6 +151,8 @@ impl From<crate::storage::repositories::DataplaneData> for DataplaneResponse {
             name: data.name,
             gateway_host: data.gateway_host,
             description: data.description,
+            certificate_serial: data.certificate_serial,
+            certificate_expires_at: data.certificate_expires_at,
             created_at: data.created_at,
             updated_at: data.updated_at,
         }

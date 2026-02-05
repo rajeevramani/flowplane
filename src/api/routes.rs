@@ -29,7 +29,7 @@ use super::{
         list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
     },
     handlers::dataplanes::{
-        create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+        create_dataplane_handler, delete_dataplane_handler, generate_envoy_config_handler,
         get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
         update_dataplane_handler,
     },
@@ -164,6 +164,8 @@ pub struct ApiState {
     pub stats_cache: Arc<StatsCache>,
     pub mcp_connection_manager: crate::mcp::SharedConnectionManager,
     pub mcp_session_manager: crate::mcp::SharedSessionManager,
+    /// Rate limiter for certificate generation (prevents Vault PKI exhaustion)
+    pub certificate_rate_limiter: Arc<super::rate_limit::RateLimiter>,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -257,12 +259,16 @@ pub fn build_router_with_registry(
     // Create MCP session manager for HTTP-only connections
     let mcp_session_manager = crate::mcp::create_session_manager();
 
+    // Create rate limiter for certificate generation (prevents Vault PKI exhaustion)
+    let certificate_rate_limiter = Arc::new(super::rate_limit::RateLimiter::from_env());
+
     let api_state = ApiState {
         xds_state: state.clone(),
         filter_schema_registry,
         stats_cache,
         mcp_connection_manager,
         mcp_session_manager,
+        certificate_rate_limiter,
     };
 
     let cluster_repo = match &state.cluster_repository {
@@ -438,7 +444,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
-        .route("/api/v1/teams/{team}/dataplanes/{name}/bootstrap", get(get_dataplane_bootstrap_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}/envoy-config", get(generate_envoy_config_handler))
         // Aggregated schema endpoints (API catalog)
         .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))

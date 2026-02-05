@@ -587,17 +587,22 @@ impl TokenRepository for SqlxTokenRepository {
     async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()> {
         // Increment failed_attempts and lock token if failed_attempts >= 5
         // Lock for 15 minutes
+        // Note: Lock timestamp computed in Rust for PostgreSQL compatibility
+        // (SQLite's datetime() function is not supported in PostgreSQL)
+        let lock_until = chrono::Utc::now() + chrono::Duration::minutes(15);
+
         let result = sqlx::query(
             "UPDATE personal_access_tokens
              SET failed_attempts = failed_attempts + 1,
                  locked_until = CASE
-                     WHEN failed_attempts + 1 >= 5 THEN datetime(CURRENT_TIMESTAMP, '+15 minutes')
+                     WHEN failed_attempts + 1 >= 5 THEN $2
                      ELSE locked_until
                  END,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND is_setup_token = TRUE",
         )
         .bind(id)
+        .bind(lock_until)
         .execute(&self.pool)
         .await
         .map_err(|err| FlowplaneError::Database {

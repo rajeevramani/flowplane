@@ -13,7 +13,7 @@
 //! - `Auth` → 401 Unauthorized
 //! - `Database` → 409 Conflict (constraint violations) or 500 Internal Server Error
 //! - `Config`, `Internal`, `Xds`, `Http` → 500 Internal Server Error
-//! - `RateLimit` → 503 Service Unavailable
+//! - `RateLimit` → 429 Too Many Requests (with Retry-After header)
 //! - `Timeout` → 500 Internal Server Error
 //!
 //! # Example
@@ -48,7 +48,8 @@ use crate::errors::FlowplaneError;
 /// - `NotFound`: 404 - Resource not found
 /// - `Unauthorized`: 401 - Authentication required or failed
 /// - `Forbidden`: 403 - Authenticated but insufficient permissions
-/// - `ServiceUnavailable`: 503 - Service temporarily unavailable (rate limits, overload)
+/// - `TooManyRequests`: 429 - Rate limit exceeded (with Retry-After header)
+/// - `ServiceUnavailable`: 503 - Service temporarily unavailable (overload, maintenance)
 /// - `Internal`: 500 - Internal server error (database errors, unexpected failures)
 #[derive(Debug)]
 pub enum ApiError {
@@ -57,6 +58,11 @@ pub enum ApiError {
     NotFound(String),
     Unauthorized(String),
     Forbidden(String),
+    /// Rate limit exceeded - includes retry_after_seconds for Retry-After header
+    TooManyRequests {
+        message: String,
+        retry_after_seconds: u32,
+    },
     ServiceUnavailable(String),
     Internal(String),
 }
@@ -69,6 +75,7 @@ impl ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -94,28 +101,29 @@ struct ErrorBody {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
+        use axum::http::header::RETRY_AFTER;
+
         let status = self.status_code();
-        let error_kind = match self {
-            ApiError::BadRequest(_) => "bad_request",
-            ApiError::Conflict(_) => "conflict",
-            ApiError::NotFound(_) => "not_found",
-            ApiError::Unauthorized(_) => "unauthorized",
-            ApiError::Forbidden(_) => "forbidden",
-            ApiError::ServiceUnavailable(_) => "service_unavailable",
-            ApiError::Internal(_) => "internal_error",
+        let (error_kind, message, retry_after) = match self {
+            ApiError::BadRequest(msg) => ("bad_request", msg, None),
+            ApiError::Conflict(msg) => ("conflict", msg, None),
+            ApiError::NotFound(msg) => ("not_found", msg, None),
+            ApiError::Unauthorized(msg) => ("unauthorized", msg, None),
+            ApiError::Forbidden(msg) => ("forbidden", msg, None),
+            ApiError::TooManyRequests { message, retry_after_seconds } => {
+                ("too_many_requests", message, Some(retry_after_seconds))
+            }
+            ApiError::ServiceUnavailable(msg) => ("service_unavailable", msg, None),
+            ApiError::Internal(msg) => ("internal_error", msg, None),
         };
 
-        let message = match self {
-            ApiError::BadRequest(msg)
-            | ApiError::Conflict(msg)
-            | ApiError::NotFound(msg)
-            | ApiError::Unauthorized(msg)
-            | ApiError::Forbidden(msg)
-            | ApiError::ServiceUnavailable(msg)
-            | ApiError::Internal(msg) => msg,
-        };
+        let body = Json(ErrorBody { error: error_kind, message });
 
-        (status, Json(ErrorBody { error: error_kind, message })).into_response()
+        if let Some(seconds) = retry_after {
+            (status, [(RETRY_AFTER, seconds.to_string())], body).into_response()
+        } else {
+            (status, body).into_response()
+        }
     }
 }
 
@@ -141,7 +149,10 @@ impl From<FlowplaneError> for ApiError {
             FlowplaneError::Serialization { context, .. } => ApiError::BadRequest(context),
             FlowplaneError::Xds { message, .. } => ApiError::Internal(message),
             FlowplaneError::Http { message, .. } => ApiError::Internal(message),
-            FlowplaneError::RateLimit { message, .. } => ApiError::ServiceUnavailable(message),
+            FlowplaneError::RateLimit { message, retry_after } => ApiError::TooManyRequests {
+                message,
+                retry_after_seconds: retry_after.unwrap_or(60) as u32,
+            },
             FlowplaneError::Timeout { operation, duration_ms } => ApiError::Internal(format!(
                 "Operation '{}' timed out after {}ms",
                 operation, duration_ms
@@ -218,5 +229,12 @@ impl ApiError {
     /// Use for unexpected internal errors.
     pub fn internal<S: Into<String>>(msg: S) -> Self {
         ApiError::Internal(msg.into())
+    }
+
+    /// Creates a rate limit error (429) with Retry-After header.
+    ///
+    /// Use when rate limits are exceeded.
+    pub fn rate_limited<S: Into<String>>(msg: S, retry_after_seconds: u32) -> Self {
+        ApiError::TooManyRequests { message: msg.into(), retry_after_seconds }
     }
 }

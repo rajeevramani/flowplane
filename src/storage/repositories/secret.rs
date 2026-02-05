@@ -282,6 +282,12 @@ impl SecretRepository {
     }
 
     /// List secrets filtered by team names
+    ///
+    /// # Security Note
+    ///
+    /// Empty teams array returns ALL resources. This is intentional for admin:all
+    /// scope but could be a security issue if authorization logic has bugs.
+    /// A warning is logged when this occurs for auditing purposes.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_secrets_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -289,8 +295,13 @@ impl SecretRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<SecretData>> {
-        // If no teams specified, return all secrets (admin scope)
+        // SECURITY: Empty teams array returns ALL resources (admin scope).
+        // Log warning for audit trail - this should only happen for admin:all scope.
         if teams.is_empty() {
+            tracing::warn!(
+                resource = "secrets",
+                "list_by_teams called with empty teams array - returning all resources (admin scope)"
+            );
             return self.list(limit, offset).await;
         }
 
@@ -331,6 +342,43 @@ impl SecretRepository {
             FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to list secrets for teams: {:?}", teams),
+            }
+        })?;
+
+        rows.into_iter().map(|row| self.decrypt_row(row)).collect()
+    }
+
+    /// List only default/shared secrets (team IS NULL)
+    ///
+    /// Used for Allowlist scope where clients should only see shared infrastructure,
+    /// not team-specific resources.
+    ///
+    /// Note: Secrets are always team-scoped in practice, so this typically returns empty.
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_default_secrets")]
+    pub async fn list_default_only(
+        &self,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<SecretData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<Sqlite, SecretRow>(
+            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
+             FROM secrets \
+             WHERE team IS NULL \
+             ORDER BY created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list default secrets");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list default secrets".to_string(),
             }
         })?;
 
