@@ -11,7 +11,10 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
 };
@@ -84,8 +87,9 @@ async fn test_610_verify_headers() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_610_verify_headers").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_610_verify_headers").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -236,8 +240,9 @@ async fn test_611_route_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_611_route_override").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_611_route_override").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();

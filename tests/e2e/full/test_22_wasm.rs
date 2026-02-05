@@ -12,7 +12,7 @@
 use serde_json::json;
 
 use crate::common::{
-    api_client::{setup_dev_context, ApiClient},
+    api_client::{setup_dev_context, setup_envoy_context, ApiClient},
     harness::{TestHarness, TestHarnessConfig},
 };
 
@@ -118,7 +118,8 @@ async fn test_102_verify_wasm_execution() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let _ctx = setup_dev_context(&api, "test_102_verify_wasm_execution")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let _ctx = setup_envoy_context(&api, "test_102_verify_wasm_execution")
         .await
         .expect("Setup should succeed");
 

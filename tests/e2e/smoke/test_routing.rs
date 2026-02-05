@@ -19,7 +19,10 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
@@ -35,9 +38,9 @@ async fn smoke_test_basic_routing() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context (bootstrap + login + admin token + teams)
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "smoke_test_basic_routing").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "smoke_test_basic_routing").await.expect("Setup should succeed");
     println!("✓ Dev context ready");
 
     // Get echo server endpoint
@@ -129,8 +132,8 @@ async fn smoke_test_filter_attachment() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context
-    let ctx = setup_dev_context(&api, "smoke_test_filter_attachment")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "smoke_test_filter_attachment")
         .await
         .expect("Setup should succeed");
     println!("✓ Dev context ready");
@@ -300,8 +303,9 @@ async fn smoke_test_xds_config() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context
-    let ctx = setup_dev_context(&api, "smoke_test_xds_config").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx =
+        setup_envoy_context(&api, "smoke_test_xds_config").await.expect("Setup should succeed");
     println!("✓ Dev context ready");
 
     // Get echo server endpoint

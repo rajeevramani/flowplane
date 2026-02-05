@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, ApiClient},
+    api_client::{setup_envoy_context, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     resource_setup::{ClusterConfig, FilterConfig, ListenerConfig, ResourceSetup, RouteConfig},
@@ -31,8 +31,9 @@ async fn test_100_setup_compression() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx =
-        setup_dev_context(&api, "test_100_setup_compression").await.expect("Setup should succeed");
+    let ctx = setup_envoy_context(&api, "test_100_setup_compression")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -104,8 +105,9 @@ async fn test_101_verify_compression() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx =
-        setup_dev_context(&api, "test_101_verify_compression").await.expect("Setup should succeed");
+    let ctx = setup_envoy_context(&api, "test_101_verify_compression")
+        .await
+        .expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -214,7 +216,8 @@ async fn test_102_check_stats() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_102_check_stats").await.expect("Setup should succeed");
+    let ctx =
+        setup_envoy_context(&api, "test_102_check_stats").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -320,7 +323,7 @@ async fn test_103_compression_large_payload() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_103_compression_large_payload")
+    let ctx = setup_envoy_context(&api, "test_103_compression_large_payload")
         .await
         .expect("Setup should succeed");
 

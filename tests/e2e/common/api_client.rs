@@ -199,6 +199,13 @@ pub struct DataplaneResponse {
     pub description: Option<String>,
 }
 
+/// List dataplanes response wrapper - matches backend ListDataplanesResponse
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDataplanesResponse {
+    pub dataplanes: Vec<DataplaneResponse>,
+}
+
 // Request types - match backend CreateClusterBody
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -641,8 +648,8 @@ impl ApiClient {
             anyhow::bail!("List dataplanes failed: {} - {}", status, text);
         }
 
-        let result: Vec<DataplaneResponse> = resp.json().await?;
-        Ok(result)
+        let result: ListDataplanesResponse = resp.json().await?;
+        Ok(result.dataplanes)
     }
 
     /// Delete a dataplane by team and name
@@ -1234,6 +1241,95 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         team_b_id: team_b.id,
         team_b_dev_token: None,
         team_b_dataplane_id: dataplane_b.id,
+    })
+}
+
+/// Setup context for tests that need Envoy routing.
+///
+/// Uses the shared team name (E2E_SHARED_TEAM) that Envoy is configured to see.
+/// This ensures xDS resources are visible to Envoy for routing tests.
+///
+/// Use this instead of `setup_dev_context` when:
+/// - Test creates clusters, routes, or listeners
+/// - Test verifies traffic routing through Envoy
+/// - Test needs Envoy to receive xDS updates
+pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::Result<TestContext> {
+    use super::shared_infra::E2E_SHARED_TEAM;
+
+    // Use the shared team name that Envoy is configured for
+    let team_name = E2E_SHARED_TEAM.to_string();
+
+    // Check if bootstrap is needed
+    let needs_bootstrap = with_timeout(TestTimeout::quick("Check bootstrap status"), async {
+        api.needs_bootstrap().await
+    })
+    .await
+    .unwrap_or(true);
+
+    // Bootstrap only if needed (uses standard test credentials)
+    if needs_bootstrap {
+        let bootstrap = with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
+            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
+        })
+        .await?;
+        assert!(bootstrap.setup_token.starts_with("fp_setup_"));
+    }
+
+    // Login with standard credentials
+    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login(TEST_EMAIL, TEST_PASSWORD).await
+    })
+    .await?;
+
+    // Create admin token (may already exist, but tokens are user-scoped so this is fine)
+    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
+        api.create_token(&session, "e2e-admin-token", vec!["admin:all".to_string()]).await
+    })
+    .await?;
+
+    assert!(token_resp.token.starts_with("fp_pat_"));
+    let admin_token = token_resp.token;
+
+    // Create shared team (idempotent)
+    let team = with_timeout(TestTimeout::default_with_label("Create shared team"), async {
+        api.create_team_idempotent(
+            &admin_token,
+            &team_name,
+            Some("Shared team for E2E tests requiring Envoy routing"),
+        )
+        .await
+    })
+    .await?;
+
+    // Create dataplane for shared team (idempotent)
+    let dataplane =
+        with_timeout(TestTimeout::default_with_label("Create shared dataplane"), async {
+            api.create_dataplane_idempotent(
+                &admin_token,
+                &CreateDataplaneRequest {
+                    team: team.name.clone(),
+                    name: format!("{}-dataplane", team.name),
+                    gateway_host: Some("127.0.0.1".to_string()),
+                    description: Some("Shared dataplane for E2E tests".to_string()),
+                },
+            )
+            .await
+        })
+        .await?;
+
+    // Return context with shared team in both A and B slots (for compatibility)
+    Ok(TestContext {
+        admin_session: session,
+        admin_token,
+        team_a_name: team.name.clone(),
+        team_a_id: team.id.clone(),
+        team_a_dev_token: None,
+        team_a_dataplane_id: dataplane.id.clone(),
+        // Use same team for B to simplify (tests needing isolation should use setup_dev_context)
+        team_b_name: team.name,
+        team_b_id: team.id,
+        team_b_dev_token: None,
+        team_b_dataplane_id: dataplane.id,
     })
 }
 

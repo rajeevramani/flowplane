@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, ApiClient},
+    api_client::{setup_envoy_context, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     resource_setup::{ClusterConfig, ResourceSetup, RouteConfig},
@@ -30,7 +30,8 @@ async fn test_100_setup_retry_infrastructure() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_100_setup_retry_infrastructure")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_100_setup_retry_infrastructure")
         .await
         .expect("Setup should succeed");
 
@@ -102,8 +103,9 @@ async fn test_101_trigger_retries() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_101_trigger_retries").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_101_trigger_retries").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -180,8 +182,10 @@ async fn test_102_verify_retry_stats() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx =
-        setup_dev_context(&api, "test_102_verify_retry_stats").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_102_verify_retry_stats")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();

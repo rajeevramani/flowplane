@@ -15,7 +15,10 @@
 use serde_json::json;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
 };
@@ -92,7 +95,9 @@ async fn test_101_setup_oauth2() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_101_setup_oauth2").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx =
+        setup_envoy_context(&api, "test_101_setup_oauth2").await.expect("Setup should succeed");
 
     // Get auth server endpoint (for OAuth2 token endpoint)
     let auth_endpoint = match harness.mocks().auth_endpoint() {
