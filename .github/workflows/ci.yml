@@ -123,6 +123,8 @@ jobs:
           export RUST_LOG=info
           export DATABASE_URL=sqlite:///tmp/flowplane_e2e_smoke.sqlite
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
+          # mTLS connection tests skip gracefully without FLOWPLANE_E2E_MTLS=1
+          # Certificate API tests (test_200-205) run using mock backend
           cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1
 
   e2e-full:
@@ -157,6 +159,9 @@ jobs:
           export RUST_LOG=info
           export DATABASE_URL=sqlite:///tmp/flowplane_e2e_full.sqlite
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
+          # Enable mTLS E2E tests - tests mTLS connection, SPIFFE team extraction, and team isolation
+          # Uses mock certificate backend (no Vault required)
+          export FLOWPLANE_E2E_MTLS=1
           cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1
       - name: Collect test artifacts
         if: ${{ always() }}
