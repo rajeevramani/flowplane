@@ -435,6 +435,10 @@ pub struct SessionInfoResponse {
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
     /// Control plane version
     #[schema(example = "0.0.11")]
     pub version: String,
@@ -530,6 +534,10 @@ pub async fn get_session_info_handler(
             }
         };
 
+    // Extract org info from scopes
+    let (org_id, org_name) =
+        crate::auth::session::extract_org_from_scopes(&session_info.token.scopes);
+
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
         user_id: user_id_str,
@@ -539,6 +547,8 @@ pub async fn get_session_info_handler(
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
+        org_id,
+        org_name,
         version: crate::VERSION.to_string(),
     };
 
@@ -651,6 +661,10 @@ pub struct LoginResponseBody {
     pub user_email: String,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
 }
 
 /// Response wrapper that includes both JSON body and Set-Cookie header
@@ -757,6 +771,9 @@ pub async fn login_handler(
         )
         .into();
 
+    // Extract org info from scopes
+    let (org_id, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
+
     let response_body = LoginResponseBody {
         session_id: session_response.session_id,
         csrf_token: session_response.csrf_token.clone(),
@@ -765,6 +782,8 @@ pub async fn login_handler(
         user_email: user.email,
         teams,
         scopes,
+        org_id,
+        org_name,
     };
 
     Ok(LoginResponse { body: response_body, cookie, csrf_token: session_response.csrf_token })

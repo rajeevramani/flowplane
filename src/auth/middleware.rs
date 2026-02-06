@@ -15,10 +15,12 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::api::error::ApiError;
 use crate::auth::auth_service::AuthService;
 use crate::auth::authorization::{
-    action_from_request, require_resource_access, resource_from_path,
+    action_from_request, extract_org_scopes, require_resource_access, resource_from_path,
 };
 use crate::auth::models::{AuthContext, AuthError};
 use crate::auth::session::{SessionService, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
+use crate::storage::repositories::{OrganizationRepository, SqlxOrganizationRepository};
+use crate::storage::DbPool;
 use tracing::{field, info_span, warn};
 
 pub type AuthServiceState = Arc<AuthService>;
@@ -66,7 +68,11 @@ fn extract_user_agent(request: &Request<Body>) -> Option<String> {
 /// Middleware entry point that authenticates requests using the configured [`AuthService`] and [`SessionService`].
 /// Supports both Bearer token and cookie-based authentication with CSRF validation.
 pub async fn authenticate(
-    State((auth_service, session_service)): State<(AuthServiceState, SessionServiceState)>,
+    State((auth_service, session_service, pool)): State<(
+        AuthServiceState,
+        SessionServiceState,
+        DbPool,
+    )>,
     jar: CookieJar,
     mut request: Request<Body>,
     next: Next,
@@ -257,7 +263,16 @@ pub async fn authenticate(
             let user_agent = extract_user_agent(&request);
 
             // Add request context to auth context
-            let context = context.with_request_context(client_ip, user_agent);
+            let mut context = context.with_request_context(client_ip, user_agent);
+
+            // Populate org context from scopes (Phase 3.6)
+            let org_scopes = extract_org_scopes(&context);
+            if let Some((org_name, _role)) = org_scopes.first() {
+                let org_repo = SqlxOrganizationRepository::new(pool);
+                if let Ok(Some(org)) = org_repo.get_organization_by_name(org_name).await {
+                    context = context.with_org(org.id, org.name);
+                }
+            }
 
             tracing::Span::current().record("auth.token_id", field::display(&context.token_id));
             request.extensions_mut().insert(context);

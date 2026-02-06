@@ -57,6 +57,10 @@ pub struct SessionResponse {
     pub teams: Vec<String>,
     /// Scopes granted to this session
     pub scopes: Vec<String>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
 }
 
 /// Session information for validation
@@ -93,6 +97,24 @@ pub enum SameSitePolicy {
     Strict,
     Lax,
     None,
+}
+
+/// Extract the first organization name and derive org_id placeholder from org-scoped permissions.
+///
+/// Parses scopes matching `org:{name}:admin|member` and returns the first org found.
+/// Since users belong to a single org, the first match is sufficient.
+pub fn extract_org_from_scopes(scopes: &[String]) -> (Option<String>, Option<String>) {
+    for scope in scopes {
+        if scope.starts_with("org:") {
+            let parts: Vec<&str> = scope.split(':').collect();
+            if parts.len() == 3 && (parts[2] == "admin" || parts[2] == "member") {
+                // Return org_name in both fields for now; org_id will be resolved
+                // by middleware from the user's org_id field in the database
+                return (None, Some(parts[1].to_string()));
+            }
+        }
+    }
+    (None, None)
 }
 
 /// Extract team names from a list of scopes
@@ -264,6 +286,9 @@ impl SessionService {
             "Session created from setup token"
         );
 
+        // Extract org info from scopes
+        let (org_id, org_name) = extract_org_from_scopes(&setup_token_obj.scopes);
+
         Ok(SessionResponse {
             session_id,
             session_token: session_token_value,
@@ -271,6 +296,8 @@ impl SessionService {
             expires_at,
             teams,
             scopes: setup_token_obj.scopes,
+            org_id,
+            org_name,
         })
     }
 
@@ -365,6 +392,9 @@ impl SessionService {
             "Session created from user login"
         );
 
+        // Extract org info from scopes
+        let (org_id, org_name) = extract_org_from_scopes(&scopes);
+
         Ok(SessionResponse {
             session_id,
             session_token: session_token_value,
@@ -372,6 +402,8 @@ impl SessionService {
             expires_at,
             teams,
             scopes,
+            org_id,
+            org_name,
         })
     }
 

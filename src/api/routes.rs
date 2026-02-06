@@ -293,8 +293,8 @@ pub fn build_router_with_registry(
             Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
         let session_service = Arc::new(SessionService::new(token_repo, audit_repository));
 
-        // Create a tuple state with both services
-        let auth_state = (auth_service, session_service);
+        // Create a tuple state with auth services + pool for org context resolution
+        let auth_state = (auth_service, session_service, pool);
         middleware::from_fn_with_state(auth_state, authenticate)
     };
 

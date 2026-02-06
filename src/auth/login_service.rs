@@ -148,11 +148,8 @@ impl LoginService {
         let memberships = self.membership_repository.list_user_memberships(&user.id).await?;
 
         // Fetch org memberships
-        let org_memberships = self
-            .org_membership_repository
-            .list_user_memberships(&user.id)
-            .await
-            .unwrap_or_default();
+        let org_memberships =
+            self.org_membership_repository.list_user_memberships(&user.id).await?;
 
         // Compute scopes from team + org memberships
         let scopes = compute_scopes_from_memberships(&user, &memberships, &org_memberships);

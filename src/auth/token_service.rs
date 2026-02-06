@@ -404,6 +404,19 @@ impl TokenService {
             }
         }
 
+        // Ensure all org scopes belong to the same organization (single-org-per-user)
+        let org_names: std::collections::HashSet<String> = requested_scopes
+            .iter()
+            .filter_map(|s| parse_org_from_scope(s).map(|(name, _)| name))
+            .collect();
+
+        if org_names.len() > 1 {
+            return Err(Error::auth(
+                "Cannot create token with scopes from multiple organizations",
+                AuthErrorType::InsufficientPermissions,
+            ));
+        }
+
         Ok(())
     }
 
