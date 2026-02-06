@@ -1,30 +1,28 @@
 //! # Database Connection Pool Management
 //!
 //! Provides database connection pool creation and management utilities.
+//! Uses PostgreSQL as the sole database backend.
 
 use crate::config::DatabaseConfig;
 use crate::errors::{FlowplaneError, Result};
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode},
-    Pool, Sqlite,
-};
-use std::{str::FromStr, time::Duration};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::PgPool;
+use std::str::FromStr;
 
-/// Type alias for the database connection pool
-pub type DbPool = Pool<Sqlite>;
+/// Type alias for the database connection pool.
+/// Uses PostgreSQL as the sole database backend.
+pub type DbPool = PgPool;
 
-const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Create a database connection pool with the specified configuration
-pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
+/// Create a database connection pool with the specified configuration.
+pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
     // Validate configuration
     validate_config(config)?;
 
-    let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
+    let pool_options = PgPoolOptions::new()
         .max_connections(config.max_connections)
         .min_connections(config.min_connections)
         .acquire_timeout(config.connect_timeout())
-        .test_before_acquire(true); // Test connections before use
+        .test_before_acquire(true);
 
     let pool_options = if let Some(idle_timeout) = config.idle_timeout() {
         pool_options.idle_timeout(idle_timeout)
@@ -32,41 +30,26 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<Pool<Sqlite>> {
         pool_options
     };
 
-    let pool = if config.is_sqlite() {
-        let connect_options = SqliteConnectOptions::from_str(&config.url)
-            .map_err(|e| FlowplaneError::Database {
-                source: e,
-                context: format!("Invalid SQLite connection string: {}", sanitize_url(&config.url)),
-            })?
-            .create_if_missing(true)
-            .busy_timeout(SQLITE_BUSY_TIMEOUT)
-            .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true); // Enable foreign key constraints
+    let connect_options =
+        PgConnectOptions::from_str(&config.url).map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Invalid PostgreSQL connection string: {}", sanitize_url(&config.url)),
+        })?;
 
-        pool_options.connect_with(connect_options).await.map_err(|e| {
-            tracing::error!(
-                error = %e,
-                url = %config.url,
-                busy_timeout_ms = SQLITE_BUSY_TIMEOUT.as_millis(),
-                "Failed to create SQLite database pool"
-            );
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
-            }
-        })?
-    } else {
-        pool_options.connect(&config.url).await.map_err(|e| {
-            tracing::error!(error = %e, url = %config.url, "Failed to create database pool");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
-            }
-        })?
-    };
+    let pool = pool_options.connect_with(connect_options).await.map_err(|e| {
+        tracing::error!(
+            error = %e,
+            url = %sanitize_url(&config.url),
+            "Failed to create PostgreSQL database pool"
+        );
+        FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to connect to database: {}", sanitize_url(&config.url)),
+        }
+    })?;
 
     tracing::info!(
-        database_type = if config.is_sqlite() { "sqlite" } else { "postgresql" },
+        database_type = "postgresql",
         max_connections = config.max_connections,
         min_connections = config.min_connections,
         connect_timeout_ms = config.connect_timeout().as_millis(),
@@ -99,10 +82,10 @@ fn validate_config(config: &DatabaseConfig) -> Result<()> {
         return Err(FlowplaneError::validation("database URL cannot be empty"));
     }
 
-    // Validate URL format
-    if !config.url.starts_with("sqlite://") && !config.url.starts_with("postgresql://") {
+    // Validate URL format - PostgreSQL only
+    if !config.url.starts_with("postgresql://") && !config.url.starts_with("postgres://") {
         return Err(FlowplaneError::validation(
-            "database URL must start with 'sqlite://' or 'postgresql://'",
+            "database URL must start with 'postgresql://' or 'postgres://'",
         ));
     }
 
@@ -129,7 +112,7 @@ fn sanitize_url(url: &str) -> String {
 }
 
 /// Get pool statistics for monitoring
-pub fn get_pool_stats(pool: &Pool<Sqlite>) -> PoolStats {
+pub fn get_pool_stats(pool: &PgPool) -> PoolStats {
     PoolStats { size: pool.size(), idle: pool.num_idle() }
 }
 
@@ -161,7 +144,19 @@ mod tests {
     #[test]
     fn test_validate_config_valid() {
         let config = DatabaseConfig {
-            url: "sqlite://./test.db".to_string(),
+            url: "postgresql://localhost/test".to_string(),
+            max_connections: 10,
+            min_connections: 2,
+            ..Default::default()
+        };
+
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_postgres_scheme() {
+        let config = DatabaseConfig {
+            url: "postgres://localhost/test".to_string(),
             max_connections: 10,
             min_connections: 2,
             ..Default::default()
@@ -173,7 +168,7 @@ mod tests {
     #[test]
     fn test_validate_config_invalid_max_connections() {
         let config = DatabaseConfig {
-            url: "sqlite://./test.db".to_string(),
+            url: "postgresql://localhost/test".to_string(),
             max_connections: 0,
             ..Default::default()
         };
@@ -184,7 +179,7 @@ mod tests {
     #[test]
     fn test_validate_config_invalid_min_max() {
         let config = DatabaseConfig {
-            url: "sqlite://./test.db".to_string(),
+            url: "postgresql://localhost/test".to_string(),
             max_connections: 5,
             min_connections: 10,
             ..Default::default()
@@ -202,6 +197,13 @@ mod tests {
 
     #[test]
     fn test_validate_config_invalid_url_scheme() {
+        let config = DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
+
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_mysql_rejected() {
         let config =
             DatabaseConfig { url: "mysql://localhost/test".to_string(), ..Default::default() };
 
@@ -215,7 +217,7 @@ mod tests {
             "postgresql://***:***@localhost/db"
         );
 
-        assert_eq!(sanitize_url("sqlite://./test.db"), "sqlite://./test.db");
+        assert_eq!(sanitize_url("postgresql://localhost/test"), "postgresql://localhost/test");
 
         assert_eq!(sanitize_url("invalid-url"), "invalid-url");
     }
@@ -231,32 +233,5 @@ mod tests {
 
         assert_eq!(empty_stats.active(), 0);
         assert!(!empty_stats.is_healthy());
-    }
-
-    #[tokio::test]
-    async fn test_create_pool_success() {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 3,
-            min_connections: 1,
-            auto_migrate: false,
-            ..Default::default()
-        };
-
-        let pool = create_pool(&config).await.unwrap();
-        let stats = get_pool_stats(&pool);
-        assert!(stats.is_healthy());
-    }
-
-    #[tokio::test]
-    async fn test_create_pool_invalid_config() {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 0, // Invalid
-            ..Default::default()
-        };
-
-        let result = create_pool(&config).await;
-        assert!(result.is_err());
     }
 }

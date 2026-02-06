@@ -6,9 +6,9 @@ CREATE TABLE IF NOT EXISTS clusters (
     name TEXT NOT NULL UNIQUE,
     service_name TEXT NOT NULL,
     configuration TEXT NOT NULL,  -- JSON serialized cluster config
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Indexing for performance
     UNIQUE(name, version)

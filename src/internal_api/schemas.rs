@@ -206,44 +206,40 @@ mod tests {
     use crate::config::SimpleXdsConfig;
     use crate::storage::repositories::aggregated_schema::CreateAggregatedSchemaRequest;
     use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
-    use crate::storage::{create_pool, DatabaseConfig, DbPool};
-
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
+    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::DbPool;
 
     struct TestSetup {
         state: Arc<XdsState>,
         pool: DbPool,
+        _db: TestDatabase,
     }
 
     async fn setup_state() -> TestSetup {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Run migrations to create aggregated_api_schemas table
-        sqlx::migrate!("./migrations").run(&pool).await.expect("migrations");
+        let test_db = TestDatabase::new("internal_api_schemas").await;
+        let pool = test_db.pool.clone();
 
         TestSetup {
             state: Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone())),
             pool,
+            _db: test_db,
         }
     }
 
     async fn create_team(pool: &DbPool, name: &str) {
         let repo = SqlxTeamRepository::new(pool.clone());
-        repo.create_team(CreateTeamRequest {
-            name: name.to_string(),
-            display_name: format!("Test {}", name),
-            description: None,
-            owner_user_id: None,
-            settings: None,
-        })
-        .await
-        .expect("create team");
+        // Use get_or_create pattern to handle seed data
+        if repo.get_team_by_name(name).await.ok().flatten().is_none() {
+            repo.create_team(CreateTeamRequest {
+                name: name.to_string(),
+                display_name: format!("Test {}", name),
+                description: None,
+                owner_user_id: None,
+                settings: None,
+            })
+            .await
+            .expect("create team");
+        }
     }
 
     async fn create_test_schema(

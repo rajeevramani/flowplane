@@ -254,10 +254,10 @@ mod tests {
     // Use test_utils::create_test_state() which runs full migrations
     // and test_utils::admin_auth_context() for admin permissions
 
-    async fn setup_state() -> ApiState {
+    async fn setup_state() -> (crate::storage::test_helpers::TestDatabase, ApiState) {
         use crate::api::test_utils::TestTeamBuilder;
 
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create commonly used teams for tests
         let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
@@ -268,7 +268,7 @@ mod tests {
             TestTeamBuilder::new(team_name).insert(&pool).await;
         }
 
-        state
+        (_db, state)
     }
 
     fn sample_request() -> CreateClusterBody {
@@ -315,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_applies_defaults_and_persists() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
         let response = create_cluster_handler(
@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_validates_missing_endpoints() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
         body.endpoints.clear();
 
@@ -357,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_clusters_returns_created_cluster() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
         let (_status, Json(created)) = create_cluster_handler(
@@ -378,13 +378,13 @@ mod tests {
         .expect("list clusters");
 
         let clusters = response.0;
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].name, "api-cluster");
+        // Seed data adds global clusters; verify our created cluster is present
+        assert!(clusters.iter().any(|c| c.name == "api-cluster"));
     }
 
     #[tokio::test]
     async fn get_cluster_returns_cluster_details() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
         let (_status, Json(created)) = create_cluster_handler(
@@ -411,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_cluster_persists_changes() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
 
         let (_status, Json(created)) = create_cluster_handler(
@@ -446,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cluster_removes_record() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
         let (_status, Json(created)) = create_cluster_handler(
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_clusters_filters_by_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
         insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
@@ -536,7 +536,7 @@ mod tests {
         .expect("list clusters for team-a");
 
         let clusters = response.0;
-        assert_eq!(clusters.len(), 2);
+        // Should see team-a-cluster + global clusters (seed + test-created)
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-a-cluster"));
         assert!(names.contains(&"global-cluster"));
@@ -553,13 +553,12 @@ mod tests {
         .expect("list clusters for team-b");
 
         let clusters = response.0;
-        assert_eq!(clusters.len(), 2);
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-b-cluster"));
         assert!(names.contains(&"global-cluster"));
         assert!(!names.contains(&"team-a-cluster"));
 
-        // Admin should see all clusters
+        // Admin should see all clusters (test-created + seed)
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(admin_auth_context()),
@@ -569,12 +568,15 @@ mod tests {
         .expect("list clusters for admin");
 
         let clusters = response.0;
-        assert_eq!(clusters.len(), 3);
+        let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"team-a-cluster"));
+        assert!(names.contains(&"team-b-cluster"));
+        assert!(names.contains(&"global-cluster"));
     }
 
     #[tokio::test]
     async fn get_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
         insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
@@ -613,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_cluster_allows_global_cluster_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a global cluster (no team)
         insert_cluster_with_team(&state, "global-cluster", None)
@@ -642,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
         insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
@@ -686,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
         insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
@@ -731,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn team_scoped_user_creates_team_scoped_cluster() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
         body.team = "team-a".to_string(); // Explicitly set team to match user's scope
 
@@ -760,7 +762,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_user_creates_team_owned_cluster() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
         body.team = "platform".to_string(); // Admin explicitly specifies team
 

@@ -13,7 +13,8 @@ use crate::internal_api::{
     ListVirtualHostsRequest, RouteOperations, UpdateRouteRequest, UpdateVirtualHostRequest,
     VirtualHostOperations,
 };
-use crate::storage::{create_pool, run_migrations, DatabaseConfig, RouteConfigData};
+use crate::storage::test_helpers::TestDatabase;
+use crate::storage::RouteConfigData;
 use crate::xds::XdsState;
 use serde_json::json;
 use std::sync::Arc;
@@ -22,18 +23,11 @@ use std::sync::Arc;
 // Test Setup Helpers
 // =============================================================================
 
-fn create_test_config() -> DatabaseConfig {
-    DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: false,
-        ..Default::default()
-    }
-}
-
-async fn setup_state_with_migrations() -> Arc<XdsState> {
-    let pool = create_pool(&create_test_config()).await.expect("Failed to create pool");
-    run_migrations(&pool).await.expect("Failed to run migrations");
-    Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
+    let test_db = TestDatabase::new("internal_api_route_hierarchy").await;
+    let pool = test_db.pool.clone();
+    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+    (test_db, state)
 }
 
 /// Helper to create a route config with cluster dependency
@@ -103,7 +97,7 @@ fn sample_route_action() -> serde_json::Value {
 
 #[tokio::test]
 async fn test_virtual_host_create_via_operations() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -130,7 +124,7 @@ async fn test_virtual_host_create_via_operations() {
 
 #[tokio::test]
 async fn test_virtual_host_list_by_route_config() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -172,7 +166,7 @@ async fn test_virtual_host_list_by_route_config() {
 
 #[tokio::test]
 async fn test_virtual_host_get_by_route_config_and_name() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -198,7 +192,7 @@ async fn test_virtual_host_get_by_route_config_and_name() {
 
 #[tokio::test]
 async fn test_virtual_host_update_domains_and_rule_order() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -228,7 +222,7 @@ async fn test_virtual_host_update_domains_and_rule_order() {
 
 #[tokio::test]
 async fn test_virtual_host_delete() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -257,7 +251,7 @@ async fn test_virtual_host_delete() {
 
 #[tokio::test]
 async fn test_route_create_via_operations() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -288,7 +282,7 @@ async fn test_route_create_via_operations() {
 
 #[tokio::test]
 async fn test_route_list_by_route_config() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -328,7 +322,7 @@ async fn test_route_list_by_route_config() {
 
 #[tokio::test]
 async fn test_route_list_by_virtual_host() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -369,7 +363,7 @@ async fn test_route_list_by_virtual_host() {
 
 #[tokio::test]
 async fn test_route_get_by_hierarchy() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -399,7 +393,7 @@ async fn test_route_get_by_hierarchy() {
 
 #[tokio::test]
 async fn test_route_update_path_match_type_action() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -438,7 +432,7 @@ async fn test_route_update_path_match_type_action() {
 
 #[tokio::test]
 async fn test_route_delete() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -476,7 +470,7 @@ async fn test_route_delete() {
 #[tokio::test]
 #[ignore]
 async fn test_virtual_host_cross_team_access_returns_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
 
     // Setup: Create route config for team-a
@@ -510,7 +504,7 @@ async fn test_virtual_host_cross_team_access_returns_not_found() {
 #[tokio::test]
 #[ignore]
 async fn test_route_cross_team_access_returns_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
 
     // Setup: Create route config for team-a
@@ -548,7 +542,7 @@ async fn test_route_cross_team_access_returns_not_found() {
 #[tokio::test]
 #[ignore]
 async fn test_virtual_host_team_scoped_list_only_sees_own_resources() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let admin_auth = InternalAuthContext::admin();
 
@@ -582,7 +576,7 @@ async fn test_virtual_host_team_scoped_list_only_sees_own_resources() {
 #[tokio::test]
 #[ignore]
 async fn test_admin_can_access_all_resources() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
     let admin_auth = InternalAuthContext::admin();
 
@@ -614,7 +608,7 @@ async fn test_admin_can_access_all_resources() {
 
 #[tokio::test]
 async fn test_deleting_route_config_cascades_to_virtual_hosts() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 
@@ -651,7 +645,7 @@ async fn test_deleting_route_config_cascades_to_virtual_hosts() {
 
 #[tokio::test]
 async fn test_deleting_virtual_host_cascades_to_routes() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
     let route_ops = RouteOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
@@ -715,7 +709,7 @@ async fn test_deleting_virtual_host_cascades_to_routes() {
 #[tokio::test]
 #[ignore]
 async fn test_virtual_host_filter_attachments_cleaned_up_on_delete() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
     let auth = InternalAuthContext::admin();
 

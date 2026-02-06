@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for listener_route_configs.
@@ -16,7 +16,7 @@ use tracing::instrument;
 struct ListenerRouteConfigRow {
     pub listener_id: String,
     pub route_config_id: String,
-    pub route_order: i32,
+    pub route_order: i64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -25,7 +25,7 @@ struct ListenerRouteConfigRow {
 pub struct ListenerRouteConfigData {
     pub listener_id: ListenerId,
     pub route_config_id: RouteConfigId,
-    pub route_order: i32,
+    pub route_order: i64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -58,7 +58,7 @@ impl ListenerRouteConfigRepository {
         &self,
         listener_id: &ListenerId,
         route_config_id: &RouteConfigId,
-        order: i32,
+        order: i64,
     ) -> Result<ListenerRouteConfigData> {
         let now = Utc::now();
 
@@ -163,7 +163,7 @@ impl ListenerRouteConfigRepository {
         &self,
         listener_id: &ListenerId,
     ) -> Result<Vec<ListenerRouteConfigData>> {
-        let rows = sqlx::query_as::<Sqlite, ListenerRouteConfigRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRouteConfigRow>(
             "SELECT listener_id, route_config_id, route_order, created_at \
              FROM listener_route_configs WHERE listener_id = $1 ORDER BY route_order ASC"
         )
@@ -210,7 +210,7 @@ impl ListenerRouteConfigRepository {
         &self,
         route_config_id: &RouteConfigId,
     ) -> Result<Vec<ListenerRouteConfigData>> {
-        let rows = sqlx::query_as::<Sqlite, ListenerRouteConfigRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRouteConfigRow>(
             "SELECT listener_id, route_config_id, route_order, created_at \
              FROM listener_route_configs WHERE route_config_id = $1"
         )

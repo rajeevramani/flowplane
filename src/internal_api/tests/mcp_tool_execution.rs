@@ -17,7 +17,8 @@ use crate::mcp::tools::virtual_hosts::{
     execute_create_virtual_host, execute_delete_virtual_host, execute_get_virtual_host,
     execute_list_virtual_hosts, execute_update_virtual_host,
 };
-use crate::storage::{create_pool, run_migrations, DatabaseConfig, RouteConfigData};
+use crate::storage::test_helpers::TestDatabase;
+use crate::storage::RouteConfigData;
 use crate::xds::XdsState;
 use serde_json::json;
 use std::sync::Arc;
@@ -26,18 +27,11 @@ use std::sync::Arc;
 // Test Setup Helpers
 // =============================================================================
 
-fn create_test_config() -> DatabaseConfig {
-    DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: false,
-        ..Default::default()
-    }
-}
-
-async fn setup_state_with_migrations() -> Arc<XdsState> {
-    let pool = create_pool(&create_test_config()).await.expect("Failed to create pool");
-    run_migrations(&pool).await.expect("Failed to run migrations");
-    Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
+    let test_db = TestDatabase::new("internal_api_mcp_tool_execution").await;
+    let pool = test_db.pool.clone();
+    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+    (test_db, state)
 }
 
 /// Helper to create a route config with cluster dependency
@@ -97,7 +91,7 @@ async fn create_test_virtual_host(
 
 #[tokio::test]
 async fn test_mcp_list_virtual_hosts_all() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route configs and virtual hosts
     let rc1 = create_test_route_config(&state, "routes-1", Some("team-a")).await;
@@ -126,7 +120,7 @@ async fn test_mcp_list_virtual_hosts_all() {
 
 #[tokio::test]
 async fn test_mcp_list_virtual_hosts_by_route_config() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc1 = create_test_route_config(&state, "routes-1", Some("team-a")).await;
@@ -160,7 +154,7 @@ async fn test_mcp_list_virtual_hosts_by_route_config() {
 
 #[tokio::test]
 async fn test_mcp_list_virtual_hosts_with_pagination() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create multiple virtual hosts
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -202,7 +196,7 @@ async fn test_mcp_list_virtual_hosts_with_pagination() {
 
 #[tokio::test]
 async fn test_mcp_get_virtual_host_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -235,7 +229,7 @@ async fn test_mcp_get_virtual_host_success() {
 
 #[tokio::test]
 async fn test_mcp_get_virtual_host_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -252,7 +246,7 @@ async fn test_mcp_get_virtual_host_not_found() {
 
 #[tokio::test]
 async fn test_mcp_get_virtual_host_missing_params() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing route_config parameter
     let args = json!({
@@ -277,7 +271,7 @@ async fn test_mcp_get_virtual_host_missing_params() {
 
 #[tokio::test]
 async fn test_mcp_create_virtual_host_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -310,7 +304,7 @@ async fn test_mcp_create_virtual_host_success() {
 
 #[tokio::test]
 async fn test_mcp_create_virtual_host_missing_required_params() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing route_config
     let args = json!({
@@ -339,7 +333,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
 
 #[tokio::test]
 async fn test_mcp_create_virtual_host_invalid_domains() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -378,7 +372,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
 
 #[tokio::test]
 async fn test_mcp_update_virtual_host_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -411,7 +405,7 @@ async fn test_mcp_update_virtual_host_success() {
 
 #[tokio::test]
 async fn test_mcp_update_virtual_host_partial_update() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -441,7 +435,7 @@ async fn test_mcp_update_virtual_host_partial_update() {
 
 #[tokio::test]
 async fn test_mcp_update_virtual_host_no_fields_provided() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -464,7 +458,7 @@ async fn test_mcp_update_virtual_host_no_fields_provided() {
 
 #[tokio::test]
 async fn test_mcp_delete_virtual_host_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -497,7 +491,7 @@ async fn test_mcp_delete_virtual_host_success() {
 
 #[tokio::test]
 async fn test_mcp_delete_virtual_host_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -522,7 +516,7 @@ async fn test_mcp_delete_virtual_host_not_found() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_virtual_host_cross_team_access() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route config for team-a
     let rc = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
@@ -542,7 +536,7 @@ async fn test_mcp_virtual_host_cross_team_access() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_virtual_host_create_wrong_team() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route config for team-a
     create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
@@ -573,7 +567,7 @@ fn sample_route_action() -> serde_json::Value {
 
 #[tokio::test]
 async fn test_mcp_get_route_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route config, virtual host, and route
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -619,7 +613,7 @@ async fn test_mcp_get_route_success() {
 
 #[tokio::test]
 async fn test_mcp_get_route_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -638,7 +632,7 @@ async fn test_mcp_get_route_not_found() {
 
 #[tokio::test]
 async fn test_mcp_create_route_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -673,7 +667,7 @@ async fn test_mcp_create_route_success() {
 
 #[tokio::test]
 async fn test_mcp_create_route_missing_params() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing route_config
     let args = json!({
@@ -711,7 +705,7 @@ async fn test_mcp_create_route_missing_params() {
 
 #[tokio::test]
 async fn test_mcp_update_route_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route config, virtual host, and route
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -758,7 +752,7 @@ async fn test_mcp_update_route_success() {
 
 #[tokio::test]
 async fn test_mcp_update_route_partial() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -802,7 +796,7 @@ async fn test_mcp_update_route_partial() {
 
 #[tokio::test]
 async fn test_mcp_delete_route_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     let rc = create_test_route_config(&state, "routes", Some("team-a")).await;
@@ -849,7 +843,7 @@ async fn test_mcp_delete_route_success() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_route_cross_team_access() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create route for team-a
     let rc = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;

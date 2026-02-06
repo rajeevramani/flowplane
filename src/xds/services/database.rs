@@ -725,8 +725,7 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
         }
 
         // Track cluster state using count + last modification timestamp
-        // This avoids false positives from PRAGMA data_version which can change
-        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        // This avoids false positives from polling-based approaches
         let mut last_cluster_state: Option<(i64, Option<String>)> = None;
 
         loop {
@@ -778,8 +777,7 @@ fn spawn_route_config_watcher(state: Arc<XdsState>, repository: RouteConfigRepos
         }
 
         // Track route config state using count + last modification timestamp
-        // This avoids false positives from PRAGMA data_version which can change
-        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        // This avoids false positives from polling-based approaches
         let mut last_route_config_state: Option<(i64, Option<String>)> = None;
 
         loop {
@@ -831,8 +829,7 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
         }
 
         // Track listener state using count + last modification timestamp
-        // This avoids false positives from PRAGMA data_version which can change
-        // due to SQLite internal operations (WAL checkpoints, vacuum, etc.)
+        // This avoids false positives from polling-based approaches
         let mut last_listener_state: Option<(i64, Option<String>)> = None;
 
         loop {

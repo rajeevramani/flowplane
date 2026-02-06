@@ -4,7 +4,7 @@
 -- Stores consensus schemas aggregated from multiple inferred_schemas observations
 -- This represents the final, production-ready API documentation per endpoint
 CREATE TABLE IF NOT EXISTS aggregated_api_schemas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     team TEXT NOT NULL,
 
     -- API endpoint identification
@@ -12,23 +12,23 @@ CREATE TABLE IF NOT EXISTS aggregated_api_schemas (
     http_method TEXT NOT NULL,    -- GET, POST, PUT, DELETE, etc.
 
     -- Versioning for schema evolution tracking
-    version INTEGER NOT NULL DEFAULT 1,
-    previous_version_id INTEGER,  -- NULL for first version
+    version BIGINT NOT NULL DEFAULT 1,
+    previous_version_id BIGINT,  -- NULL for first version
 
     -- Aggregated schemas (JSON Schema Draft 2020-12 format)
     request_schema TEXT,          -- NULL if no request body
     response_schemas TEXT,        -- JSON object mapping status codes to schemas: {"200": {...}, "404": {...}}
 
     -- Aggregation metadata
-    sample_count INTEGER NOT NULL DEFAULT 0,        -- Total number of observations aggregated
-    confidence_score REAL NOT NULL DEFAULT 0.0,     -- Confidence score (0.0 to 1.0)
+    sample_count BIGINT NOT NULL DEFAULT 0,        -- Total number of observations aggregated
+    confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0.0,     -- Confidence score (0.0 to 1.0)
     breaking_changes TEXT,                          -- JSON array of breaking change objects
 
     -- Timestamps
-    first_observed DATETIME NOT NULL,               -- Earliest observation timestamp
-    last_observed DATETIME NOT NULL,                -- Latest observation timestamp
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    first_observed TIMESTAMPTZ NOT NULL,               -- Earliest observation timestamp
+    last_observed TIMESTAMPTZ NOT NULL,                -- Latest observation timestamp
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign key to track schema evolution
     FOREIGN KEY (previous_version_id) REFERENCES aggregated_api_schemas(id),

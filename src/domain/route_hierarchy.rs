@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::encode::IsNull;
 use sqlx::error::BoxDynError;
-use sqlx::{Decode, Encode, Sqlite, Type};
+use sqlx::{Decode, Encode, Postgres, Type};
 use std::fmt;
 use std::str::FromStr;
 use utoipa::ToSchema;
@@ -62,24 +62,24 @@ impl FromStr for AttachmentLevel {
 }
 
 // SQLx trait implementations for database compatibility
-impl Type<Sqlite> for AttachmentLevel {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as Type<Sqlite>>::type_info()
+impl Type<Postgres> for AttachmentLevel {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
     }
 }
 
-impl<'q> Encode<'q, Sqlite> for AttachmentLevel {
+impl<'q> Encode<'q, Postgres> for AttachmentLevel {
     fn encode_by_ref(
         &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
     ) -> Result<IsNull, BoxDynError> {
-        <&str as Encode<'q, Sqlite>>::encode_by_ref(&self.as_str(), buf)
+        <&str as Encode<'q, Postgres>>::encode_by_ref(&self.as_str(), buf)
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for AttachmentLevel {
-    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
-        let s = <String as Decode<'r, Sqlite>>::decode(value)?;
+impl<'r> Decode<'r, Postgres> for AttachmentLevel {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <String as Decode<'r, Postgres>>::decode(value)?;
         AttachmentLevel::from_str(&s).map_err(|e| e.into())
     }
 }
@@ -161,24 +161,24 @@ impl FromStr for RouteMatchType {
 }
 
 // SQLx trait implementations for database compatibility
-impl Type<Sqlite> for RouteMatchType {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as Type<Sqlite>>::type_info()
+impl Type<Postgres> for RouteMatchType {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
     }
 }
 
-impl<'q> Encode<'q, Sqlite> for RouteMatchType {
+impl<'q> Encode<'q, Postgres> for RouteMatchType {
     fn encode_by_ref(
         &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
     ) -> Result<IsNull, BoxDynError> {
-        <&str as Encode<'q, Sqlite>>::encode_by_ref(&self.as_str(), buf)
+        <&str as Encode<'q, Postgres>>::encode_by_ref(&self.as_str(), buf)
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for RouteMatchType {
-    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
-        let s = <String as Decode<'r, Sqlite>>::decode(value)?;
+impl<'r> Decode<'r, Postgres> for RouteMatchType {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <String as Decode<'r, Postgres>>::decode(value)?;
         RouteMatchType::from_str(&s).map_err(|e| e.into())
     }
 }

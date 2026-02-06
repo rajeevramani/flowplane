@@ -5,11 +5,11 @@ CREATE TABLE filters (
     filter_type TEXT NOT NULL CHECK (filter_type IN ('header_mutation', 'jwt_auth', 'cors', 'rate_limit', 'ext_authz')),
     description TEXT,
     configuration TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1,
+    version BIGINT NOT NULL DEFAULT 1,
     source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'ui', 'openapi_import')),
     team TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(team, name)

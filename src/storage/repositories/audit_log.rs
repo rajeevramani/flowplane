@@ -7,7 +7,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 use utoipa::ToSchema;
 
@@ -232,7 +232,7 @@ impl AuditLogRepository {
         let limit = limit.unwrap_or(50).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(
+        let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT id, resource_type, resource_id, resource_name, action, \
              old_configuration, new_configuration, user_id, client_ip, user_agent, created_at \
              FROM audit_log WHERE 1=1",
@@ -287,8 +287,9 @@ impl AuditLogRepository {
     /// This is useful for pagination to know the total number of pages.
     #[instrument(skip(self, filters), name = "db_count_audit_logs")]
     pub async fn count_logs(&self, filters: Option<AuditLogFilters>) -> Result<i64> {
-        let mut query_builder =
-            sqlx::QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as count FROM audit_log WHERE 1=1");
+        let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT COUNT(*) as count FROM audit_log WHERE 1=1",
+        );
 
         // Apply filters (same as query_logs)
         if let Some(filters) = filters {

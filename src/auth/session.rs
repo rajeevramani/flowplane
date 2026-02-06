@@ -593,29 +593,21 @@ impl SessionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_pool() -> crate::storage::DbPool {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        };
-        create_pool(&config).await.unwrap()
-    }
-
-    async fn create_test_service() -> SessionService {
-        let pool = create_test_pool().await;
+    async fn create_test_service() -> (TestDatabase, SessionService) {
+        let test_db = TestDatabase::new("auth_session").await;
+        let pool = test_db.pool.clone();
         let token_repo =
             Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
         let audit_repo = Arc::new(AuditLogRepository::new(pool));
-        SessionService::new(token_repo, audit_repo)
+        let service = SessionService::new(token_repo, audit_repo);
+        (test_db, service)
     }
 
     #[tokio::test]
     async fn test_generate_csrf_token() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token1 = service.generate_csrf_token().unwrap();
         let token2 = service.generate_csrf_token().unwrap();
@@ -635,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_teams_from_scopes() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let scopes = vec![
             "team:acme:*".to_string(),
@@ -654,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_session_cookie() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let expires_at = Utc::now() + Duration::hours(24);
         let cookie = service.build_session_cookie("fp_session_test.secret", expires_at, true);
@@ -670,7 +662,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_setup_token_valid() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token = "fp_setup_12345.abcdef";
         let result = service.parse_setup_token(token);
@@ -683,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_setup_token_invalid_format() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         // Missing dot separator
         let result = service.parse_setup_token("fp_setup_12345abcdef");
@@ -700,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_session_token_valid() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token = "fp_session_12345.abcdef";
         let result = service.parse_session_token(token);
@@ -713,7 +705,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_and_verify_secret() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let secret = "test_secret_123";
         let hashed = service.hash_secret(secret).unwrap();

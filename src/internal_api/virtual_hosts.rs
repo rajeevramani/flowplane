@@ -65,7 +65,10 @@ impl VirtualHostOperations {
 
         let created = repository.create(create_request).await.map_err(|e| {
             let err_str = e.to_string();
-            if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+            if err_str.contains("already exists")
+                || err_str.contains("UNIQUE constraint")
+                || err_str.contains("unique constraint")
+            {
                 InternalError::already_exists(
                     "Virtual host",
                     format!("{}:{}", req.route_config, req.name),
@@ -330,63 +333,13 @@ impl VirtualHostOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use sqlx::Executor;
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create route_configs table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create route_configs table");
-
-        // Create virtual_hosts table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS virtual_hosts (
-                id TEXT PRIMARY KEY,
-                route_config_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                domains TEXT NOT NULL,
-                rule_order INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(route_config_id, name),
-                FOREIGN KEY (route_config_id) REFERENCES route_configs(id) ON DELETE CASCADE
-            )
-        "#,
-        )
-        .await
-        .expect("create virtual_hosts table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_virtual_hosts").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     async fn create_test_route_config(
@@ -412,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_virtual_host_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -438,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_virtual_host_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -458,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_virtual_host_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -479,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_virtual_host() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -507,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_virtual_host_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -520,7 +473,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_virtual_host_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
 
         // Create route config for team-a
@@ -547,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_virtual_hosts_by_route_config() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -581,7 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_virtual_host() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -612,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_virtual_host() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 

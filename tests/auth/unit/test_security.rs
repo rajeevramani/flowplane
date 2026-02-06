@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL (via Testcontainers)
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use flowplane::auth::token_service::TokenService;
 use flowplane::auth::validation::CreateTokenRequest;
 use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
@@ -8,10 +12,11 @@ use tokio::time::Instant;
 #[allow(clippy::duplicate_mod)]
 #[path = "../test_schema.rs"]
 mod test_schema;
-use test_schema::create_test_pool;
+use test_schema::{create_test_pool, TestDatabase};
 
-async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
-    let pool = create_test_pool().await;
+async fn setup_service() -> (TestDatabase, TokenService, Arc<SqlxTokenRepository>, String) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
 
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit = Arc::new(AuditLogRepository::new(pool));
@@ -33,7 +38,7 @@ async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, String) {
         .await
         .unwrap();
 
-    (service, repo, secret.token)
+    (test_db, service, repo, secret.token)
 }
 
 fn random_secret() -> String {
@@ -42,7 +47,7 @@ fn random_secret() -> String {
 
 #[tokio::test]
 async fn token_verification_timing_within_bounds() {
-    let (service, repo, valid_token) = setup_service().await;
+    let (_db, service, repo, valid_token) = setup_service().await;
 
     let parts: Vec<&str> = valid_token.split('.').collect();
     assert_eq!(parts.len(), 2);

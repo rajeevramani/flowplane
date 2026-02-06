@@ -7,7 +7,7 @@ use crate::domain::ListenerId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for listeners.
@@ -268,7 +268,7 @@ impl ListenerRepository {
     /// - [`FlowplaneError::Database`] if query execution fails
     #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
-        let row = sqlx::query_as::<Sqlite, ListenerRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE id = $1"
         )
         .bind(id)
@@ -292,7 +292,7 @@ impl ListenerRepository {
 
     #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
-        let row = sqlx::query_as::<Sqlite, ListenerRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
@@ -320,7 +320,7 @@ impl ListenerRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ListenerRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
@@ -430,7 +430,7 @@ impl ListenerRepository {
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, ListenerRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, ListenerRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -464,7 +464,7 @@ impl ListenerRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ListenerRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
             "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at \
              FROM listeners \
              WHERE team IS NULL \
@@ -489,7 +489,7 @@ impl ListenerRepository {
     /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
     #[instrument(skip(self), fields(import_id = %import_id), name = "db_count_listeners_by_import")]
     pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
-        sqlx::query_scalar::<Sqlite, i64>(
+        sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listeners WHERE import_id = $1",
         )
         .bind(import_id)
@@ -617,7 +617,7 @@ impl ListenerRepository {
 
     #[instrument(skip(self), fields(listener_name = %name), name = "db_exists_listener_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
             .bind(name)
             .fetch_one(&self.pool)
             .await
@@ -634,7 +634,7 @@ impl ListenerRepository {
 
     #[instrument(skip(self), name = "db_count_listeners")]
     pub async fn count(&self) -> Result<i64> {
-        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners")
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM listeners")
             .fetch_one(&self.pool)
             .await
             .map_err(|e| {

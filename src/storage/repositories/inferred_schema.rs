@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row, Sqlite};
+use sqlx::{FromRow, Row};
 use std::collections::HashMap;
 use tracing::instrument;
 
@@ -102,7 +102,7 @@ impl InferredSchemaRepository {
     /// Get inferred schema by ID
     #[instrument(skip(self), fields(id = %id), name = "db_get_inferred_schema_by_id")]
     pub async fn get_by_id(&self, id: i64) -> Result<InferredSchemaData> {
-        let row = sqlx::query_as::<Sqlite, InferredSchemaRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
                     sample_count, confidence, first_seen_at, last_seen_at,
@@ -132,7 +132,7 @@ impl InferredSchemaRepository {
     /// List all inferred schemas for a learning session
     #[instrument(skip(self), fields(session_id = %session_id), name = "db_list_inferred_schemas_by_session")]
     pub async fn list_by_session_id(&self, session_id: &str) -> Result<Vec<InferredSchemaData>> {
-        let rows = sqlx::query_as::<Sqlite, InferredSchemaRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
                     sample_count, confidence, first_seen_at, last_seen_at,
@@ -179,7 +179,7 @@ impl InferredSchemaRepository {
     /// List inferred schemas for a team
     #[instrument(skip(self), fields(team = %team), name = "db_list_inferred_schemas_by_team")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<InferredSchemaData>> {
-        let rows = sqlx::query_as::<Sqlite, InferredSchemaRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
                     sample_count, confidence, first_seen_at, last_seen_at,
@@ -210,7 +210,7 @@ impl InferredSchemaRepository {
         path_pattern: &str,
         http_method: &str,
     ) -> Result<Vec<InferredSchemaData>> {
-        let rows = sqlx::query_as::<Sqlite, InferredSchemaRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
                     sample_count, confidence, first_seen_at, last_seen_at,
@@ -263,21 +263,12 @@ impl InferredSchemaRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::SqlitePool;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        // Run migrations
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     /// Helper to create a test team in the database (idempotent)
     async fn create_test_team(pool: &DbPool, name: &str) {
         sqlx::query(
-            "INSERT OR IGNORE INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')"
+            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING"
         )
         .bind(format!("team-{}", uuid::Uuid::new_v4()))
         .bind(name)
@@ -340,7 +331,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_session_id() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("inferred_schema_list_session").await;
+        let pool = _db.pool.clone();
         let repo = InferredSchemaRepository::new(pool.clone());
         let session_id = create_test_session(&pool).await;
 
@@ -358,7 +350,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_session_grouped() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("inferred_schema_grouped").await;
+        let pool = _db.pool.clone();
         let repo = InferredSchemaRepository::new(pool.clone());
         let session_id = create_test_session(&pool).await;
 
@@ -385,7 +378,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_count_by_session() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("inferred_schema_count").await;
+        let pool = _db.pool.clone();
         let repo = InferredSchemaRepository::new(pool.clone());
         let session_id = create_test_session(&pool).await;
 
@@ -399,7 +393,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_endpoint() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("inferred_schema_by_endpoint").await;
+        let pool = _db.pool.clone();
         let repo = InferredSchemaRepository::new(pool.clone());
 
         let session1 = create_test_session(&pool).await;

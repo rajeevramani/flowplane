@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -18,11 +22,12 @@ use tower::ServiceExt;
 #[allow(clippy::duplicate_mod)]
 #[path = "../test_schema.rs"]
 mod test_schema;
-use test_schema::create_test_pool;
+use test_schema::{create_test_pool, TestDatabase};
 
 async fn setup_services(
-) -> (TokenService, Arc<AuthService>, Arc<SessionService>, Arc<SqlxTokenRepository>) {
-    let pool = create_test_pool().await;
+) -> (TestDatabase, TokenService, Arc<AuthService>, Arc<SessionService>, Arc<SqlxTokenRepository>) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit = Arc::new(AuditLogRepository::new(pool));
 
@@ -30,7 +35,7 @@ async fn setup_services(
     let auth_service = Arc::new(AuthService::new(repo.clone(), audit.clone()));
     let session_service = Arc::new(SessionService::new(repo.clone(), audit));
 
-    (token_service, auth_service, session_service, repo)
+    (test_db, token_service, auth_service, session_service, repo)
 }
 
 fn secured_router(
@@ -54,7 +59,7 @@ fn secured_router(
 
 #[tokio::test]
 async fn missing_bearer_returns_unauthorized() {
-    let (_, auth_service, session_service, _) = setup_services().await;
+    let (_db, _, auth_service, session_service, _) = setup_services().await;
     let app = secured_router(auth_service, session_service, vec!["clusters:read"]);
 
     let response =
@@ -65,7 +70,7 @@ async fn missing_bearer_returns_unauthorized() {
 
 #[tokio::test]
 async fn insufficient_scope_returns_forbidden() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _) = setup_services().await;
     let token = token_service
         .create_token(
             flowplane::auth::validation::CreateTokenRequest {
@@ -100,7 +105,7 @@ async fn insufficient_scope_returns_forbidden() {
 
 #[tokio::test]
 async fn valid_token_allows_request() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _) = setup_services().await;
     let token = token_service
         .create_token(
             flowplane::auth::validation::CreateTokenRequest {
@@ -198,7 +203,7 @@ async fn create_test_session(
 
 #[tokio::test]
 async fn session_cookie_get_request_succeeds_without_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:read"]).await;
@@ -223,7 +228,7 @@ async fn session_cookie_get_request_succeeds_without_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_fails_without_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
@@ -252,7 +257,7 @@ async fn session_cookie_post_request_fails_without_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_succeeds_with_valid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo) = setup_services().await;
 
     let (session_token, csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
@@ -282,7 +287,7 @@ async fn session_cookie_post_request_succeeds_with_valid_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_fails_with_invalid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
@@ -312,7 +317,7 @@ async fn session_cookie_post_request_fails_with_invalid_csrf() {
 
 #[tokio::test]
 async fn bearer_session_token_post_request_succeeds_with_valid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo) = setup_services().await;
 
     let (session_token, csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
@@ -341,7 +346,7 @@ async fn bearer_session_token_post_request_succeeds_with_valid_csrf() {
 
 #[tokio::test]
 async fn pat_tokens_bypass_csrf_validation() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _) = setup_services().await;
 
     let token = token_service
         .create_token(

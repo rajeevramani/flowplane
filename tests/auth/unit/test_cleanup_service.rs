@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL (via Testcontainers)
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use chrono::{Duration, Utc};
 use flowplane::auth::cleanup_service::CleanupService;
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
@@ -12,7 +16,8 @@ use test_schema::create_test_pool;
 
 #[tokio::test]
 async fn run_once_marks_expired_tokens() {
-    let pool = create_test_pool().await;
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
     let cleanup = CleanupService::new(repo.clone(), audit_repo.clone());

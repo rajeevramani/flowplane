@@ -112,8 +112,8 @@ pub use devops_agent::execute_devops_get_deployment_status;
 
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
+use crate::storage::DbPool;
 use serde_json::Value;
-use sqlx::SqlitePool;
 
 /// Get all available MCP tools.
 ///
@@ -206,7 +206,7 @@ pub fn get_all_tools() -> Vec<Tool> {
 /// Result containing the tool execution result or an error.
 pub async fn execute_tool(
     tool_name: &str,
-    db_pool: &SqlitePool,
+    db_pool: &DbPool,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
@@ -292,18 +292,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_tool_unknown() {
-        use crate::config::DatabaseConfig;
-        use crate::storage::create_pool;
+        use crate::storage::test_helpers::TestDatabase;
 
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_tools_mod").await;
+        let pool = _db.pool.clone();
 
         let result = execute_tool("unknown_tool", &pool, "test-team", serde_json::json!({})).await;
 

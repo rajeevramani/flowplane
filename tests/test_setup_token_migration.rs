@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL (via Testcontainers)
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for setup token migration
 //!
 //! Verifies that migration 20251108000001_add_setup_token_fields.sql properly adds:
@@ -6,31 +10,20 @@
 //! - usage_count column
 //! - Indexes for setup tokens
 
-use flowplane::config::DatabaseConfig;
-use flowplane::storage::create_pool;
-use sqlx::Row;
+mod common;
 
-async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
-    let config = DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: true,
-        ..Default::default()
-    };
-    create_pool(&config).await.unwrap()
-}
+use common::db_metadata::{get_column_names, get_index_names};
+use common::test_db::TestDatabase;
+use sqlx::Row;
 
 #[tokio::test]
 async fn test_setup_token_migration_adds_columns() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_cols").await;
+    let pool = &test_db.pool;
 
     // Verify new columns exist by querying the table schema
-    let schema = sqlx::query("PRAGMA table_info(personal_access_tokens)")
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to fetch table info");
-
-    // Extract column names
-    let column_names: Vec<String> = schema.iter().map(|row| row.get("name")).collect();
+    let column_names =
+        get_column_names(pool, "personal_access_tokens").await.expect("Failed to fetch table info");
 
     // Verify is_setup_token column exists
     assert!(
@@ -50,17 +43,12 @@ async fn test_setup_token_migration_adds_columns() {
 
 #[tokio::test]
 async fn test_setup_token_migration_creates_indexes() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_idx").await;
+    let pool = &test_db.pool;
 
     // Verify indexes exist
-    let indexes = sqlx::query(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='personal_access_tokens'",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Failed to fetch indexes");
-
-    let index_names: Vec<String> = indexes.iter().map(|row| row.get("name")).collect();
+    let index_names =
+        get_index_names(pool, "personal_access_tokens").await.expect("Failed to fetch indexes");
 
     // Verify setup token index exists
     assert!(
@@ -77,22 +65,23 @@ async fn test_setup_token_migration_creates_indexes() {
 
 #[tokio::test]
 async fn test_setup_token_migration_preserves_existing_data() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_data").await;
+    let pool = &test_db.pool;
 
     // Insert a test token
     sqlx::query(
         r#"
         INSERT INTO personal_access_tokens (id, name, token_hash, status, created_at, updated_at)
-        VALUES ('test-token-1', 'Test Token', 'hash123', 'active', datetime('now'), datetime('now'))
+        VALUES ('test-token-1', 'Test Token', 'hash123', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to insert test token");
 
     // Query the token and verify default values for new columns
     let row = sqlx::query("SELECT is_setup_token, max_usage_count, usage_count FROM personal_access_tokens WHERE id = 'test-token-1'")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .expect("Failed to fetch test token");
 
@@ -111,23 +100,24 @@ async fn test_setup_token_migration_preserves_existing_data() {
 
 #[tokio::test]
 async fn test_setup_token_can_insert_with_new_fields() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_insert").await;
+    let pool = &test_db.pool;
 
     // Insert a setup token with new fields
     sqlx::query(
         r#"
         INSERT INTO personal_access_tokens
         (id, name, token_hash, status, is_setup_token, max_usage_count, usage_count, created_at, updated_at)
-        VALUES ('setup-token-1', 'Setup Token', 'hash456', 'active', TRUE, 5, 2, datetime('now'), datetime('now'))
+        VALUES ('setup-token-1', 'Setup Token', 'hash456', 'active', TRUE, 5, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to insert setup token");
 
     // Query the token
     let row = sqlx::query("SELECT is_setup_token, max_usage_count, usage_count FROM personal_access_tokens WHERE id = 'setup-token-1'")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .expect("Failed to fetch setup token");
 
@@ -144,30 +134,31 @@ async fn test_setup_token_can_insert_with_new_fields() {
 
 #[tokio::test]
 async fn test_setup_token_usage_count_can_be_incremented() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_incr").await;
+    let pool = &test_db.pool;
 
     // Insert a setup token
     sqlx::query(
         r#"
         INSERT INTO personal_access_tokens
         (id, name, token_hash, status, is_setup_token, max_usage_count, usage_count, created_at, updated_at)
-        VALUES ('setup-token-2', 'Setup Token', 'hash789', 'active', TRUE, 5, 0, datetime('now'), datetime('now'))
+        VALUES ('setup-token-2', 'Setup Token', 'hash789', 'active', TRUE, 5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to insert setup token");
 
     // Increment usage count
     sqlx::query("UPDATE personal_access_tokens SET usage_count = usage_count + 1 WHERE id = 'setup-token-2'")
-        .execute(&pool)
+        .execute(pool)
         .await
         .expect("Failed to increment usage count");
 
     // Verify the count was incremented
     let row =
         sqlx::query("SELECT usage_count FROM personal_access_tokens WHERE id = 'setup-token-2'")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .expect("Failed to fetch setup token");
 
@@ -177,7 +168,8 @@ async fn test_setup_token_usage_count_can_be_incremented() {
 
 #[tokio::test]
 async fn test_setup_token_index_filters_correctly() {
-    let pool = create_test_pool().await;
+    let test_db = TestDatabase::new("setup_token_filter").await;
+    let pool = &test_db.pool;
 
     // Insert test data
     for i in 0..10 {
@@ -186,14 +178,14 @@ async fn test_setup_token_index_filters_correctly() {
             r#"
             INSERT INTO personal_access_tokens
             (id, name, token_hash, status, is_setup_token, created_at, updated_at)
-            VALUES (?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
+            VALUES ($1, $2, $3, 'active', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#,
         )
         .bind(format!("token-{}", i))
         .bind(format!("Token {}", i))
         .bind(format!("hash-{}", i))
         .bind(is_setup)
-        .execute(&pool)
+        .execute(pool)
         .await
         .expect("Failed to insert test token");
     }
@@ -202,7 +194,7 @@ async fn test_setup_token_index_filters_correctly() {
     let count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM personal_access_tokens WHERE is_setup_token = TRUE",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .expect("Failed to count setup tokens");
 
@@ -212,7 +204,7 @@ async fn test_setup_token_index_filters_correctly() {
     let count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM personal_access_tokens WHERE is_setup_token = FALSE",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .expect("Failed to count non-setup tokens");
 

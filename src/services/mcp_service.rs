@@ -1132,17 +1132,18 @@ impl McpService {
 mod tests {
     use super::*;
     use crate::domain::RouteMetadataSourceType;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_service() -> McpService {
-        // Create a minimal in-memory pool for tests
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create test pool");
-        McpService::new(Arc::new(pool))
+    async fn create_test_service() -> (TestDatabase, McpService) {
+        let test_db = TestDatabase::new("mcp_service").await;
+        let pool = test_db.pool.clone();
+        let service = McpService::new(Arc::new(pool));
+        (test_db, service)
     }
 
     #[tokio::test]
     async fn test_check_missing_fields_no_metadata() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
         let missing = service.check_missing_fields(&None);
 
         assert_eq!(missing.len(), 4);
@@ -1154,7 +1155,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_missing_fields_incomplete_metadata() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let metadata = RouteMetadataData {
             id: crate::domain::RouteMetadataId::new(),
@@ -1183,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_missing_fields_complete_metadata() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let metadata = RouteMetadataData {
             id: crate::domain::RouteMetadataId::new(),

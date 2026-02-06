@@ -327,9 +327,12 @@ impl From<sqlx::Error> for FlowplaneError {
         // Check for constraint violations
         if let Some(db_err) = error.as_database_error() {
             if let Some(code) = db_err.code() {
-                // SQLite constraint violation codes
-                // 2067 is SQLITE_CONSTRAINT_UNIQUE
-                if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT") {
+                // PostgreSQL constraint violation error codes (Class 23)
+                // 23505 = unique_violation
+                // 23503 = foreign_key_violation
+                // 23502 = not_null_violation
+                // 23514 = check_violation
+                if code.as_ref().starts_with("23") {
                     return Self::ConstraintViolation {
                         message: db_err.message().to_string(),
                         source: error,

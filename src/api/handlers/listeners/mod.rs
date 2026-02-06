@@ -246,7 +246,7 @@ mod tests {
             resource_auth_context,
         },
         config::SimpleXdsConfig,
-        storage::DbPool,
+        storage::test_helpers::TestDatabase,
         xds::resources::LISTENER_TYPE_URL,
         xds::route::{
             PathMatch, RouteActionConfig, RouteConfig as InlineRouteConfig, RouteMatchConfig,
@@ -255,7 +255,6 @@ mod tests {
         xds::XdsState,
     };
     use axum::{response::IntoResponse, Extension};
-    use sqlx::sqlite::SqlitePoolOptions;
     use tokio::time::{sleep, Duration};
 
     use types::{
@@ -266,96 +265,11 @@ mod tests {
 
     // Use test_utils::admin_auth_context() for admin permissions
 
-    async fn create_test_pool() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("create sqlite pool");
+    async fn build_state() -> (TestDatabase, Arc<XdsState>, ApiState) {
+        let test_db = TestDatabase::new("listener_handler").await;
+        let pool = test_db.pool.clone();
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS dataplanes (
-                id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                name TEXT NOT NULL,
-                gateway_host TEXT,
-                description TEXT,
-                certificate_serial TEXT,
-                certificate_expires_at TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        // Insert test dataplanes
+        // Insert test dataplanes (TestDatabase runs all migrations automatically)
         sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
@@ -366,11 +280,6 @@ mod tests {
         .await
         .unwrap();
 
-        pool
-    }
-
-    async fn build_state() -> (Arc<XdsState>, ApiState) {
-        let pool = create_test_pool().await;
         let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
         let mcp_connection_manager = crate::mcp::create_connection_manager();
@@ -384,7 +293,7 @@ mod tests {
             mcp_session_manager,
             certificate_rate_limiter,
         };
-        (state, api_state)
+        (test_db, state, api_state)
     }
 
     #[test]
@@ -448,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_listener_handler_persists_and_refreshes_state() {
-        let (state, api_state) = build_state().await;
+        let (_db, state, api_state) = build_state().await;
 
         let payload = CreateListenerBody {
             team: "test-team".to_string(),
@@ -494,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_listener_handler_updates_repository() {
-        let (state, api_state) = build_state().await;
+        let (_db, state, api_state) = build_state().await;
 
         // Seed a listener so we can update it.
         let initial = CreateListenerBody {
@@ -624,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_listeners_returns_entries() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let _ = create_listener_handler(
@@ -650,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_listener_returns_details() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let _ = create_listener_handler(
@@ -676,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_listener_removes_record() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let _ = create_listener_handler(
@@ -711,7 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_listener_with_listeners_write_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let result = create_listener_handler(
@@ -728,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_listener_fails_without_write_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let result = create_listener_handler(
@@ -746,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_listener_fails_with_no_permissions() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         let result = create_listener_handler(
@@ -764,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_listeners_requires_read_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
         let result = list_listeners_handler(
             State(api_state),
@@ -781,7 +690,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_listener_requires_read_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
         let result = get_listener_handler(
             State(api_state),
@@ -798,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_listener_requires_write_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         // Create first with admin
@@ -828,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_listener_requires_write_scope() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         // Create first with admin
@@ -858,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_listener_not_found() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
         let result = get_listener_handler(
             State(api_state),
@@ -875,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_listener_not_found() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let update = sample_update_listener();
 
         let result = update_listener_handler(
@@ -894,7 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_listener_not_found() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
         let result = delete_listener_handler(
             State(api_state),
@@ -911,7 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_listener_duplicate_name_returns_error() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
         let payload = sample_create_listener();
 
         // Create first listener
@@ -939,12 +848,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_listeners_with_pagination() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
-        // Create multiple listeners
+        // Create multiple listeners (vary port to avoid partial unique index violation)
         for i in 0..5 {
             let mut payload = sample_create_listener();
             payload.name = format!("listener-{}", i);
+            payload.port = 10000 + i as u16;
             let _ = create_listener_handler(
                 State(api_state.clone()),
                 Extension(admin_auth_context()),
@@ -969,12 +879,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_listeners_with_offset() {
-        let (_state, api_state) = build_state().await;
+        let (_db, _state, api_state) = build_state().await;
 
-        // Create multiple listeners
+        // Create multiple listeners (vary port to avoid partial unique index violation)
         for i in 0..5 {
             let mut payload = sample_create_listener();
             payload.name = format!("listener-{}", i);
+            payload.port = 10000 + i as u16;
             let _ = create_listener_handler(
                 State(api_state.clone()),
                 Extension(admin_auth_context()),

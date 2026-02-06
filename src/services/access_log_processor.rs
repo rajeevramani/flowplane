@@ -38,10 +38,10 @@ use tracing::{debug, error, info, warn};
 use crate::observability::metrics;
 use crate::schema::inference::SchemaInferenceEngine;
 use crate::services::{normalize_path, PathNormalizationConfig};
+use crate::storage::DbPool;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::xds::services::ext_proc_service::CapturedBody;
 use crate::Result;
-use sqlx::{Pool, Sqlite};
 
 /// Convert HTTP method code to string
 ///
@@ -172,7 +172,7 @@ pub struct AccessLogProcessor {
     /// Receiver for inferred schemas (moved to batcher task)
     schema_rx: Arc<Mutex<mpsc::Receiver<InferredSchemaRecord>>>,
     /// Database pool for batch writes (optional for testing)
-    db_pool: Option<Pool<Sqlite>>,
+    db_pool: Option<DbPool>,
     /// Shutdown signal sender (broadcast to all workers)
     shutdown_tx: watch::Sender<bool>,
     /// Shutdown signal receiver (cloned for each worker)
@@ -233,7 +233,7 @@ impl AccessLogProcessor {
     pub fn new(
         log_rx: mpsc::UnboundedReceiver<ProcessedLogEntry>,
         ext_proc_rx: Option<mpsc::UnboundedReceiver<CapturedBody>>,
-        db_pool: Option<Pool<Sqlite>>,
+        db_pool: Option<DbPool>,
         config: Option<ProcessorConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
@@ -916,7 +916,7 @@ impl AccessLogProcessor {
     /// Task 5.3: Batch database writes for schema aggregation
     /// Task 5.4: Retry logic with exponential backoff
     async fn write_schema_batch_with_retry(
-        pool: &Pool<Sqlite>,
+        pool: &DbPool,
         batch: Vec<InferredSchemaRecord>,
         max_retries: usize,
         initial_backoff_ms: u64,
@@ -967,10 +967,7 @@ impl AccessLogProcessor {
     ///
     /// Uses a single transaction for all inserts to ensure atomicity and performance.
     /// Task 5.3: Batch database writes for schema aggregation
-    async fn write_schema_batch(
-        pool: &Pool<Sqlite>,
-        batch: Vec<InferredSchemaRecord>,
-    ) -> Result<()> {
+    async fn write_schema_batch(pool: &DbPool, batch: Vec<InferredSchemaRecord>) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
@@ -1022,7 +1019,7 @@ impl AccessLogProcessor {
     /// Task 5.3: Batch accumulation and periodic flushing
     fn spawn_schema_batcher(
         schema_rx: Arc<Mutex<mpsc::Receiver<InferredSchemaRecord>>>,
-        db_pool: Pool<Sqlite>,
+        db_pool: DbPool,
         batch_size: usize,
         flush_interval_secs: u64,
         max_retries: usize,

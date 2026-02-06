@@ -3,13 +3,13 @@
 //! Implements the stdio transport for MCP: reads JSON-RPC messages from stdin
 //! and writes responses to stdout.
 
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::mcp::handler::McpHandler;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
+use crate::storage::DbPool;
 
 pub struct McpStdioServer {
     handler: McpHandler,
@@ -23,7 +23,7 @@ impl McpStdioServer {
     /// * `team` - Team context for multi-tenancy
     ///
     /// Note: CLI access grants admin:all scope since the user has direct machine access
-    pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
+    pub fn new(db_pool: Arc<DbPool>, team: String) -> Self {
         // CLI access grants full permissions - user has direct machine access
         let scopes = vec!["admin:all".to_string()];
         Self { handler: McpHandler::new(db_pool, team, scopes) }
@@ -100,24 +100,17 @@ impl McpStdioServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_server() -> McpStdioServer {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
-        McpStdioServer::new(Arc::new(pool), "test-team".to_string())
+    async fn create_test_server() -> (TestDatabase, McpStdioServer) {
+        let test_db = TestDatabase::new("mcp_server").await;
+        let pool = test_db.pool.clone();
+        let server = McpStdioServer::new(Arc::new(pool), "test-team".to_string());
+        (test_db, server)
     }
 
     #[tokio::test]
     async fn test_server_creation() {
-        let _server = create_test_server().await;
+        let (_db, _server) = create_test_server().await;
     }
 }

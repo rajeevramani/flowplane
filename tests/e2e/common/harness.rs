@@ -15,6 +15,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
 use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
@@ -144,8 +147,8 @@ pub struct TestHarness {
     mocks_owned: Option<MockServices>,
     /// Temp directory for test artifacts (cleaned up on drop)
     _temp_dir: Option<TempDir>,
-    /// Database path
-    pub db_path: PathBuf,
+    /// Database URL
+    pub db_url: String,
     /// Whether we're using shared mode
     is_shared: bool,
     /// mTLS certificate paths (if mTLS enabled)
@@ -159,6 +162,9 @@ pub struct TestHarness {
     /// mTLS client cert (kept alive to prevent TempDir cleanup in isolated mode)
     #[allow(dead_code)]
     _mtls_client_cert: Option<crate::tls::support::TestCertificateFiles>,
+    /// PostgreSQL container (kept alive in isolated mode)
+    #[allow(dead_code)]
+    _pg_container: Option<ContainerAsync<Postgres>>,
 }
 
 impl TestHarness {
@@ -330,13 +336,14 @@ impl TestHarness {
             envoy_owned: None,
             mocks_owned: None,
             _temp_dir: None,
-            db_path: shared.db_path.clone(),
+            db_url: shared.db_url.clone(),
             is_shared: true,
             mtls_cert_paths,
             // In shared mode, cert lifetimes are managed by SharedInfrastructure
             _mtls_ca: None,
             _mtls_server_cert: None,
             _mtls_client_cert: None,
+            _pg_container: None,
         })
     }
 
@@ -349,9 +356,26 @@ impl TestHarness {
         let ports = port_allocator.allocate_test_ports();
         info!(?ports, "Allocated ports for isolated test");
 
-        // Create temp directory for test artifacts
+        // Create temp directory for test artifacts (certs, etc.)
         let temp_dir = tempfile::tempdir()?;
-        let db_path = temp_dir.path().join("flowplane-e2e.db");
+
+        // Start PostgreSQL container for isolated E2E database
+        info!("Starting PostgreSQL container for isolated E2E test...");
+        let pg_container = Postgres::default()
+            .start()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start PostgreSQL container: {}", e))?;
+
+        let pg_host = pg_container
+            .get_host()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container host: {}", e))?;
+        let pg_port = pg_container
+            .get_host_port_ipv4(5432)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container port: {}", e))?;
+        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
+        info!(db_url = %db_url, "PostgreSQL container ready for isolated E2E test");
 
         // Generate mTLS certificates if enabled
         let (mtls_cert_paths, xds_tls_config, mtls_ca, mtls_server_cert, mtls_client_cert) =
@@ -424,7 +448,7 @@ impl TestHarness {
 
         // Start control plane with optional TLS
         let mut cp_config =
-            ControlPlaneConfig::new(db_path.clone(), ports.api, ports.xds, ports.listener);
+            ControlPlaneConfig::new(db_url.clone(), ports.api, ports.xds, ports.listener);
         if let Some(tls) = xds_tls_config {
             cp_config = cp_config.with_xds_tls(tls);
         }
@@ -479,12 +503,13 @@ impl TestHarness {
             envoy_owned: envoy,
             mocks_owned: Some(mocks),
             _temp_dir: Some(temp_dir),
-            db_path,
+            db_url,
             is_shared: false,
             mtls_cert_paths,
             _mtls_ca: mtls_ca,
             _mtls_server_cert: mtls_server_cert,
             _mtls_client_cert: mtls_client_cert,
+            _pg_container: Some(pg_container),
         })
     }
 

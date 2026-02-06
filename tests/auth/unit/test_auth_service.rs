@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL (via Testcontainers)
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use flowplane::auth::auth_service::AuthService;
 use flowplane::auth::models::AuthError;
 use flowplane::auth::token_service::TokenService;
@@ -8,17 +12,18 @@ use std::sync::Arc;
 #[allow(clippy::duplicate_mod)]
 #[path = "../test_schema.rs"]
 mod test_schema;
-use test_schema::create_test_pool;
+use test_schema::{create_test_pool, TestDatabase};
 
-async fn setup_services() -> (TokenService, AuthService) {
-    let pool = create_test_pool().await;
+async fn setup_services() -> (TestDatabase, TokenService, AuthService) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit = Arc::new(AuditLogRepository::new(pool));
 
     let token_service = TokenService::new(repo.clone(), audit.clone());
     let auth_service = AuthService::new(repo, audit);
 
-    (token_service, auth_service)
+    (test_db, token_service, auth_service)
 }
 
 fn sample_request() -> CreateTokenRequest {
@@ -35,7 +40,7 @@ fn sample_request() -> CreateTokenRequest {
 
 #[tokio::test]
 async fn authenticate_valid_token() {
-    let (token_service, auth_service) = setup_services().await;
+    let (_db, token_service, auth_service) = setup_services().await;
     let secret = token_service.create_token(sample_request(), None).await.unwrap();
 
     let auth_header = format!("Bearer {}", secret.token);
@@ -45,7 +50,7 @@ async fn authenticate_valid_token() {
 
 #[tokio::test]
 async fn authenticate_rejects_invalid_secret() {
-    let (token_service, auth_service) = setup_services().await;
+    let (_db, token_service, auth_service) = setup_services().await;
     let secret = token_service.create_token(sample_request(), None).await.unwrap();
 
     let bad_header = format!("Bearer fp_pat_{}.WRONG", secret.id);
@@ -55,7 +60,7 @@ async fn authenticate_rejects_invalid_secret() {
 
 #[tokio::test]
 async fn authenticate_requires_prefix() {
-    let (_, auth_service) = setup_services().await;
+    let (_db, _, auth_service) = setup_services().await;
     let err = auth_service.authenticate("not-a-token", None, None).await.unwrap_err();
     assert!(matches!(err, AuthError::MalformedBearer | AuthError::MissingBearer));
 }

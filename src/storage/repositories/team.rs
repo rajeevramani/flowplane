@@ -24,7 +24,7 @@ struct TeamRow {
     pub owner_user_id: Option<String>,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
-    pub envoy_admin_port: Option<i64>, // Stored as INTEGER in SQLite
+    pub envoy_admin_port: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -325,24 +325,12 @@ impl TeamRepository for SqlxTeamRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        // Run migrations
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_create_and_get_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_create_get").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -373,7 +361,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_team_duplicate_name_fails() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_dup_name").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -393,7 +382,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_update").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -426,7 +416,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_teams() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_list").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create multiple teams
@@ -441,16 +432,18 @@ mod tests {
             repo.create_team(request).await.expect("create team");
         }
 
-        let teams = repo.list_teams(10, 0).await.expect("list teams");
-        assert_eq!(teams.len(), 5);
+        // Count includes seed teams from TestDatabase (test-team, team-a, team-b)
+        let teams = repo.list_teams(20, 0).await.expect("list teams");
+        assert_eq!(teams.len(), 5 + 3); // 5 created + 3 seed
 
         let count = repo.count_teams().await.expect("count teams");
-        assert_eq!(count, 5);
+        assert_eq!(count, 5 + 3);
     }
 
     #[tokio::test]
     async fn test_list_teams_by_status() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_list_by_status").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create active team
@@ -483,11 +476,11 @@ mod tests {
         };
         repo.update_team(&suspended_team.id, update).await.expect("suspend team");
 
-        // List active teams
+        // List active teams (includes 3 seed teams + 1 created active)
         let active_teams =
             repo.list_teams_by_status(TeamStatus::Active, 10, 0).await.expect("list active");
-        assert_eq!(active_teams.len(), 1);
-        assert_eq!(active_teams[0].id, active_team.id);
+        assert_eq!(active_teams.len(), 4); // 1 created + 3 seed
+        assert!(active_teams.iter().any(|t| t.id == active_team.id));
 
         // List suspended teams
         let suspended_teams =
@@ -498,7 +491,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_delete").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -519,7 +513,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_name_available() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_name_available").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         assert!(repo.is_name_available("new-team").await.expect("check availability"));
@@ -539,7 +534,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_team_allocates_envoy_admin_port() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_envoy_port").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -558,7 +554,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_multiple_teams_unique_ports() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_unique_ports").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create 3 teams

@@ -33,7 +33,7 @@ async fn audit_log_captures_user_context_on_user_creation() {
 
     // Query audit log to verify user context was captured
     let audit_record: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT user_id, client_ip, user_agent FROM audit_log WHERE action = 'user.created' AND resource_id = ? ORDER BY created_at DESC LIMIT 1"
+        "SELECT user_id, client_ip, user_agent FROM audit_log WHERE action = 'user.created' AND resource_id = $1 ORDER BY created_at DESC LIMIT 1"
     )
     .bind(user.id)
     .fetch_one(&app.pool)
@@ -148,7 +148,7 @@ async fn audit_log_query_by_user_id() {
     }
 
     // Query audit logs for this user
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE user_id = ?")
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE user_id = $1")
         .bind(user_id)
         .fetch_one(&app.pool)
         .await
@@ -158,7 +158,7 @@ async fn audit_log_query_by_user_id() {
 
     // Verify the index is being used (this query should be fast)
     let actions: Vec<String> = sqlx::query_scalar(
-        "SELECT action FROM audit_log WHERE user_id = ? ORDER BY created_at DESC",
+        "SELECT action FROM audit_log WHERE user_id = $1 ORDER BY created_at DESC",
     )
     .bind(user_id)
     .fetch_all(&app.pool)
@@ -207,7 +207,7 @@ async fn login_event_audit_trail() {
 
     // Verify login success event was logged
     let login_events: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, resource_id FROM audit_log WHERE action LIKE 'auth.login.%' AND resource_id = ? ORDER BY created_at DESC"
+        "SELECT action, resource_id FROM audit_log WHERE action LIKE 'auth.login.%' AND resource_id = $1 ORDER BY created_at DESC"
     )
     .bind(user.id)
     .fetch_all(&app.pool)

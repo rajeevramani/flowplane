@@ -19,7 +19,7 @@ CREATE TABLE listener_auto_filters (
     http_filter_name TEXT NOT NULL,
     source_filter_id TEXT NOT NULL,
     source_route_id TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (listener_id) REFERENCES listeners(id) ON DELETE CASCADE,
     FOREIGN KEY (source_filter_id) REFERENCES filters(id) ON DELETE CASCADE,

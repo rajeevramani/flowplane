@@ -12,9 +12,11 @@
 //! across all tests. This is necessary because each `#[tokio::test]` has its own runtime
 //! that gets shut down when the test completes, which would kill any tasks spawned on it.
 
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
 use super::api_client::{ApiClient, TEST_EMAIL, TEST_NAME, TEST_PASSWORD};
@@ -81,6 +83,45 @@ fn cleanup_stale_processes() {
         }
     }
 
+    // Clean up stale testcontainer PostgreSQL containers from previous runs.
+    // ContainerAsync::Drop is async but Rust's Drop is sync, so containers
+    // are never properly cleaned up when the tokio runtime shuts down.
+    {
+        use std::process::Command;
+
+        let output = Command::new("docker")
+            .args([
+                "ps",
+                "-q",
+                "--filter",
+                "label=org.testcontainers.managed-by=testcontainers",
+                "--filter",
+                "ancestor=postgres",
+            ])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let ids_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !ids_str.is_empty() {
+                    let ids: Vec<&str> = ids_str.lines().collect();
+                    info!(
+                        count = ids.len(),
+                        "Cleaning up stale testcontainer PostgreSQL containers"
+                    );
+
+                    let mut stop_args = vec!["stop", "--time", "5"];
+                    stop_args.extend(&ids);
+                    let _ = Command::new("docker").args(&stop_args).output();
+
+                    let mut rm_args = vec!["rm", "-f"];
+                    rm_args.extend(&ids);
+                    let _ = Command::new("docker").args(&rm_args).output();
+                }
+            }
+        }
+    }
+
     // Give processes time to fully terminate and release ports
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
@@ -96,8 +137,8 @@ static SHARED_INFRA: OnceLock<SharedInfrastructure> = OnceLock::new();
 /// Initialization result for waiting threads
 static INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
-/// Temp directory for shared DB - must live for entire test run
-static TEMP_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+/// PostgreSQL container for shared DB - must live for entire test run
+static SHARED_PG_CONTAINER: OnceLock<ContainerAsync<Postgres>> = OnceLock::new();
 
 /// Dedicated runtime for shared infrastructure - persists across all tests
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -113,8 +154,8 @@ pub struct SharedInfrastructure {
     pub envoy: Option<EnvoyHandle>,
     /// Mock services
     pub mocks: MockServices,
-    /// Database path
-    pub db_path: PathBuf,
+    /// Database URL
+    pub db_url: String,
     /// mTLS Certificate Authority (if FLOWPLANE_E2E_MTLS=1 was set)
     ///
     /// When present, the CP is configured with xDS TLS and tests can
@@ -202,10 +243,23 @@ impl SharedInfrastructure {
             info!("mTLS enabled for shared infrastructure (FLOWPLANE_E2E_MTLS=1)");
         }
 
-        // Create temp directory that lives for entire test run
-        let temp_dir =
-            TEMP_DIR.get_or_init(|| tempfile::tempdir().expect("Failed to create temp dir"));
-        let db_path = temp_dir.path().join("shared-e2e.db");
+        // Start PostgreSQL container for shared E2E database
+        info!("Starting PostgreSQL container for shared E2E database...");
+        let container = Postgres::default()
+            .start()
+            .await
+            .expect("Failed to start PostgreSQL container for shared E2E");
+
+        let pg_host = container.get_host().await.expect("Failed to get PostgreSQL container host");
+        let pg_port = container
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get PostgreSQL container port");
+        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
+        info!(db_url = %db_url, "PostgreSQL container ready for shared E2E");
+
+        // Store container in static to keep it alive for entire test run
+        let _ = SHARED_PG_CONTAINER.set(container);
 
         // Initialize mTLS CA if enabled
         let (mtls_ca, mtls_server_cert, xds_tls_config) = if enable_mtls {
@@ -243,7 +297,7 @@ impl SharedInfrastructure {
 
         // Start control plane with optional TLS
         let mut cp_config = ControlPlaneConfig::new(
-            db_path.clone(),
+            db_url.clone(),
             SHARED_API_PORT,
             SHARED_XDS_PORT,
             SHARED_LISTENER_PORT,
@@ -351,7 +405,7 @@ impl SharedInfrastructure {
             cp,
             envoy,
             mocks,
-            db_path,
+            db_url,
             mtls_ca,
             mtls_server_cert,
             mtls_envoy_client_cert,

@@ -260,7 +260,6 @@ mod tests {
     use super::*;
     use axum::{extract::State, response::IntoResponse, Extension, Json};
     use serde_json::json;
-    use sqlx::Executor;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -269,7 +268,7 @@ mod tests {
         resource_auth_context,
     };
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, CreateClusterRequest, DatabaseConfig};
+    use crate::storage::{test_helpers::TestDatabase, CreateClusterRequest};
     use crate::xds::filters::http::{
         local_rate_limit::{
             FractionalPercentDenominator, LocalRateLimitConfig, RuntimeFractionalPercentConfig,
@@ -287,51 +286,9 @@ mod tests {
 
     // Use test_utils::admin_auth_context() for admin permissions
 
-    async fn setup_state() -> ApiState {
-        let pool = create_pool(&DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        })
-        .await
-        .expect("pool");
-
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            );
-
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            );
-        "#,
-        )
-        .await
-        .expect("create tables");
+    async fn setup_state() -> (TestDatabase, ApiState) {
+        let test_db = TestDatabase::new("route_configs_handler").await;
+        let pool = test_db.pool.clone();
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool.clone());
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
@@ -377,7 +334,7 @@ mod tests {
             .await
             .expect("seed shadow cluster");
 
-        api_state
+        (test_db, api_state)
     }
 
     fn sample_route_config_definition() -> RouteConfigDefinition {
@@ -410,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_persists_configuration() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let payload = sample_route_config_definition();
         let (status, Json(created)) = create_route_config_handler(
@@ -434,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_route_configs_returns_entries() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
@@ -460,7 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_route_config_returns_definition() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
@@ -485,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_route_config_applies_changes() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
@@ -572,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_route_config_removes_row() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
@@ -600,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn template_route_config_supports_rewrite() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let mut payload = sample_route_config_definition();
         payload.name = "template-route".into();
@@ -642,7 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_with_routes_write_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         let result = create_route_config_handler(
@@ -659,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_fails_without_write_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         let result = create_route_config_handler(
@@ -677,7 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_fails_with_no_permissions() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         let result = create_route_config_handler(
@@ -695,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_route_configs_requires_read_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let result = list_route_configs_handler(
             State(state),
@@ -712,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_route_config_requires_read_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let result = get_route_config_handler(
             State(state),
@@ -729,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_route_config_requires_write_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         // Create first with admin
@@ -758,7 +715,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_route_config_requires_write_scope() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         // Create first with admin
@@ -788,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_route_config_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let result = get_route_config_handler(
             State(state),
@@ -805,7 +762,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_route_config_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut payload = sample_route_config_definition();
         // Set the payload name to match the path parameter
         payload.name = "non-existent-route".to_string();
@@ -826,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_route_config_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let result = delete_route_config_handler(
             State(state),
@@ -843,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_duplicate_name_returns_error() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
 
         // Create first route config
@@ -872,7 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_validates_empty_virtual_hosts() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let mut payload = sample_route_config_definition();
         payload.virtual_hosts = vec![];
@@ -892,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_validates_empty_routes() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let mut payload = sample_route_config_definition();
         payload.virtual_hosts[0].routes = vec![];
@@ -912,7 +869,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_validates_empty_domains() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let mut payload = sample_route_config_definition();
         payload.virtual_hosts[0].domains = vec![];
@@ -934,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_route_configs_with_pagination() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Create multiple route configs
         for i in 0..5 {
@@ -964,7 +921,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_route_configs_with_offset() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Create multiple route configs
         for i in 0..5 {

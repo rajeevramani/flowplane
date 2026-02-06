@@ -354,53 +354,18 @@ impl LearningSessionOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use sqlx::Executor;
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create learning_sessions table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS learning_sessions (
-                id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                route_pattern TEXT NOT NULL,
-                cluster_name TEXT,
-                http_methods TEXT,
-                status TEXT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                started_at DATETIME,
-                ends_at DATETIME,
-                completed_at DATETIME,
-                target_sample_count INTEGER NOT NULL,
-                current_sample_count INTEGER NOT NULL DEFAULT 0,
-                triggered_by TEXT,
-                deployment_version TEXT,
-                configuration_snapshot TEXT,
-                error_message TEXT,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create learning_sessions table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_learning").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     #[tokio::test]
     async fn test_create_learning_session_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -425,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_learning_session_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -444,7 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_learning_session_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -464,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_learning_session_invalid_sample_count() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -484,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_learning_session_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -495,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_learning_session_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
 
         // Create session as admin for team-a
@@ -521,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_learning_sessions_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
         let admin_auth = InternalAuthContext::admin();
 
@@ -554,7 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_learning_session() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 

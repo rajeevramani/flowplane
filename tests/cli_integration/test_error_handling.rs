@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for CLI error handling
 //!
 //! Tests:

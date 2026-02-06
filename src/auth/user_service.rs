@@ -525,18 +525,12 @@ impl UserService {
 mod tests {
     use super::*;
     use crate::storage::repositories::user::{SqlxTeamMembershipRepository, SqlxUserRepository};
+    use crate::storage::test_helpers::TestDatabase;
     use crate::storage::DbPool;
-    use sqlx::sqlite::SqlitePoolOptions;
 
-    async fn setup_test_service() -> (UserService, DbPool) {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("create sqlite pool");
-
-        // Run migrations
-        crate::storage::run_migrations(&pool).await.expect("run migrations");
+    async fn setup_test_service() -> (TestDatabase, UserService, DbPool) {
+        let test_db = TestDatabase::new("user_service").await;
+        let pool = test_db.pool.clone();
 
         let user_repo = Arc::new(SqlxUserRepository::new(pool.clone()));
         let membership_repo = Arc::new(SqlxTeamMembershipRepository::new(pool.clone()));
@@ -547,13 +541,13 @@ mod tests {
         let service =
             UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo);
 
-        (service, pool)
+        (test_db, service, pool)
     }
 
     /// Helper to create a test team in the database
     async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) {
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')",
+            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
         )
         .bind(format!("team-{}", uuid::Uuid::new_v4()))
         .bind(name)
@@ -565,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -587,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_duplicate_user_fails() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         // Create first user
         service
@@ -620,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let created = service
             .create_user(
@@ -644,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_users() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         // Create multiple users
         for i in 1..=3 {
@@ -667,7 +661,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -700,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -722,7 +716,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
         create_test_team(&pool, "team-alpha", "Team Alpha").await;
@@ -757,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_team_membership() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
         create_test_team(&pool, "team-alpha", "Team Alpha").await;
@@ -796,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_user_teams() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create teams first
         for (name, display) in
@@ -837,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership_validates_team_exists() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -873,7 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
         create_test_team(&pool, "team-alpha", "Team Alpha").await;
@@ -924,7 +918,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes_user_not_found() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let fake_user_id = UserId::new();
         let result = service
@@ -948,7 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes_membership_not_found() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(

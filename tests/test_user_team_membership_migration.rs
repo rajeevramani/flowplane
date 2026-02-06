@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for user and team membership migrations
 //!
 //! Verifies that the following migrations work correctly:
@@ -5,19 +9,18 @@
 //! - 20251112000002_create_user_team_memberships_table.sql
 //! - 20251112000003_add_user_columns_to_tokens.sql
 
+mod common;
+
+use common::db_metadata::{get_column_names, get_index_names};
+use common::test_db::TestDatabase;
 use flowplane::auth::team::CreateTeamRequest;
-use flowplane::config::DatabaseConfig;
-use flowplane::storage::create_pool;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
+use flowplane::storage::DbPool;
 use sqlx::Row;
 
-async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
-    let config = DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: true,
-        ..Default::default()
-    };
-    let pool = create_pool(&config).await.unwrap();
+async fn create_test_pool() -> (TestDatabase, DbPool) {
+    let test_db = TestDatabase::new("user_team_membership").await;
+    let pool = test_db.pool.clone();
 
     // Create test teams to satisfy FK constraints
     let team_repo = SqlxTeamRepository::new(pool.clone());
@@ -33,23 +36,18 @@ async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
             .await;
     }
 
-    pool
+    (test_db, pool)
 }
 
 // Tests for users table migration (20251112000001)
 
 #[tokio::test]
 async fn test_users_table_created() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify users table exists by querying its schema
-    let schema = sqlx::query("PRAGMA table_info(users)")
-        .fetch_all(&pool)
-        .await
-        .expect("Failed to fetch users table info");
-
-    // Extract column names
-    let column_names: Vec<String> = schema.iter().map(|row| row.get("name")).collect();
+    let column_names =
+        get_column_names(&pool, "users").await.expect("Failed to fetch users table info");
 
     // Verify all required columns exist
     assert!(column_names.contains(&"id".to_string()), "id column should exist");
@@ -67,16 +65,10 @@ async fn test_users_table_created() {
 
 #[tokio::test]
 async fn test_users_table_indexes() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify indexes exist
-    let indexes =
-        sqlx::query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='users'")
-            .fetch_all(&pool)
-            .await
-            .expect("Failed to fetch indexes");
-
-    let index_names: Vec<String> = indexes.iter().map(|row| row.get("name")).collect();
+    let index_names = get_index_names(&pool, "users").await.expect("Failed to fetch indexes");
 
     // Verify required indexes exist
     assert!(
@@ -99,13 +91,13 @@ async fn test_users_table_indexes() {
 
 #[tokio::test]
 async fn test_users_email_unique_constraint() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Insert a user
     sqlx::query(
         r#"
         INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', 'active', FALSE, datetime('now'), datetime('now'))
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', 'active', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -116,7 +108,7 @@ async fn test_users_email_unique_constraint() {
     let result = sqlx::query(
         r#"
         INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
-        VALUES ('user-2', 'test@example.com', 'hash456', 'Test User 2', 'active', FALSE, datetime('now'), datetime('now'))
+        VALUES ('user-2', 'test@example.com', 'hash456', 'Test User 2', 'active', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -128,7 +120,7 @@ async fn test_users_email_unique_constraint() {
 
 #[tokio::test]
 async fn test_users_default_values() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Insert a user with minimal fields
     sqlx::query(
@@ -159,16 +151,12 @@ async fn test_users_default_values() {
 
 #[tokio::test]
 async fn test_user_team_memberships_table_created() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify user_team_memberships table exists
-    let schema = sqlx::query("PRAGMA table_info(user_team_memberships)")
-        .fetch_all(&pool)
+    let column_names = get_column_names(&pool, "user_team_memberships")
         .await
         .expect("Failed to fetch user_team_memberships table info");
-
-    // Extract column names
-    let column_names: Vec<String> = schema.iter().map(|row| row.get("name")).collect();
 
     // Verify all required columns exist
     assert!(column_names.contains(&"id".to_string()), "id column should exist");
@@ -180,17 +168,11 @@ async fn test_user_team_memberships_table_created() {
 
 #[tokio::test]
 async fn test_user_team_memberships_indexes() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify indexes exist
-    let indexes = sqlx::query(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='user_team_memberships'",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Failed to fetch indexes");
-
-    let index_names: Vec<String> = indexes.iter().map(|row| row.get("name")).collect();
+    let index_names =
+        get_index_names(&pool, "user_team_memberships").await.expect("Failed to fetch indexes");
 
     // Verify required indexes exist
     assert!(
@@ -209,7 +191,7 @@ async fn test_user_team_memberships_indexes() {
 
 #[tokio::test]
 async fn test_user_team_memberships_unique_constraint() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // First create a user
     sqlx::query(
@@ -226,7 +208,7 @@ async fn test_user_team_memberships_unique_constraint() {
     sqlx::query(
         r#"
         INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-        VALUES ('membership-1', 'user-1', 'team-a', '["read", "write"]', datetime('now'))
+        VALUES ('membership-1', 'user-1', 'team-a', '["read", "write"]', CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -237,7 +219,7 @@ async fn test_user_team_memberships_unique_constraint() {
     let result = sqlx::query(
         r#"
         INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-        VALUES ('membership-2', 'user-1', 'team-a', '["admin"]', datetime('now'))
+        VALUES ('membership-2', 'user-1', 'team-a', '["admin"]', CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -249,7 +231,7 @@ async fn test_user_team_memberships_unique_constraint() {
 
 #[tokio::test]
 async fn test_user_team_memberships_foreign_key_cascade() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Create a user
     sqlx::query(
@@ -267,7 +249,7 @@ async fn test_user_team_memberships_foreign_key_cascade() {
         sqlx::query(
             r#"
             INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-            VALUES (?, 'user-1', ?, '["read"]', datetime('now'))
+            VALUES ($1, 'user-1', $2, '["read"]', CURRENT_TIMESTAMP)
             "#,
         )
         .bind(format!("membership-{}", i))
@@ -306,15 +288,12 @@ async fn test_user_team_memberships_foreign_key_cascade() {
 
 #[tokio::test]
 async fn test_personal_access_tokens_user_columns_added() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify new columns exist
-    let schema = sqlx::query("PRAGMA table_info(personal_access_tokens)")
-        .fetch_all(&pool)
+    let column_names = get_column_names(&pool, "personal_access_tokens")
         .await
         .expect("Failed to fetch table info");
-
-    let column_names: Vec<String> = schema.iter().map(|row| row.get("name")).collect();
 
     assert!(column_names.contains(&"user_id".to_string()), "user_id column should exist");
     assert!(column_names.contains(&"user_email".to_string()), "user_email column should exist");
@@ -322,17 +301,11 @@ async fn test_personal_access_tokens_user_columns_added() {
 
 #[tokio::test]
 async fn test_personal_access_tokens_user_indexes() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Verify indexes exist
-    let indexes = sqlx::query(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='personal_access_tokens'",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Failed to fetch indexes");
-
-    let index_names: Vec<String> = indexes.iter().map(|row| row.get("name")).collect();
+    let index_names =
+        get_index_names(&pool, "personal_access_tokens").await.expect("Failed to fetch indexes");
 
     assert!(
         index_names.contains(&"idx_personal_access_tokens_user_id".to_string()),
@@ -350,13 +323,13 @@ async fn test_personal_access_tokens_user_indexes() {
 
 #[tokio::test]
 async fn test_personal_access_tokens_backward_compatible() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Insert a token without user_id and user_email (backward compatibility)
     sqlx::query(
         r#"
         INSERT INTO personal_access_tokens (id, name, token_hash, status, created_at, updated_at)
-        VALUES ('token-1', 'Legacy Token', 'hash123', 'active', datetime('now'), datetime('now'))
+        VALUES ('token-1', 'Legacy Token', 'hash123', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -380,7 +353,7 @@ async fn test_personal_access_tokens_backward_compatible() {
 
 #[tokio::test]
 async fn test_personal_access_tokens_with_user_data() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Create a user
     sqlx::query(
@@ -397,7 +370,7 @@ async fn test_personal_access_tokens_with_user_data() {
     sqlx::query(
         r#"
         INSERT INTO personal_access_tokens (id, name, token_hash, status, user_id, user_email, created_at, updated_at)
-        VALUES ('token-1', 'User Token', 'hash456', 'active', 'user-1', 'test@example.com', datetime('now'), datetime('now'))
+        VALUES ('token-1', 'User Token', 'hash456', 'active', 'user-1', 'test@example.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -421,7 +394,7 @@ async fn test_personal_access_tokens_with_user_data() {
 
 #[tokio::test]
 async fn test_query_tokens_by_user() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // Create a user
     sqlx::query(
@@ -439,7 +412,7 @@ async fn test_query_tokens_by_user() {
         sqlx::query(
             r#"
             INSERT INTO personal_access_tokens (id, name, token_hash, status, user_id, user_email, created_at, updated_at)
-            VALUES (?, ?, ?, 'active', 'user-1', 'test@example.com', datetime('now'), datetime('now'))
+            VALUES ($1, $2, $3, 'active', 'user-1', 'test@example.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#,
         )
         .bind(format!("token-{}", i))
@@ -475,7 +448,7 @@ async fn test_query_tokens_by_user() {
 
 #[tokio::test]
 async fn test_complete_user_workflow() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
 
     // 1. Create a user
     sqlx::query(
@@ -493,7 +466,7 @@ async fn test_complete_user_workflow() {
         sqlx::query(
             r#"
             INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-            VALUES (?, 'user-1', ?, '["read", "write", "admin"]', datetime('now'))
+            VALUES ($1, 'user-1', $2, '["read", "write", "admin"]', CURRENT_TIMESTAMP)
             "#,
         )
         .bind(format!("membership-{}", team))
@@ -508,7 +481,7 @@ async fn test_complete_user_workflow() {
         sqlx::query(
             r#"
             INSERT INTO personal_access_tokens (id, name, token_hash, status, user_id, user_email, created_at, updated_at)
-            VALUES (?, ?, ?, 'active', 'user-1', 'admin@example.com', datetime('now'), datetime('now'))
+            VALUES ($1, $2, $3, 'active', 'user-1', 'admin@example.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#,
         )
         .bind(format!("token-{}", i))

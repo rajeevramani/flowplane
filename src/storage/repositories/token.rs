@@ -587,8 +587,7 @@ impl TokenRepository for SqlxTokenRepository {
     async fn record_failed_setup_token_attempt(&self, id: &str) -> Result<()> {
         // Increment failed_attempts and lock token if failed_attempts >= 5
         // Lock for 15 minutes
-        // Note: Lock timestamp computed in Rust for PostgreSQL compatibility
-        // (SQLite's datetime() function is not supported in PostgreSQL)
+        // Lock timestamp computed in Rust
         let lock_until = chrono::Utc::now() + chrono::Duration::minutes(15);
 
         let result = sqlx::query(

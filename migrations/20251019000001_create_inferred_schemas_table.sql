@@ -3,7 +3,7 @@
 
 -- Stores aggregated schema information for API endpoints discovered during learning sessions
 CREATE TABLE IF NOT EXISTS inferred_schemas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     team TEXT NOT NULL,
 
     -- Learning session reference
@@ -16,17 +16,17 @@ CREATE TABLE IF NOT EXISTS inferred_schemas (
     -- Schema storage (JSON)
     request_schema TEXT,  -- JSON Schema Draft 2020-12 format (NULL if no request body)
     response_schema TEXT, -- JSON Schema Draft 2020-12 format (NULL if no response body)
-    response_status_code INTEGER, -- HTTP status code this schema applies to
+    response_status_code BIGINT, -- HTTP status code this schema applies to
 
     -- Statistics
-    sample_count INTEGER NOT NULL DEFAULT 1, -- Number of samples this schema was inferred from
-    confidence REAL NOT NULL DEFAULT 1.0,    -- Confidence score (0.0 to 1.0)
+    sample_count BIGINT NOT NULL DEFAULT 1, -- Number of samples this schema was inferred from
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,    -- Confidence score (0.0 to 1.0)
 
     -- Timestamps
-    first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign key constraint
     FOREIGN KEY (session_id) REFERENCES learning_sessions(id) ON DELETE CASCADE

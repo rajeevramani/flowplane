@@ -11,6 +11,28 @@
 #   - xDS:     localhost:50051
 
 services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:17-alpine
+    container_name: flowplane-postgres
+    environment:
+      POSTGRES_USER: flowplane
+      POSTGRES_PASSWORD: flowplane
+      POSTGRES_DB: flowplane
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowplane_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowplane"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
   # Flowplane Control Plane
   control-plane:
     build:
@@ -19,8 +41,9 @@ services:
     image: flowplane:latest
     container_name: flowplane-control-plane
     environment:
-      # Database configuration (SQLite)
-      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
+      # Database configuration (PostgreSQL)
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-postgres:5432/flowplane
+      FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
 
       # Server configuration
       FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
@@ -49,20 +72,21 @@ services:
       - "50051:50051" # xDS gRPC
       - "50052:50052" # Access Log Service
       - "50053:50053" # External Processor
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
-    volumes:
-      - flowplane_data:/app/data
     networks:
       - flowplane-network
     restart: unless-stopped
 
 volumes:
-  flowplane_data:
+  flowplane_pgdata:
     driver: local
 
 networks:

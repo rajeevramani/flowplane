@@ -279,46 +279,18 @@ impl DataplaneOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use sqlx::Executor;
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create dataplanes table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS dataplanes (
-                id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                name TEXT NOT NULL,
-                gateway_host TEXT,
-                description TEXT,
-                certificate_serial TEXT,
-                certificate_expires_at TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .await
-        .expect("create dataplanes table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_dataplanes").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     #[tokio::test]
     async fn test_create_dataplane_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -341,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_dataplane_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -358,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_dataplane_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -376,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_dataplane_empty_name() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -394,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_dataplane_already_exists() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -415,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_dataplane() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -438,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_dataplane_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -449,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_dataplane_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
 
         // Create dataplane as admin for team-a
@@ -473,7 +445,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_dataplanes_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
         let admin_auth = InternalAuthContext::admin();
 
@@ -504,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_dataplane() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -532,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_dataplane() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 

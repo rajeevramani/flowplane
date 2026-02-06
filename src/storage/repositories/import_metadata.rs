@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -108,7 +108,7 @@ impl ImportMetadataRepository {
     /// Get import metadata by ID
     #[instrument(skip(self), name = "db_get_import_metadata")]
     pub async fn get_by_id(&self, id: &str) -> Result<Option<ImportMetadataData>> {
-        let row = sqlx::query_as::<Sqlite, ImportMetadataRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
             "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
              FROM import_metadata WHERE id = $1",
         )
@@ -127,7 +127,7 @@ impl ImportMetadataRepository {
         team: &str,
         spec_name: &str,
     ) -> Result<Option<ImportMetadataData>> {
-        let row = sqlx::query_as::<Sqlite, ImportMetadataRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
             "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
              FROM import_metadata WHERE team = $1 AND spec_name = $2",
         )
@@ -143,7 +143,7 @@ impl ImportMetadataRepository {
     /// List all import metadata for a team
     #[instrument(skip(self), name = "db_list_import_metadata")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<ImportMetadataData>> {
-        let rows = sqlx::query_as::<Sqlite, ImportMetadataRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
             "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
              FROM import_metadata WHERE team = $1 ORDER BY imported_at DESC",
         )
@@ -158,7 +158,7 @@ impl ImportMetadataRepository {
     /// List all import metadata across all teams (for admin users)
     #[instrument(skip(self), name = "db_list_all_import_metadata")]
     pub async fn list_all(&self) -> Result<Vec<ImportMetadataData>> {
-        let rows = sqlx::query_as::<Sqlite, ImportMetadataRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
             "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
              FROM import_metadata ORDER BY imported_at DESC",
         )

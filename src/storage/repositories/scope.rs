@@ -391,24 +391,12 @@ impl ScopeRepository for SqlxScopeRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        // Run migrations
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_find_all_enabled_returns_seeded_scopes() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_find_all_enabled").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let scopes = repo.find_all_enabled().await.expect("find_all_enabled");
@@ -425,7 +413,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_ui_visible_excludes_admin() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_find_ui_visible").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let scopes = repo.find_ui_visible().await.expect("find_ui_visible");
@@ -441,7 +430,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_by_value() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_find_by_value").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let scope = repo.find_by_value("clusters:write").await.expect("find_by_value");
@@ -455,7 +445,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_by_value_not_found() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_find_by_value_nf").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let scope = repo.find_by_value("nonexistent:scope").await.expect("find_by_value");
@@ -465,7 +456,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_valid_scope() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_is_valid").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         // Valid scopes
@@ -479,7 +471,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_valid_resource_action() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_valid_resource_action").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         // Valid combinations
@@ -493,7 +486,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_by_resource() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_find_by_resource").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let scopes = repo.find_by_resource("tokens").await.expect("find_by_resource");
@@ -504,7 +498,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_scope() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_create").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let request = CreateScopeRequest {
@@ -531,7 +526,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_scope() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_update").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         // Get an existing scope
@@ -555,7 +551,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_scope_soft_deletes() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_delete").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         // Get an existing scope
@@ -575,7 +572,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_resources() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_get_resources").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let resources = repo.get_resources().await.expect("get_resources");
@@ -587,7 +585,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_categories() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("scope_get_categories").await;
+        let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
         let categories = repo.get_categories().await.expect("get_categories");

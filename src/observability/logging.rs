@@ -84,7 +84,7 @@ pub fn log_config_info(config: &crate::config::AppConfig) {
     tracing::info!(
         server_address = %config.server.bind_address(),
         xds_address = %config.xds.bind_address(),
-        database_type = if config.database.is_sqlite() { "sqlite" } else { "postgresql" },
+        database_type = "postgresql",
         auth_enabled = %config.auth.enable_auth,
         metrics_enabled = %config.observability.enable_metrics,
         tracing_enabled = %config.observability.enable_tracing,

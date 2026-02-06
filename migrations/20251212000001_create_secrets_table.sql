@@ -12,22 +12,22 @@ CREATE TABLE IF NOT EXISTS secrets (
     )),
     description TEXT,
     -- Encrypted secret configuration (JSON encrypted with AES-256-GCM)
-    configuration_encrypted BLOB NOT NULL,
+    configuration_encrypted BYTEA NOT NULL,
     -- Encryption key identifier for key rotation support
     encryption_key_id TEXT NOT NULL DEFAULT 'default',
     -- Nonce used for AES-GCM encryption (unique per secret)
-    nonce BLOB NOT NULL,
+    nonce BYTEA NOT NULL,
     -- Version for optimistic locking and xDS versioning
-    version INTEGER NOT NULL DEFAULT 1,
+    version BIGINT NOT NULL DEFAULT 1,
     -- Source API that created this secret
     source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'gateway_api', 'platform_api')),
     -- Team ownership for multi-tenancy
     team TEXT NOT NULL,
     -- Timestamps
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- Optional expiration for time-limited secrets
-    expires_at DATETIME,
+    expires_at TIMESTAMPTZ,
 
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(team, name)

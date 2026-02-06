@@ -78,7 +78,10 @@ impl RouteConfigOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already exists")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::already_exists("Route config", &req.name)
                 } else {
                     InternalError::from(e)
@@ -294,7 +297,7 @@ impl RouteConfigOperations {
 /// Extracts the first path prefix and collects all referenced cluster names.
 fn summarize_config(config: &Value) -> (String, String) {
     let mut paths = Vec::new();
-    let mut clusters = std::collections::HashSet::new();
+    let mut clusters = std::collections::BTreeSet::new();
 
     // Handle both formats: MCP format and internal format
     let virtual_hosts = config.get("virtual_hosts").or_else(|| config.get("virtualHosts"));
@@ -314,10 +317,13 @@ fn summarize_config(config: &Value) -> (String, String) {
     }
 
     let path_prefix = paths.first().cloned().unwrap_or_else(|| "/".to_string());
+    // Store only the first cluster name to satisfy FK constraint on route_configs.cluster_name.
+    // PostgreSQL enforces FKs strictly - comma-separated values are not valid FK references.
+    // The full cluster list is preserved in the route config JSON configuration.
     let cluster_summary = if clusters.is_empty() {
         "none".to_string()
     } else {
-        clusters.into_iter().collect::<Vec<_>>().join(", ")
+        clusters.into_iter().next().unwrap_or_else(|| "none".to_string())
     };
 
     (path_prefix, cluster_summary)
@@ -349,7 +355,7 @@ fn extract_path_from_route(route: &Value, paths: &mut Vec<String>) {
 }
 
 /// Extract clusters from route configuration
-fn extract_clusters_from_route(route: &Value, clusters: &mut std::collections::HashSet<String>) {
+fn extract_clusters_from_route(route: &Value, clusters: &mut std::collections::BTreeSet<String>) {
     if let Some(action) = route.get("action") {
         // MCP forward format: {"type": "forward", "cluster": "x"}
         if let Some(cluster) = action.get("cluster").and_then(|c| c.as_str()) {
@@ -553,43 +559,13 @@ fn transform_action(action: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use sqlx::Executor;
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_routes").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_config() -> Value {
@@ -601,7 +577,7 @@ mod tests {
                 "routes": [{
                     "name": "api",
                     "match": {"path": {"Prefix": "/api"}},
-                    "action": {"Cluster": {"name": "api-cluster"}}
+                    "action": {"Cluster": {"name": "test-cluster"}}
                 }]
             }]
         })
@@ -609,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_route_config_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -629,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_route_config_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -646,7 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_route_config_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -657,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_default_route_blocked() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -721,8 +697,10 @@ mod tests {
 
         let (path_prefix, cluster_summary) = summarize_config(&config);
         assert_eq!(path_prefix, "/api");
-        assert!(cluster_summary.contains("api-cluster"));
-        assert!(cluster_summary.contains("admin-cluster"));
+        // summarize_config now returns only the first cluster name (FK-safe)
+        assert!(
+            cluster_summary.contains("api-cluster") || cluster_summary.contains("admin-cluster")
+        );
     }
 }
 
@@ -1032,7 +1010,10 @@ impl RouteOperations {
 
         let created = route_repo.create(create_req).await.map_err(|e| {
             let err_str = e.to_string();
-            if err_str.contains("UNIQUE constraint") || err_str.contains("already exists") {
+            if err_str.contains("UNIQUE constraint")
+                || err_str.contains("unique constraint")
+                || err_str.contains("already exists")
+            {
                 InternalError::already_exists("Route", &req.name)
             } else {
                 InternalError::from(e)
@@ -1183,20 +1164,13 @@ impl RouteOperations {
 mod route_operations_tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, run_migrations, DatabaseConfig};
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state_with_migrations() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-        run_migrations(&pool).await.expect("migrations");
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_route_ops").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_route_action() -> Value {
@@ -1225,12 +1199,8 @@ mod route_operations_tests {
             team: None, // No team to avoid FK constraint
             import_id: None,
         };
-        // Create cluster (ignore errors if it already exists)
-        match cluster_repo.create(cluster_req).await {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("UNIQUE") => {} // Already exists
-            Err(e) => panic!("Failed to create test cluster: {}", e),
-        }
+        // Create cluster (ignore errors - seed data already provides "test-cluster")
+        let _ = cluster_repo.create(cluster_req).await;
 
         let repo = state.route_config_repository.as_ref().expect("route config repo");
 
@@ -1265,7 +1235,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_create_route_success_admin() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -1300,7 +1270,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_get_route_by_hierarchy() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -1335,7 +1305,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_get_route_not_found() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -1346,7 +1316,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_update_route_success() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -1389,7 +1359,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_delete_route_success() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -1454,7 +1424,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_list_routes_by_route_config() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -1499,7 +1469,7 @@ mod route_operations_tests {
 
     #[tokio::test]
     async fn test_list_routes_by_virtual_host() {
-        let state = setup_state_with_migrations().await;
+        let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 

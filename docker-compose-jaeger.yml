@@ -36,13 +36,36 @@ services:
       - flowplane-network
     restart: unless-stopped
 
+  # PostgreSQL database
+  postgres:
+    image: postgres:17-alpine
+    container_name: flowplane-postgres
+    environment:
+      POSTGRES_USER: flowplane
+      POSTGRES_PASSWORD: flowplane
+      POSTGRES_DB: flowplane
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowplane_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowplane"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
   # Flowplane Control Plane with tracing enabled
   control-plane:
     image: ghcr.io/rajeevramani/flowplane:latest
     container_name: flowplane-control-plane
     environment:
-      # Database configuration (SQLite)
-      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
+      # Database configuration (PostgreSQL)
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-postgres:5432/flowplane
+      FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
 
       # Server configuration
       FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
@@ -70,14 +93,14 @@ services:
     depends_on:
       jaeger:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 15s
-    volumes:
-      - flowplane_data:/app/data
     networks:
       - flowplane-network
     restart: unless-stopped
@@ -87,5 +110,5 @@ networks:
     external: true
 
 volumes:
-  flowplane_data:
+  flowplane_pgdata:
     driver: local

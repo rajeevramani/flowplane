@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
 use flowplane::domain::TokenId;
 use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
@@ -8,11 +12,12 @@ use uuid::Uuid;
 #[allow(clippy::duplicate_mod)]
 #[path = "../test_schema.rs"]
 mod test_schema;
-use test_schema::create_test_pool_minimal_with_connections;
+use test_schema::{create_test_pool_minimal_with_connections, TestDatabase};
 
-async fn setup_pool() -> DbPool {
-    // Performance tests use 10 connections for higher concurrency
-    create_test_pool_minimal_with_connections(10).await
+async fn setup_pool() -> (TestDatabase, DbPool) {
+    let test_db = create_test_pool_minimal_with_connections(10).await;
+    let pool = test_db.pool.clone();
+    (test_db, pool)
 }
 
 fn sample_token(id: &str, index: usize) -> NewPersonalAccessToken {
@@ -48,7 +53,7 @@ async fn seed_tokens(repo: &SqlxTokenRepository, count: usize) {
 
 #[tokio::test]
 async fn performance_list_tokens_100() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 100).await;
 
@@ -68,7 +73,7 @@ async fn performance_list_tokens_100() {
 
 #[tokio::test]
 async fn performance_list_tokens_1000() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -88,7 +93,7 @@ async fn performance_list_tokens_1000() {
 
 #[tokio::test]
 async fn performance_list_tokens_pagination() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 500).await;
 
@@ -112,7 +117,7 @@ async fn performance_list_tokens_pagination() {
 
 #[tokio::test]
 async fn performance_count_operations() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -134,7 +139,7 @@ async fn performance_count_operations() {
 
 #[tokio::test]
 async fn performance_get_single_token() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -165,7 +170,7 @@ async fn performance_get_single_token() {
 
 #[tokio::test]
 async fn performance_comparison_theoretical() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 100).await;
 

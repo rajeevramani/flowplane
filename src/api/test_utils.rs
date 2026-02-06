@@ -58,7 +58,8 @@ use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
 use crate::domain::{TeamId, TokenId, UserId};
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
-use crate::storage::{create_pool, DatabaseConfig, DbPool};
+use crate::storage::test_helpers::TestDatabase;
+use crate::storage::DbPool;
 use crate::xds::XdsState;
 
 /// Builder for creating test API state with configurable dependencies
@@ -79,18 +80,24 @@ impl TestApiStateBuilder {
         self
     }
 
-    /// Build the test API state with in-memory database
+    /// Build the test API state with PostgreSQL test database
     ///
-    /// If no pool is provided, creates an in-memory SQLite database.
-    /// Runs migrations automatically.
-    pub async fn build(self) -> ApiState {
-        let pool = match self.pool {
-            Some(p) => p,
-            None => create_in_memory_pool().await,
+    /// If no pool is provided, creates a PostgreSQL test database via Testcontainers.
+    /// Returns both the TestDatabase (which must be kept alive) and the ApiState.
+    pub async fn build(self) -> (TestDatabase, ApiState) {
+        let (test_db, pool) = match self.pool {
+            Some(p) => {
+                // When a pool is provided externally, create a dummy TestDatabase
+                // The caller is responsible for keeping their own container alive
+                let db = TestDatabase::new("api_state_builder").await;
+                (db, p)
+            }
+            None => {
+                let db = TestDatabase::new("api_state").await;
+                let pool = db.pool.clone();
+                (db, pool)
+            }
         };
-
-        // Run migrations
-        run_migrations(&pool).await;
 
         let xds_state = Arc::new(XdsState::with_database(Default::default(), pool));
         let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
@@ -98,38 +105,33 @@ impl TestApiStateBuilder {
         let mcp_session_manager = crate::mcp::create_session_manager();
         let certificate_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::from_env());
 
-        ApiState {
-            xds_state,
-            filter_schema_registry: None,
-            stats_cache,
-            mcp_connection_manager,
-            mcp_session_manager,
-            certificate_rate_limiter,
-        }
+        (
+            test_db,
+            ApiState {
+                xds_state,
+                filter_schema_registry: None,
+                stats_cache,
+                mcp_connection_manager,
+                mcp_session_manager,
+                certificate_rate_limiter,
+            },
+        )
     }
 }
 
-/// Create an in-memory SQLite database pool
-pub async fn create_in_memory_pool() -> DbPool {
-    let config = DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: false,
-        max_connections: 5,
-        min_connections: 1,
-        connect_timeout_seconds: 10,
-        idle_timeout_seconds: 600,
-    };
-
-    create_pool(&config).await.expect("Failed to create in-memory database pool")
+/// Create a PostgreSQL test database pool via Testcontainers.
+///
+/// Returns the TestDatabase (must be kept alive) and the DbPool.
+pub async fn create_test_pool() -> (TestDatabase, DbPool) {
+    let db = TestDatabase::new("api_test").await;
+    let pool = db.pool.clone();
+    (db, pool)
 }
 
-/// Run database migrations on the pool
-pub async fn run_migrations(pool: &DbPool) {
-    sqlx::migrate!("./migrations").run(pool).await.expect("Failed to run migrations");
-}
-
-/// Create test API state with default configuration
-pub async fn create_test_state() -> ApiState {
+/// Create test API state with default configuration.
+///
+/// Returns the TestDatabase (must be kept alive) and the ApiState.
+pub async fn create_test_state() -> (TestDatabase, ApiState) {
     TestApiStateBuilder::new().build().await
 }
 
@@ -227,13 +229,20 @@ impl TestTeamBuilder {
         self
     }
 
-    /// Insert the team into the database
+    /// Insert the team into the database, or return the existing team if it already exists.
     pub async fn insert(self, pool: &DbPool) -> TeamId {
-        use crate::auth::team::CreateTeamRequest;
         use crate::storage::repositories::SqlxTeamRepository;
         use crate::storage::repositories::TeamRepository;
 
         let repo = SqlxTeamRepository::new(pool.clone());
+
+        // Try to get the existing team first (seed data may have created it)
+        if let Ok(Some(team)) = repo.get_team_by_name(&self.name).await {
+            return team.id;
+        }
+
+        // Team doesn't exist, create it
+        use crate::auth::team::CreateTeamRequest;
         let team = repo
             .create_team(CreateTeamRequest {
                 name: self.name.clone(),
@@ -337,18 +346,16 @@ mod tests {
     use axum::http::StatusCode;
 
     #[tokio::test]
-    async fn test_create_in_memory_pool() {
-        let pool = create_in_memory_pool().await;
-        // Should be able to run migrations
-        run_migrations(&pool).await;
+    async fn test_create_test_pool() {
+        let (_db, pool) = create_test_pool().await;
         // Pool should be usable
-        let result: Result<(i64,), _> = sqlx::query_as("SELECT 1").fetch_one(&pool).await;
+        let result: Result<(i32,), _> = sqlx::query_as("SELECT 1").fetch_one(&pool).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_create_test_state() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         // State should have valid XDS state
         assert!(state.xds_state.cluster_repository.is_some());
     }
@@ -375,8 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_team_builder() {
-        let pool = create_in_memory_pool().await;
-        run_migrations(&pool).await;
+        let (_db, pool) = create_test_pool().await;
 
         let team_id =
             TestTeamBuilder::new("test-team").with_display_name("My Test Team").insert(&pool).await;
@@ -386,8 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_builder() {
-        let pool = create_in_memory_pool().await;
-        run_migrations(&pool).await;
+        let (_db, pool) = create_test_pool().await;
 
         let user_id =
             TestUserBuilder::new("testuser@test.com").with_name("Test User").insert(&pool).await;

@@ -74,7 +74,10 @@ impl ListenerOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already exists")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::already_exists("Listener", &req.name)
                 } else if err_str.contains("not found") {
                     InternalError::not_found("Dataplane", &dataplane_id)
@@ -260,66 +263,15 @@ impl ListenerOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::TestDatabase;
     use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
-    use sqlx::Executor;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create listeners table for repository usage
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create listeners table");
-
-        // Create dataplanes table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS dataplanes (
-                id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                name TEXT NOT NULL,
-                gateway_host TEXT,
-                description TEXT,
-                certificate_serial TEXT,
-                certificate_expires_at TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .await
-        .expect("create dataplanes table");
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_listeners").await;
+        let pool = test_db.pool.clone();
 
         // Insert test dataplanes for various teams
-        pool.execute(
+        sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
             VALUES
@@ -328,10 +280,12 @@ mod tests {
                 ('dp-team-b-123', 'team-b', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
         "#,
         )
+        .execute(&pool)
         .await
         .expect("insert test dataplanes");
 
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_config() -> ListenerConfig {
@@ -358,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -384,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -404,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -425,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_listener_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -436,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_listener_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
 
         // Create listener as admin for team-a
@@ -463,7 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_listeners_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
         let admin_auth = InternalAuthContext::admin();
 
@@ -499,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_listener() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -537,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_listener() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -564,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_default_listener_blocked() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
         let auth = InternalAuthContext::admin();
 

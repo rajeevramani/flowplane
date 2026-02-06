@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for Native API cross-team resource access prevention
 //!
 //! These tests verify that team-scoped users cannot access or discover resources

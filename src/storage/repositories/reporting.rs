@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Route flow data combining information from routes, clusters, and listeners
@@ -81,7 +81,7 @@ impl ReportingRepository {
             "#
             .to_string();
 
-            let rows = sqlx::query_as::<Sqlite, RouteFlowRow>(&query_str)
+            let rows = sqlx::query_as::<sqlx::Postgres, RouteFlowRow>(&query_str)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool)
@@ -128,7 +128,7 @@ impl ReportingRepository {
                 teams.len() + 2
             );
 
-            let mut query = sqlx::query_as::<Sqlite, RouteFlowRow>(&query_str);
+            let mut query = sqlx::query_as::<sqlx::Postgres, RouteFlowRow>(&query_str);
 
             // Bind team names
             for team in teams {
@@ -165,7 +165,7 @@ impl ReportingRepository {
     async fn count_route_flows(&self, teams: &[String]) -> Result<i64> {
         let count = if teams.is_empty() {
             // Admin query - count all routes
-            sqlx::query_scalar::<Sqlite, i64>(
+            sqlx::query_scalar::<sqlx::Postgres, i64>(
                 r#"
                 SELECT COUNT(DISTINCT r.name)
                 FROM route_configs r
@@ -200,7 +200,7 @@ impl ReportingRepository {
                 placeholders
             );
 
-            let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+            let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
 
             for team in teams {
                 query = query.bind(team);

@@ -5,7 +5,6 @@
 //! from the database and executed via GatewayExecutor.
 
 use serde_json::Value;
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::{debug, error};
 
@@ -14,9 +13,10 @@ use crate::mcp::error::McpError;
 use crate::mcp::gateway::GatewayExecutor;
 use crate::mcp::protocol::*;
 use crate::storage::repositories::mcp_tool::McpToolRepository;
+use crate::storage::DbPool;
 
 pub struct McpApiHandler {
-    db_pool: Arc<SqlitePool>,
+    db_pool: Arc<DbPool>,
     team: String,
     gateway_executor: GatewayExecutor,
     #[allow(dead_code)]
@@ -24,7 +24,7 @@ pub struct McpApiHandler {
 }
 
 impl McpApiHandler {
-    pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
+    pub fn new(db_pool: Arc<DbPool>, team: String) -> Self {
         Self { db_pool, team, gateway_executor: GatewayExecutor::new(), initialized: false }
     }
 
@@ -352,12 +352,12 @@ impl McpApiHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_ping() {
-        // Create in-memory database
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_api_handler_ping").await;
+        let pool = _db.pool.clone();
 
         let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
 
@@ -377,8 +377,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize() {
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_api_handler_init").await;
+        let pool = _db.pool.clone();
 
         let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
 
@@ -410,8 +410,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_method_not_found() {
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_api_handler_not_found").await;
+        let pool = _db.pool.clone();
 
         let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
 
@@ -432,8 +432,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_version_negotiation_supported() {
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_api_handler_version_ok").await;
+        let pool = _db.pool.clone();
 
         let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
 
@@ -444,8 +444,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_version_negotiation_unsupported() {
-        let pool =
-            sqlx::SqlitePool::connect("sqlite::memory:").await.expect("Failed to create pool");
+        let _db = TestDatabase::new("mcp_api_handler_version_bad").await;
+        let pool = _db.pool.clone();
 
         let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
 

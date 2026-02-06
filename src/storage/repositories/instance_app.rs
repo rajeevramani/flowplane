@@ -374,23 +374,12 @@ impl InstanceAppRepository for SqlxInstanceAppRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_is_enabled_returns_false_for_unknown_app() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_unknown").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         let enabled = repo.is_enabled("unknown_app").await.expect("is_enabled");
@@ -399,7 +388,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_enable_app_creates_record() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_enable").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         let app =
@@ -413,7 +403,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_enable_app_with_config() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_enable_config").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         let config = serde_json::json!({
@@ -433,7 +424,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_disable_app() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_disable").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         // First enable
@@ -449,7 +441,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_enabled_after_enable() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_enabled_after").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         repo.enable_app(app_ids::STATS_DASHBOARD, "user-123", None).await.expect("enable_app");
@@ -460,7 +453,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_enabled_after_disable() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_disabled_after").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         repo.enable_app(app_ids::STATS_DASHBOARD, "user-123", None).await.expect("enable_app");
@@ -473,7 +467,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_enabled_apps() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_get_enabled").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         // Enable one app
@@ -489,7 +484,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_config() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_update_config").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         // First enable
@@ -509,7 +505,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats_dashboard_config_returns_none_when_disabled() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_stats_none").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         let config = repo.get_stats_dashboard_config().await.expect("get_stats_dashboard_config");
@@ -518,7 +515,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats_dashboard_config_returns_default_when_enabled() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_stats_default").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         repo.enable_app(app_ids::STATS_DASHBOARD, "user-123", None).await.expect("enable_app");
@@ -533,7 +531,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats_dashboard_config_with_custom_values() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("instance_app_stats_custom").await;
+        let pool = _db.pool.clone();
         let repo = SqlxInstanceAppRepository::new(pool);
 
         let config = serde_json::json!({

@@ -47,7 +47,7 @@ fn to_api_error(e: McpServiceError) -> ApiError {
 }
 
 /// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<sqlx::SqlitePool>, ApiError> {
+fn get_db_pool(state: &ApiState) -> Result<Arc<crate::storage::DbPool>, ApiError> {
     let cluster_repo = state
         .xds_state
         .cluster_repository

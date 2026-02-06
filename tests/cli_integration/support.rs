@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Support utilities for CLI integration tests
 //!
 //! Provides test fixtures, server setup, and helper functions for testing

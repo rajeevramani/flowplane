@@ -2,8 +2,8 @@
 CREATE TABLE route_filters (
     route_id TEXT NOT NULL,
     filter_id TEXT NOT NULL,
-    filter_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    filter_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE,
     FOREIGN KEY (filter_id) REFERENCES filters(id) ON DELETE RESTRICT,

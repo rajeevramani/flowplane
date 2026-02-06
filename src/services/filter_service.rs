@@ -600,7 +600,7 @@ impl FilterService {
         &self,
         virtual_host_id: &VirtualHostId,
         filter_id: &FilterId,
-        order: Option<i32>,
+        order: Option<i64>,
         settings: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -709,7 +709,7 @@ impl FilterService {
         &self,
         route_id: &RouteId,
         filter_id: &FilterId,
-        order: Option<i32>,
+        order: Option<i64>,
         settings: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         use opentelemetry::trace::{FutureExt, TraceContextExt};

@@ -20,7 +20,7 @@
 //! - **xDS Server**: Tonic-based gRPC server implementing Envoy discovery protocols
 //! - **Configuration Manager**: Translates REST API calls to Envoy xDS configurations
 //! - **REST API Gateway**: Axum-based HTTP server for configuration management
-//! - **Persistence Layer**: SQLx repositories (SQLite by default, PostgreSQL planned)
+//! - **Persistence Layer**: SQLx repositories (PostgreSQL)
 
 pub mod api;
 pub mod auth;

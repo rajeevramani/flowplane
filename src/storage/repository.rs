@@ -30,93 +30,12 @@ pub use crate::storage::repositories::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
-
-    async fn create_test_pool() -> crate::storage::DbPool {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        };
-        let pool = create_pool(&config).await.unwrap();
-
-        // Run basic schema creation for testing
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            )
-        "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_cluster_crud_operations() {
-        let pool = create_test_pool().await;
+        let _db = TestDatabase::new("repository_cluster_crud").await;
+        let pool = _db.pool.clone();
         let repo = ClusterRepository::new(pool);
 
         // Create a test cluster
@@ -159,18 +78,16 @@ mod tests {
         assert_eq!(updated.service_name, "updated_service");
         assert_eq!(updated.version, 2);
 
-        // List clusters
+        // List clusters (includes seed clusters from TestDatabase)
         let clusters = repo.list(None, None).await.unwrap();
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].id, created.id);
+        assert!(clusters.iter().any(|c| c.id == created.id));
 
         // Check existence
         assert!(repo.exists_by_name("test_cluster").await.unwrap());
         assert!(!repo.exists_by_name("nonexistent").await.unwrap());
 
-        // Get count
-        let count = repo.count().await.unwrap();
-        assert_eq!(count, 1);
+        // Get count (includes seed clusters)
+        let count_before_delete = repo.count().await.unwrap();
 
         // Delete cluster
         repo.delete(&created.id).await.unwrap();
@@ -178,12 +95,13 @@ mod tests {
         // Verify deletion
         assert!(repo.get_by_id(&created.id).await.is_err());
         let count_after_delete = repo.count().await.unwrap();
-        assert_eq!(count_after_delete, 0);
+        assert_eq!(count_after_delete, count_before_delete - 1);
     }
 
     #[tokio::test]
     async fn test_cluster_not_found() {
-        let pool = create_test_pool().await;
+        let _db = TestDatabase::new("repository_cluster_not_found").await;
+        let pool = _db.pool.clone();
         let repo = ClusterRepository::new(pool);
 
         let result =
@@ -196,7 +114,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_route_config_crud_operations() {
-        let pool = create_test_pool().await;
+        let _db = TestDatabase::new("repository_route_config_crud").await;
+        let pool = _db.pool.clone();
         let repo = RouteConfigRepository::new(pool.clone());
 
         let create_request = CreateRouteConfigRequest {
@@ -278,7 +197,7 @@ mod tests {
         assert_eq!(updated.cluster_name, "cluster-b");
 
         let listed = repo.list(None, None).await.unwrap();
-        assert_eq!(listed.len(), 1);
+        assert!(listed.iter().any(|rc| rc.id == created.id));
 
         repo.delete(&created.id).await.unwrap();
         assert!(repo.get_by_id(&created.id).await.is_err());
@@ -286,7 +205,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_listener_crud_operations() {
-        let pool = create_test_pool().await;
+        let _db = TestDatabase::new("repository_listener_crud").await;
+        let pool = _db.pool.clone();
         let repo = ListenerRepository::new(pool);
 
         let create_request = CreateListenerRequest {
@@ -336,15 +256,14 @@ mod tests {
         assert_eq!(updated.version, 2);
 
         let listeners = repo.list(None, None).await.unwrap();
-        assert_eq!(listeners.len(), 1);
+        assert!(listeners.iter().any(|l| l.id == created.id));
 
         assert!(repo.exists_by_name("test-listener").await.unwrap());
         assert!(!repo.exists_by_name("missing").await.unwrap());
 
-        assert_eq!(repo.count().await.unwrap(), 1);
-
+        let count_before = repo.count().await.unwrap();
         repo.delete(&created.id).await.unwrap();
         assert!(repo.get_by_id(&created.id).await.is_err());
-        assert_eq!(repo.count().await.unwrap(), 0);
+        assert_eq!(repo.count().await.unwrap(), count_before - 1);
     }
 }

@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for cluster_endpoints.
@@ -163,7 +163,7 @@ impl ClusterEndpointRepository {
     /// Get an endpoint by ID.
     #[instrument(skip(self), fields(id = %id), name = "db_get_endpoint_by_id")]
     pub async fn get_by_id(&self, id: &EndpointId) -> Result<ClusterEndpointData> {
-        let row = sqlx::query_as::<Sqlite, ClusterEndpointRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterEndpointRow>(
             "SELECT id, cluster_id, address, port, weight, health_status, priority, metadata, created_at, updated_at \
              FROM cluster_endpoints WHERE id = $1"
         )
@@ -192,7 +192,7 @@ impl ClusterEndpointRepository {
         address: &str,
         port: u16,
     ) -> Result<ClusterEndpointData> {
-        let row = sqlx::query_as::<Sqlite, ClusterEndpointRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterEndpointRow>(
             "SELECT id, cluster_id, address, port, weight, health_status, priority, metadata, created_at, updated_at \
              FROM cluster_endpoints WHERE cluster_id = $1 AND address = $2 AND port = $3"
         )
@@ -223,7 +223,7 @@ impl ClusterEndpointRepository {
         &self,
         cluster_id: &ClusterId,
     ) -> Result<Vec<ClusterEndpointData>> {
-        let rows = sqlx::query_as::<Sqlite, ClusterEndpointRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterEndpointRow>(
             "SELECT id, cluster_id, address, port, weight, health_status, priority, metadata, created_at, updated_at \
              FROM cluster_endpoints WHERE cluster_id = $1 ORDER BY priority ASC, address ASC, port ASC"
         )
@@ -247,7 +247,7 @@ impl ClusterEndpointRepository {
         &self,
         cluster_id: &ClusterId,
     ) -> Result<Vec<ClusterEndpointData>> {
-        let rows = sqlx::query_as::<Sqlite, ClusterEndpointRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterEndpointRow>(
             "SELECT id, cluster_id, address, port, weight, health_status, priority, metadata, created_at, updated_at \
              FROM cluster_endpoints WHERE cluster_id = $1 AND health_status IN ('healthy', 'degraded') \
              ORDER BY priority ASC, address ASC, port ASC"

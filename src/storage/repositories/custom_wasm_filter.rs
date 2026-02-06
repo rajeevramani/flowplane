@@ -7,7 +7,7 @@ use crate::domain::{compute_sha256, validate_wasm_binary, CustomWasmFilterId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for listing (without binary for efficiency)
@@ -214,7 +214,9 @@ impl CustomWasmFilterRepository {
         .await
         .map_err(|e| {
             let err_str = e.to_string();
-            if err_str.contains("UNIQUE constraint failed") {
+            if err_str.contains("UNIQUE constraint failed")
+                || err_str.contains("duplicate key value violates unique constraint")
+            {
                 FlowplaneError::conflict(
                     format!(
                         "Custom WASM filter '{}' already exists for team '{}'",
@@ -222,7 +224,9 @@ impl CustomWasmFilterRepository {
                     ),
                     "CustomWasmFilter",
                 )
-            } else if err_str.contains("FOREIGN KEY constraint failed") {
+            } else if err_str.contains("FOREIGN KEY constraint failed")
+                || err_str.contains("violates foreign key constraint")
+            {
                 // Team doesn't exist
                 FlowplaneError::not_found("Team", &request.team)
             } else {
@@ -252,7 +256,7 @@ impl CustomWasmFilterRepository {
     /// Get custom WASM filter by ID (without binary)
     #[instrument(skip(self), fields(filter_id = %id), name = "db_get_custom_wasm_filter_by_id")]
     pub async fn get_by_id(&self, id: &CustomWasmFilterId) -> Result<CustomWasmFilterData> {
-        let row = sqlx::query_as::<Sqlite, CustomWasmFilterListRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(
             "SELECT id, name, display_name, description, wasm_sha256, wasm_size_bytes, config_schema, per_route_config_schema, ui_hints, attachment_points, runtime, failure_policy, version, team, created_by, created_at, updated_at \
              FROM custom_wasm_filters WHERE id = $1"
         )
@@ -276,7 +280,7 @@ impl CustomWasmFilterRepository {
     /// Get custom WASM filter by name and team (without binary)
     #[instrument(skip(self), fields(filter_name = %name, team = %team), name = "db_get_custom_wasm_filter_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<CustomWasmFilterData> {
-        let row = sqlx::query_as::<Sqlite, CustomWasmFilterListRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(
             "SELECT id, name, display_name, description, wasm_sha256, wasm_size_bytes, config_schema, per_route_config_schema, ui_hints, attachment_points, runtime, failure_policy, version, team, created_by, created_at, updated_at \
              FROM custom_wasm_filters WHERE team = $1 AND name = $2"
         )
@@ -330,7 +334,7 @@ impl CustomWasmFilterRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<CustomWasmFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, CustomWasmFilterListRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(
             "SELECT id, name, display_name, description, wasm_sha256, wasm_size_bytes, config_schema, per_route_config_schema, ui_hints, attachment_points, runtime, failure_policy, version, team, created_by, created_at, updated_at \
              FROM custom_wasm_filters WHERE team = $1 ORDER BY name LIMIT $2 OFFSET $3"
         )
@@ -380,7 +384,7 @@ impl CustomWasmFilterRepository {
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, CustomWasmFilterListRow>(&query);
+        let mut query = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(&query);
         for team in teams {
             query = query.bind(team);
         }
@@ -594,7 +598,7 @@ impl CustomWasmFilterRepository {
     /// List all custom WASM filters (for startup initialization)
     #[instrument(skip(self), name = "db_list_all_custom_wasm_filters")]
     pub async fn list_all(&self) -> Result<Vec<CustomWasmFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, CustomWasmFilterListRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(
             "SELECT id, name, display_name, description, wasm_sha256, wasm_size_bytes, config_schema, per_route_config_schema, ui_hints, attachment_points, runtime, failure_policy, version, team, created_by, created_at, updated_at \
              FROM custom_wasm_filters ORDER BY team, name"
         )
@@ -616,24 +620,12 @@ impl CustomWasmFilterRepository {
 mod tests {
     use super::*;
     use crate::domain::WASM_MAGIC_BYTES;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     /// Helper to create a test team in the database (required due to foreign key)
     async fn create_test_team(pool: &DbPool, name: &str) {
         sqlx::query(
-            "INSERT OR IGNORE INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')",
+            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
         )
         .bind(format!("team-{}", uuid::Uuid::new_v4()))
         .bind(name)
@@ -652,7 +644,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_custom_wasm_filter() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_create_get").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -695,7 +688,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_wasm_binary() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_get_binary").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -723,7 +717,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_list_by_team").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "team1").await;
         create_test_team(&pool, "team2").await;
         let repo = CustomWasmFilterRepository::new(pool);
@@ -779,7 +774,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_name_conflict() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_dup_name").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -809,7 +805,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_delete").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -846,7 +843,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_filter_metadata() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_update").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -887,7 +885,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_with_nonexistent_team_returns_not_found() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_no_team").await;
+        let pool = _db.pool.clone();
         // Intentionally NOT creating the team
         let repo = CustomWasmFilterRepository::new(pool);
 
@@ -919,7 +918,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_teams() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("wasm_filter_list_by_teams").await;
+        let pool = _db.pool.clone();
         create_test_team(&pool, "team-a").await;
         create_test_team(&pool, "team-b").await;
         create_test_team(&pool, "team-c").await;

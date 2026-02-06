@@ -2,7 +2,7 @@
 -- Migration: 20241201000005_create_audit_log_table.sql
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     resource_type TEXT NOT NULL,  -- 'cluster', 'route', 'listener'
     resource_id TEXT NOT NULL,    -- ID of the affected resource
     resource_name TEXT NOT NULL,  -- Human-readable name
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     user_id TEXT,                 -- User who made the change (from JWT)
     client_ip TEXT,               -- IP address of the client
     user_agent TEXT,              -- User agent string
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Constraints
     CHECK (action IN ('CREATE', 'UPDATE', 'DELETE')),

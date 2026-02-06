@@ -62,12 +62,12 @@ impl AppConfig {
             return Err(FlowplaneError::validation("Server and xDS ports cannot be the same"));
         }
 
-        // Validate database URL format
+        // Validate database URL format - PostgreSQL only
         if !self.database.url.starts_with("postgresql://")
-            && !self.database.url.starts_with("sqlite://")
+            && !self.database.url.starts_with("postgres://")
         {
             return Err(FlowplaneError::validation(
-                "Database URL must start with 'postgresql://' or 'sqlite://'",
+                "Database URL must start with 'postgresql://' or 'postgres://'",
             ));
         }
 
@@ -166,7 +166,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite://./data/flowplane.db".to_string(),
+            url: "postgresql://localhost:5432/flowplane".to_string(),
             max_connections: 10,
             min_connections: 0,
             connect_timeout_seconds: 10,
@@ -191,20 +191,10 @@ impl DatabaseConfig {
         }
     }
 
-    /// Check if this is a SQLite configuration
-    pub fn is_sqlite(&self) -> bool {
-        self.url.starts_with("sqlite://")
-    }
-
-    /// Check if this is a PostgreSQL configuration
-    pub fn is_postgresql(&self) -> bool {
-        self.url.starts_with("postgresql://")
-    }
-
     /// Create DatabaseConfig from environment variables
     pub fn from_env() -> Self {
         let url = std::env::var("FLOWPLANE_DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://./data/flowplane.db".to_string());
+            .unwrap_or_else(|_| "postgresql://localhost:5432/flowplane".to_string());
 
         let max_connections = std::env::var("FLOWPLANE_DATABASE_MAX_CONNECTIONS")
             .ok()
@@ -534,16 +524,24 @@ mod tests {
     }
 
     #[test]
-    fn test_database_config_type_detection() {
-        let sqlite_config =
-            DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
-        assert!(sqlite_config.is_sqlite());
-        assert!(!sqlite_config.is_postgresql());
-
+    fn test_database_config_postgresql_urls() {
         let pg_config =
             DatabaseConfig { url: "postgresql://localhost/test".to_string(), ..Default::default() };
-        assert!(!pg_config.is_sqlite());
-        assert!(pg_config.is_postgresql());
+        let config = AppConfig { database: pg_config, ..Default::default() };
+        assert!(config.validate().is_ok());
+
+        let pg_config2 =
+            DatabaseConfig { url: "postgres://localhost/test".to_string(), ..Default::default() };
+        let config2 = AppConfig { database: pg_config2, ..Default::default() };
+        assert!(config2.validate().is_ok());
+    }
+
+    #[test]
+    fn test_database_config_rejects_sqlite() {
+        let sqlite_config =
+            DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
+        let config = AppConfig { database: sqlite_config, ..Default::default() };
+        assert!(config.validate().is_err());
     }
 
     #[test]

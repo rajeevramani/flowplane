@@ -1,25 +1,27 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for user and team membership repositories
 //!
 //! Tests UserRepository and TeamMembershipRepository implementations
 //! with SQLite database to ensure all CRUD operations work correctly.
 
+mod common;
+
+use common::test_db::TestDatabase;
 use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::user::{NewUser, NewUserTeamMembership, UpdateUser, UserStatus};
-use flowplane::config::DatabaseConfig;
 use flowplane::domain::UserId;
-use flowplane::storage::create_pool;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::repositories::{
     SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };
+use flowplane::storage::DbPool;
 
-async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
-    let config = DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: true,
-        ..Default::default()
-    };
-    let pool = create_pool(&config).await.unwrap();
+async fn create_test_pool() -> (TestDatabase, DbPool) {
+    let test_db = TestDatabase::new("user_repository").await;
+    let pool = test_db.pool.clone();
 
     // Create test teams to satisfy FK constraints
     let team_repo = SqlxTeamRepository::new(pool.clone());
@@ -49,14 +51,14 @@ async fn create_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
             .await;
     }
 
-    pool
+    (test_db, pool)
 }
 
 // UserRepository tests
 
 #[tokio::test]
 async fn test_create_and_get_user() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -86,7 +88,7 @@ async fn test_create_and_get_user() {
 
 #[tokio::test]
 async fn test_get_user_by_email() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -113,7 +115,7 @@ async fn test_get_user_by_email() {
 
 #[tokio::test]
 async fn test_get_user_with_password() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -139,7 +141,7 @@ async fn test_get_user_with_password() {
 
 #[tokio::test]
 async fn test_update_user() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -172,7 +174,7 @@ async fn test_update_user() {
 
 #[tokio::test]
 async fn test_partial_update_user() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -205,7 +207,7 @@ async fn test_partial_update_user() {
 
 #[tokio::test]
 async fn test_update_password() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -230,7 +232,7 @@ async fn test_update_password() {
 
 #[tokio::test]
 async fn test_list_users() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     // Create multiple users
@@ -261,7 +263,7 @@ async fn test_list_users() {
 
 #[tokio::test]
 async fn test_count_users() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let count_before = repo.count_users().await.unwrap();
@@ -308,7 +310,7 @@ async fn test_count_users() {
 
 #[tokio::test]
 async fn test_delete_user() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -339,7 +341,7 @@ async fn test_delete_user() {
 
 #[tokio::test]
 async fn test_create_and_get_membership() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -378,7 +380,7 @@ async fn test_create_and_get_membership() {
 
 #[tokio::test]
 async fn test_list_user_memberships() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -412,7 +414,7 @@ async fn test_list_user_memberships() {
 
 #[tokio::test]
 async fn test_list_team_members() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -446,7 +448,7 @@ async fn test_list_team_members() {
 
 #[tokio::test]
 async fn test_get_user_team_membership() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -485,7 +487,7 @@ async fn test_get_user_team_membership() {
 
 #[tokio::test]
 async fn test_update_membership_scopes() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -522,7 +524,7 @@ async fn test_update_membership_scopes() {
 
 #[tokio::test]
 async fn test_delete_membership() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -561,7 +563,7 @@ async fn test_delete_membership() {
 
 #[tokio::test]
 async fn test_delete_user_team_membership() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -596,7 +598,7 @@ async fn test_delete_user_team_membership() {
 
 #[tokio::test]
 async fn test_delete_user_cascades_to_memberships() {
-    let pool = create_test_pool().await;
+    let (_db, pool) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 

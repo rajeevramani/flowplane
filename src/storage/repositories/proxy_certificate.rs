@@ -16,14 +16,24 @@ use tracing::instrument;
 use utoipa::ToSchema;
 
 /// Parse a timestamp string that may be in RFC 3339 format (from application)
-/// or SQLite datetime format (from DEFAULT datetime('now')).
+/// or PostgreSQL text format (from DEFAULT CURRENT_TIMESTAMP on TEXT columns).
 fn parse_timestamp(s: &str) -> Result<DateTime<Utc>> {
     // Try RFC 3339 first (application-provided timestamps)
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));
     }
 
-    // Try SQLite datetime format: "YYYY-MM-DD HH:MM:SS"
+    // Try PostgreSQL TIMESTAMPTZ text format: "YYYY-MM-DD HH:MM:SS.ffffff+00"
+    if let Ok(dt) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f%#z") {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // Try PostgreSQL format without fractional seconds: "YYYY-MM-DD HH:MM:SS+00"
+    if let Ok(dt) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%#z") {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // Try plain datetime format: "YYYY-MM-DD HH:MM:SS"
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return Ok(naive.and_utc());
     }
@@ -434,19 +444,7 @@ impl ProxyCertificateRepository for SqlxProxyCertificateRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
-    }
+    use crate::storage::test_helpers::TestDatabase;
 
     async fn create_test_team(pool: &DbPool) -> TeamId {
         use crate::auth::team::CreateTeamRequest;
@@ -466,7 +464,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_certificate() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("proxy_cert_create_get").await;
+        let pool = _db.pool.clone();
         let team_id = create_test_team(&pool).await;
         let repo = SqlxProxyCertificateRepository::new(pool);
 
@@ -498,7 +497,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_certificates_by_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("proxy_cert_list_team").await;
+        let pool = _db.pool.clone();
         let team_id = create_test_team(&pool).await;
         let repo = SqlxProxyCertificateRepository::new(pool);
 
@@ -525,7 +525,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_revoke_certificate() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("proxy_cert_revoke").await;
+        let pool = _db.pool.clone();
         let team_id = create_test_team(&pool).await;
         let repo = SqlxProxyCertificateRepository::new(pool);
 

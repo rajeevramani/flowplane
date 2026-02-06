@@ -34,7 +34,7 @@ async fn integration_audit_logging_records_events() {
     let _: PersonalAccessToken = read_json(revoke_response).await;
 
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_log WHERE resource_type = 'auth.token' AND resource_id = ?",
+        "SELECT COUNT(*) FROM audit_log WHERE resource_type = 'auth.token' AND resource_id = $1",
     )
     .bind(&created.id)
     .fetch_one(&app.pool)

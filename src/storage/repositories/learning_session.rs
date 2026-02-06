@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row, Sqlite};
+use sqlx::{FromRow, Row};
 use tracing::instrument;
 
 /// Learning session status
@@ -280,7 +280,7 @@ impl LearningSessionRepository {
     /// Get learning session by ID
     #[instrument(skip(self), fields(session_id = %id), name = "db_get_learning_session_by_id")]
     pub async fn get_by_id(&self, id: &str) -> Result<LearningSessionData> {
-        let row = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
@@ -311,7 +311,7 @@ impl LearningSessionRepository {
     /// Get learning session by ID and team (for authorization)
     #[instrument(skip(self), fields(session_id = %id, team = %team), name = "db_get_learning_session_by_id_and_team")]
     pub async fn get_by_id_and_team(&self, id: &str, team: &str) -> Result<LearningSessionData> {
-        let row = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
@@ -378,7 +378,7 @@ impl LearningSessionRepository {
         };
 
         let rows = if let Some(status_str) = status_str {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(team)
                 .bind(status_str)
                 .bind(limit)
@@ -386,7 +386,7 @@ impl LearningSessionRepository {
                 .fetch_all(&self.pool)
                 .await
         } else {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(team)
                 .bind(limit)
                 .bind(offset)
@@ -445,14 +445,14 @@ impl LearningSessionRepository {
         };
 
         let rows: Vec<LearningSessionRow> = if let Some(status) = status_str {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(status)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool)
                 .await
         } else {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool)
@@ -472,7 +472,7 @@ impl LearningSessionRepository {
     /// List all active learning sessions (for Access Log Service)
     #[instrument(skip(self), name = "db_list_active_learning_sessions")]
     pub async fn list_active(&self) -> Result<Vec<LearningSessionData>> {
-        let rows = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,

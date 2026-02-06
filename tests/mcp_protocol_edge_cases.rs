@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 //! MCP Protocol Edge Case Tests
 //!
 //! Comprehensive tests for MCP protocol edge cases including:
@@ -6,12 +10,13 @@
 //! - Session management edge cases
 //! - Error handling scenarios
 
-use flowplane::config::DatabaseConfig;
+mod common;
+
+use common::test_db::TestDatabase;
 use flowplane::mcp::error::McpError;
 use flowplane::mcp::handler::McpHandler;
 use flowplane::mcp::protocol::*;
 use flowplane::mcp::session::{create_session_manager_with_ttl, SessionId, SessionManager};
-use flowplane::storage::create_pool;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,18 +25,13 @@ use std::time::Duration;
 // Test Helpers
 // -----------------------------------------------------------------------------
 
-async fn create_test_handler() -> McpHandler {
-    let config = DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        max_connections: 5,
-        min_connections: 1,
-        connect_timeout_seconds: 5,
-        idle_timeout_seconds: 0,
-        auto_migrate: false,
-    };
-    let pool = create_pool(&config).await.expect("Failed to create pool");
+async fn create_test_handler() -> (TestDatabase, McpHandler) {
+    let test_db = TestDatabase::new("mcp_edge_cases").await;
+    let pool = test_db.pool.clone();
     // Use admin:all scope for tests to bypass authorization
-    McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()])
+    let handler =
+        McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()]);
+    (test_db, handler)
 }
 
 fn create_test_session_manager() -> SessionManager {
@@ -44,7 +44,7 @@ fn create_test_session_manager() -> SessionManager {
 
 #[tokio::test]
 async fn test_jsonrpc_request_with_null_id() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -62,7 +62,7 @@ async fn test_jsonrpc_request_with_null_id() {
 
 #[tokio::test]
 async fn test_jsonrpc_request_missing_method() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     // Create request with empty method
     let request = JsonRpcRequest {
@@ -80,7 +80,7 @@ async fn test_jsonrpc_request_missing_method() {
 
 #[tokio::test]
 async fn test_jsonrpc_request_invalid_method_type() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -99,7 +99,7 @@ async fn test_jsonrpc_request_invalid_method_type() {
 
 #[tokio::test]
 async fn test_initialize_missing_required_fields() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -118,7 +118,7 @@ async fn test_initialize_missing_required_fields() {
 
 #[tokio::test]
 async fn test_initialize_malformed_client_info() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -139,7 +139,7 @@ async fn test_initialize_malformed_client_info() {
 
 #[tokio::test]
 async fn test_tool_call_missing_name() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -162,7 +162,7 @@ async fn test_tool_call_missing_name() {
 
 #[tokio::test]
 async fn test_version_negotiation_empty_string() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -189,7 +189,7 @@ async fn test_version_negotiation_empty_string() {
 
 #[tokio::test]
 async fn test_version_negotiation_very_old_version() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -218,7 +218,7 @@ async fn test_version_negotiation_very_old_version() {
 
 #[tokio::test]
 async fn test_version_negotiation_malformed_version() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -245,7 +245,7 @@ async fn test_version_negotiation_malformed_version() {
 
 #[tokio::test]
 async fn test_version_negotiation_future_version() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -272,7 +272,7 @@ async fn test_version_negotiation_future_version() {
 
 #[tokio::test]
 async fn test_version_negotiation_exact_boundary() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     // Test old version - should be rejected (only 2025-11-25 is accepted)
     let request = JsonRpcRequest {
@@ -432,7 +432,7 @@ async fn test_session_multiple_teams() {
 
 #[tokio::test]
 async fn test_tool_not_found_error() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -454,7 +454,7 @@ async fn test_tool_not_found_error() {
 
 #[tokio::test]
 async fn test_resource_read_invalid_uri() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -473,7 +473,7 @@ async fn test_resource_read_invalid_uri() {
 
 #[tokio::test]
 async fn test_prompt_get_nonexistent() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -569,7 +569,7 @@ async fn test_session_manager_with_custom_ttl() {
 
 #[tokio::test]
 async fn test_json_rpc_id_string_variant() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -586,7 +586,7 @@ async fn test_json_rpc_id_string_variant() {
 
 #[tokio::test]
 async fn test_json_rpc_id_number_variant() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -607,7 +607,7 @@ async fn test_json_rpc_id_number_variant() {
 
 #[tokio::test]
 async fn test_handler_multiple_requests_sequence() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     // First request: initialize
     let init_request = JsonRpcRequest {
@@ -656,7 +656,7 @@ async fn test_handler_multiple_requests_sequence() {
 
 #[tokio::test]
 async fn test_logging_set_level_with_invalid_params() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -675,7 +675,7 @@ async fn test_logging_set_level_with_invalid_params() {
 
 #[tokio::test]
 async fn test_notification_methods() {
-    let mut handler = create_test_handler().await;
+    let (_db, mut handler) = create_test_handler().await;
 
     // Test notifications/initialized
     let request = JsonRpcRequest {

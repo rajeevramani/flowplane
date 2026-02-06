@@ -44,7 +44,7 @@ impl ListenerRouteSyncService {
             match self.route_config_repo.get_by_name(route_config_name).await {
                 Ok(route_config) => {
                     self.listener_route_config_repo
-                        .create(listener_id, &route_config.id, order as i32)
+                        .create(listener_id, &route_config.id, order as i64)
                         .await?;
                     result.routes_created += 1;
                 }

@@ -7,11 +7,11 @@ ADD COLUMN is_setup_token BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Add max_usage_count column to limit the number of times a setup token can be used
 ALTER TABLE personal_access_tokens
-ADD COLUMN max_usage_count INTEGER;
+ADD COLUMN max_usage_count BIGINT;
 
 -- Add usage_count column to track how many times a setup token has been used
 ALTER TABLE personal_access_tokens
-ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+ADD COLUMN usage_count BIGINT NOT NULL DEFAULT 0;
 
 -- Create index for setup tokens to optimize queries filtering by is_setup_token
 CREATE INDEX IF NOT EXISTS idx_personal_access_tokens_is_setup_token

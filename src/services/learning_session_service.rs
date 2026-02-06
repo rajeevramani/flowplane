@@ -545,14 +545,13 @@ fn convert_to_access_log_session(session: &LearningSessionData) -> Result<Learni
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::test_helpers::TestDatabase;
 
-    // Helper function to create a test service for should_complete tests
-    // We use a minimal pool config to avoid tokio runtime issues
-    fn create_test_service() -> LearningSessionService {
-        // For unit tests of should_complete, we don't actually use the repository
-        // So we can use a minimal pool configuration
-        let pool = sqlx::Pool::connect_lazy("sqlite::memory:").expect("create test pool");
-        LearningSessionService::new(LearningSessionRepository::new(pool))
+    async fn create_test_service() -> (TestDatabase, LearningSessionService) {
+        let test_db = TestDatabase::new("learning_session_service").await;
+        let pool = test_db.pool.clone();
+        let service = LearningSessionService::new(LearningSessionRepository::new(pool));
+        (test_db, service)
     }
 
     #[tokio::test]
@@ -577,7 +576,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let service = create_test_service();
+        let (_db, service) = create_test_service().await;
         assert!(service.should_complete(&session));
     }
 
@@ -603,7 +602,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let service = create_test_service();
+        let (_db, service) = create_test_service().await;
         assert!(service.should_complete(&session));
     }
 
@@ -629,7 +628,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let service = create_test_service();
+        let (_db, service) = create_test_service().await;
         assert!(!service.should_complete(&session));
     }
 

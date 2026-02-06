@@ -18,8 +18,8 @@ CREATE TABLE cluster_endpoints (
     ),
     priority INTEGER NOT NULL DEFAULT 0,      -- Locality priority
     metadata TEXT,                            -- JSON for endpoint metadata
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
     UNIQUE(cluster_id, address, port)

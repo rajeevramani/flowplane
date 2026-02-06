@@ -7,7 +7,7 @@ use crate::domain::DataplaneId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for dataplanes.
@@ -145,7 +145,7 @@ impl DataplaneRepository {
     /// Retrieves a dataplane by its unique ID.
     #[instrument(skip(self), fields(dataplane_id = %id), name = "db_get_dataplane_by_id")]
     pub async fn get_by_id(&self, id: &DataplaneId) -> Result<DataplaneData> {
-        let row = sqlx::query_as::<Sqlite, DataplaneRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
             "SELECT id, team, name, gateway_host, description, certificate_serial, certificate_expires_at, created_at, updated_at FROM dataplanes WHERE id = $1"
         )
         .bind(id)
@@ -170,7 +170,7 @@ impl DataplaneRepository {
     /// Retrieves a dataplane by name and team.
     #[instrument(skip(self), fields(dataplane_name = %name, team = %team), name = "db_get_dataplane_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<Option<DataplaneData>> {
-        let row = sqlx::query_as::<Sqlite, DataplaneRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
             "SELECT id, team, name, gateway_host, description, certificate_serial, certificate_expires_at, created_at, updated_at FROM dataplanes WHERE team = $1 AND name = $2"
         )
         .bind(team)
@@ -199,7 +199,7 @@ impl DataplaneRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, DataplaneRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
             "SELECT id, team, name, gateway_host, description, certificate_serial, certificate_expires_at, created_at, updated_at FROM dataplanes WHERE team = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(team)
@@ -263,7 +263,7 @@ impl DataplaneRepository {
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, DataplaneRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(&query_str);
 
         for team in teams {
             query = query.bind(team);
@@ -292,7 +292,7 @@ impl DataplaneRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, DataplaneRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
             "SELECT id, team, name, gateway_host, description, certificate_serial, certificate_expires_at, created_at, updated_at FROM dataplanes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
@@ -418,7 +418,7 @@ impl DataplaneRepository {
     #[instrument(skip(self), fields(dataplane_name = %name, team = %team), name = "db_exists_dataplane_by_name")]
     pub async fn exists_by_name(&self, team: &str, name: &str) -> Result<bool> {
         let count =
-            sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM dataplanes WHERE team = $1 AND name = $2")
+            sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM dataplanes WHERE team = $1 AND name = $2")
                 .bind(team)
                 .bind(name)
                 .fetch_one(&self.pool)
@@ -498,7 +498,7 @@ impl DataplaneRepository {
         let threshold = chrono::Utc::now() + chrono::Duration::days(within_days);
         let threshold_str = threshold.to_rfc3339();
 
-        let rows = sqlx::query_as::<Sqlite, DataplaneRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
             "SELECT id, team, name, gateway_host, description, certificate_serial, certificate_expires_at, created_at, updated_at \
              FROM dataplanes \
              WHERE certificate_expires_at IS NOT NULL \

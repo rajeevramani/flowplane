@@ -114,7 +114,7 @@ pub trait TeamMembershipRepository: Send + Sync {
     async fn delete_user_team_membership(&self, user_id: &UserId, team: &str) -> Result<()>;
 }
 
-// SQLite implementations
+// PostgreSQL implementations
 
 #[derive(Debug, Clone)]
 pub struct SqlxUserRepository {

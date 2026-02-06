@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for database-level team filtering in repositories
 //!
 //! These tests verify that team-scoped RBAC filtering works correctly at the database

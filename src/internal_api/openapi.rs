@@ -148,45 +148,18 @@ mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
     use crate::storage::repositories::import_metadata::CreateImportMetadataRequest;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use sqlx::Executor;
+    use crate::storage::test_helpers::TestDatabase;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create import_metadata table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS import_metadata (
-                id TEXT PRIMARY KEY,
-                spec_name TEXT NOT NULL,
-                spec_version TEXT,
-                spec_checksum TEXT,
-                team TEXT NOT NULL,
-                source_content TEXT,
-                listener_name TEXT,
-                imported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create import_metadata table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_openapi").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     #[tokio::test]
     async fn test_list_openapi_imports_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -225,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_openapi_imports_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
 
         // Create test imports for different teams
@@ -267,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_openapi_imports_pagination() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -306,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_openapi_import() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 
@@ -336,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_openapi_import_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -347,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_openapi_import_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
 
         // Create import for team-a

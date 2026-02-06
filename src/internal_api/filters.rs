@@ -71,7 +71,10 @@ impl FilterOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already exists")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::already_exists("Filter", &req.name)
                 } else if err_str.contains("do not match") || err_str.contains("validation") {
                     InternalError::validation(err_str)
@@ -350,7 +353,10 @@ impl FilterOperations {
         let service = FilterService::new(self.xds_state.clone());
         service.attach_filter_to_listener(&listener.id, &filter.id, order).await.map_err(|e| {
             let err_str = e.to_string();
-            if err_str.contains("already attached") || err_str.contains("UNIQUE constraint") {
+            if err_str.contains("already attached")
+                || err_str.contains("UNIQUE constraint")
+                || err_str.contains("unique constraint")
+            {
                 InternalError::conflict(format!(
                     "Filter '{}' is already attached to listener '{}'",
                     filter.name, listener_name
@@ -456,7 +462,10 @@ impl FilterOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already attached") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already attached")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::conflict(format!(
                         "Filter '{}' is already attached to route config '{}'",
                         filter.name, route_config_name
@@ -535,177 +544,14 @@ mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
     use crate::domain::FilterConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::TestDatabase;
     use crate::xds::filters::http::cors::{CorsConfig, CorsPolicyConfig};
-    use sqlx::Executor;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create filters table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS filters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                filter_type TEXT NOT NULL,
-                description TEXT,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .await
-        .expect("create filters table");
-
-        // Create listener_filters table for attachment tests
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listener_filters (
-                listener_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (listener_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create listener_filters table");
-
-        // Create route_config_filters table for attachment tests
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_config_filters (
-                route_config_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                settings TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (route_config_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create route_config_filters table");
-
-        // Create route_configs table for XDS refresh
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create route_configs table");
-
-        // Create listeners table for XDS refresh
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create listeners table");
-
-        // Create virtual_hosts table for filter route checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS virtual_hosts (
-                id TEXT PRIMARY KEY,
-                route_config_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                domains TEXT NOT NULL,
-                require_tls TEXT,
-                configuration TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create virtual_hosts table");
-
-        // Create routes table for filter route checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS routes (
-                id TEXT PRIMARY KEY,
-                virtual_host_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                route_order INTEGER NOT NULL DEFAULT 0,
-                match_path TEXT,
-                match_headers TEXT,
-                match_query_parameters TEXT,
-                action_type TEXT NOT NULL,
-                action_config TEXT NOT NULL,
-                typed_per_filter_config TEXT,
-                configuration TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create routes table");
-
-        // Create route_filters table for filter route attachment checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_filters (
-                route_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                settings TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (route_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create route_filters table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_filters").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_cors_config() -> FilterConfig {
@@ -727,7 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -750,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -768,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
         let auth = InternalAuthContext::for_team("team-a");
 
@@ -787,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -798,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
 
         // Create filter as admin for team-a
@@ -823,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
         let admin_auth = InternalAuthContext::admin();
 
@@ -855,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_by_type() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
         let admin_auth = InternalAuthContext::admin();
 
@@ -891,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_filter() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
         let auth = InternalAuthContext::admin();
 
@@ -921,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
         let auth = InternalAuthContext::admin();
 

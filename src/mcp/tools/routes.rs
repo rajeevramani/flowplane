@@ -12,9 +12,9 @@ use crate::mcp::response_builders::{
     build_create_response, build_delete_response, build_query_response, build_update_response,
     ResourceRef,
 };
+use crate::storage::DbPool;
 use crate::xds::XdsState;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -136,7 +136,7 @@ Authorization: Requires routes:read or cp:read scope."#,
 /// not route_configs. It needs direct db_pool access.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_list_routes")]
 pub async fn execute_list_routes(
-    db_pool: &SqlitePool,
+    db_pool: &DbPool,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
@@ -253,7 +253,7 @@ pub async fn execute_list_routes(
 /// Returns minimal response format for token efficiency.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_path")]
 pub async fn execute_query_path(
-    db_pool: &SqlitePool,
+    db_pool: &DbPool,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {

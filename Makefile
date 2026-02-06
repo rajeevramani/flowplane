@@ -20,7 +20,7 @@
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
         build build-backend build-ui info prune \
-        vault-setup test fmt clippy check
+        vault-setup dev-db test test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check
 
 .DEFAULT_GOAL := help
 
@@ -94,7 +94,12 @@ help: ## Show this help message
 	@echo "  $(CYAN)make info$(RESET)            - Show disk usage and image sizes"
 	@echo ""
 	@echo "$(GREEN)Development:$(RESET)"
+	@echo "  $(CYAN)make dev-db$(RESET)          - Start PostgreSQL for local dev"
 	@echo "  $(CYAN)make test$(RESET)            - Run cargo tests"
+	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
+	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
+	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
+	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainer containers"
 	@echo "  $(CYAN)make fmt$(RESET)             - Run cargo fmt"
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
@@ -234,9 +239,47 @@ build-ui: ## Build frontend-only Docker image
 # Development Targets
 # =============================================================================
 
-test: ## Run cargo tests
+dev-db: _ensure-network ## Start PostgreSQL for local development
+	@echo "$(CYAN)Starting PostgreSQL...$(RESET)"
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) up -d postgres
+	@echo "$(GREEN)PostgreSQL running on localhost:5432$(RESET)"
+	@echo "  URL: postgresql://flowplane:flowplane@localhost:5432/flowplane"
+
+test: ## Run cargo tests (requires Docker/Podman for testcontainers)
 	@echo "$(CYAN)Running tests...$(RESET)"
-	cargo test --all-features
+	cargo test --features postgres_tests
+
+test-e2e: ## Run E2E smoke tests and clean up containers
+	@echo "$(CYAN)Running E2E smoke tests...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-full: ## Run full E2E suite and clean up containers
+	@echo "$(CYAN)Running full E2E suite...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info FLOWPLANE_E2E_MTLS=1 cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-mtls: ## Run mTLS E2E tests and clean up containers
+	@echo "$(CYAN)Running mTLS E2E tests...$(RESET)"
+	FLOWPLANE_E2E_MTLS=1 RUN_E2E=1 RUST_LOG=info cargo test --test e2e "test_24_mtls" -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-cleanup: ## Remove orphaned testcontainer PostgreSQL containers
+	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null); \
+	if [ -n "$$CONTAINERS" ]; then \
+		echo "$(YELLOW)Stopping $$(echo "$$CONTAINERS" | wc -l | tr -d ' ') testcontainer(s)...$(RESET)"; \
+		$(DOCKER) stop --time 5 $$CONTAINERS 2>/dev/null || true; \
+		$(DOCKER) rm -f $$CONTAINERS 2>/dev/null || true; \
+		echo "$(GREEN)Testcontainers cleaned up.$(RESET)"; \
+	else \
+		echo "$(GREEN)No orphaned testcontainers found.$(RESET)"; \
+	fi
 
 fmt: ## Run cargo fmt
 	@echo "$(CYAN)Running cargo fmt...$(RESET)"

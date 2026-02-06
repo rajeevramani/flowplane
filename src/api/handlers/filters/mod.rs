@@ -1087,29 +1087,34 @@ mod tests {
     // - readonly_resource_auth_context("filters") -> readonly_resource_auth_context("filters")
     // - minimal_auth_context() -> minimal_auth_context()
 
-    async fn setup_state_with_team(team_name: &str) -> ApiState {
+    async fn setup_state_with_team(
+        team_name: &str,
+    ) -> (crate::storage::test_helpers::TestDatabase, ApiState) {
         use crate::auth::team::CreateTeamRequest;
         use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
 
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create the team
         let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let pool = cluster_repo.pool().clone();
         let team_repo = SqlxTeamRepository::new(pool);
 
-        team_repo
-            .create_team(CreateTeamRequest {
-                name: team_name.to_string(),
-                display_name: format!("Test Team {}", team_name),
-                description: Some("Test team".to_string()),
-                owner_user_id: None,
-                settings: None,
-            })
-            .await
-            .expect("create team");
+        // Use get_or_create pattern to handle seed data
+        if team_repo.get_team_by_name(team_name).await.ok().flatten().is_none() {
+            team_repo
+                .create_team(CreateTeamRequest {
+                    name: team_name.to_string(),
+                    display_name: format!("Test Team {}", team_name),
+                    description: Some("Test team".to_string()),
+                    owner_user_id: None,
+                    settings: None,
+                })
+                .await
+                .expect("create team");
+        }
 
-        state
+        (_db, state)
     }
 
     fn sample_create_filter_request(team: &str) -> CreateFilterRequest {
@@ -1140,7 +1145,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_empty() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = list_filters_handler(
             State(state),
@@ -1156,7 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_requires_read_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = list_filters_handler(
             State(state),
@@ -1173,7 +1178,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_with_admin_auth_context() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         let result =
@@ -1188,7 +1193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_with_team_auth_context() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         let result = create_filter_handler(
@@ -1205,7 +1210,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_fails_without_write_scope() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         let result = create_filter_handler(
@@ -1223,7 +1228,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_validates_team_exists() {
-        let state = create_test_state().await; // No team created
+        let (_db, state) = create_test_state().await; // No team created
         let body = sample_create_filter_request("non-existent-team");
 
         let result =
@@ -1235,7 +1240,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_returns_details() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1263,7 +1268,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_not_found() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = get_filter_handler(
             State(state),
@@ -1280,7 +1285,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_filter_changes_description() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1314,7 +1319,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_filter_requires_write_scope() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1345,7 +1350,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter_removes_record() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1378,7 +1383,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter_requires_write_scope() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1406,7 +1411,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter_not_found() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = delete_filter_handler(
             State(state),
@@ -1423,7 +1428,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_returns_created_filters() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1451,7 +1456,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_with_pagination() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
 
         // Create multiple filters
         for i in 0..5 {
@@ -1483,7 +1488,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_status_returns_installations_and_configurations() {
-        let state = setup_state_with_team("test-team").await;
+        let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
         // Create filter
@@ -1513,7 +1518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_status_not_found() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = get_filter_status_handler(
             State(state),

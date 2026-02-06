@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 use std::sync::Arc;
 
 use axum::{

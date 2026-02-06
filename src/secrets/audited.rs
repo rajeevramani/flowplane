@@ -215,19 +215,15 @@ impl<T: SecretsClient> SecretsClient for AuditedSecretsClient<T> {
 mod tests {
     use super::*;
     use crate::secrets::EnvVarSecretsClient;
-    use crate::storage::DbPool;
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_audited_client_logs_operations() {
         // Set up test environment
         std::env::set_var("FLOWPLANE_SECRET_TEST", "test-value");
 
-        // Create test database pool (in-memory SQLite for testing)
-        let pool =
-            DbPool::connect("sqlite::memory:").await.expect("Failed to create test database");
-
-        // Run migrations to create audit_log table
-        sqlx::migrate!().run(&pool).await.expect("Failed to run migrations");
+        let _db = TestDatabase::new("secrets_audited_ops").await;
+        let pool = _db.pool.clone();
 
         let env_client = EnvVarSecretsClient::new();
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
@@ -252,10 +248,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_audited_client_logs_failures() {
-        let pool =
-            DbPool::connect("sqlite::memory:").await.expect("Failed to create test database");
-
-        sqlx::migrate!().run(&pool).await.expect("Failed to run migrations");
+        let _db = TestDatabase::new("secrets_audited_failures").await;
+        let pool = _db.pool.clone();
 
         let env_client = EnvVarSecretsClient::new();
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));

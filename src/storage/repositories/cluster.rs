@@ -7,7 +7,7 @@ use crate::domain::ClusterId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for clusters
@@ -114,7 +114,7 @@ impl ClusterRepository {
         })?;
         let now = chrono::Utc::now();
 
-        // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
+        // Use parameterized query with positional parameters
         let result = sqlx::query(
             "INSERT INTO clusters (id, name, service_name, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)"
         )
@@ -154,7 +154,7 @@ impl ClusterRepository {
     /// Get cluster by ID
     #[instrument(skip(self), fields(cluster_id = %id), name = "db_get_cluster_by_id")]
     pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
-        let row = sqlx::query_as::<Sqlite, ClusterRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE id = $1"
         )
         .bind(id)
@@ -179,7 +179,7 @@ impl ClusterRepository {
     /// Get cluster by name
     #[instrument(skip(self), fields(cluster_name = %name), name = "db_get_cluster_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
-        let row = sqlx::query_as::<Sqlite, ClusterRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
         )
         .bind(name)
@@ -208,7 +208,7 @@ impl ClusterRepository {
         let limit = limit.unwrap_or(100).min(1000); // Max 1000 results
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ClusterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
@@ -279,7 +279,7 @@ impl ClusterRepository {
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, ClusterRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, ClusterRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -313,7 +313,7 @@ impl ClusterRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ClusterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
             "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at \
              FROM clusters \
              WHERE team IS NULL \

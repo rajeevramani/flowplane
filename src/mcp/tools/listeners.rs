@@ -15,11 +15,11 @@ use crate::mcp::response_builders::{
     build_create_response, build_delete_response, build_query_response, build_update_response,
     ResourceRef,
 };
+use crate::storage::DbPool;
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind};
 use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -752,7 +752,7 @@ pub async fn execute_delete_listener(
 /// Returns minimal response format for token efficiency.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_port")]
 pub async fn execute_query_port(
-    db_pool: &SqlitePool,
+    db_pool: &DbPool,
     team: &str,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {

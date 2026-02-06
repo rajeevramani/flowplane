@@ -6,7 +6,7 @@
 //! ## Supported Secret Backends
 //!
 //! - **Vault**: HashiCorp Vault KV v2 engine
-//! - **Database**: Legacy mode - encrypted secrets stored in SQLite/PostgreSQL
+//! - **Database**: Legacy mode - encrypted secrets stored in PostgreSQL
 //! - **AWS Secrets Manager**: (Optional feature)
 //! - **GCP Secret Manager**: (Optional feature - enable with `--features gcp`)
 //!

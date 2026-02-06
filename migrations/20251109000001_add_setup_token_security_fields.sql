@@ -3,7 +3,7 @@
 
 -- Add failed_attempts column to track failed authentication attempts
 ALTER TABLE personal_access_tokens
-ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+ADD COLUMN failed_attempts BIGINT NOT NULL DEFAULT 0;
 
 -- Add locked_until column to implement temporary lockout after failed attempts
 ALTER TABLE personal_access_tokens

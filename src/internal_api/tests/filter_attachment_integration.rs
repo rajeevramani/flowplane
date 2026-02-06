@@ -14,7 +14,7 @@ use crate::config::SimpleXdsConfig;
 use crate::mcp::tools::filters::{
     execute_attach_filter, execute_detach_filter, execute_list_filter_attachments,
 };
-use crate::storage::{create_pool, run_migrations, DatabaseConfig};
+use crate::storage::test_helpers::TestDatabase;
 use crate::xds::XdsState;
 use serde_json::json;
 use std::sync::Arc;
@@ -23,30 +23,22 @@ use std::sync::Arc;
 // Test Setup Helpers
 // =============================================================================
 
-fn create_test_config() -> DatabaseConfig {
-    DatabaseConfig {
-        url: "sqlite://:memory:".to_string(),
-        auto_migrate: false,
-        ..Default::default()
-    }
-}
-
-async fn setup_state_with_migrations() -> Arc<XdsState> {
-    let pool = create_pool(&create_test_config()).await.expect("Failed to create pool");
-    run_migrations(&pool).await.expect("Failed to run migrations");
+async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
+    let test_db = TestDatabase::new("internal_api_filter_attachment").await;
+    let pool = test_db.pool.clone();
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
 
     // Create a test team to satisfy FK constraints for filters
     create_test_team(&state, "test-team").await;
 
-    state
+    (test_db, state)
 }
 
 /// Create a test team in the database
 async fn create_test_team(xds_state: &Arc<XdsState>, team_name: &str) {
     let pool = xds_state.cluster_repository.as_ref().unwrap().pool();
     let team_id = format!("team-{}", uuid::Uuid::new_v4());
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING")
         .bind(&team_id)
         .bind(team_name)
         .bind(format!("Test {}", team_name))
@@ -74,11 +66,17 @@ async fn create_test_filter(state: &Arc<XdsState>, name: &str) -> String {
 async fn create_test_listener(state: &Arc<XdsState>, name: &str) -> String {
     let listener_repo = state.listener_repository.as_ref().expect("listener repo");
 
+    // Use a unique port based on name hash to avoid partial unique index violations
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    let port = 8000 + (hasher.finish() % 1000) as i64;
+
     // Create a valid ListenerConfig JSON that can be deserialized by xDS layer
     let config = json!({
         "name": name,
         "address": "0.0.0.0",
-        "port": 8080,
+        "port": port,
         "filter_chains": [{
             "name": "default",
             "filters": [{
@@ -93,7 +91,7 @@ async fn create_test_listener(state: &Arc<XdsState>, name: &str) -> String {
     let req = crate::storage::repositories::listener::CreateListenerRequest {
         name: name.to_string(),
         address: "0.0.0.0".to_string(),
-        port: Some(8080),
+        port: Some(port),
         protocol: Some("http".to_string()),
         configuration: config,
         team: None, // Optional for tests
@@ -166,7 +164,7 @@ async fn create_test_route_config(state: &Arc<XdsState>, name: &str) -> String {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to ListenerConfig"]
 async fn test_mcp_attach_filter_to_listener_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter and listener
     create_test_filter(&state, "test-filter").await;
@@ -201,7 +199,7 @@ async fn test_mcp_attach_filter_to_listener_success() {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to ListenerConfig"]
 async fn test_mcp_attach_filter_to_listener_no_order() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "test-filter").await;
@@ -231,7 +229,7 @@ async fn test_mcp_attach_filter_to_listener_no_order() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_listener_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Only create filter
     create_test_filter(&state, "test-filter").await;
@@ -248,7 +246,7 @@ async fn test_mcp_attach_filter_listener_not_found() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_filter_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Only create listener
     create_test_listener(&state, "main-listener").await;
@@ -270,7 +268,7 @@ async fn test_mcp_attach_filter_filter_not_found() {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to RouteConfig"]
 async fn test_mcp_attach_filter_to_route_config_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "rate-limit-filter").await;
@@ -302,7 +300,7 @@ async fn test_mcp_attach_filter_to_route_config_success() {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to RouteConfig"]
 async fn test_mcp_attach_filter_to_route_config_with_settings() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "rate-limit-filter").await;
@@ -327,7 +325,7 @@ async fn test_mcp_attach_filter_to_route_config_with_settings() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_route_config_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Only create filter
     create_test_filter(&state, "test-filter").await;
@@ -348,7 +346,7 @@ async fn test_mcp_attach_filter_route_config_not_found() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_missing_filter() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing filter parameter
     let args = json!({
@@ -361,7 +359,7 @@ async fn test_mcp_attach_filter_missing_filter() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_no_target() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "test-filter").await;
@@ -377,7 +375,7 @@ async fn test_mcp_attach_filter_no_target() {
 
 #[tokio::test]
 async fn test_mcp_attach_filter_both_targets() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "test-filter").await;
@@ -402,7 +400,7 @@ async fn test_mcp_attach_filter_both_targets() {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to ListenerConfig"]
 async fn test_mcp_detach_filter_from_listener_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter, listener, and attach
     let filter_id = create_test_filter(&state, "test-filter").await;
@@ -443,7 +441,7 @@ async fn test_mcp_detach_filter_from_listener_success() {
 
 #[tokio::test]
 async fn test_mcp_detach_filter_not_attached() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter and listener but don't attach
     create_test_filter(&state, "test-filter").await;
@@ -467,7 +465,7 @@ async fn test_mcp_detach_filter_not_attached() {
 #[tokio::test]
 #[ignore = "requires full xDS integration - configuration must be deserializable to RouteConfig"]
 async fn test_mcp_detach_filter_from_route_config_success() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter, route config, and attach
     let filter_id = create_test_filter(&state, "test-filter").await;
@@ -510,7 +508,7 @@ async fn test_mcp_detach_filter_from_route_config_success() {
 
 #[tokio::test]
 async fn test_mcp_detach_filter_missing_filter() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing filter parameter
     let args = json!({
@@ -523,7 +521,7 @@ async fn test_mcp_detach_filter_missing_filter() {
 
 #[tokio::test]
 async fn test_mcp_detach_filter_no_target() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup
     create_test_filter(&state, "test-filter").await;
@@ -543,7 +541,7 @@ async fn test_mcp_detach_filter_no_target() {
 
 #[tokio::test]
 async fn test_mcp_list_filter_attachments_no_attachments() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter only
     create_test_filter(&state, "lonely-filter").await;
@@ -572,7 +570,7 @@ async fn test_mcp_list_filter_attachments_no_attachments() {
 
 #[tokio::test]
 async fn test_mcp_list_filter_attachments_with_listener() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter, listener, and attach
     let filter_id = create_test_filter(&state, "attached-filter").await;
@@ -594,7 +592,7 @@ async fn test_mcp_list_filter_attachments_with_listener() {
     });
     let result = execute_list_filter_attachments(&state, "", args).await;
 
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result.as_ref().err());
     let tool_result = result.unwrap();
 
     let content_text = &tool_result.content[0];
@@ -615,7 +613,7 @@ async fn test_mcp_list_filter_attachments_with_listener() {
 
 #[tokio::test]
 async fn test_mcp_list_filter_attachments_with_route_config() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Setup: Create filter, route config, and attach
     let filter_id = create_test_filter(&state, "scoped-filter").await;
@@ -654,7 +652,7 @@ async fn test_mcp_list_filter_attachments_with_route_config() {
 
 #[tokio::test]
 async fn test_mcp_list_filter_attachments_filter_not_found() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Non-existent filter
     let args = json!({
@@ -667,7 +665,7 @@ async fn test_mcp_list_filter_attachments_filter_not_found() {
 
 #[tokio::test]
 async fn test_mcp_list_filter_attachments_missing_filter() {
-    let state = setup_state_with_migrations().await;
+    let (_db, state) = setup_state_with_migrations().await;
 
     // Test: Missing filter parameter
     let args = json!({});

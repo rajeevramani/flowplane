@@ -69,8 +69,7 @@ async fn main() -> Result<()> {
 
     // Initialize database configuration and pool
     let db_config = DatabaseConfig::from_env();
-    let db_kind = if db_config.is_sqlite() { "sqlite" } else { "database" };
-    info!(database = db_kind, "Creating database connection pool");
+    info!(database = "postgresql", "Creating database connection pool");
     let pool = create_pool(&db_config).await?;
 
     // Handle first-time startup: auto-generate setup token if needed

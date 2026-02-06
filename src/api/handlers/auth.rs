@@ -879,7 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_with_admin_auth_context() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
         let result =
@@ -896,7 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_with_tokens_write_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
         let result = create_token_handler(
@@ -913,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_fails_without_write_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
         let result = create_token_handler(
@@ -931,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_fails_with_no_permissions() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
         let result =
@@ -945,7 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_validates_name_length() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let mut body = sample_create_token_body();
         body.name = "ab".to_string(); // Too short (min is 3)
 
@@ -960,7 +960,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_token_validates_empty_scopes() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
         let mut body = sample_create_token_body();
         body.scopes = vec![]; // Empty scopes (min is 1)
 
@@ -975,7 +975,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tokens_returns_created_tokens() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token first
         let body = sample_create_token_body();
@@ -999,7 +999,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tokens_requires_read_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = list_tokens_handler(
             State(state),
@@ -1016,7 +1016,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tokens_with_pagination() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create multiple tokens
         for i in 0..5 {
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_token_returns_token_details() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_token_not_found() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         let result = get_token_handler(
             State(state),
@@ -1088,7 +1088,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_token_changes_name() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();
@@ -1121,7 +1121,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_token_requires_write_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();
@@ -1149,7 +1149,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_revoke_token_changes_status() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate_token_returns_new_secret() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rotate_token_requires_write_scope() {
-        let state = create_test_state().await;
+        let (_db, state) = create_test_state().await;
 
         // Create a token
         let body = sample_create_token_body();

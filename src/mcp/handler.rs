@@ -3,7 +3,6 @@
 //! Routes incoming JSON-RPC requests to the appropriate method handlers.
 
 use serde_json::Value;
-use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
 
@@ -13,6 +12,7 @@ use crate::mcp::protocol::*;
 use crate::mcp::resources;
 use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_authorization};
 use crate::mcp::tools;
+use crate::storage::DbPool;
 use crate::xds::XdsState;
 
 /// Validate MCP protocol version (2025-11-25 only)
@@ -31,7 +31,7 @@ fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
 }
 
 pub struct McpHandler {
-    db_pool: Arc<SqlitePool>,
+    db_pool: Arc<DbPool>,
     xds_state: Option<Arc<XdsState>>,
     team: String,
     /// Scopes from the authenticated token for tool-level authorization
@@ -46,7 +46,7 @@ impl McpHandler {
     /// * `db_pool` - Database connection pool
     /// * `team` - Team context for multi-tenancy
     /// * `scopes` - Authorization scopes from the authenticated token
-    pub fn new(db_pool: Arc<SqlitePool>, team: String, scopes: Vec<String>) -> Self {
+    pub fn new(db_pool: Arc<DbPool>, team: String, scopes: Vec<String>) -> Self {
         Self { db_pool, xds_state: None, team, scopes, initialized: false }
     }
 
@@ -58,7 +58,7 @@ impl McpHandler {
     /// * `team` - Team context for multi-tenancy
     /// * `scopes` - Authorization scopes from the authenticated token
     pub fn with_xds_state(
-        db_pool: Arc<SqlitePool>,
+        db_pool: Arc<DbPool>,
         xds_state: Arc<XdsState>,
         team: String,
         scopes: Vec<String>,
@@ -767,26 +767,20 @@ impl McpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_handler() -> McpHandler {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
+    async fn create_test_handler() -> (TestDatabase, McpHandler) {
+        let test_db = TestDatabase::new("mcp_handler").await;
+        let pool = test_db.pool.clone();
         // Use admin:all scope for tests to bypass authorization
-        McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()])
+        let handler =
+            McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()]);
+        (test_db, handler)
     }
 
     #[tokio::test]
     async fn test_initialize() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -811,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_method_not_found() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -831,7 +825,7 @@ mod tests {
     #[tokio::test]
     async fn test_tools_list_without_initialize() {
         // For stateless HTTP transport, tools/list should work without initialize
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -849,7 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tools_list() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         // Initialize first
         let init_request = JsonRpcRequest {
@@ -969,7 +963,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_with_unsupported_version() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1001,7 +995,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_with_older_version_rejected() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         // 2025-06-18 was previously supported but is now rejected
         let request = JsonRpcRequest {
@@ -1031,7 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_with_newer_version_rejected() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         // Future versions are rejected - no negotiation
         let request = JsonRpcRequest {

@@ -961,30 +961,20 @@ fn parse_circuit_breakers(cb_json: &Value) -> Option<crate::xds::CircuitBreakers
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn setup_test_xds() -> Arc<XdsState> {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
-
-        // Run migrations
-        sqlx::migrate!("./migrations").run(&pool).await.expect("Failed to run migrations");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_test_xds() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("mcp_tools_clusters").await;
+        let pool = test_db.pool.clone();
+        let xds_state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, xds_state)
     }
 
     /// Create a test team in the database
     async fn create_test_team(xds_state: &Arc<XdsState>, team_name: &str) {
         let pool = xds_state.cluster_repository.as_ref().unwrap().pool();
         let team_id = format!("team-{}", uuid::Uuid::new_v4());
-        sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING")
             .bind(&team_id)
             .bind(team_name)
             .bind(format!("Test {}", team_name))
@@ -1024,8 +1014,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_list_clusters_empty() {
-        let xds_state = setup_test_xds().await;
+    async fn test_execute_list_clusters_returns_seed_data() {
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
         let result = execute_list_clusters(&xds_state, "test-team", args).await;
@@ -1036,7 +1026,8 @@ mod tests {
 
         if let ContentBlock::Text { text } = &tool_result.content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["count"], 0);
+            // Seed data creates global clusters (test-cluster, cluster-a, cluster-b)
+            assert!(output["count"].as_u64().unwrap() >= 3);
         } else {
             panic!("Expected text content block");
         }
@@ -1044,14 +1035,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_create_and_get_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
 
         // Create the team first
         create_test_team(&xds_state, "test-team").await;
 
-        // Create a cluster
+        // Create a cluster (use unique name to avoid seed data conflicts)
         let create_args = json!({
-            "name": "test-cluster",
+            "name": "mcp-created-cluster",
             "serviceName": "test-service",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
@@ -1060,20 +1051,20 @@ mod tests {
         assert!(result.is_ok());
 
         // Get the cluster
-        let get_args = json!({"name": "test-cluster"});
+        let get_args = json!({"name": "mcp-created-cluster"});
         let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
         assert!(result.is_ok());
 
         if let ContentBlock::Text { text } = &result.unwrap().content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["name"], "test-cluster");
+            assert_eq!(output["name"], "mcp-created-cluster");
             assert_eq!(output["service_name"], "test-service");
         }
     }
 
     #[tokio::test]
     async fn test_execute_get_cluster_not_found() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({"name": "non-existent-cluster"});
 
         let result = execute_get_cluster(&xds_state, "test-team", args).await;
@@ -1088,7 +1079,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_get_cluster_missing_name() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
         let result = execute_get_cluster(&xds_state, "test-team", args).await;
@@ -1103,7 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_update_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         create_test_team(&xds_state, "test-team").await;
 
         // Create a cluster first
@@ -1133,7 +1124,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_delete_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         create_test_team(&xds_state, "test-team").await;
 
         // Create a cluster first

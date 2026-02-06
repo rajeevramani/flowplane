@@ -9,7 +9,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for route_filters.
@@ -17,7 +17,7 @@ use tracing::instrument;
 struct RouteFilterRow {
     pub route_id: String,
     pub filter_id: String,
-    pub filter_order: i32,
+    pub filter_order: i64,
     pub created_at: DateTime<Utc>,
     pub settings: Option<String>,
 }
@@ -27,7 +27,7 @@ struct RouteFilterRow {
 pub struct RouteFilterData {
     pub route_id: RouteId,
     pub filter_id: FilterId,
-    pub filter_order: i32,
+    pub filter_order: i64,
     pub created_at: DateTime<Utc>,
     /// Per-scope settings (behavior, config overrides, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,7 +64,7 @@ impl RouteFilterRepository {
         &self,
         route_id: &RouteId,
         filter_id: &FilterId,
-        order: i32,
+        order: i64,
         settings: Option<serde_json::Value>,
     ) -> Result<RouteFilterData> {
         let now = Utc::now();
@@ -85,8 +85,8 @@ impl RouteFilterRepository {
             // Check for unique constraint violations and provide helpful error messages
             if let Some(db_err) = e.as_database_error() {
                 if let Some(code) = db_err.code() {
-                    // SQLite UNIQUE constraint violation code is 2067
-                    if code.as_ref() == "2067" {
+                    // PostgreSQL unique violation code is 23505
+                    if code.as_ref() == "23505" {
                         let msg = db_err.message();
                         // Check which constraint was violated
                         if msg.contains("filter_order") {
@@ -148,13 +148,13 @@ impl RouteFilterRepository {
         &self,
         route_id: &RouteId,
         filter_id: &FilterId,
-        order: i32,
+        order: i64,
         settings: Option<serde_json::Value>,
     ) -> Result<RouteFilterData> {
         let now = Utc::now();
         let settings_json = settings.as_ref().map(|s| s.to_string());
 
-        // Use INSERT OR REPLACE (SQLite UPSERT)
+        // Use ON CONFLICT ... DO UPDATE (PostgreSQL UPSERT)
         // This will update if the (route_id, filter_id) PK exists, otherwise insert
         sqlx::query(
             "INSERT INTO route_filters (route_id, filter_id, filter_order, created_at, settings) \
@@ -230,7 +230,7 @@ impl RouteFilterRepository {
     /// List all filter attachments for a route.
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_list_route_filters")]
     pub async fn list_by_route(&self, route_id: &RouteId) -> Result<Vec<RouteFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteFilterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteFilterRow>(
             "SELECT route_id, filter_id, filter_order, created_at, settings \
              FROM route_filters WHERE route_id = $1 ORDER BY filter_order ASC",
         )
@@ -291,8 +291,8 @@ impl RouteFilterRepository {
 
     /// Get the next available order for a route.
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_next_route_filter_order")]
-    pub async fn get_next_order(&self, route_id: &RouteId) -> Result<i32> {
-        let max_order: Option<i32> = sqlx::query_scalar(
+    pub async fn get_next_order(&self, route_id: &RouteId) -> Result<i64> {
+        let max_order: Option<i64> = sqlx::query_scalar(
             "SELECT MAX(filter_order) FROM route_filters WHERE route_id = $1",
         )
         .bind(route_id.as_str())
