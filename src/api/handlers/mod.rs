@@ -88,6 +88,7 @@ pub use organizations::{
     admin_add_org_member, admin_create_organization, admin_delete_organization,
     admin_get_organization, admin_list_org_members, admin_list_organizations,
     admin_remove_org_member, admin_update_org_member_role, admin_update_organization,
+    create_org_team, get_current_org, list_org_teams,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -149,8 +150,8 @@ pub use learning_sessions::{
 };
 pub use mcp_tools::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
 pub use organizations::{
-    AddOrgMemberRequest, ListOrgMembersResponse, ListOrganizationsQuery, ListOrganizationsResponse,
-    UpdateOrgMemberRoleRequest,
+    AddOrgMemberRequest, CurrentOrgResponse, ListOrgMembersResponse, ListOrgTeamsResponse,
+    ListOrganizationsQuery, ListOrganizationsResponse, UpdateOrgMemberRoleRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

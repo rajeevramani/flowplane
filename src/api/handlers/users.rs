@@ -117,6 +117,7 @@ pub async fn create_user(
             payload.password,
             payload.name,
             payload.is_admin,
+            payload.org_id,
             Some(context.token_id.to_string()),
             Some(&context),
         )

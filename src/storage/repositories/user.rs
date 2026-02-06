@@ -61,6 +61,13 @@ pub trait UserRepository: Send + Sync {
     /// Update a user's password hash
     async fn update_password(&self, id: &UserId, password_hash: String) -> Result<()>;
 
+    /// Update a user's organization ID
+    async fn update_user_org(
+        &self,
+        id: &UserId,
+        org_id: Option<crate::domain::OrgId>,
+    ) -> Result<()>;
+
     /// List all users (with pagination)
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>>;
 
@@ -281,6 +288,26 @@ impl UserRepository for SqlxUserRepository {
             .map_err(|err| FlowplaneError::Database {
                 source: err,
                 context: "Failed to update password".to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(user_id = %id), name = "db_update_user_org")]
+    async fn update_user_org(
+        &self,
+        id: &UserId,
+        org_id: Option<crate::domain::OrgId>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE users SET org_id = $1, updated_at = $2 WHERE id = $3")
+            .bind(org_id.as_ref().map(|id| id.as_str()))
+            .bind(Utc::now())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|err| FlowplaneError::Database {
+                source: err,
+                context: "Failed to update user organization".to_string(),
             })?;
 
         Ok(())

@@ -308,6 +308,10 @@ mod tests {
         async fn list_teams_by_org(&self, _org_id: &crate::domain::OrgId) -> Result<Vec<Team>> {
             unimplemented!()
         }
+
+        async fn resolve_team_ids(&self, _team_names: &[String]) -> Result<Vec<String>> {
+            unimplemented!()
+        }
     }
 
     // Mock app repository for testing

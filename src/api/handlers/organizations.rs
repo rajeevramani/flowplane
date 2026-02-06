@@ -29,7 +29,7 @@ use crate::{
     errors::Error,
     storage::repositories::{
         OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
-        SqlxOrganizationRepository, UserRepository,
+        SqlxOrganizationRepository, TeamRepository, UserRepository,
     },
 };
 
@@ -543,6 +543,192 @@ pub async fn admin_remove_org_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ===== Org-Scoped Endpoints (Authenticated Users) =====
+
+/// Response for GET /api/v1/orgs/current - returns org + user's role
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentOrgResponse {
+    pub organization: OrganizationResponse,
+    pub role: OrgRole,
+}
+
+/// Get the current authenticated user's organization.
+#[utoipa::path(
+    get,
+    path = "/api/v1/orgs/current",
+    responses(
+        (status = 200, description = "Current organization retrieved successfully", body = CurrentOrgResponse),
+        (status = 401, description = "Authentication required"),
+        (status = 404, description = "User has no organization")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(user_id = ?context.user_id))]
+pub async fn get_current_org(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+) -> Result<Json<CurrentOrgResponse>, ApiError> {
+    // Extract user_id from context
+    let user_id = context
+        .user_id
+        .as_ref()
+        .ok_or_else(|| ApiError::Unauthorized("User ID required".to_string()))?;
+
+    // Get user to retrieve org_id
+    let user_repo = user_repository_for_state(&state)?;
+    let user = user_repo
+        .get_user(user_id)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+
+    let org_id =
+        user.org_id.ok_or_else(|| ApiError::NotFound("User has no organization".to_string()))?;
+
+    // Fetch organization
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_id(&org_id)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+
+    // Fetch user's membership to get their role
+    let membership_repo = org_membership_repository_for_state(&state)?;
+    let membership =
+        membership_repo.get_membership(user_id, &org_id).await.map_err(convert_error)?.ok_or_else(
+            || ApiError::NotFound("User is not a member of this organization".to_string()),
+        )?;
+
+    Ok(Json(CurrentOrgResponse { organization: org.into(), role: membership.role }))
+}
+
+/// Response for listing teams within an organization.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOrgTeamsResponse {
+    pub teams: Vec<crate::auth::team::Team>,
+}
+
+/// List teams belonging to a specific organization.
+#[utoipa::path(
+    get,
+    path = "/api/v1/orgs/{org_name}/teams",
+    params(
+        ("org_name" = String, Path, description = "Organization name")
+    ),
+    responses(
+        (status = 200, description = "Teams listed successfully", body = ListOrgTeamsResponse),
+        (status = 403, description = "Organization membership required"),
+        (status = 404, description = "Organization not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %org_name, user_id = ?context.user_id))]
+pub async fn list_org_teams(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(org_name): Path<String>,
+) -> Result<Json<ListOrgTeamsResponse>, ApiError> {
+    // Verify caller has org membership (admin or member)
+    if !crate::auth::authorization::has_org_membership(&context, &org_name) {
+        return Err(ApiError::forbidden("Organization membership required to view teams"));
+    }
+
+    // Resolve org_name to organization
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    // List teams by org_id
+    let team_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))?;
+    let pool = team_repo.pool().clone();
+    let team_repo = Arc::new(crate::storage::repositories::SqlxTeamRepository::new(pool));
+
+    let teams = team_repo.list_teams_by_org(&org.id).await.map_err(convert_error)?;
+
+    Ok(Json(ListOrgTeamsResponse { teams }))
+}
+
+/// Create a team within an organization.
+#[utoipa::path(
+    post,
+    path = "/api/v1/orgs/{org_name}/teams",
+    params(
+        ("org_name" = String, Path, description = "Organization name")
+    ),
+    request_body = crate::auth::team::CreateTeamRequest,
+    responses(
+        (status = 201, description = "Team created successfully", body = crate::auth::team::Team),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization not found"),
+        (status = 409, description = "Team with name already exists")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %org_name, team_name = %payload.name, user_id = ?context.user_id))]
+pub async fn create_org_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(org_name): Path<String>,
+    Json(mut payload): Json<crate::auth::team::CreateTeamRequest>,
+) -> Result<(StatusCode, Json<crate::auth::team::Team>), ApiError> {
+    // Verify caller is org admin
+    crate::auth::authorization::require_org_admin(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    // Validate request
+    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Resolve org_name to organization
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    // Set org_id on the request
+    payload.org_id = Some(org.id.clone());
+
+    // Create team via TeamRepository
+    let team_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))?;
+    let pool = team_repo.pool().clone();
+    let team_repo = Arc::new(crate::storage::repositories::SqlxTeamRepository::new(pool));
+
+    let team = team_repo.create_team(payload).await.map_err(|e| {
+        // Catch unique constraint violation
+        if let crate::errors::FlowplaneError::Database { ref source, .. } = e {
+            if let Some(db_err) = source.as_database_error() {
+                if db_err.code().is_some_and(|c| c.as_ref() == "23505") {
+                    return ApiError::Conflict("Team with this name already exists".to_string());
+                }
+            }
+        }
+        convert_error(e)
+    })?;
+
+    Ok((StatusCode::CREATED, Json(team)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,5 +800,43 @@ mod tests {
     fn require_admin_or_org_admin_rejects_regular_user() {
         let ctx = regular_context();
         assert!(require_admin_or_org_admin(&ctx, "acme").is_err());
+    }
+
+    // Tests for org-scoped endpoints
+
+    fn org_member_context(org_name: &str) -> AuthContext {
+        let mut ctx = AuthContext::new(
+            TokenId::from_str_unchecked("member-token"),
+            "member".into(),
+            vec![format!("org:{}:member", org_name)],
+        );
+        ctx.user_id = Some(UserId::from_str_unchecked("user-123"));
+        ctx
+    }
+
+    #[test]
+    fn test_has_org_membership_with_member_scope() {
+        let ctx = org_member_context("acme");
+        assert!(crate::auth::authorization::has_org_membership(&ctx, "acme"));
+        assert!(!crate::auth::authorization::has_org_membership(&ctx, "globex"));
+    }
+
+    #[test]
+    fn test_has_org_admin_with_admin_scope() {
+        let ctx = org_admin_context("acme");
+        assert!(crate::auth::authorization::has_org_admin(&ctx, "acme"));
+        assert!(!crate::auth::authorization::has_org_admin(&ctx, "globex"));
+    }
+
+    #[test]
+    fn test_require_org_admin_allows_admin() {
+        let ctx = org_admin_context("acme");
+        assert!(crate::auth::authorization::require_org_admin(&ctx, "acme").is_ok());
+    }
+
+    #[test]
+    fn test_require_org_admin_rejects_member() {
+        let ctx = org_member_context("acme");
+        assert!(crate::auth::authorization::require_org_admin(&ctx, "acme").is_err());
     }
 }

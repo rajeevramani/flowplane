@@ -149,6 +149,9 @@ pub struct CreateUserRequest {
     pub name: String,
     #[serde(default)]
     pub is_admin: bool,
+    /// Organization this user belongs to
+    #[serde(default)]
+    pub org_id: Option<OrgId>,
 }
 
 /// Request to update an existing user account.

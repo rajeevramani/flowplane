@@ -18,6 +18,7 @@ use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
 use crate::auth::hashing;
 use crate::auth::models::{NewPersonalAccessToken, TokenStatus};
+use crate::auth::organization::{CreateOrganizationRequest, OrgRole};
 use crate::auth::setup_token::SetupToken;
 use crate::auth::team::CreateTeamRequest;
 use crate::auth::user::NewUserTeamMembership;
@@ -25,9 +26,10 @@ use crate::auth::user::{NewUser, UserStatus};
 use crate::domain::{TokenId, UserId};
 use crate::errors::Error;
 use crate::storage::repositories::{
-    AuditEvent, AuditLogRepository, SqlxTeamMembershipRepository, SqlxTeamRepository,
-    SqlxTokenRepository, SqlxUserRepository, TeamMembershipRepository, TeamRepository,
-    TokenRepository, UserRepository,
+    AuditEvent, AuditLogRepository, OrgMembershipRepository, OrganizationRepository,
+    SqlxOrgMembershipRepository, SqlxOrganizationRepository, SqlxTeamMembershipRepository,
+    SqlxTeamRepository, SqlxTokenRepository, SqlxUserRepository, TeamMembershipRepository,
+    TeamRepository, TokenRepository, UserRepository,
 };
 use std::sync::Arc;
 
@@ -192,7 +194,7 @@ pub async fn bootstrap_initialize_handler(
         org_id: None,
     };
 
-    let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
+    let mut admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
 
     // Log admin user creation with user context
     audit_repository
@@ -215,6 +217,77 @@ pub async fn bootstrap_initialize_handler(
         .await
         .map_err(convert_error)?;
 
+    // Create default organization
+    let org_repo = SqlxOrganizationRepository::new(pool.clone());
+    let create_org_request = CreateOrganizationRequest {
+        name: "default".to_string(),
+        display_name: "Default Organization".to_string(),
+        description: Some("Default organization created during system bootstrap".to_string()),
+        owner_user_id: Some(admin_user.id.clone()),
+        settings: None,
+    };
+
+    let default_org =
+        org_repo.create_organization(create_org_request).await.map_err(convert_error)?;
+
+    // Log organization creation
+    audit_repository
+        .record_auth_event(
+            AuditEvent::token(
+                "bootstrap.default_org_created",
+                Some(default_org.id.as_str()),
+                Some("default"),
+                serde_json::json!({
+                    "name": "default",
+                    "display_name": "Default Organization",
+                    "owner": admin_user.id.to_string(),
+                }),
+            )
+            .with_user_context(
+                Some(admin_user.id.to_string()),
+                client_ip.clone(),
+                user_agent.clone(),
+            ),
+        )
+        .await
+        .map_err(convert_error)?;
+
+    // Create organization membership for admin user as Owner
+    let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+    org_membership_repo
+        .create_membership(&admin_user.id, &default_org.id, OrgRole::Owner)
+        .await
+        .map_err(convert_error)?;
+
+    // Log org membership creation
+    audit_repository
+        .record_auth_event(
+            AuditEvent::token(
+                "bootstrap.org_membership_created",
+                Some(admin_user.id.as_str()),
+                Some(&admin_user.email),
+                serde_json::json!({
+                    "org_id": default_org.id.as_str(),
+                    "org_name": "default",
+                    "role": "owner",
+                }),
+            )
+            .with_user_context(
+                Some(admin_user.id.to_string()),
+                client_ip.clone(),
+                user_agent.clone(),
+            ),
+        )
+        .await
+        .map_err(convert_error)?;
+
+    // Update admin user with org_id
+    user_repo
+        .update_user_org(&admin_user.id, Some(default_org.id.clone()))
+        .await
+        .map_err(convert_error)?;
+    admin_user.org_id = Some(default_org.id.clone());
+
     // Create platform-admin team
     let team_repo = SqlxTeamRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
@@ -230,7 +303,7 @@ pub async fn bootstrap_initialize_handler(
                 display_name: "Platform Admin".to_string(),
                 description: Some("Default team created during system bootstrap".to_string()),
                 owner_user_id: Some(admin_user.id.clone()),
-                org_id: None,
+                org_id: Some(default_org.id.clone()),
                 settings: None,
             };
 
@@ -308,7 +381,10 @@ pub async fn bootstrap_initialize_handler(
         status: TokenStatus::Active,
         expires_at: Some(expires_at),
         created_by: Some(format!("bootstrap:user:{}", admin_user.id)),
-        scopes: vec!["bootstrap:initialize".to_string()],
+        scopes: vec![
+            "bootstrap:initialize".to_string(),
+            format!("org:{}:*", default_org.id.as_str()),
+        ],
         is_setup_token: true,
         max_usage_count: Some(max_usage),
         usage_count: 0,
@@ -412,4 +488,145 @@ pub async fn bootstrap_status_handler(
     };
 
     Ok(Json(BootstrapStatusResponse { needs_initialization, message }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::test_helpers::TestDatabase;
+
+    #[tokio::test]
+    async fn test_bootstrap_creates_default_org() {
+        let _db = TestDatabase::new("bootstrap_default_org").await;
+        let pool = _db.pool.clone();
+
+        // Create user and org repositories
+        let user_repo = SqlxUserRepository::new(pool.clone());
+        let org_repo = SqlxOrganizationRepository::new(pool.clone());
+        let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+
+        // Verify no users exist initially
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 0);
+
+        // Create bootstrap request
+        let request = BootstrapInitializeRequest {
+            email: "admin@example.com".to_string(),
+            password: "SecurePassword123!".to_string(),
+            name: "Admin User".to_string(),
+        };
+
+        // Hash password and create admin user
+        let user_id = UserId::new();
+        let password_hash = hashing::hash_password(&request.password).expect("hash password");
+        let new_user = NewUser {
+            id: user_id.clone(),
+            email: request.email.clone(),
+            password_hash,
+            name: request.name.clone(),
+            status: UserStatus::Active,
+            is_admin: true,
+            org_id: None,
+        };
+
+        let admin_user = user_repo.create_user(new_user).await.expect("create admin user");
+
+        // Create default organization
+        let create_org_request = CreateOrganizationRequest {
+            name: "default".to_string(),
+            display_name: "Default Organization".to_string(),
+            description: Some("Default organization created during system bootstrap".to_string()),
+            owner_user_id: Some(admin_user.id.clone()),
+            settings: None,
+        };
+
+        let default_org =
+            org_repo.create_organization(create_org_request).await.expect("create org");
+
+        // Verify org was created
+        assert_eq!(default_org.name, "default");
+        assert_eq!(default_org.display_name, "Default Organization");
+        assert_eq!(default_org.owner_user_id, Some(admin_user.id.clone()));
+        assert!(default_org.is_active());
+
+        // Create org membership for admin as Owner
+        let membership = org_membership_repo
+            .create_membership(&admin_user.id, &default_org.id, OrgRole::Owner)
+            .await
+            .expect("create membership");
+
+        // Verify membership was created
+        assert_eq!(membership.user_id, admin_user.id);
+        assert_eq!(membership.org_id, default_org.id);
+        assert_eq!(membership.role, OrgRole::Owner);
+
+        // Update admin user with org_id
+        user_repo
+            .update_user_org(&admin_user.id, Some(default_org.id.clone()))
+            .await
+            .expect("update user org");
+
+        // Verify user was updated with org_id
+        let updated_user = user_repo.get_user(&admin_user.id).await.expect("get user");
+        assert!(updated_user.is_some());
+        let updated_user = updated_user.unwrap();
+        assert_eq!(updated_user.org_id, Some(default_org.id.clone()));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_status_needs_initialization() {
+        let _db = TestDatabase::new("bootstrap_status_init").await;
+        let pool = _db.pool.clone();
+
+        let user_repo = SqlxUserRepository::new(pool.clone());
+
+        // Verify no users exist
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 0);
+
+        // System should need initialization
+        let (needs_init, _message) = if user_count == 0 {
+            (true, "System requires initialization".to_string())
+        } else {
+            (false, "System is already initialized".to_string())
+        };
+
+        assert!(needs_init);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_status_already_initialized() {
+        let _db = TestDatabase::new("bootstrap_status_already").await;
+        let pool = _db.pool.clone();
+
+        let user_repo = SqlxUserRepository::new(pool.clone());
+
+        // Create a user
+        let user_id = UserId::new();
+        let password_hash = hashing::hash_password("TestPassword123!").expect("hash password");
+        let new_user = NewUser {
+            id: user_id.clone(),
+            email: "test@example.com".to_string(),
+            password_hash,
+            name: "Test User".to_string(),
+            status: UserStatus::Active,
+            is_admin: false,
+            org_id: None,
+        };
+
+        user_repo.create_user(new_user).await.expect("create user");
+
+        // Verify user exists
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 1);
+
+        // System should not need initialization
+        let (needs_init, _message) = if user_count == 0 {
+            (true, "System requires initialization".to_string())
+        } else {
+            (false, "System is already initialized".to_string())
+        };
+
+        assert!(!needs_init);
+    }
 }

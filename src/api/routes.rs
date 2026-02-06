@@ -71,6 +71,7 @@ use super::{
         create_filter_handler,
         create_learning_session_handler,
         create_listener_handler,
+        create_org_team,
         create_route_config_handler,
         create_session_handler,
         create_token_handler,
@@ -94,6 +95,7 @@ use super::{
         get_app_handler,
         get_certificate_handler,
         get_cluster_handler,
+        get_current_org,
         get_filter_handler,
         get_filter_status_handler,
         get_filter_type_handler,
@@ -129,6 +131,7 @@ use super::{
         list_listener_filters_handler,
         list_listeners_handler,
         list_mcp_tools_handler,
+        list_org_teams,
         list_route_configs_handler,
         list_route_filters_handler,
         list_route_flows_handler,
@@ -478,6 +481,10 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/teams/{id}", get(admin_get_team))
         .route("/api/v1/admin/teams/{id}", put(admin_update_team))
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
+        // Org-scoped endpoints (authenticated users)
+        .route("/api/v1/orgs/current", get(get_current_org))
+        .route("/api/v1/orgs/{org_name}/teams", get(list_org_teams))
+        .route("/api/v1/orgs/{org_name}/teams", post(create_org_team))
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))

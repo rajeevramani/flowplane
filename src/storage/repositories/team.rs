@@ -100,6 +100,11 @@ pub trait TeamRepository: Send + Sync {
 
     /// List all teams belonging to an organization
     async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>>;
+
+    /// Resolve team names to team IDs (UUIDs).
+    /// Returns empty vec for empty input (admin bypass preserved).
+    /// Errors if any team name doesn't exist.
+    async fn resolve_team_ids(&self, team_names: &[String]) -> Result<Vec<String>>;
 }
 
 // SQLx implementation
@@ -340,6 +345,47 @@ impl TeamRepository for SqlxTeamRepository {
             })?;
 
         Ok(count == 0)
+    }
+
+    #[instrument(skip(self), fields(team_count = team_names.len()), name = "db_resolve_team_ids")]
+    async fn resolve_team_ids(&self, team_names: &[String]) -> Result<Vec<String>> {
+        // Empty input returns empty vec (admin bypass preserved)
+        if team_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build dynamic query with IN clause
+        // PostgreSQL uses $1, $2, ... for positional params
+        let placeholders: Vec<String> = (1..=team_names.len()).map(|i| format!("${}", i)).collect();
+        let query =
+            format!("SELECT id, name FROM teams WHERE name IN ({})", placeholders.join(", "));
+
+        // Bind all team names to the query
+        let mut query_builder = sqlx::query_as::<_, (String, String)>(&query);
+        for name in team_names {
+            query_builder = query_builder.bind(name);
+        }
+
+        let rows =
+            query_builder.fetch_all(&self.pool).await.map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to resolve team IDs".to_string(),
+            })?;
+
+        // Verify all team names were found
+        if rows.len() != team_names.len() {
+            let found_names: std::collections::HashSet<_> =
+                rows.iter().map(|(_, name)| name.as_str()).collect();
+            let missing: Vec<_> =
+                team_names.iter().filter(|name| !found_names.contains(name.as_str())).collect();
+            return Err(FlowplaneError::validation(format!(
+                "Team(s) not found: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        // Return IDs in the order they were returned (not necessarily the order requested)
+        Ok(rows.into_iter().map(|(id, _)| id).collect())
     }
 }
 
@@ -606,5 +652,82 @@ mod tests {
         // Verify sequential allocation
         let base = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT;
         assert_eq!(ports, vec![base, base + 1, base + 2]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_empty_input() {
+        let _db = TestDatabase::new("team_resolve_empty").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        let result = repo.resolve_team_ids(&[]).await.expect("resolve empty");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_success() {
+        let _db = TestDatabase::new("team_resolve_success").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create teams
+        let team1 = repo
+            .create_team(CreateTeamRequest {
+                name: "alpha".to_string(),
+                display_name: "Alpha Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: None,
+                settings: None,
+            })
+            .await
+            .expect("create team alpha");
+
+        let team2 = repo
+            .create_team(CreateTeamRequest {
+                name: "beta".to_string(),
+                display_name: "Beta Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: None,
+                settings: None,
+            })
+            .await
+            .expect("create team beta");
+
+        // Resolve names to IDs
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        let ids = repo.resolve_team_ids(&names).await.expect("resolve IDs");
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&team1.id.as_str().to_string()));
+        assert!(ids.contains(&team2.id.as_str().to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_missing_team() {
+        let _db = TestDatabase::new("team_resolve_missing").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create one team
+        repo.create_team(CreateTeamRequest {
+            name: "exists".to_string(),
+            display_name: "Exists Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            org_id: None,
+            settings: None,
+        })
+        .await
+        .expect("create team");
+
+        // Try to resolve with a missing team
+        let names = vec!["exists".to_string(), "does-not-exist".to_string()];
+        let result = repo.resolve_team_ids(&names).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("does-not-exist"));
     }
 }

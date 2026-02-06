@@ -54,12 +54,14 @@ impl UserService {
     ///
     /// This will hash the password and create the user in the database.
     /// An audit log entry will be recorded.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_user(
         &self,
         email: String,
         password: String,
         name: String,
         is_admin: bool,
+        org_id: Option<crate::domain::OrgId>,
         created_by: Option<String>,
         auth_context: Option<&AuthContext>,
     ) -> Result<User> {
@@ -76,6 +78,8 @@ impl UserService {
 
         // Create user
         let user_id = UserId::new();
+        let org_id_for_audit = org_id.as_ref().map(|id| id.as_str().to_string());
+
         let new_user = NewUser {
             id: user_id.clone(),
             email: email.clone(),
@@ -83,7 +87,7 @@ impl UserService {
             name: name.clone(),
             status: UserStatus::Active,
             is_admin,
-            org_id: None,
+            org_id,
         };
 
         let user = self.user_repository.create_user(new_user).await?;
@@ -96,6 +100,7 @@ impl UserService {
             serde_json::json!({
                 "name": name,
                 "is_admin": is_admin,
+                "org_id": org_id_for_audit,
                 "created_by": created_by,
             }),
         );
@@ -568,6 +573,7 @@ mod tests {
                 "SecurePassword123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 Some("admin".to_string()),
                 None,
             )
@@ -593,6 +599,7 @@ mod tests {
                 false,
                 None,
                 None,
+                None,
             )
             .await
             .expect("create first user");
@@ -604,6 +611,7 @@ mod tests {
                 "Password456".to_string(),
                 "Another User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -623,6 +631,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -651,6 +660,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("create user");
@@ -670,6 +680,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -705,6 +716,7 @@ mod tests {
                 false,
                 None,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -728,6 +740,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -763,6 +776,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -808,6 +822,7 @@ mod tests {
                 false,
                 None,
                 None,
+                None,
             )
             .await
             .expect("create user");
@@ -840,6 +855,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -879,6 +895,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )
@@ -951,6 +968,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                None,
                 None,
                 None,
             )

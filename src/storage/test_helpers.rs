@@ -12,6 +12,12 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
+/// Predictable team IDs for seed data (UUIDs).
+/// Tests can reference these IDs when working with team-scoped resources.
+pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
+pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
+
 /// Stop and remove stale testcontainer PostgreSQL containers from previous runs.
 ///
 /// Testcontainers-rs 0.26 has a known issue where `ContainerAsync::Drop` is async
@@ -125,15 +131,26 @@ impl TestDatabase {
 ///
 /// PostgreSQL enforces FKs (unlike SQLite), so tests that insert dataplanes,
 /// route_configs, etc. need the parent team/cluster rows to exist.
+///
+/// Teams are seeded with predictable UUIDs that tests can reference:
+/// - test-team: 00000000-0000-0000-0000-000000000001
+/// - team-a:    00000000-0000-0000-0000-000000000002
+/// - team-b:    00000000-0000-0000-0000-000000000003
 async fn seed_test_data(pool: &DbPool) {
-    // Create common test teams
-    for team_name in &["test-team", "team-a", "team-b"] {
+    // Create common test teams with predictable UUIDs
+    let teams = [
+        ("test-team", "00000000-0000-0000-0000-000000000001"),
+        ("team-a", "00000000-0000-0000-0000-000000000002"),
+        ("team-b", "00000000-0000-0000-0000-000000000003"),
+    ];
+
+    for (team_name, team_id) in &teams {
         sqlx::query(
             "INSERT INTO teams (id, name, display_name, status) \
              VALUES ($1, $2, $3, 'active') \
              ON CONFLICT (name) DO NOTHING",
         )
-        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(team_id)
         .bind(team_name)
         .bind(format!("Test Team {}", team_name))
         .execute(pool)
