@@ -39,10 +39,19 @@ use super::{
     },
     handlers::{
         add_team_membership,
+        admin_add_org_member,
+        admin_create_organization,
         admin_create_team,
+        admin_delete_organization,
         admin_delete_team,
+        admin_get_organization,
         admin_get_team,
+        admin_list_org_members,
+        admin_list_organizations,
         admin_list_teams,
+        admin_remove_org_member,
+        admin_update_org_member_role,
+        admin_update_organization,
         admin_update_team,
         apply_learned_schema_handler,
         attach_filter_handler,
@@ -469,6 +478,16 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/teams/{id}", get(admin_get_team))
         .route("/api/v1/admin/teams/{id}", put(admin_update_team))
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
+        // Admin organization management endpoints
+        .route("/api/v1/admin/organizations", get(admin_list_organizations))
+        .route("/api/v1/admin/organizations", post(admin_create_organization))
+        .route("/api/v1/admin/organizations/{id}", get(admin_get_organization))
+        .route("/api/v1/admin/organizations/{id}", put(admin_update_organization))
+        .route("/api/v1/admin/organizations/{id}", delete(admin_delete_organization))
+        .route("/api/v1/admin/organizations/{id}/members", get(admin_list_org_members))
+        .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))
+        .route("/api/v1/admin/organizations/{id}/members/{user_id}", put(admin_update_org_member_role))
+        .route("/api/v1/admin/organizations/{id}/members/{user_id}", delete(admin_remove_org_member))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
         // Admin scopes endpoint (includes hidden scopes like admin:all)

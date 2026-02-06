@@ -251,6 +251,7 @@ mod tests {
                 display_name: name.to_string(),
                 description: None,
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
                 status: TeamStatus::Active,
                 envoy_admin_port: admin_port,
@@ -301,6 +302,10 @@ mod tests {
         }
 
         async fn is_name_available(&self, _name: &str) -> Result<bool> {
+            unimplemented!()
+        }
+
+        async fn list_teams_by_org(&self, _org_id: &crate::domain::OrgId) -> Result<Vec<Team>> {
             unimplemented!()
         }
     }

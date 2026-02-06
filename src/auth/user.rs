@@ -10,7 +10,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::domain::UserId;
+use crate::domain::{OrgId, UserId};
 
 /// User account status lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -64,6 +64,8 @@ pub struct User {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
+    /// Organization this user belongs to
+    pub org_id: Option<OrgId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -89,6 +91,7 @@ pub struct NewUser {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
+    pub org_id: Option<OrgId>,
 }
 
 /// Update payload for an existing user.
@@ -199,6 +202,7 @@ pub struct UserResponse {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
+    pub org_id: Option<OrgId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -211,6 +215,7 @@ impl From<User> for UserResponse {
             name: user.name,
             status: user.status,
             is_admin: user.is_admin,
+            org_id: user.org_id,
             created_at: user.created_at,
             updated_at: user.updated_at,
         }
@@ -254,6 +259,7 @@ mod tests {
             name: "Test User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -323,6 +329,7 @@ mod tests {
             name: "Test User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

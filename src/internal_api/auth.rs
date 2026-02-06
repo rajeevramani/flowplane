@@ -5,6 +5,7 @@
 
 use crate::api::handlers::team_access::{get_effective_team_scopes, TeamOwned};
 use crate::auth::models::AuthContext;
+use crate::domain::OrgId;
 use crate::internal_api::error::InternalError;
 use crate::observability::metrics::record_cross_team_access_attempt;
 
@@ -20,6 +21,10 @@ pub struct InternalAuthContext {
     pub is_admin: bool,
     /// Teams the user can access
     pub allowed_teams: Vec<String>,
+    /// Organization ID for this user (if org-scoped)
+    pub org_id: Option<OrgId>,
+    /// Organization name for this user (if org-scoped)
+    pub org_name: Option<String>,
 }
 
 impl InternalAuthContext {
@@ -31,7 +36,13 @@ impl InternalAuthContext {
         // For REST, we get team from the first allowed team or from the request
         let team = if is_admin { None } else { allowed_teams.first().cloned() };
 
-        Self { team, is_admin, allowed_teams }
+        Self {
+            team,
+            is_admin,
+            allowed_teams,
+            org_id: context.org_id.clone(),
+            org_name: context.org_name.clone(),
+        }
     }
 
     /// Create an internal auth context from MCP team string
@@ -40,18 +51,24 @@ impl InternalAuthContext {
         let allowed_teams = if is_admin { Vec::new() } else { vec![team.to_string()] };
         let team = if is_admin { None } else { Some(team.to_string()) };
 
-        Self { team, is_admin, allowed_teams }
+        Self { team, is_admin, allowed_teams, org_id: None, org_name: None }
     }
 
     /// Create an admin context (for testing or system operations)
     pub fn admin() -> Self {
-        Self { team: None, is_admin: true, allowed_teams: Vec::new() }
+        Self { team: None, is_admin: true, allowed_teams: Vec::new(), org_id: None, org_name: None }
     }
 
     /// Create a team-scoped context
     pub fn for_team(team: impl Into<String>) -> Self {
         let team_str = team.into();
-        Self { team: Some(team_str.clone()), is_admin: false, allowed_teams: vec![team_str] }
+        Self {
+            team: Some(team_str.clone()),
+            is_admin: false,
+            allowed_teams: vec![team_str],
+            org_id: None,
+            org_name: None,
+        }
     }
 
     /// Check if this context can access a team-owned resource

@@ -5,8 +5,9 @@
 //! implementation of team access verification.
 
 use crate::api::error::ApiError;
-use crate::auth::authorization::{extract_team_scopes, has_admin_bypass};
+use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_admin_bypass};
 use crate::auth::models::AuthContext;
+use crate::storage::repositories::TeamRepository;
 
 /// Trait for resources that belong to a team.
 ///
@@ -60,6 +61,45 @@ pub fn get_effective_team_scopes(context: &AuthContext) -> Vec<String> {
     } else {
         extract_team_scopes(context)
     }
+}
+
+/// Get effective team scopes with org admin expansion.
+///
+/// For org admins (users with `org:{name}:admin` scope), this expands their team list
+/// to include ALL teams in their organization. This allows org admins to manage
+/// resources across all teams within their org without explicit team memberships.
+///
+/// Falls back to `get_effective_team_scopes()` for non-org-admin users and platform admins.
+pub async fn get_effective_team_scopes_with_org(
+    context: &AuthContext,
+    team_repo: &dyn TeamRepository,
+) -> Vec<String> {
+    // Platform admin bypasses all checks
+    if has_admin_bypass(context) {
+        return Vec::new();
+    }
+
+    let mut teams: std::collections::HashSet<String> =
+        extract_team_scopes(context).into_iter().collect();
+
+    // Expand org admin scopes to include all teams in their org(s)
+    let org_scopes = extract_org_scopes(context);
+    for (org_name, role) in &org_scopes {
+        if role == "admin" {
+            if let Some(org_id) = &context.org_id {
+                if let Ok(org_teams) = team_repo.list_teams_by_org(org_id).await {
+                    for team in org_teams {
+                        teams.insert(team.name);
+                    }
+                }
+            }
+            // Even without org_id in context, the org_name match gives us
+            // the scope; team names will be picked up from their memberships
+            let _ = org_name;
+        }
+    }
+
+    teams.into_iter().collect()
 }
 
 /// Verify that a resource belongs to one of the user's teams or is global.
@@ -120,6 +160,46 @@ pub async fn verify_team_access<T: TeamOwned>(
                 )))
             }
         }
+    }
+}
+
+/// Verify that a team belongs to the same org as the user for cross-org isolation.
+///
+/// This prevents users from one org from adding memberships to teams in another org.
+/// Platform admins bypass this check.
+///
+/// # Arguments
+/// * `team_org_id` - The org_id of the target team (None for global teams)
+/// * `user_org_id` - The org_id of the current user (None for unscoped users)
+/// * `is_admin` - Whether the user is a platform admin
+///
+/// # Returns
+/// * `Ok(())` if access is allowed
+/// * `Err(ApiError::Forbidden)` if the user is trying to access a team in a different org
+pub fn verify_same_org(
+    team_org_id: Option<&crate::domain::OrgId>,
+    user_org_id: Option<&crate::domain::OrgId>,
+    is_admin: bool,
+) -> Result<(), ApiError> {
+    // Platform admin can access any org's teams
+    if is_admin {
+        return Ok(());
+    }
+
+    match (team_org_id, user_org_id) {
+        // Both have orgs - must match
+        (Some(team_org), Some(user_org)) => {
+            if team_org == user_org {
+                Ok(())
+            } else {
+                Err(ApiError::Forbidden("Cross-organization access denied".to_string()))
+            }
+        }
+        // Team has org but user doesn't - deny
+        (Some(_), None) => Err(ApiError::Forbidden("Cross-organization access denied".to_string())),
+        // Team has no org (global) or user has no org - allow
+        // Global teams are accessible to all; unscoped users accessing unscoped teams is fine
+        _ => Ok(()),
     }
 }
 
@@ -304,5 +384,54 @@ mod tests {
         let team_scopes = vec!["team-a".to_string(), "team-b".to_string(), "team-c".to_string()];
         let result = verify_team_access(resource, &team_scopes).await;
         assert!(result.is_ok());
+    }
+
+    // === Cross-org isolation tests ===
+
+    #[test]
+    fn test_verify_same_org_admin_bypass() {
+        let org_a = crate::domain::OrgId::new();
+        let org_b = crate::domain::OrgId::new();
+        // Admin can access any org's teams
+        assert!(verify_same_org(Some(&org_a), Some(&org_b), true).is_ok());
+    }
+
+    #[test]
+    fn test_verify_same_org_matching_orgs() {
+        let org = crate::domain::OrgId::new();
+        assert!(verify_same_org(Some(&org), Some(&org), false).is_ok());
+    }
+
+    #[test]
+    fn test_verify_same_org_different_orgs() {
+        let org_a = crate::domain::OrgId::new();
+        let org_b = crate::domain::OrgId::new();
+        let result = verify_same_org(Some(&org_a), Some(&org_b), false);
+        assert!(result.is_err());
+        if let Err(ApiError::Forbidden(msg)) = result {
+            assert!(msg.contains("Cross-organization"));
+        } else {
+            panic!("Expected Forbidden error");
+        }
+    }
+
+    #[test]
+    fn test_verify_same_org_team_has_org_user_doesnt() {
+        let org = crate::domain::OrgId::new();
+        let result = verify_same_org(Some(&org), None, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_same_org_global_team() {
+        let user_org = crate::domain::OrgId::new();
+        // Global team (no org) is accessible to all
+        assert!(verify_same_org(None, Some(&user_org), false).is_ok());
+    }
+
+    #[test]
+    fn test_verify_same_org_both_none() {
+        // Unscoped user accessing unscoped team - fine
+        assert!(verify_same_org(None, None, false).is_ok());
     }
 }

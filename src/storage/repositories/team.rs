@@ -4,7 +4,7 @@
 //! with team memberships and resource ownership.
 
 use crate::auth::team::{CreateTeamRequest, Team, TeamStatus, UpdateTeamRequest};
-use crate::domain::TeamId;
+use crate::domain::{OrgId, TeamId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -22,6 +22,7 @@ struct TeamRow {
     pub display_name: String,
     pub description: Option<String>,
     pub owner_user_id: Option<String>,
+    pub org_id: Option<String>,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
     pub envoy_admin_port: Option<i64>,
@@ -51,6 +52,7 @@ impl TryFrom<TeamRow> for Team {
             display_name: row.display_name,
             description: row.description,
             owner_user_id: row.owner_user_id.map(|id| id.into()),
+            org_id: row.org_id.map(|id| id.into()),
             settings,
             status,
             envoy_admin_port: row.envoy_admin_port.map(|p| p as u16),
@@ -95,6 +97,9 @@ pub trait TeamRepository: Send + Sync {
 
     /// Check if a team name is available
     async fn is_name_available(&self, name: &str) -> Result<bool>;
+
+    /// List all teams belonging to an organization
+    async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>>;
 }
 
 // SQLx implementation
@@ -136,8 +141,8 @@ impl TeamRepository for SqlxTeamRepository {
 
         let row = sqlx::query_as::<_, TeamRow>(
             "INSERT INTO teams (
-                id, name, display_name, description, owner_user_id, settings, status, envoy_admin_port, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                id, name, display_name, description, owner_user_id, org_id, settings, status, envoy_admin_port, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *"
         )
         .bind(id.as_str())
@@ -145,6 +150,7 @@ impl TeamRepository for SqlxTeamRepository {
         .bind(&request.display_name)
         .bind(&request.description)
         .bind(request.owner_user_id.as_ref().map(|id| id.as_str()))
+        .bind(request.org_id.as_ref().map(|id| id.as_str()))
         .bind(settings_json.as_deref())
         .bind(TeamStatus::Active.as_str())
         .bind(next_port)
@@ -307,6 +313,21 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(org_id = %org_id), name = "db_list_teams_by_org")]
+    async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>> {
+        let rows =
+            sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE org_id = $1 ORDER BY name")
+                .bind(org_id.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to list teams by org: {}", org_id),
+                })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
     #[instrument(skip(self), fields(team_name = %name), name = "db_is_team_name_available")]
     async fn is_name_available(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE name = $1")
@@ -338,6 +359,7 @@ mod tests {
             display_name: "Engineering Team".to_string(),
             description: Some("Main engineering team".to_string()),
             owner_user_id: None,
+            org_id: None,
             settings: Some(serde_json::json!({"foo": "bar"})),
         };
 
@@ -370,6 +392,7 @@ mod tests {
             display_name: "Platform Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
 
@@ -391,6 +414,7 @@ mod tests {
             display_name: "DevOps".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
 
@@ -427,6 +451,7 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             };
             repo.create_team(request).await.expect("create team");
@@ -452,6 +477,7 @@ mod tests {
             display_name: "Active Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
         let active_team = repo.create_team(active_request).await.expect("create active team");
@@ -462,6 +488,7 @@ mod tests {
             display_name: "Suspended Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
         let suspended_team =
@@ -500,6 +527,7 @@ mod tests {
             display_name: "Temporary Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
 
@@ -524,6 +552,7 @@ mod tests {
             display_name: "Existing Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
         repo.create_team(request).await.expect("create team");
@@ -543,6 +572,7 @@ mod tests {
             display_name: "First Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
 
@@ -566,6 +596,7 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             };
             let created = repo.create_team(request).await.expect("create team");

@@ -107,6 +107,7 @@ impl TestServer {
                 display_name: format!("Test Team {}", team_name),
                 description: Some("Team for CLI integration tests".to_string()),
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await;

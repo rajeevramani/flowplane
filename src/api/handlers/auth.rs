@@ -856,8 +856,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use crate::api::test_utils::{
-        admin_auth_context, create_test_state, minimal_auth_context,
-        readonly_resource_auth_context, resource_auth_context,
+        admin_auth_context, create_test_state, minimal_auth_context, readonly_resource_auth_context,
     };
 
     // Use test_utils helpers for auth contexts:
@@ -899,12 +898,20 @@ mod tests {
         let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
-        let result = create_token_handler(
-            State(state),
-            Extension(resource_auth_context("tokens")),
-            Json(body),
-        )
-        .await;
+        // Create context that has tokens:write (for handler access) plus the scopes
+        // being granted (clusters:read, routes:read) for scope subset validation
+        let context = AuthContext::new(
+            crate::domain::TokenId::new(),
+            "tokens-test-token".into(),
+            vec![
+                "tokens:read".into(),
+                "tokens:write".into(),
+                "clusters:read".into(),
+                "routes:read".into(),
+            ],
+        );
+
+        let result = create_token_handler(State(state), Extension(context), Json(body)).await;
 
         assert!(result.is_ok());
         let (status, _) = result.unwrap();

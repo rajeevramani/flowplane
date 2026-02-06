@@ -189,6 +189,7 @@ pub async fn bootstrap_initialize_handler(
         name: payload.name.clone(),
         status: UserStatus::Active,
         is_admin: true,
+        org_id: None,
     };
 
     let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
@@ -229,6 +230,7 @@ pub async fn bootstrap_initialize_handler(
                 display_name: "Platform Admin".to_string(),
                 description: Some("Default team created during system bootstrap".to_string()),
                 owner_user_id: Some(admin_user.id.clone()),
+                org_id: None,
                 settings: None,
             };
 

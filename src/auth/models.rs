@@ -8,7 +8,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::domain::{TokenId, UserId};
+use crate::domain::{OrgId, TokenId, UserId};
 use crate::errors::Error;
 
 /// Lifecycle status for a personal access token.
@@ -127,6 +127,10 @@ pub struct AuthContext {
     pub user_email: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
+    /// Organization ID for this user (if org-scoped)
+    pub org_id: Option<OrgId>,
+    /// Organization name for this user (if org-scoped)
+    pub org_name: Option<String>,
     scopes: HashSet<String>,
 }
 
@@ -139,6 +143,8 @@ impl AuthContext {
             user_email: None,
             client_ip: None,
             user_agent: None,
+            org_id: None,
+            org_name: None,
             scopes: scopes.into_iter().collect(),
         }
     }
@@ -157,8 +163,17 @@ impl AuthContext {
             user_email: Some(user_email),
             client_ip: None,
             user_agent: None,
+            org_id: None,
+            org_name: None,
             scopes: scopes.into_iter().collect(),
         }
+    }
+
+    /// Set the organization context for this auth context.
+    pub fn with_org(mut self, org_id: OrgId, org_name: String) -> Self {
+        self.org_id = Some(org_id);
+        self.org_name = Some(org_name);
+        self
     }
 
     /// Set the client IP and user agent for this context.

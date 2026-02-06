@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use tracing::{info, instrument, warn};
 
+use crate::auth::organization::{OrgRole, OrganizationMembership};
 use crate::auth::{hashing, user::UserStatus, LoginRequest, User, UserTeamMembership};
 use crate::errors::{AuthErrorType, Error, Result};
 use crate::observability::metrics;
 use crate::storage::repositories::{
-    AuditEvent, AuditLogRepository, SqlxTeamMembershipRepository, SqlxUserRepository,
-    TeamMembershipRepository, UserRepository,
+    AuditEvent, AuditLogRepository, OrgMembershipRepository, SqlxOrgMembershipRepository,
+    SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };
 
 /// Service for handling email/password authentication.
@@ -17,6 +18,7 @@ use crate::storage::repositories::{
 pub struct LoginService {
     user_repository: Arc<dyn UserRepository>,
     membership_repository: Arc<dyn TeamMembershipRepository>,
+    org_membership_repository: Arc<dyn OrgMembershipRepository>,
     audit_repository: Arc<AuditLogRepository>,
 }
 
@@ -24,9 +26,10 @@ impl LoginService {
     pub fn new(
         user_repository: Arc<dyn UserRepository>,
         membership_repository: Arc<dyn TeamMembershipRepository>,
+        org_membership_repository: Arc<dyn OrgMembershipRepository>,
         audit_repository: Arc<AuditLogRepository>,
     ) -> Self {
-        Self { user_repository, membership_repository, audit_repository }
+        Self { user_repository, membership_repository, org_membership_repository, audit_repository }
     }
 
     pub fn with_sqlx(pool: crate::storage::DbPool) -> Self {
@@ -34,6 +37,7 @@ impl LoginService {
         Self::new(
             Arc::new(SqlxUserRepository::new(pool.clone())),
             Arc::new(SqlxTeamMembershipRepository::new(pool.clone())),
+            Arc::new(SqlxOrgMembershipRepository::new(pool.clone())),
             audit_repository,
         )
     }
@@ -143,8 +147,15 @@ impl LoginService {
         // Fetch team memberships
         let memberships = self.membership_repository.list_user_memberships(&user.id).await?;
 
-        // Compute scopes from team memberships
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        // Fetch org memberships
+        let org_memberships = self
+            .org_membership_repository
+            .list_user_memberships(&user.id)
+            .await
+            .unwrap_or_default();
+
+        // Compute scopes from team + org memberships
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &org_memberships);
 
         // Audit successful login
         self.audit_repository
@@ -173,34 +184,41 @@ impl LoginService {
     }
 }
 
-/// Compute scopes from user's team memberships.
+/// Compute scopes from user's team and organization memberships.
 ///
 /// If user is an admin, grants `admin:all` scope.
-/// Otherwise, returns all scopes from all team memberships.
+/// Otherwise, returns all scopes from team memberships + org scopes from org memberships.
+///
+/// Org scope mapping:
+/// - `OrgRole::Owner` or `OrgRole::Admin` -> `org:{name}:admin`
+/// - `OrgRole::Member` or `OrgRole::Viewer` -> `org:{name}:member`
 pub fn compute_scopes_from_memberships(
     user: &User,
     memberships: &[UserTeamMembership],
+    org_memberships: &[OrganizationMembership],
 ) -> Vec<String> {
+    let mut scopes = Vec::new();
+
     if user.is_admin {
         // Admin users get admin:all scope plus team-scoped permissions
         // This ensures extract_teams_from_scopes() can extract team names
         // for dashboard and UI components that need team context
-        let mut scopes = vec!["admin:all".to_string()];
-
-        // Include team-scoped permissions from memberships
-        let team_scopes: Vec<String> =
-            memberships.iter().flat_map(|m| m.scopes.iter()).map(|s| s.to_string()).collect();
-
-        scopes.extend(team_scopes);
-        scopes.sort();
-        scopes.dedup();
-
-        return scopes;
+        scopes.push("admin:all".to_string());
     }
 
-    // Collect all unique scopes from all team memberships
-    let mut scopes: Vec<String> =
+    // Include team-scoped permissions from memberships
+    let team_scopes: Vec<String> =
         memberships.iter().flat_map(|m| m.scopes.iter()).map(|s| s.to_string()).collect();
+    scopes.extend(team_scopes);
+
+    // Include org scopes from org memberships
+    for org_mem in org_memberships {
+        let org_scope = match org_mem.role {
+            OrgRole::Owner | OrgRole::Admin => format!("org:{}:admin", org_mem.org_name),
+            OrgRole::Member | OrgRole::Viewer => format!("org:{}:member", org_mem.org_name),
+        };
+        scopes.push(org_scope);
+    }
 
     // Remove duplicates
     scopes.sort();
@@ -223,6 +241,7 @@ mod tests {
             name: "Admin User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -235,7 +254,7 @@ mod tests {
             created_at: Utc::now(),
         }];
 
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &[]);
 
         // Admin users should get both admin:all and team-scoped permissions
         assert!(scopes.contains(&"admin:all".to_string()));
@@ -251,6 +270,7 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -263,7 +283,7 @@ mod tests {
             created_at: Utc::now(),
         }];
 
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &[]);
 
         assert_eq!(scopes, vec!["clusters:read", "clusters:write"]);
     }
@@ -276,6 +296,7 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -297,7 +318,7 @@ mod tests {
             },
         ];
 
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &[]);
 
         // Should deduplicate clusters:read
         assert_eq!(scopes, vec!["clusters:read", "listeners:read", "routes:write"]);
@@ -311,15 +332,99 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
 
         let memberships = vec![];
 
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &[]);
 
         assert_eq!(scopes, Vec::<String>::new());
+    }
+
+    #[test]
+    fn compute_scopes_includes_org_scopes() {
+        use crate::auth::organization::OrganizationMembership;
+        use crate::domain::OrgId;
+
+        let user = User {
+            id: UserId::new(),
+            email: "user@example.com".to_string(),
+            name: "Org User".to_string(),
+            status: UserStatus::Active,
+            is_admin: false,
+            org_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let memberships = vec![UserTeamMembership {
+            id: "m1".to_string(),
+            user_id: user.id.clone(),
+            team: "team-a".to_string(),
+            scopes: vec!["team:team-a:routes:read".to_string()],
+            created_at: Utc::now(),
+        }];
+
+        let org_memberships = vec![
+            OrganizationMembership {
+                id: "om1".to_string(),
+                user_id: user.id.clone(),
+                org_id: OrgId::new(),
+                org_name: "acme".to_string(),
+                role: crate::auth::organization::OrgRole::Admin,
+                created_at: Utc::now(),
+            },
+            OrganizationMembership {
+                id: "om2".to_string(),
+                user_id: user.id.clone(),
+                org_id: OrgId::new(),
+                org_name: "globex".to_string(),
+                role: crate::auth::organization::OrgRole::Member,
+                created_at: Utc::now(),
+            },
+        ];
+
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &org_memberships);
+
+        assert!(scopes.contains(&"team:team-a:routes:read".to_string()));
+        assert!(scopes.contains(&"org:acme:admin".to_string()));
+        assert!(scopes.contains(&"org:globex:member".to_string()));
+        assert_eq!(scopes.len(), 3);
+    }
+
+    #[test]
+    fn compute_scopes_org_owner_gets_admin_scope() {
+        use crate::auth::organization::OrganizationMembership;
+        use crate::domain::OrgId;
+
+        let user = User {
+            id: UserId::new(),
+            email: "owner@example.com".to_string(),
+            name: "Org Owner".to_string(),
+            status: UserStatus::Active,
+            is_admin: false,
+            org_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let org_memberships = vec![OrganizationMembership {
+            id: "om1".to_string(),
+            user_id: user.id.clone(),
+            org_id: OrgId::new(),
+            org_name: "acme".to_string(),
+            role: crate::auth::organization::OrgRole::Owner,
+            created_at: Utc::now(),
+        }];
+
+        let scopes = compute_scopes_from_memberships(&user, &[], &org_memberships);
+
+        // Owner role maps to org:admin scope
+        assert!(scopes.contains(&"org:acme:admin".to_string()));
+        assert_eq!(scopes.len(), 1);
     }
 
     #[test]
@@ -332,6 +437,7 @@ mod tests {
             name: "Admin User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
+            org_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -344,7 +450,7 @@ mod tests {
             created_at: Utc::now(),
         }];
 
-        let scopes = compute_scopes_from_memberships(&user, &memberships);
+        let scopes = compute_scopes_from_memberships(&user, &memberships, &[]);
 
         // Verify scopes include both admin:all and team scopes
         assert!(scopes.contains(&"admin:all".to_string()));

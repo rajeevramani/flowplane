@@ -25,6 +25,7 @@ struct UserRow {
     pub name: String,
     pub status: String,
     pub is_admin: bool,
+    pub org_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -137,6 +138,7 @@ impl SqlxUserRepository {
             name: row.name,
             status,
             is_admin: row.is_admin,
+            org_id: row.org_id.map(|id| id.into()),
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -152,8 +154,8 @@ impl UserRepository for SqlxUserRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(&id)
@@ -162,6 +164,7 @@ impl UserRepository for SqlxUserRepository {
         .bind(&user.name)
         .bind(&status)
         .bind(user.is_admin)
+        .bind(user.org_id.as_ref().map(|id| id.as_str()))
         .bind(Utc::now())
         .bind(Utc::now())
         .execute(&self.pool)
@@ -179,7 +182,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_id = %id), name = "db_get_user")]
     async fn get_user(&self, id: &UserId) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE id = $1",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -195,7 +198,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_by_email")]
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -211,7 +214,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_with_password")]
     async fn get_user_with_password(&self, email: &str) -> Result<Option<(User, String)>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -286,7 +289,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_users")]
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)

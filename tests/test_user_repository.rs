@@ -46,6 +46,7 @@ async fn create_test_pool() -> (TestDatabase, DbPool) {
                 display_name: format!("Test Team {}", team_name),
                 description: Some("Team for user repository tests".to_string()),
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await;
@@ -69,6 +70,7 @@ async fn test_create_and_get_user() {
         name: "Test User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     // Create user
@@ -99,6 +101,7 @@ async fn test_get_user_by_email() {
         name: "Find Me".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -128,6 +131,7 @@ async fn test_get_user_with_password() {
         name: "Auth User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -152,6 +156,7 @@ async fn test_update_user() {
         name: "Original Name".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -185,6 +190,7 @@ async fn test_partial_update_user() {
         name: "Original Name".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -218,6 +224,7 @@ async fn test_update_password() {
         name: "Password Changer".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -245,6 +252,7 @@ async fn test_list_users() {
             name: format!("User {}", i),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
         };
         repo.create_user(new_user).await.unwrap();
     }
@@ -279,6 +287,7 @@ async fn test_count_users() {
             name: format!("Active User {}", i),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
         };
         repo.create_user(new_user).await.unwrap();
     }
@@ -292,6 +301,7 @@ async fn test_count_users() {
             name: format!("Inactive User {}", i),
             status: UserStatus::Inactive,
             is_admin: false,
+            org_id: None,
         };
         repo.create_user(new_user).await.unwrap();
     }
@@ -321,6 +331,7 @@ async fn test_delete_user() {
         name: "To Delete".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
 
     repo.create_user(new_user).await.unwrap();
@@ -354,6 +365,7 @@ async fn test_create_and_get_membership() {
         name: "Team Member".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -393,6 +405,7 @@ async fn test_list_user_memberships() {
         name: "Multi Team User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -428,6 +441,7 @@ async fn test_list_team_members() {
             name: format!("Team User {}", i),
             status: UserStatus::Active,
             is_admin: false,
+            org_id: None,
         };
         user_repo.create_user(new_user).await.unwrap();
 
@@ -461,6 +475,7 @@ async fn test_get_user_team_membership() {
         name: "Specific User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -500,6 +515,7 @@ async fn test_update_membership_scopes() {
         name: "Update Scopes User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -537,6 +553,7 @@ async fn test_delete_membership() {
         name: "Delete Membership User".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -576,6 +593,7 @@ async fn test_delete_user_team_membership() {
         name: "Delete User Team".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 
@@ -611,6 +629,7 @@ async fn test_delete_user_cascades_to_memberships() {
         name: "Cascade Test".to_string(),
         status: UserStatus::Active,
         is_admin: false,
+        org_id: None,
     };
     user_repo.create_user(new_user).await.unwrap();
 

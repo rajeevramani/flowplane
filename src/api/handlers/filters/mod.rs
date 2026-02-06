@@ -1108,6 +1108,7 @@ mod tests {
                     display_name: format!("Test Team {}", team_name),
                     description: Some("Test team".to_string()),
                     owner_user_id: None,
+                    org_id: None,
                     settings: None,
                 })
                 .await

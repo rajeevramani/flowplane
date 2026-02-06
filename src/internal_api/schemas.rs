@@ -235,6 +235,7 @@ mod tests {
                 display_name: format!("Test {}", name),
                 description: None,
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await

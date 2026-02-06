@@ -203,6 +203,11 @@ domain_id!(
     DataplaneId
 );
 
+domain_id!(
+    /// Unique identifier for an organization
+    OrgId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

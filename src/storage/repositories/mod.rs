@@ -19,6 +19,7 @@ pub mod listener;
 pub mod listener_auto_filter;
 pub mod listener_route_config;
 pub mod mcp_tool;
+pub mod organization;
 pub mod proxy_certificate;
 pub mod reporting;
 pub mod route;
@@ -76,6 +77,10 @@ pub use listener_auto_filter::{
 pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepository};
 pub use mcp_tool::{
     CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
+};
+pub use organization::{
+    OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
+    SqlxOrganizationRepository,
 };
 pub use proxy_certificate::{
     CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,

@@ -456,6 +456,7 @@ mod tests {
             display_name: "Test Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: None,
             settings: None,
         };
         let team = repo.create_team(request).await.expect("create team");

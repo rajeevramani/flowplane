@@ -16,6 +16,7 @@ pub mod mcp_routes;
 pub mod mcp_tools;
 pub mod openapi_import;
 pub mod openapi_utils;
+pub mod organizations;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
@@ -83,6 +84,11 @@ pub use mcp_tools::{
     list_mcp_tools_handler, update_mcp_tool_handler,
 };
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
+pub use organizations::{
+    admin_add_org_member, admin_create_organization, admin_delete_organization,
+    admin_get_organization, admin_list_org_members, admin_list_organizations,
+    admin_remove_org_member, admin_update_org_member_role, admin_update_organization,
+};
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
     revoke_certificate_handler,
@@ -142,6 +148,10 @@ pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
 pub use mcp_tools::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use organizations::{
+    AddOrgMemberRequest, ListOrgMembersResponse, ListOrganizationsQuery, ListOrganizationsResponse,
+    UpdateOrgMemberRoleRequest,
+};
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
     ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,

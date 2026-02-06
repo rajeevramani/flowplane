@@ -30,6 +30,7 @@ async fn create_test_team(pool: &DbPool, team_name: &str) {
             display_name: format!("Test Team {}", team_name),
             description: Some("Test team for integration tests".to_string()),
             owner_user_id: None,
+            org_id: None,
             settings: None,
         })
         .await;

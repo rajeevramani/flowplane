@@ -83,6 +83,7 @@ impl UserService {
             name: name.clone(),
             status: UserStatus::Active,
             is_admin,
+            org_id: None,
         };
 
         let user = self.user_repository.create_user(new_user).await?;

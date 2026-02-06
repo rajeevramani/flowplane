@@ -301,6 +301,74 @@ pub fn parse_team_from_scope(scope: &str) -> Option<String> {
     }
 }
 
+/// Parse organization name from a scope string if it matches the org pattern.
+///
+/// Expected pattern: `org:{name}:admin` or `org:{name}:member`
+///
+/// # Arguments
+///
+/// * `scope` - The scope string to parse
+///
+/// # Returns
+///
+/// `Some((org_name, role))` if the scope matches the org pattern, `None` otherwise.
+pub fn parse_org_from_scope(scope: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = scope.split(':').collect();
+
+    // Pattern: org:{name}:{role}
+    if parts.len() == 3 && parts[0] == "org" && (parts[2] == "admin" || parts[2] == "member") {
+        Some((parts[1].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+/// Extract all organization names and roles from org-scoped permissions in the context.
+///
+/// Parses scopes matching the pattern `org:{name}:admin|member` and
+/// returns a list of (org_name, role) pairs.
+pub fn extract_org_scopes(context: &AuthContext) -> Vec<(String, String)> {
+    let mut orgs = Vec::new();
+
+    for scope in context.scopes() {
+        if let Some(pair) = parse_org_from_scope(scope) {
+            orgs.push(pair);
+        }
+    }
+
+    orgs
+}
+
+/// Check if the context has org admin privileges for a specific org.
+pub fn has_org_admin(context: &AuthContext, org_name: &str) -> bool {
+    if has_admin_bypass(context) {
+        return true;
+    }
+
+    let expected = format!("org:{}:admin", org_name);
+    context.has_scope(&expected)
+}
+
+/// Require org admin access or return a 403 Forbidden error.
+pub fn require_org_admin(context: &AuthContext, org_name: &str) -> Result<(), AuthError> {
+    if has_org_admin(context, org_name) {
+        Ok(())
+    } else {
+        Err(AuthError::Forbidden)
+    }
+}
+
+/// Check if the context has any org membership (admin or member) for a specific org.
+pub fn has_org_membership(context: &AuthContext, org_name: &str) -> bool {
+    if has_admin_bypass(context) {
+        return true;
+    }
+
+    let admin_scope = format!("org:{}:admin", org_name);
+    let member_scope = format!("org:{}:member", org_name);
+    context.has_scope(&admin_scope) || context.has_scope(&member_scope)
+}
+
 /// Check if the context has any team-scoped permissions.
 ///
 /// Returns `true` if at least one scope matches the `team:{name}:{resource}:{action}` pattern.
@@ -821,6 +889,84 @@ mod tests {
             "write",
             "updating aggregated-schema should be write operation"
         );
+    }
+
+    // === Organization scope tests ===
+
+    #[test]
+    fn parse_org_from_scope_extracts_org_and_role() {
+        assert_eq!(parse_org_from_scope("org:acme:admin"), Some(("acme".into(), "admin".into())));
+        assert_eq!(
+            parse_org_from_scope("org:my-org:member"),
+            Some(("my-org".into(), "member".into()))
+        );
+        assert_eq!(parse_org_from_scope("org:acme:viewer"), None);
+        assert_eq!(parse_org_from_scope("team:acme:routes:read"), None);
+        assert_eq!(parse_org_from_scope("routes:read"), None);
+        assert_eq!(parse_org_from_scope("org:acme"), None);
+    }
+
+    #[test]
+    fn extract_org_scopes_returns_org_memberships() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-user"),
+            "org-user".into(),
+            vec![
+                "org:acme:admin".into(),
+                "org:globex:member".into(),
+                "team:platform:routes:read".into(),
+                "routes:read".into(),
+            ],
+        );
+
+        let orgs = extract_org_scopes(&ctx);
+        assert_eq!(orgs.len(), 2);
+        assert!(orgs.contains(&("acme".into(), "admin".into())));
+        assert!(orgs.contains(&("globex".into(), "member".into())));
+    }
+
+    #[test]
+    fn has_org_admin_checks_org_scope() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into(), "org:globex:member".into()],
+        );
+
+        assert!(has_org_admin(&ctx, "acme"));
+        assert!(!has_org_admin(&ctx, "globex")); // member, not admin
+        assert!(!has_org_admin(&ctx, "unknown"));
+    }
+
+    #[test]
+    fn has_org_admin_respects_platform_admin() {
+        let ctx = admin_context();
+        assert!(has_org_admin(&ctx, "any-org"));
+    }
+
+    #[test]
+    fn require_org_admin_returns_forbidden() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("member"),
+            "member".into(),
+            vec!["org:acme:member".into()],
+        );
+
+        assert!(require_org_admin(&ctx, "acme").is_err());
+        assert!(require_org_admin(&ctx, "unknown").is_err());
+    }
+
+    #[test]
+    fn has_org_membership_checks_admin_or_member() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-user"),
+            "org-user".into(),
+            vec!["org:acme:admin".into(), "org:globex:member".into()],
+        );
+
+        assert!(has_org_membership(&ctx, "acme"));
+        assert!(has_org_membership(&ctx, "globex"));
+        assert!(!has_org_membership(&ctx, "unknown"));
     }
 
     // === Regression tests for admin-with-team-memberships bug ===

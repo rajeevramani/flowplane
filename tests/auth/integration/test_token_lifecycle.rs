@@ -11,7 +11,12 @@ use flowplane::auth::{
 async fn integration_token_lifecycle_flow() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("token-admin", &["tokens:write", "tokens:read"]).await;
+    let admin = app
+        .issue_token(
+            "token-admin",
+            &["tokens:write", "tokens:read", "clusters:read", "routes:read"],
+        )
+        .await;
 
     // Create a new token via API.
     let create_response = send_request(

@@ -11,6 +11,7 @@ pub mod jwt;
 pub mod login_service;
 pub mod middleware;
 pub mod models;
+pub mod organization;
 pub mod scope_registry;
 pub mod session;
 pub mod setup_token;
@@ -23,6 +24,10 @@ pub mod validation;
 
 pub use hashing::{hash_password, verify_password};
 pub use jwt::{AuthService as JwtAuthService, Claims, Role};
+pub use organization::{
+    CreateOrganizationRequest, OrgMembershipResponse, OrgRole, OrgStatus, Organization,
+    OrganizationMembership, OrganizationResponse, UpdateOrganizationRequest,
+};
 pub use team::{CreateTeamRequest, Team, TeamStatus, UpdateTeamRequest};
 pub use user::{
     ChangePasswordRequest, CreateTeamMembershipRequest, CreateUserRequest, LoginRequest, NewUser,

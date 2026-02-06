@@ -249,6 +249,7 @@ impl TestTeamBuilder {
                 display_name: self.display_name,
                 description: self.description,
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await
@@ -312,6 +313,7 @@ impl TestUserBuilder {
             name: self.name,
             status: UserStatus::Active,
             is_admin: self.is_admin,
+            org_id: None,
         };
 
         repo.create_user(new_user).await.expect("Failed to create test user");

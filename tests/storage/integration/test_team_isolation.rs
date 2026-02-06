@@ -31,6 +31,7 @@ async fn setup_test_db() -> (TestDatabase, DbPool) {
                 display_name: format!("Test Team {}", team_name),
                 description: Some("Team for storage team isolation tests".to_string()),
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await;

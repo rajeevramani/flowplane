@@ -31,6 +31,7 @@ async fn create_test_pool() -> (TestDatabase, DbPool) {
                 display_name: format!("Test Team {}", team_name),
                 description: Some("Team for user team membership tests".to_string()),
                 owner_user_id: None,
+                org_id: None,
                 settings: None,
             })
             .await;
