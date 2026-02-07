@@ -44,7 +44,7 @@ async fn create_test_pool() -> (TestDatabase, DbPool, TestTeams) {
     let team_repo = SqlxTeamRepository::new(pool.clone());
 
     let team_names = vec![
-        "team-a",
+        "team-ur-a",
         "team-alpha",
         "team-beta",
         "team-gamma",

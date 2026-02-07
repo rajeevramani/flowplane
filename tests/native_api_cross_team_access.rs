@@ -27,7 +27,7 @@ use tower::ServiceExt;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::test_db::TestDatabase;
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
 
 // === Test Infrastructure ===
 
@@ -65,29 +65,8 @@ pub async fn setup_native_api_app() -> NativeApiApp {
     let test_db = TestDatabase::new("native_api_cross_team").await;
     let pool = test_db.pool().clone();
 
-    // Create teams required for cross-team tests
-    let team_id_a = uuid::Uuid::new_v4().to_string();
-    let team_id_b = uuid::Uuid::new_v4().to_string();
-
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
-        .bind(&team_id_a)
-        .bind("team-a")
-        .bind("Team A")
-        .bind("active")
-        .execute(&pool)
-        .await
-        .expect("create team-a");
-
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
-        .bind(&team_id_b)
-        .bind("team-b")
-        .bind("Team B")
-        .bind("active")
-        .execute(&pool)
-        .await
-        .expect("create team-b");
-
-    // Create dataplanes for both teams (required for listener creation)
+    // Teams are already seeded by TestDatabase::new() with predictable UUIDs.
+    // Create dataplanes for both teams (required for listener creation).
     let dataplane_id_a = uuid::Uuid::new_v4().to_string();
     let dataplane_id_b = uuid::Uuid::new_v4().to_string();
 
@@ -95,7 +74,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
         "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&dataplane_id_a)
-    .bind("team-a")
+    .bind(TEAM_A_ID)
     .bind("team-a-dataplane")
     .bind("127.0.0.1")
     .bind("Team A dataplane")
@@ -107,7 +86,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
         "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&dataplane_id_b)
-    .bind("team-b")
+    .bind(TEAM_B_ID)
     .bind("team-b-dataplane")
     .bind("127.0.0.1")
     .bind("Team B dataplane")

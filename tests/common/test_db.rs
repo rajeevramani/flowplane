@@ -65,12 +65,37 @@ impl TestDatabase {
             .await
             .unwrap_or_else(|e| panic!("Failed to create test pool for {}: {}", prefix, e));
 
+        // Seed common test teams with predictable UUIDs (matches src/storage/test_helpers.rs)
+        seed_test_teams(&pool).await;
+
         Self { pool, _container: container }
     }
 
     /// Get a reference to the connection pool.
     pub fn pool(&self) -> &DbPool {
         &self.pool
+    }
+}
+
+/// Seed common test teams with predictable UUIDs.
+///
+/// Uses raw SQL to insert teams with specific UUIDs that match the constants
+/// defined above. This mirrors `src/storage/test_helpers.rs::seed_test_data()`.
+async fn seed_test_teams(pool: &DbPool) {
+    let teams = [("test-team", TEST_TEAM_ID), ("team-a", TEAM_A_ID), ("team-b", TEAM_B_ID)];
+
+    for (team_name, team_id) in &teams {
+        sqlx::query(
+            "INSERT INTO teams (id, name, display_name, status) \
+             VALUES ($1, $2, $3, 'active') \
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(team_id)
+        .bind(team_name)
+        .bind(format!("Test Team {}", team_name))
+        .execute(pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", team_name, e));
     }
 }
 

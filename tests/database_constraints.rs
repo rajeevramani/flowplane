@@ -8,32 +8,15 @@
 
 mod common;
 
-use common::test_db::TestDatabase;
-use flowplane::auth::team::CreateTeamRequest;
-use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
+use common::test_db::{TestDatabase, TEST_TEAM_ID};
 use flowplane::storage::repositories::{CreateImportMetadataRequest, ImportMetadataRepository};
 use flowplane::storage::repository::{
     ClusterRepository, CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRequest,
     ListenerRepository, RouteConfigRepository,
 };
-use flowplane::storage::DbPool;
 
 async fn create_test_pool() -> TestDatabase {
     TestDatabase::new("database_constraints").await
-}
-
-async fn create_test_team(pool: &DbPool, team_name: &str) {
-    let team_repo = SqlxTeamRepository::new(pool.clone());
-    let _ = team_repo
-        .create_team(CreateTeamRequest {
-            name: team_name.to_string(),
-            display_name: format!("Test Team {}", team_name),
-            description: Some("Test team for integration tests".to_string()),
-            owner_user_id: None,
-            org_id: None,
-            settings: None,
-        })
-        .await;
 }
 
 #[tokio::test]
@@ -56,8 +39,6 @@ async fn test_source_enum_constraint_on_listeners() {
 async fn test_source_enum_constraint_on_routes() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
-
     // Create a cluster first (required by FK constraint)
     let cluster_repo = ClusterRepository::new(pool.clone());
     cluster_repo
@@ -65,7 +46,7 @@ async fn test_source_enum_constraint_on_routes() {
             name: "test-cluster".to_string(),
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
         })
         .await
@@ -102,7 +83,6 @@ async fn test_source_enum_constraint_on_clusters() {
 async fn test_valid_source_values_accepted() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     let listener_repo = ListenerRepository::new(pool.clone());
     let cluster_repo = ClusterRepository::new(pool.clone());
@@ -116,7 +96,7 @@ async fn test_valid_source_values_accepted() {
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "test"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
             dataplane_id: None,
         })
@@ -130,7 +110,7 @@ async fn test_valid_source_values_accepted() {
             name: "test-cluster".to_string(),
             service_name: "test-service".to_string(),
             configuration: serde_json::json!({"type": "EDS"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
         })
         .await
@@ -144,7 +124,7 @@ async fn test_valid_source_values_accepted() {
             path_prefix: "/".to_string(),
             cluster_name: "test-cluster".to_string(),
             configuration: serde_json::json!({"name": "test"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
             route_order: None,
             headers: None,
@@ -163,7 +143,6 @@ async fn test_valid_source_values_accepted() {
 async fn test_listener_created_with_import_id_stores_in_column() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     // Create import metadata first
     let import_repo = ImportMetadataRepository::new(pool.clone());
@@ -172,7 +151,7 @@ async fn test_listener_created_with_import_id_stores_in_column() {
             spec_name: "test-api".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: None,
-            team: "test".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             source_content: None,
             listener_name: Some("imported-listener".to_string()),
         })
@@ -188,7 +167,7 @@ async fn test_listener_created_with_import_id_stores_in_column() {
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "imported-listener"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: Some(import.id.clone()),
             dataplane_id: None,
         })
@@ -207,7 +186,6 @@ async fn test_listener_created_with_import_id_stores_in_column() {
 async fn test_listener_without_import_id_has_none() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     let listener_repo = ListenerRepository::new(pool.clone());
     let listener = listener_repo
@@ -217,7 +195,7 @@ async fn test_listener_without_import_id_has_none() {
             port: Some(8081),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "native-listener"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
             dataplane_id: None,
         })
@@ -231,7 +209,6 @@ async fn test_listener_without_import_id_has_none() {
 async fn test_count_by_import_uses_column_not_json() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     // Create two imports
     let import_repo = ImportMetadataRepository::new(pool.clone());
@@ -240,7 +217,7 @@ async fn test_count_by_import_uses_column_not_json() {
             spec_name: "api-one".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: None,
-            team: "test".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             source_content: None,
             listener_name: Some("import1-listener".to_string()),
         })
@@ -252,7 +229,7 @@ async fn test_count_by_import_uses_column_not_json() {
             spec_name: "api-two".to_string(),
             spec_version: Some("2.0.0".to_string()),
             spec_checksum: None,
-            team: "test".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             source_content: None,
             listener_name: Some("import2-listener".to_string()),
         })
@@ -270,7 +247,7 @@ async fn test_count_by_import_uses_column_not_json() {
                 port: Some(8080 + i),
                 protocol: Some("HTTP".to_string()),
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
-                team: Some("test".into()),
+                team: Some(TEST_TEAM_ID.into()),
                 import_id: Some(import1.id.clone()),
                 dataplane_id: None,
             })
@@ -287,7 +264,7 @@ async fn test_count_by_import_uses_column_not_json() {
                 port: Some(9080 + i),
                 protocol: Some("HTTP".to_string()),
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
-                team: Some("test".into()),
+                team: Some(TEST_TEAM_ID.into()),
                 import_id: Some(import2.id.clone()),
                 dataplane_id: None,
             })
@@ -307,7 +284,6 @@ async fn test_count_by_import_uses_column_not_json() {
 async fn test_cascade_delete_removes_listeners_when_import_deleted() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     // Create import metadata
     let import_repo = ImportMetadataRepository::new(pool.clone());
@@ -316,7 +292,7 @@ async fn test_cascade_delete_removes_listeners_when_import_deleted() {
             spec_name: "cascade-test-api".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: None,
-            team: "test".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             source_content: None,
             listener_name: Some("cascade-listener".to_string()),
         })
@@ -334,7 +310,7 @@ async fn test_cascade_delete_removes_listeners_when_import_deleted() {
                 port: Some(8080 + i),
                 protocol: Some("HTTP".to_string()),
                 configuration: serde_json::json!({"name": format!("listener-{}", i)}),
-                team: Some("test".into()),
+                team: Some(TEST_TEAM_ID.into()),
                 import_id: Some(import.id.clone()),
                 dataplane_id: None,
             })
@@ -362,7 +338,6 @@ async fn test_cascade_delete_removes_listeners_when_import_deleted() {
 async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
     let test_db = create_test_pool().await;
     let pool = &test_db.pool;
-    create_test_team(pool, "test").await;
 
     // Create import metadata
     let import_repo = ImportMetadataRepository::new(pool.clone());
@@ -371,7 +346,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             spec_name: "isolated-test-api".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: None,
-            team: "test".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             source_content: None,
             listener_name: Some("linked-listener".to_string()),
         })
@@ -388,7 +363,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             port: Some(8080),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "linked"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: Some(import.id.clone()),
             dataplane_id: None,
         })
@@ -403,7 +378,7 @@ async fn test_cascade_delete_does_not_affect_unlinked_listeners() {
             port: Some(8081),
             protocol: Some("HTTP".to_string()),
             configuration: serde_json::json!({"name": "unlinked"}),
-            team: Some("test".into()),
+            team: Some(TEST_TEAM_ID.into()),
             import_id: None,
             dataplane_id: None,
         })

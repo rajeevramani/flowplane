@@ -12,29 +12,38 @@
 mod common;
 
 use common::db_metadata::{get_column_names, get_index_names};
-use common::test_db::TestDatabase;
-use flowplane::auth::team::CreateTeamRequest;
-use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
 use flowplane::storage::DbPool;
 use sqlx::Row;
+
+// Predictable UUIDs for additional teams needed by these tests
+const TEAM_C_ID: &str = "00000000-0000-0000-0001-000000000001";
+const TEAM_1_ID: &str = "00000000-0000-0000-0001-000000000002";
+const TEAM_2_ID: &str = "00000000-0000-0000-0001-000000000003";
+const TEAM_3_ID: &str = "00000000-0000-0000-0001-000000000004";
 
 async fn create_test_pool() -> (TestDatabase, DbPool) {
     let test_db = TestDatabase::new("user_team_membership").await;
     let pool = test_db.pool.clone();
 
-    // Create test teams to satisfy FK constraints
-    let team_repo = SqlxTeamRepository::new(pool.clone());
-    for team_name in &["team-a", "team-b", "team-c", "team-1", "team-2", "team-3"] {
-        let _ = team_repo
-            .create_team(CreateTeamRequest {
-                name: team_name.to_string(),
-                display_name: format!("Test Team {}", team_name),
-                description: Some("Team for user team membership tests".to_string()),
-                owner_user_id: None,
-                org_id: None,
-                settings: None,
-            })
-            .await;
+    // Create additional test teams (team-a, team-b already seeded by TestDatabase)
+    let additional_teams = [
+        ("team-c", TEAM_C_ID),
+        ("team-1", TEAM_1_ID),
+        ("team-2", TEAM_2_ID),
+        ("team-3", TEAM_3_ID),
+    ];
+    for (name, id) in &additional_teams {
+        sqlx::query(
+            "INSERT INTO teams (id, name, display_name, status) \
+             VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(format!("Test Team {}", name))
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", name, e));
     }
 
     (test_db, pool)
@@ -209,9 +218,10 @@ async fn test_user_team_memberships_unique_constraint() {
     sqlx::query(
         r#"
         INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-        VALUES ('membership-1', 'user-1', 'team-a', '["read", "write"]', CURRENT_TIMESTAMP)
+        VALUES ('membership-1', 'user-1', $1, '["read", "write"]', CURRENT_TIMESTAMP)
         "#,
     )
+    .bind(TEAM_A_ID)
     .execute(&pool)
     .await
     .expect("Failed to insert first membership");
@@ -220,9 +230,10 @@ async fn test_user_team_memberships_unique_constraint() {
     let result = sqlx::query(
         r#"
         INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-        VALUES ('membership-2', 'user-1', 'team-a', '["admin"]', CURRENT_TIMESTAMP)
+        VALUES ('membership-2', 'user-1', $1, '["admin"]', CURRENT_TIMESTAMP)
         "#,
     )
+    .bind(TEAM_A_ID)
     .execute(&pool)
     .await;
 
@@ -246,15 +257,16 @@ async fn test_user_team_memberships_foreign_key_cascade() {
     .expect("Failed to insert user");
 
     // Create memberships for the user
-    for i in 1..=3 {
+    let team_ids = [TEAM_1_ID, TEAM_2_ID, TEAM_3_ID];
+    for (i, team_id) in team_ids.iter().enumerate() {
         sqlx::query(
             r#"
             INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
             VALUES ($1, 'user-1', $2, '["read"]', CURRENT_TIMESTAMP)
             "#,
         )
-        .bind(format!("membership-{}", i))
-        .bind(format!("team-{}", i))
+        .bind(format!("membership-{}", i + 1))
+        .bind(team_id)
         .execute(&pool)
         .await
         .expect("Failed to insert membership");
@@ -463,15 +475,20 @@ async fn test_complete_user_workflow() {
     .expect("Failed to create user");
 
     // 2. Add team memberships
-    for team in &["team-a", "team-b", "team-c"] {
+    let workflow_teams = [
+        ("membership-team-a", TEAM_A_ID),
+        ("membership-team-b", TEAM_B_ID),
+        ("membership-team-c", TEAM_C_ID),
+    ];
+    for (membership_id, team_id) in &workflow_teams {
         sqlx::query(
             r#"
             INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
             VALUES ($1, 'user-1', $2, '["read", "write", "admin"]', CURRENT_TIMESTAMP)
             "#,
         )
-        .bind(format!("membership-{}", team))
-        .bind(team)
+        .bind(membership_id)
+        .bind(team_id)
         .execute(&pool)
         .await
         .expect("Failed to create membership");
