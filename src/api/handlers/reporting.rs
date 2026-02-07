@@ -18,8 +18,9 @@ use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::{get_effective_team_ids, team_repo_from_state};
 use crate::api::routes::ApiState;
-use crate::auth::authorization::{extract_team_scopes, require_resource_access};
+use crate::auth::authorization::require_resource_access;
 use crate::auth::models::AuthContext;
 use crate::storage::repositories::ReportingRepository;
 use crate::xds::ClusterSpec;
@@ -131,8 +132,9 @@ pub async fn list_route_flows_handler(
 
     let reporting_repo = ReportingRepository::new(cluster_repo.pool().clone());
 
-    // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    // Extract team IDs from auth context for filtering
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
 
     // Fetch route flows from repository
     let (rows, total) = reporting_repo

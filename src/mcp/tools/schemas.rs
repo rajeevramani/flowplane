@@ -162,7 +162,14 @@ pub async fn execute_list_aggregated_schemas(
 
     // Use internal API layer
     let ops = AggregatedSchemaOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = ListSchemasRequest { path, http_method, min_confidence, latest_only, limit, offset };
 
@@ -219,7 +226,14 @@ pub async fn execute_get_aggregated_schema(
 
     // Use internal API layer
     let ops = AggregatedSchemaOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let schema = ops.get(id, &auth).await?;
 

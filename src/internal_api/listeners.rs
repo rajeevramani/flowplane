@@ -50,11 +50,18 @@ impl ListenerOperations {
         req: CreateListenerRequest,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<ListenerData>, InternalError> {
+        // Resolve team name to UUID for database storage
+        let resolved_team = self
+            .xds_state
+            .resolve_optional_team(req.team.as_deref())
+            .await
+            .map_err(InternalError::from)?;
+
         // 1. Verify team access (can create in this team?)
-        if !auth.can_create_for_team(req.team.as_deref()) {
+        if !auth.can_create_for_team(resolved_team.as_deref()) {
             return Err(InternalError::forbidden(format!(
                 "Cannot create listener for team '{}'",
-                req.team.as_deref().unwrap_or("global")
+                resolved_team.as_deref().unwrap_or("global")
             )));
         }
 
@@ -68,7 +75,7 @@ impl ListenerOperations {
                 req.port,
                 req.protocol.unwrap_or_else(|| "HTTP".to_string()),
                 req.config,
-                req.team,
+                resolved_team,
                 req.dataplane_id,
             )
             .await
@@ -263,21 +270,21 @@ impl ListenerOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
     use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_listeners").await;
         let pool = test_db.pool.clone();
 
-        // Insert test dataplanes for various teams
+        // Insert test dataplanes for various teams (using team UUIDs from seed data)
         sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
             VALUES
-                ('dp-test-123', 'test-team', 'test-dataplane', '10.0.0.1', 'Test dataplane'),
-                ('dp-team-a-123', 'team-a', 'team-a-dataplane', '10.0.0.2', 'Team A dataplane'),
-                ('dp-team-b-123', 'team-b', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
+                ('dp-test-123', '00000000-0000-0000-0000-000000000001', 'test-dataplane', '10.0.0.1', 'Test dataplane'),
+                ('dp-team-a-123', '00000000-0000-0000-0000-000000000002', 'team-a-dataplane', '10.0.0.2', 'Team A dataplane'),
+                ('dp-team-b-123', '00000000-0000-0000-0000-000000000003', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
         "#,
         )
         .execute(&pool)
@@ -321,7 +328,7 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };
@@ -340,14 +347,14 @@ mod tests {
     async fn test_create_listener_team_user() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateListenerRequest {
             name: "team-listener".to_string(),
             address: "127.0.0.1".to_string(),
             port: 9090,
             protocol: Some("HTTPS".to_string()),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-team-a-123".to_string(),
         };
@@ -360,14 +367,14 @@ mod tests {
     async fn test_create_listener_wrong_team() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateListenerRequest {
             name: "wrong-team-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             config: sample_config(),
             dataplane_id: "dp-team-b-123".to_string(),
         };
@@ -400,14 +407,14 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-team-a-123".to_string(),
         };
         ops.create(req, &admin_auth).await.expect("create listener");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get("team-a-listener", &team_b_auth).await;
 
         assert!(result.is_err());
@@ -422,10 +429,10 @@ mod tests {
         let admin_auth = InternalAuthContext::admin();
 
         // Create listeners for different teams
-        for (name, port, team) in [
-            ("listener-a1", 8081, "team-a"),
-            ("listener-b1", 8082, "team-b"),
-            ("listener-a2", 8083, "team-a"),
+        for (name, port, team, dp_id) in [
+            ("listener-a1", 8081, TEAM_A_ID, "dp-team-a-123"),
+            ("listener-b1", 8082, TEAM_B_ID, "dp-team-b-123"),
+            ("listener-a2", 8083, TEAM_A_ID, "dp-team-a-123"),
         ] {
             let req = CreateListenerRequest {
                 name: name.to_string(),
@@ -434,20 +441,20 @@ mod tests {
                 protocol: Some("HTTP".to_string()),
                 team: Some(team.to_string()),
                 config: sample_config(),
-                dataplane_id: format!("dp-{}-123", team),
+                dataplane_id: dp_id.to_string(),
             };
             ops.create(req, &admin_auth).await.expect("create listener");
         }
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let list_req = ListListenersRequest { include_defaults: true, ..Default::default() };
         let result = ops.list(list_req, &team_a_auth).await.expect("list listeners");
 
         // Should only see team-a listeners
         assert_eq!(result.count, 2);
         for listener in &result.listeners {
-            assert_eq!(listener.team.as_deref(), Some("team-a"));
+            assert_eq!(listener.team.as_deref(), Some(TEAM_A_ID));
         }
     }
 
@@ -463,7 +470,7 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };
@@ -501,7 +508,7 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };

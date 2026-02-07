@@ -305,7 +305,14 @@ pub async fn execute_list_dataplanes(
 
     // Use internal API layer
     let ops = DataplaneOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = ListDataplanesInternalRequest { limit, offset };
 
@@ -349,7 +356,14 @@ pub async fn execute_get_dataplane(
 
     // Use internal API layer
     let ops = DataplaneOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let dataplane = ops.get(dataplane_team, name, &auth).await?;
 
@@ -400,7 +414,14 @@ pub async fn execute_create_dataplane(
 
     // 3. Use internal API layer
     let ops = DataplaneOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = CreateDataplaneInternalRequest {
         team: dataplane_team.to_string(),
@@ -463,7 +484,14 @@ pub async fn execute_update_dataplane(
 
     // 3. Use internal API layer
     let ops = DataplaneOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = UpdateDataplaneInternalRequest { gateway_host, description };
 
@@ -509,7 +537,14 @@ pub async fn execute_delete_dataplane(
 
     // 2. Use internal API layer
     let ops = DataplaneOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     ops.delete(dataplane_team, name, &auth).await?;
 

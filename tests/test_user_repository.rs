@@ -19,13 +19,31 @@ use flowplane::storage::repositories::{
 };
 use flowplane::storage::DbPool;
 
-async fn create_test_pool() -> (TestDatabase, DbPool) {
+/// Helper struct to hold team IDs for tests
+struct TestTeams {
+    team_a_id: String,
+    team_alpha_id: String,
+    team_beta_id: String,
+    team_gamma_id: String,
+    team_delta_id: String,
+    team_epsilon_id: String,
+    team_zeta_id: String,
+    team_1_id: String,
+    team_2_id: String,
+    team_3_id: String,
+    cascade_team_1_id: String,
+    cascade_team_2_id: String,
+    cascade_team_3_id: String,
+}
+
+async fn create_test_pool() -> (TestDatabase, DbPool, TestTeams) {
     let test_db = TestDatabase::new("user_repository").await;
     let pool = test_db.pool.clone();
 
-    // Create test teams to satisfy FK constraints
+    // Create test teams to satisfy FK constraints and capture their IDs
     let team_repo = SqlxTeamRepository::new(pool.clone());
-    for team_name in &[
+
+    let team_names = vec![
         "team-a",
         "team-alpha",
         "team-beta",
@@ -39,8 +57,11 @@ async fn create_test_pool() -> (TestDatabase, DbPool) {
         "cascade-team-1",
         "cascade-team-2",
         "cascade-team-3",
-    ] {
-        let _ = team_repo
+    ];
+
+    let mut team_ids = Vec::new();
+    for team_name in &team_names {
+        let team = team_repo
             .create_team(CreateTeamRequest {
                 name: team_name.to_string(),
                 display_name: format!("Test Team {}", team_name),
@@ -49,17 +70,35 @@ async fn create_test_pool() -> (TestDatabase, DbPool) {
                 org_id: None,
                 settings: None,
             })
-            .await;
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create team {}: {}", team_name, e));
+        team_ids.push(team.id.to_string());
     }
 
-    (test_db, pool)
+    let test_teams = TestTeams {
+        team_a_id: team_ids[0].clone(),
+        team_alpha_id: team_ids[1].clone(),
+        team_beta_id: team_ids[2].clone(),
+        team_gamma_id: team_ids[3].clone(),
+        team_delta_id: team_ids[4].clone(),
+        team_epsilon_id: team_ids[5].clone(),
+        team_zeta_id: team_ids[6].clone(),
+        team_1_id: team_ids[7].clone(),
+        team_2_id: team_ids[8].clone(),
+        team_3_id: team_ids[9].clone(),
+        cascade_team_1_id: team_ids[10].clone(),
+        cascade_team_2_id: team_ids[11].clone(),
+        cascade_team_3_id: team_ids[12].clone(),
+    };
+
+    (test_db, pool, test_teams)
 }
 
 // UserRepository tests
 
 #[tokio::test]
 async fn test_create_and_get_user() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -90,7 +129,7 @@ async fn test_create_and_get_user() {
 
 #[tokio::test]
 async fn test_get_user_by_email() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -118,7 +157,7 @@ async fn test_get_user_by_email() {
 
 #[tokio::test]
 async fn test_get_user_with_password() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -145,7 +184,7 @@ async fn test_get_user_with_password() {
 
 #[tokio::test]
 async fn test_update_user() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -179,7 +218,7 @@ async fn test_update_user() {
 
 #[tokio::test]
 async fn test_partial_update_user() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -213,7 +252,7 @@ async fn test_partial_update_user() {
 
 #[tokio::test]
 async fn test_update_password() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -239,7 +278,7 @@ async fn test_update_password() {
 
 #[tokio::test]
 async fn test_list_users() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     // Create multiple users
@@ -271,7 +310,7 @@ async fn test_list_users() {
 
 #[tokio::test]
 async fn test_count_users() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let count_before = repo.count_users().await.unwrap();
@@ -320,7 +359,7 @@ async fn test_count_users() {
 
 #[tokio::test]
 async fn test_delete_user() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, _teams) = create_test_pool().await;
     let repo = SqlxUserRepository::new(pool);
 
     let user_id = UserId::new();
@@ -352,7 +391,7 @@ async fn test_delete_user() {
 
 #[tokio::test]
 async fn test_create_and_get_membership() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -374,7 +413,7 @@ async fn test_create_and_get_membership() {
     let new_membership = NewUserTeamMembership {
         id: membership_id.clone(),
         user_id: user_id.clone(),
-        team: "team-a".to_string(),
+        team: teams.team_a_id.clone(),
         scopes: vec!["clusters:read".to_string(), "routes:write".to_string()],
     };
 
@@ -382,7 +421,7 @@ async fn test_create_and_get_membership() {
 
     assert_eq!(created.id, membership_id);
     assert_eq!(created.user_id, user_id);
-    assert_eq!(created.team, "team-a");
+    assert_eq!(created.team, teams.team_a_id);
     assert_eq!(created.scopes.len(), 2);
 
     // Get membership
@@ -392,7 +431,7 @@ async fn test_create_and_get_membership() {
 
 #[tokio::test]
 async fn test_list_user_memberships() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -410,11 +449,12 @@ async fn test_list_user_memberships() {
     user_repo.create_user(new_user).await.unwrap();
 
     // Create memberships for different teams
-    for i in 1..=3 {
+    let team_ids = [&teams.team_1_id, &teams.team_2_id, &teams.team_3_id];
+    for (i, team_id) in team_ids.iter().enumerate() {
         let membership = NewUserTeamMembership {
-            id: format!("membership-{}", i),
+            id: format!("membership-{}", i + 1),
             user_id: user_id.clone(),
-            team: format!("team-{}", i),
+            team: team_id.to_string(),
             scopes: vec!["clusters:read".to_string()],
         };
         membership_repo.create_membership(membership).await.unwrap();
@@ -427,7 +467,7 @@ async fn test_list_user_memberships() {
 
 #[tokio::test]
 async fn test_list_team_members() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -449,20 +489,20 @@ async fn test_list_team_members() {
         let membership = NewUserTeamMembership {
             id: format!("membership-alpha-{}", i),
             user_id: user_id.clone(),
-            team: "team-alpha".to_string(),
+            team: teams.team_alpha_id.clone(),
             scopes: vec!["clusters:read".to_string()],
         };
         membership_repo.create_membership(membership).await.unwrap();
     }
 
     // List all members of team-alpha
-    let members = membership_repo.list_team_members("team-alpha").await.unwrap();
+    let members = membership_repo.list_team_members(&teams.team_alpha_id).await.unwrap();
     assert_eq!(members.len(), 3);
 }
 
 #[tokio::test]
 async fn test_get_user_team_membership() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -483,26 +523,30 @@ async fn test_get_user_team_membership() {
     let membership = NewUserTeamMembership {
         id: "membership-beta".to_string(),
         user_id: user_id.clone(),
-        team: "team-beta".to_string(),
+        team: teams.team_beta_id.clone(),
         scopes: vec!["admin:all".to_string()],
     };
     membership_repo.create_membership(membership).await.unwrap();
 
     // Get specific membership
-    let found =
-        membership_repo.get_user_team_membership(&user_id, "team-beta").await.unwrap().unwrap();
+    let found = membership_repo
+        .get_user_team_membership(&user_id, &teams.team_beta_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(found.user_id, user_id);
-    assert_eq!(found.team, "team-beta");
+    assert_eq!(found.team, teams.team_beta_id);
 
     // Not found for different team
-    let not_found = membership_repo.get_user_team_membership(&user_id, "team-gamma").await.unwrap();
+    let not_found =
+        membership_repo.get_user_team_membership(&user_id, &teams.team_gamma_id).await.unwrap();
     assert!(not_found.is_none());
 }
 
 #[tokio::test]
 async fn test_update_membership_scopes() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -523,7 +567,7 @@ async fn test_update_membership_scopes() {
     let membership = NewUserTeamMembership {
         id: membership_id.clone(),
         user_id: user_id.clone(),
-        team: "team-delta".to_string(),
+        team: teams.team_delta_id.clone(),
         scopes: vec!["clusters:read".to_string()],
     };
     membership_repo.create_membership(membership).await.unwrap();
@@ -540,7 +584,7 @@ async fn test_update_membership_scopes() {
 
 #[tokio::test]
 async fn test_delete_membership() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -561,7 +605,7 @@ async fn test_delete_membership() {
     let membership = NewUserTeamMembership {
         id: membership_id.clone(),
         user_id: user_id.clone(),
-        team: "team-epsilon".to_string(),
+        team: teams.team_epsilon_id.clone(),
         scopes: vec!["clusters:read".to_string()],
     };
     membership_repo.create_membership(membership).await.unwrap();
@@ -580,7 +624,7 @@ async fn test_delete_membership() {
 
 #[tokio::test]
 async fn test_delete_user_team_membership() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -601,22 +645,23 @@ async fn test_delete_user_team_membership() {
     let membership = NewUserTeamMembership {
         id: "membership-zeta".to_string(),
         user_id: user_id.clone(),
-        team: "team-zeta".to_string(),
+        team: teams.team_zeta_id.clone(),
         scopes: vec!["clusters:read".to_string()],
     };
     membership_repo.create_membership(membership).await.unwrap();
 
     // Delete by user_id and team
-    membership_repo.delete_user_team_membership(&user_id, "team-zeta").await.unwrap();
+    membership_repo.delete_user_team_membership(&user_id, &teams.team_zeta_id).await.unwrap();
 
     // Verify deleted
-    let deleted = membership_repo.get_user_team_membership(&user_id, "team-zeta").await.unwrap();
+    let deleted =
+        membership_repo.get_user_team_membership(&user_id, &teams.team_zeta_id).await.unwrap();
     assert!(deleted.is_none());
 }
 
 #[tokio::test]
 async fn test_delete_user_cascades_to_memberships() {
-    let (_db, pool) = create_test_pool().await;
+    let (_db, pool, teams) = create_test_pool().await;
     let user_repo = SqlxUserRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool);
 
@@ -634,11 +679,13 @@ async fn test_delete_user_cascades_to_memberships() {
     user_repo.create_user(new_user).await.unwrap();
 
     // Create multiple memberships
-    for i in 1..=3 {
+    let cascade_teams =
+        [&teams.cascade_team_1_id, &teams.cascade_team_2_id, &teams.cascade_team_3_id];
+    for (i, team_id) in cascade_teams.iter().enumerate() {
         let membership = NewUserTeamMembership {
-            id: format!("cascade-membership-{}", i),
+            id: format!("cascade-membership-{}", i + 1),
             user_id: user_id.clone(),
-            team: format!("cascade-team-{}", i),
+            team: team_id.to_string(),
             scopes: vec!["clusters:read".to_string()],
         };
         membership_repo.create_membership(membership).await.unwrap();

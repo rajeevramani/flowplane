@@ -26,8 +26,9 @@ use tracing::{info, instrument};
 use utoipa;
 
 use crate::{
+    api::handlers::team_access::{get_effective_team_ids, team_repo_from_state},
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::FilterId,
     services::FilterService,
@@ -86,9 +87,9 @@ async fn resolve_route_config_with_access(
     let route_config =
         route_config_repository.get_by_name(route_name).await.map_err(ApiError::from)?;
 
-    // Extract team scopes for access verification
-    let team_scopes =
-        if has_admin_bypass(context) { Vec::new() } else { extract_team_scopes(context) };
+    // Extract team IDs for access verification
+    let team_repo = team_repo_from_state(state)?;
+    let team_scopes = get_effective_team_ids(context, team_repo).await?;
 
     verify_route_config_access(route_config, &team_scopes).await
 }

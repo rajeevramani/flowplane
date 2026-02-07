@@ -54,8 +54,15 @@ impl ClusterOperations {
         // 1. Validate the cluster spec
         req.config.validate_model().map_err(|e| InternalError::validation(e.to_string()))?;
 
+        // Resolve team name to UUID for database storage
+        let resolved_team = self
+            .xds_state
+            .resolve_optional_team(req.team.as_deref())
+            .await
+            .map_err(InternalError::from)?;
+
         // 2. Verify team access (can create in this team?)
-        if !auth.can_create_for_team(req.team.as_deref()) {
+        if !auth.can_create_for_team(resolved_team.as_deref()) {
             return Err(InternalError::forbidden(format!(
                 "Cannot create cluster for team '{}'",
                 req.team.as_deref().unwrap_or("global")
@@ -65,7 +72,7 @@ impl ClusterOperations {
         // 3. Call service layer
         let service = ClusterService::new(self.xds_state.clone());
         let created = service
-            .create_cluster(req.name.clone(), req.service_name, req.config, req.team)
+            .create_cluster(req.name.clone(), req.service_name, req.config, resolved_team)
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
@@ -250,7 +257,7 @@ impl ClusterOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
     use crate::xds::EndpointSpec;
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
@@ -278,7 +285,7 @@ mod tests {
         let req = CreateClusterRequest {
             name: "new-test-cluster".to_string(),
             service_name: "test-service".to_string(),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
         };
 
@@ -295,12 +302,12 @@ mod tests {
     async fn test_create_cluster_team_user() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateClusterRequest {
             name: "team-cluster".to_string(),
             service_name: "team-service".to_string(),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
         };
 
@@ -312,12 +319,12 @@ mod tests {
     async fn test_create_cluster_wrong_team() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateClusterRequest {
             name: "wrong-team-cluster".to_string(),
             service_name: "service".to_string(),
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             config: sample_config(),
         };
 
@@ -347,13 +354,13 @@ mod tests {
         let req = CreateClusterRequest {
             name: "team-a-cluster".to_string(),
             service_name: "service".to_string(),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
         };
         ops.create(req, &admin_auth).await.expect("create cluster");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get("team-a-cluster", &team_b_auth).await;
 
         assert!(result.is_err());
@@ -369,7 +376,7 @@ mod tests {
 
         // Create clusters for different teams (use unique names to avoid seed data conflicts)
         for (name, team) in
-            [("filtered-a", "team-a"), ("filtered-b", "team-b"), ("filtered-a2", "team-a")]
+            [("filtered-a", TEAM_A_ID), ("filtered-b", TEAM_B_ID), ("filtered-a2", TEAM_A_ID)]
         {
             let req = CreateClusterRequest {
                 name: name.to_string(),
@@ -381,7 +388,7 @@ mod tests {
         }
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let list_req = ListClustersRequest { include_defaults: true, ..Default::default() };
         let result = ops.list(list_req, &team_a_auth).await.expect("list clusters");
 
@@ -389,7 +396,7 @@ mod tests {
         let team_a_names: Vec<&str> = result
             .clusters
             .iter()
-            .filter(|c| c.team.as_deref() == Some("team-a"))
+            .filter(|c| c.team.as_deref() == Some(TEAM_A_ID))
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(team_a_names.len(), 2);
@@ -407,7 +414,7 @@ mod tests {
         let create_req = CreateClusterRequest {
             name: "update-test".to_string(),
             service_name: "original".to_string(),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
         };
         ops.create(create_req, &auth).await.expect("create cluster");
@@ -434,7 +441,7 @@ mod tests {
         let create_req = CreateClusterRequest {
             name: "delete-test".to_string(),
             service_name: "service".to_string(),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
         };
         ops.create(create_req, &auth).await.expect("create cluster");

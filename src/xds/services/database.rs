@@ -7,6 +7,7 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use crate::{
+    storage::repositories::TeamRepository,
     storage::{ClusterRepository, ListenerRepository, RouteConfigRepository, SecretRepository},
     Result,
 };
@@ -132,6 +133,11 @@ impl DatabaseAggregatedDiscoveryService {
                 }
             };
 
+            // Resolve team names to UUIDs
+            let teams = resolve_teams_for_xds(teams, &self.state)
+                .await
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
             // If Allowlist scope, query only default resources
             let cluster_data_list = if is_default_only {
                 // For Allowlist on clusters, return only shared/default clusters
@@ -248,6 +254,11 @@ impl DatabaseAggregatedDiscoveryService {
                 }
             };
 
+            // Resolve team names to UUIDs
+            let teams = resolve_teams_for_xds(teams, &self.state)
+                .await
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
+
             // If Allowlist scope, query only default resources
             let route_data_result = if is_default_only {
                 repo.list_default_only(Some(100), None).await
@@ -336,6 +347,11 @@ impl DatabaseAggregatedDiscoveryService {
                     vec![]
                 }
             };
+
+            // Resolve team names to UUIDs
+            let teams = resolve_teams_for_xds(teams, &self.state)
+                .await
+                .map_err(|e| crate::errors::Error::internal(e.message()))?;
 
             // If Allowlist scope, query only default resources
             let listener_data_result = if is_default_only {
@@ -508,6 +524,11 @@ impl DatabaseAggregatedDiscoveryService {
                 vec![]
             }
         };
+
+        // Resolve team names to UUIDs
+        let teams = resolve_teams_for_xds(teams, &self.state)
+            .await
+            .map_err(|e| crate::errors::Error::internal(e.message()))?;
 
         // If Allowlist scope, query only default resources
         let secret_data_result = if is_default_only {
@@ -1135,6 +1156,25 @@ fn teams_from_scope(
             // This prevents Allowlist from granting access to all teams' resources.
             Ok(None)
         }
+    }
+}
+
+/// Resolve team names to UUIDs for database queries.
+/// After FK migration, resource tables store team UUIDs, not names.
+async fn resolve_teams_for_xds(
+    teams: Vec<String>,
+    state: &XdsState,
+) -> std::result::Result<Vec<String>, tonic::Status> {
+    if teams.is_empty() {
+        return Ok(teams);
+    }
+    if let Some(team_repo) = &state.team_repository {
+        team_repo
+            .resolve_team_ids(&teams)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Failed to resolve team IDs: {}", e)))
+    } else {
+        Ok(teams)
     }
 }
 

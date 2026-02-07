@@ -109,6 +109,7 @@ pub trait TeamRepository: Send + Sync {
 
 // SQLx implementation
 
+#[derive(Debug)]
 pub struct SqlxTeamRepository {
     pool: DbPool,
 }
@@ -434,8 +435,8 @@ mod tests {
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
-            name: "platform".to_string(),
-            display_name: "Platform Team".to_string(),
+            name: "duplicate-test".to_string(),
+            display_name: "Duplicate Test Team".to_string(),
             description: None,
             owner_user_id: None,
             org_id: None,
@@ -503,12 +504,12 @@ mod tests {
             repo.create_team(request).await.expect("create team");
         }
 
-        // Count includes seed teams from TestDatabase (test-team, team-a, team-b)
+        // Count includes seed teams from TestDatabase (test-team, team-a, team-b, platform)
         let teams = repo.list_teams(20, 0).await.expect("list teams");
-        assert_eq!(teams.len(), 5 + 3); // 5 created + 3 seed
+        assert_eq!(teams.len(), 5 + 4); // 5 created + 4 seed
 
         let count = repo.count_teams().await.expect("count teams");
-        assert_eq!(count, 5 + 3);
+        assert_eq!(count, 5 + 4);
     }
 
     #[tokio::test]
@@ -549,10 +550,10 @@ mod tests {
         };
         repo.update_team(&suspended_team.id, update).await.expect("suspend team");
 
-        // List active teams (includes 3 seed teams + 1 created active)
+        // List active teams (includes 4 seed teams + 1 created active)
         let active_teams =
             repo.list_teams_by_status(TeamStatus::Active, 10, 0).await.expect("list active");
-        assert_eq!(active_teams.len(), 4); // 1 created + 3 seed
+        assert_eq!(active_teams.len(), 5); // 1 created + 4 seed
         assert!(active_teams.iter().any(|t| t.id == active_team.id));
 
         // List suspended teams

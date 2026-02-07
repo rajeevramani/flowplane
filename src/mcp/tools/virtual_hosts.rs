@@ -322,7 +322,14 @@ pub async fn execute_list_virtual_hosts(
 
     // Use internal API layer
     let ops = VirtualHostOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let list_req =
         ListVirtualHostsRequest { route_config: route_config.map(String::from), limit, offset };
@@ -389,7 +396,14 @@ pub async fn execute_get_virtual_host(
 
     // Use internal API layer
     let ops = VirtualHostOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let virtual_host = ops.get(route_config, name, &auth).await?;
 
@@ -466,7 +480,14 @@ pub async fn execute_create_virtual_host(
 
     // 2. Use internal API layer
     let ops = VirtualHostOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = crate::internal_api::CreateVirtualHostRequest {
         route_config: route_config.to_string(),
@@ -556,7 +577,14 @@ pub async fn execute_update_virtual_host(
 
     // 3. Use internal API layer
     let ops = VirtualHostOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = UpdateVirtualHostRequest { domains, rule_order };
 
@@ -604,7 +632,14 @@ pub async fn execute_delete_virtual_host(
 
     // 2. Use internal API layer
     let ops = VirtualHostOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     ops.delete(route_config, name, &auth).await?;
 

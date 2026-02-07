@@ -16,7 +16,7 @@ use crate::{
             RouteListViewDto,
         },
         error::ApiError,
-        handlers::team_access::get_effective_team_scopes,
+        handlers::team_access::{get_effective_team_ids, team_repo_from_state},
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
@@ -53,7 +53,8 @@ pub async fn list_route_views_handler(
 
     // Extract team scopes from auth context for filtering
     // Empty team_scopes = admin bypass (query all teams)
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
 
     // Parse query parameters
     let page = params.page.unwrap_or(1).max(1);
@@ -188,7 +189,8 @@ pub async fn get_route_stats_handler(
 
     // Extract team scopes from auth context for filtering
     // Empty team_scopes = admin bypass (query all teams)
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
 
     // Get repositories
     let route_repo = state

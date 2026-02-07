@@ -26,7 +26,11 @@ use utoipa::{IntoParams, ToSchema};
 use std::collections::HashMap;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_ids, team_repo_from_state},
+        routes::ApiState,
+    },
     auth::{
         authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
         models::AuthContext,
@@ -461,8 +465,9 @@ pub async fn get_import_handler(
 
     // Team-scoped users validation (skip for admins)
     if !has_admin_bypass(&context) {
-        let team_scopes = extract_team_scopes(&context);
-        if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
+        let team_repo = team_repo_from_state(&state)?;
+        let team_ids = get_effective_team_ids(&context, team_repo).await?;
+        if !team_ids.is_empty() && !team_ids.contains(&import_data.team) {
             return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
         }
     }
@@ -539,8 +544,9 @@ pub async fn delete_import_handler(
 
     // Team-scoped users validation (skip for admins)
     if !has_admin_bypass(&context) {
-        let team_scopes = extract_team_scopes(&context);
-        if !team_scopes.is_empty() && !team_scopes.contains(&import_data.team) {
+        let team_repo = team_repo_from_state(&state)?;
+        let team_ids = get_effective_team_ids(&context, team_repo).await?;
+        if !team_ids.is_empty() && !team_ids.contains(&import_data.team) {
             return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
         }
     }

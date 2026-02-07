@@ -206,7 +206,7 @@ mod tests {
     use crate::config::SimpleXdsConfig;
     use crate::storage::repositories::aggregated_schema::CreateAggregatedSchemaRequest;
     use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
     use crate::storage::DbPool;
 
     struct TestSetup {
@@ -276,11 +276,11 @@ mod tests {
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
         // Create schemas for team-a
-        create_test_schema(&setup.state, "team-a", "/users", "GET").await;
-        create_test_schema(&setup.state, "team-a", "/products", "GET").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/products", "GET").await;
 
         // List as team-a
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = ListSchemasRequest::default();
         let result = ops.list(req, &auth).await;
 
@@ -297,11 +297,11 @@ mod tests {
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
         // Create schemas
-        create_test_schema(&setup.state, "team-a", "/users", "GET").await;
-        create_test_schema(&setup.state, "team-a", "/products", "GET").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/products", "GET").await;
 
         // Filter by path
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = ListSchemasRequest { path: Some("users".to_string()), ..Default::default() };
         let result = ops.list(req, &auth).await.expect("list schemas");
 
@@ -316,11 +316,11 @@ mod tests {
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
         // Create schemas with different methods
-        create_test_schema(&setup.state, "team-a", "/users", "GET").await;
-        create_test_schema(&setup.state, "team-a", "/users", "POST").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
+        create_test_schema(&setup.state, TEAM_A_ID, "/users", "POST").await;
 
         // Filter by method
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req =
             ListSchemasRequest { http_method: Some("POST".to_string()), ..Default::default() };
         let result = ops.list(req, &auth).await.expect("list schemas");
@@ -336,7 +336,7 @@ mod tests {
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
         // Create multiple versions of the same endpoint
-        let schema_v1 = create_test_schema(&setup.state, "team-a", "/users", "GET").await;
+        let schema_v1 = create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
 
         let repo = setup
             .state
@@ -344,7 +344,7 @@ mod tests {
             .as_ref()
             .expect("aggregated schema repository");
         let request_v2 = CreateAggregatedSchemaRequest {
-            team: "team-a".to_string(),
+            team: TEAM_A_ID.to_string(),
             path: "/users".to_string(),
             http_method: "GET".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
@@ -359,7 +359,7 @@ mod tests {
         repo.create(request_v2).await.expect("create v2");
 
         // List with latest_only = true
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = ListSchemasRequest { latest_only: Some(true), ..Default::default() };
         let result = ops.list(req, &auth).await.expect("list schemas");
 
@@ -374,16 +374,16 @@ mod tests {
         create_team(&setup.pool, "team-a").await;
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
-        let created = create_test_schema(&setup.state, "team-a", "/users", "GET").await;
+        let created = create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
 
         // Get as team-a
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let result = ops.get(created.id, &auth).await;
 
         assert!(result.is_ok());
         let schema = result.unwrap();
         assert_eq!(schema.id, created.id);
-        assert_eq!(schema.team, "team-a");
+        assert_eq!(schema.team, TEAM_A_ID);
     }
 
     #[tokio::test]
@@ -393,10 +393,10 @@ mod tests {
         create_team(&setup.pool, "team-b").await;
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
-        let created = create_test_schema(&setup.state, "team-a", "/users", "GET").await;
+        let created = create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
 
         // Try to access from team-b
-        let auth = InternalAuthContext::for_team("team-b");
+        let auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get(created.id, &auth).await;
 
         assert!(result.is_err());
@@ -409,7 +409,7 @@ mod tests {
         create_team(&setup.pool, "team-a").await;
         let ops = AggregatedSchemaOperations::new(setup.state);
 
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let result = ops.get(99999, &auth).await;
 
         assert!(result.is_err());
@@ -423,7 +423,7 @@ mod tests {
         let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
         // Create multiple versions
-        let schema_v1 = create_test_schema(&setup.state, "team-a", "/users", "GET").await;
+        let schema_v1 = create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
 
         let repo = setup
             .state
@@ -432,7 +432,7 @@ mod tests {
             .expect("aggregated schema repository");
         for i in 2..=3 {
             let request = CreateAggregatedSchemaRequest {
-                team: "team-a".to_string(),
+                team: TEAM_A_ID.to_string(),
                 path: "/users".to_string(),
                 http_method: "GET".to_string(),
                 request_schema: Some(serde_json::json!({"type": "object"})),
@@ -448,7 +448,7 @@ mod tests {
         }
 
         // Get version history
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
         let result = ops.get_version_history("/users", "GET", &auth).await.expect("get history");
 
         // Should have 3 versions

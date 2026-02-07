@@ -16,7 +16,7 @@ use validator::Validate;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
         routes::ApiState,
     },
     auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
@@ -318,8 +318,18 @@ pub async fn list_learning_sessions_handler(
             ApiError::Internal(format!("Failed to list learning sessions: {}", e))
         })?
     } else {
-        // Extract team from auth context for non-admin users
-        let team = require_single_team_scope(&context)?;
+        // Extract team from auth context for non-admin users and resolve to UUID
+        let team_name = require_single_team_scope(&context)?;
+        use crate::storage::repositories::TeamRepository as _;
+        let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
+        let team_ids = team_repo
+            .resolve_team_ids(&[team_name])
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+        let team = team_ids
+            .into_iter()
+            .next()
+            .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
         session_repo.list_by_team(&team, status_filter, query.limit, query.offset).await.map_err(
             |e| {
                 tracing::error!(error = %e, team = %team, "Failed to list learning sessions");
@@ -358,7 +368,8 @@ pub async fn get_learning_session_handler(
     require_resource_access(&context, "learning-sessions", "read", None)?;
 
     // Get effective team scopes for access verification
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
 
     // Get repository
     let repo = state
@@ -416,7 +427,8 @@ pub async fn delete_learning_session_handler(
     require_resource_access(&context, "learning-sessions", "delete", None)?;
 
     // Get effective team scopes for access verification
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
 
     // Get repository
     let repo = state

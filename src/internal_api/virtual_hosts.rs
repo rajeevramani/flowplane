@@ -333,7 +333,7 @@ impl VirtualHostOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_virtual_hosts").await;
@@ -371,7 +371,7 @@ mod tests {
 
         // Create route config first
         let _route_config =
-            create_test_route_config(&state, "test-routes", Some("test-team")).await;
+            create_test_route_config(&state, "test-routes", Some(TEST_TEAM_ID)).await;
 
         let req = CreateVirtualHostRequest {
             route_config: "test-routes".to_string(),
@@ -393,10 +393,11 @@ mod tests {
     async fn test_create_virtual_host_team_user() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         // Create route config for team-a
-        let _route_config = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
+        let _route_config =
+            create_test_route_config(&state, "team-a-routes", Some(TEAM_A_ID)).await;
 
         let req = CreateVirtualHostRequest {
             route_config: "team-a-routes".to_string(),
@@ -413,10 +414,11 @@ mod tests {
     async fn test_create_virtual_host_wrong_team() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         // Create route config for team-b
-        let _route_config = create_test_route_config(&state, "team-b-routes", Some("team-b")).await;
+        let _route_config =
+            create_test_route_config(&state, "team-b-routes", Some(TEAM_B_ID)).await;
 
         let req = CreateVirtualHostRequest {
             route_config: "team-b-routes".to_string(),
@@ -438,7 +440,7 @@ mod tests {
 
         // Create route config and virtual host
         let _route_config =
-            create_test_route_config(&state, "test-routes", Some("test-team")).await;
+            create_test_route_config(&state, "test-routes", Some(TEST_TEAM_ID)).await;
 
         let create_req = CreateVirtualHostRequest {
             route_config: "test-routes".to_string(),
@@ -477,7 +479,8 @@ mod tests {
         let ops = VirtualHostOperations::new(state.clone());
 
         // Create route config for team-a
-        let _route_config = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
+        let _route_config =
+            create_test_route_config(&state, "team-a-routes", Some(TEAM_A_ID)).await;
 
         // Create virtual host as admin
         let admin_auth = InternalAuthContext::admin();
@@ -490,7 +493,7 @@ mod tests {
         ops.create(create_req, &admin_auth).await.expect("create virtual host");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get("team-a-routes", "secret", &team_b_auth).await;
 
         assert!(result.is_err());
@@ -506,7 +509,7 @@ mod tests {
 
         // Create route config
         let _route_config =
-            create_test_route_config(&state, "test-routes", Some("test-team")).await;
+            create_test_route_config(&state, "test-routes", Some(TEST_TEAM_ID)).await;
 
         // Create multiple virtual hosts
         for (name, domains) in
@@ -540,7 +543,7 @@ mod tests {
 
         // Create route config and virtual host
         let _route_config =
-            create_test_route_config(&state, "test-routes", Some("test-team")).await;
+            create_test_route_config(&state, "test-routes", Some(TEST_TEAM_ID)).await;
 
         let create_req = CreateVirtualHostRequest {
             route_config: "test-routes".to_string(),
@@ -571,7 +574,7 @@ mod tests {
 
         // Create route config and virtual host
         let _route_config =
-            create_test_route_config(&state, "test-routes", Some("test-team")).await;
+            create_test_route_config(&state, "test-routes", Some(TEST_TEAM_ID)).await;
 
         let create_req = CreateVirtualHostRequest {
             route_config: "test-routes".to_string(),

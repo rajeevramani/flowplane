@@ -266,7 +266,14 @@ pub async fn execute_list_learning_sessions(
 
     // Use internal API layer
     let ops = LearningSessionOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = ListLearningSessionsRequest { status, limit, offset };
 
@@ -314,7 +321,14 @@ pub async fn execute_get_learning_session(
 
     // Use internal API layer
     let ops = LearningSessionOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let session = ops.get(id, &auth).await?;
 
@@ -386,7 +400,14 @@ pub async fn execute_create_learning_session(
 
     // 4. Use internal API layer
     let ops = LearningSessionOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = CreateLearningSessionInternalRequest {
         team: if team.is_empty() { None } else { Some(team.to_string()) },
@@ -431,7 +452,14 @@ pub async fn execute_delete_learning_session(
 
     // 2. Use internal API layer
     let ops = LearningSessionOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     ops.delete(id, &auth).await?;
 

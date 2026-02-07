@@ -656,30 +656,16 @@ impl AggregatedSchemaRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::test_helpers::TestDatabase;
-
-    /// Helper to create a test team in the database (idempotent)
-    async fn create_test_team(pool: &DbPool, name: &str) {
-        sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING"
-        )
-        .bind(format!("team-{}", uuid::Uuid::new_v4()))
-        .bind(name)
-        .bind(format!("Test {}", name))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
+    use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
 
     #[tokio::test]
     async fn test_create_and_get_aggregated_schema() {
         let _db = TestDatabase::new("agg_schema_create_get").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let request = CreateAggregatedSchemaRequest {
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             path: "/users/{id}".to_string(),
             http_method: "GET".to_string(),
             request_schema: None,
@@ -696,7 +682,7 @@ mod tests {
 
         let created = repo.create(request).await.unwrap();
 
-        assert_eq!(created.team, "test-team");
+        assert_eq!(created.team, TEST_TEAM_ID);
         assert_eq!(created.path, "/users/{id}");
         assert_eq!(created.http_method, "GET");
         assert_eq!(created.version, 1);
@@ -712,14 +698,13 @@ mod tests {
     async fn test_version_increment() {
         let _db = TestDatabase::new("agg_schema_version_inc").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
 
         // Create version 1
         let request1 = CreateAggregatedSchemaRequest {
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             path: "/users".to_string(),
             http_method: "POST".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
@@ -737,7 +722,7 @@ mod tests {
 
         // Create version 2
         let request2 = CreateAggregatedSchemaRequest {
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             path: "/users".to_string(),
             http_method: "POST".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
@@ -759,7 +744,6 @@ mod tests {
     async fn test_get_latest() {
         let _db = TestDatabase::new("agg_schema_get_latest").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -767,7 +751,7 @@ mod tests {
         // Create multiple versions
         for i in 1..=3 {
             let request = CreateAggregatedSchemaRequest {
-                team: "test-team".to_string(),
+                team: TEST_TEAM_ID.to_string(),
                 path: "/products".to_string(),
                 http_method: "GET".to_string(),
                 request_schema: None,
@@ -783,7 +767,7 @@ mod tests {
             repo.create(request).await.unwrap();
         }
 
-        let latest = repo.get_latest("test-team", "/products", "GET").await.unwrap().unwrap();
+        let latest = repo.get_latest(TEST_TEAM_ID, "/products", "GET").await.unwrap().unwrap();
 
         assert_eq!(latest.version, 3);
         assert_eq!(latest.sample_count, 15);
@@ -793,7 +777,6 @@ mod tests {
     async fn test_list_latest_by_team() {
         let _db = TestDatabase::new("agg_schema_list_latest").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -802,7 +785,7 @@ mod tests {
         for path in &["/users", "/products", "/orders"] {
             for version in 1..=2 {
                 let request = CreateAggregatedSchemaRequest {
-                    team: "test-team".to_string(),
+                    team: TEST_TEAM_ID.to_string(),
                     path: path.to_string(),
                     http_method: "GET".to_string(),
                     request_schema: None,
@@ -819,7 +802,7 @@ mod tests {
             }
         }
 
-        let latest = repo.list_latest_by_team("test-team").await.unwrap();
+        let latest = repo.list_latest_by_team(TEST_TEAM_ID).await.unwrap();
 
         // Should get 3 endpoints, each at version 2
         assert_eq!(latest.len(), 3);
@@ -833,7 +816,6 @@ mod tests {
     async fn test_get_by_ids_returns_all_requested() {
         let _db = TestDatabase::new("agg_schema_get_by_ids").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -842,7 +824,7 @@ mod tests {
         let mut ids: Vec<i64> = Vec::new();
         for path in ["/users", "/products", "/orders"] {
             let request = CreateAggregatedSchemaRequest {
-                team: "test-team".to_string(),
+                team: TEST_TEAM_ID.to_string(),
                 path: path.to_string(),
                 http_method: "GET".to_string(),
                 request_schema: None,
@@ -881,7 +863,6 @@ mod tests {
     async fn test_get_by_ids_orders_by_path() {
         let _db = TestDatabase::new("agg_schema_get_by_ids_order").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
@@ -890,7 +871,7 @@ mod tests {
         let mut ids: Vec<i64> = Vec::new();
         for path in ["/zebra", "/apple", "/mango"] {
             let request = CreateAggregatedSchemaRequest {
-                team: "test-team".to_string(),
+                team: TEST_TEAM_ID.to_string(),
                 path: path.to_string(),
                 http_method: "GET".to_string(),
                 request_schema: None,
@@ -918,13 +899,12 @@ mod tests {
     async fn test_get_by_ids_partial_match() {
         let _db = TestDatabase::new("agg_schema_get_by_ids_partial").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = AggregatedSchemaRepository::new(pool);
 
         let now = chrono::Utc::now();
 
         let request = CreateAggregatedSchemaRequest {
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             path: "/test".to_string(),
             http_method: "GET".to_string(),
             request_schema: None,

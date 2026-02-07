@@ -443,7 +443,14 @@ pub async fn execute_list_listeners(
 
     // Use internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let list_req = ListListenersRequest {
         limit,
         offset,
@@ -515,7 +522,14 @@ pub async fn execute_get_listener(
 
     // Use internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let listener = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -622,7 +636,14 @@ pub async fn execute_create_listener(
 
     // 3. Create via internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let create_req = InternalCreateRequest {
         name: name.to_string(),
         address,
@@ -668,7 +689,14 @@ pub async fn execute_update_listener(
 
     // 2. Use internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // 3. Get existing listener to build config
     let existing = ops.get(name, &auth).await?;
@@ -733,7 +761,14 @@ pub async fn execute_delete_listener(
 
     // 2. Delete via internal API layer
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     ops.delete(name, &auth).await?;
 
     // 3. Format success response (minimal token-efficient format)
@@ -831,7 +866,14 @@ pub async fn execute_get_listener_status(
 
     // Verify listener exists
     let ops = ListenerOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let listener = ops.get(name, &auth).await?;
 
     // Query route config count

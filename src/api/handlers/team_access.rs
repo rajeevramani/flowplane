@@ -5,6 +5,7 @@
 //! implementation of team access verification.
 
 use crate::api::error::ApiError;
+use crate::api::routes::ApiState;
 use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_admin_bypass};
 use crate::auth::models::AuthContext;
 use crate::storage::repositories::TeamRepository;
@@ -61,6 +62,58 @@ pub fn get_effective_team_scopes(context: &AuthContext) -> Vec<String> {
     } else {
         extract_team_scopes(context)
     }
+}
+
+/// Get effective team IDs (UUIDs) from auth context.
+///
+/// Like `get_effective_team_scopes()`, but resolves team names to their database UUIDs.
+/// This is required after the FK migration where resource tables store team UUIDs
+/// instead of team names.
+///
+/// Admin users still get an empty vec (bypass all team checks).
+pub async fn get_effective_team_ids(
+    context: &AuthContext,
+    team_repo: &dyn TeamRepository,
+) -> Result<Vec<String>, ApiError> {
+    let team_names = get_effective_team_scopes(context);
+    if team_names.is_empty() {
+        return Ok(Vec::new());
+    }
+    team_repo
+        .resolve_team_ids(&team_names)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team IDs: {}", e)))
+}
+
+/// Resolve a team name to its UUID for database operations.
+///
+/// After the FK migration, the `team` column stores UUIDs.
+/// This converts a user-provided team name to its UUID.
+/// If the input is already a UUID, it is returned as-is (idempotent).
+pub async fn resolve_team_name(state: &ApiState, team_name: &str) -> Result<String, ApiError> {
+    // If it already looks like a UUID, pass through (idempotent)
+    if uuid::Uuid::parse_str(team_name).is_ok() {
+        return Ok(team_name.to_string());
+    }
+    let team_repo = team_repo_from_state(state)?;
+    let ids = team_repo
+        .resolve_team_ids(&[team_name.to_string()])
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team: {}", e)))?;
+    ids.into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))
+}
+
+/// Get team repository from ApiState.
+pub fn team_repo_from_state(
+    state: &ApiState,
+) -> Result<&crate::storage::repositories::team::SqlxTeamRepository, ApiError> {
+    state
+        .xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))
 }
 
 /// Get effective team scopes with org admin expansion.

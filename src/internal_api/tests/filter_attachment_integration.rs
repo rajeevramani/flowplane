@@ -14,7 +14,7 @@ use crate::config::SimpleXdsConfig;
 use crate::mcp::tools::filters::{
     execute_attach_filter, execute_detach_filter, execute_list_filter_attachments,
 };
-use crate::storage::test_helpers::TestDatabase;
+use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
 use crate::xds::XdsState;
 use serde_json::json;
 use std::sync::Arc;
@@ -28,24 +28,10 @@ async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
     let pool = test_db.pool.clone();
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
 
-    // Create a test team to satisfy FK constraints for filters
-    create_test_team(&state, "test-team").await;
+    // Teams are already seeded by TestDatabase::new() with predictable UUIDs:
+    // test-team -> TEST_TEAM_ID, team-a -> TEAM_A_ID, team-b -> TEAM_B_ID
 
     (test_db, state)
-}
-
-/// Create a test team in the database
-async fn create_test_team(xds_state: &Arc<XdsState>, team_name: &str) {
-    let pool = xds_state.cluster_repository.as_ref().unwrap().pool();
-    let team_id = format!("team-{}", uuid::Uuid::new_v4());
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING")
-        .bind(&team_id)
-        .bind(team_name)
-        .bind(format!("Test {}", team_name))
-        .bind("active")
-        .execute(pool)
-        .await
-        .expect("Failed to create test team");
 }
 
 /// Helper to create a test filter
@@ -56,7 +42,7 @@ async fn create_test_filter(state: &Arc<XdsState>, name: &str) -> String {
         filter_type: "HeaderToMetadata".to_string(),
         description: Some("Test filter".to_string()),
         configuration: json!({"request_rules": []}).to_string(),
-        team: "test-team".to_string(), // Must match the team created in setup
+        team: TEST_TEAM_ID.to_string(), // Must match the seeded team UUID
     };
     let filter = filter_repo.create(req).await.expect("Failed to create filter");
     filter.id.to_string()

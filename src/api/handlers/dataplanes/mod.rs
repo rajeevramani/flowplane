@@ -26,7 +26,7 @@ use crate::{
     storage::repositories::{CreateDataplaneRequest, DataplaneRepository, UpdateDataplaneRequest},
 };
 
-use super::team_access::get_effective_team_scopes;
+use super::team_access::{get_effective_team_ids, team_repo_from_state};
 
 /// Create a new dataplane
 #[utoipa::path(
@@ -62,6 +62,9 @@ pub async fn create_dataplane_handler(
     // Authorization
     require_resource_access(&context, "dataplanes", "write", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -72,7 +75,7 @@ pub async fn create_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     // Check if name is available
-    if repo.exists_by_name(&team, &payload.name).await.map_err(convert_error)? {
+    if repo.exists_by_name(&team_id, &payload.name).await.map_err(convert_error)? {
         return Err(ApiError::Conflict(format!(
             "Dataplane with name '{}' already exists for team '{}'",
             payload.name, team
@@ -81,7 +84,7 @@ pub async fn create_dataplane_handler(
 
     // Create dataplane
     let request = CreateDataplaneRequest {
-        team: payload.team,
+        team: team_id,
         name: payload.name,
         gateway_host: payload.gateway_host,
         description: payload.description,
@@ -116,6 +119,9 @@ pub async fn list_dataplanes_handler(
     // Authorization
     require_resource_access(&context, "dataplanes", "read", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -126,7 +132,7 @@ pub async fn list_dataplanes_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     let dataplanes =
-        repo.list_by_team(&team, query.limit, query.offset).await.map_err(convert_error)?;
+        repo.list_by_team(&team_id, query.limit, query.offset).await.map_err(convert_error)?;
 
     let response = ListDataplanesResponse {
         dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
@@ -161,7 +167,8 @@ pub async fn list_all_dataplanes_handler(
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let pool = cluster_repo.pool().clone();
 
-    let teams = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let teams = get_effective_team_ids(&context, team_repo).await?;
 
     let repo = DataplaneRepository::new(pool);
 
@@ -201,6 +208,9 @@ pub async fn get_dataplane_handler(
     // Authorization
     require_resource_access(&context, "dataplanes", "read", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -211,7 +221,7 @@ pub async fn get_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     let dataplane =
-        repo.get_by_name(&team, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 
@@ -250,6 +260,9 @@ pub async fn update_dataplane_handler(
     // Authorization
     require_resource_access(&context, "dataplanes", "write", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -261,7 +274,7 @@ pub async fn update_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 
@@ -302,6 +315,9 @@ pub async fn delete_dataplane_handler(
     // Authorization
     require_resource_access(&context, "dataplanes", "write", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -313,7 +329,7 @@ pub async fn delete_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 
@@ -402,6 +418,9 @@ pub async fn generate_envoy_config_handler(
     // Authorization
     require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
 
+    // Resolve team name to UUID for database storage
+    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+
     // Get repository
     let cluster_repo = state
         .xds_state
@@ -413,7 +432,7 @@ pub async fn generate_envoy_config_handler(
 
     // Get dataplane
     let dataplane =
-        repo.get_by_name(&team, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 

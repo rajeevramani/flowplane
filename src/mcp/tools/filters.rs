@@ -135,7 +135,14 @@ pub async fn execute_list_filters(
 
     // Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = ListFiltersRequest { filter_type, limit, offset, include_defaults: true };
 
@@ -183,7 +190,14 @@ pub async fn execute_get_filter(
 
     // Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let filter_with_installations = ops.get_with_installations(name, &auth).await?;
     let filter = &filter_with_installations.filter;
@@ -445,7 +459,14 @@ pub async fn execute_create_filter(
 
     // 3. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = CreateFilterRequest {
         name: name.to_string(),
@@ -505,7 +526,14 @@ pub async fn execute_update_filter(
 
     // 3. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req =
         UpdateFilterRequest { name: new_name, description: new_description, config: new_config };
@@ -548,7 +576,14 @@ pub async fn execute_delete_filter(
 
     // 2. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     ops.delete(name, &auth).await?;
 
@@ -782,7 +817,14 @@ pub async fn execute_attach_filter(
     }
 
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // 3. Execute appropriate attachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -857,7 +899,14 @@ pub async fn execute_detach_filter(
     }
 
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // 3. Execute appropriate detachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -921,7 +970,14 @@ pub async fn execute_list_filter_attachments(
 
     // 2. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let filter_with_installations = ops.get_with_installations(filter, &auth).await?;
     let filter_data = &filter_with_installations.filter;

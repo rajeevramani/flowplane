@@ -160,7 +160,14 @@ pub async fn execute_list_clusters(
 
     // Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let list_req = ListClustersRequest {
         limit,
         offset,
@@ -230,7 +237,14 @@ pub async fn execute_get_cluster(
 
     // Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let cluster = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -658,7 +672,14 @@ pub async fn execute_create_cluster(
     };
 
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let result = ops.create(internal_req, &auth).await?;
 
     // 7. Format success response (minimal token-efficient format)
@@ -695,7 +716,14 @@ pub async fn execute_update_cluster(
 
     // 2. Get existing cluster to merge configuration
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let existing = ops.get(name, &auth).await?;
 
     // 3. Parse existing configuration
@@ -772,7 +800,14 @@ pub async fn execute_delete_cluster(
 
     // 2. Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     ops.delete(name, &auth).await?;
 
     // 3. Format success response (minimal token-efficient format)
@@ -803,7 +838,14 @@ pub async fn execute_get_cluster_health(
 
     // Verify cluster exists and get cluster ID
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let cluster = ops.get(name, &auth).await?;
     let cluster_id = cluster.id.clone();
 

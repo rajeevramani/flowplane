@@ -120,7 +120,14 @@ pub async fn execute_devops_get_deployment_status(
         "Getting deployment status"
     );
 
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // Get cluster status
     let cluster_ops = ClusterOperations::new(xds_state.clone());

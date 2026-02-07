@@ -620,19 +620,22 @@ impl CustomWasmFilterRepository {
 mod tests {
     use super::*;
     use crate::domain::WASM_MAGIC_BYTES;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
 
-    /// Helper to create a test team in the database (required due to foreign key)
-    async fn create_test_team(pool: &DbPool, name: &str) {
+    /// Helper to create a non-seeded test team in the database.
+    /// Returns the team ID (UUID) for use in data inserts.
+    async fn create_test_team(pool: &DbPool, name: &str) -> String {
+        let team_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
         )
-        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(&team_id)
         .bind(name)
         .bind(format!("Test {}", name))
         .execute(pool)
         .await
         .expect("Failed to create test team");
+        team_id
     }
 
     fn create_valid_wasm_binary() -> Vec<u8> {
@@ -646,7 +649,6 @@ mod tests {
     async fn test_create_and_get_custom_wasm_filter() {
         let _db = TestDatabase::new("wasm_filter_create_get").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         let request = CreateCustomWasmFilterRequest {
@@ -665,7 +667,7 @@ mod tests {
             attachment_points: vec!["listener".to_string(), "route".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             created_by: Some("test-user".to_string()),
         };
 
@@ -673,7 +675,7 @@ mod tests {
 
         assert_eq!(created.name, "test-filter");
         assert_eq!(created.display_name, "Test Filter");
-        assert_eq!(created.team, "test-team");
+        assert_eq!(created.team, TEST_TEAM_ID);
         assert_eq!(created.wasm_size_bytes, 8);
         assert!(!created.wasm_sha256.is_empty());
 
@@ -682,7 +684,7 @@ mod tests {
         assert_eq!(fetched.name, created.name);
 
         // Get by name
-        let by_name = repo.get_by_name("test-team", "test-filter").await.unwrap();
+        let by_name = repo.get_by_name(TEST_TEAM_ID, "test-filter").await.unwrap();
         assert_eq!(by_name.id, created.id);
     }
 
@@ -690,7 +692,6 @@ mod tests {
     async fn test_get_wasm_binary() {
         let _db = TestDatabase::new("wasm_filter_get_binary").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         let wasm_binary = create_valid_wasm_binary();
@@ -705,7 +706,7 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             created_by: None,
         };
 
@@ -719,8 +720,8 @@ mod tests {
     async fn test_list_by_team() {
         let _db = TestDatabase::new("wasm_filter_list_by_team").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "team1").await;
-        create_test_team(&pool, "team2").await;
+        let team1_id = create_test_team(&pool, "team1").await;
+        let team2_id = create_test_team(&pool, "team2").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         // Create filters for team1
@@ -736,7 +737,7 @@ mod tests {
                 attachment_points: vec!["listener".to_string()],
                 runtime: "envoy.wasm.runtime.v8".to_string(),
                 failure_policy: "FAIL_CLOSED".to_string(),
-                team: "team1".to_string(),
+                team: team1_id.clone(),
                 created_by: None,
             };
             repo.create(request).await.unwrap();
@@ -754,21 +755,21 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "team2".to_string(),
+            team: team2_id.clone(),
             created_by: None,
         };
         repo.create(request).await.unwrap();
 
         // List team1 filters
-        let team1_filters = repo.list_by_team("team1", 100, 0).await.unwrap();
+        let team1_filters = repo.list_by_team(&team1_id, 100, 0).await.unwrap();
         assert_eq!(team1_filters.len(), 3);
 
         // List team2 filters
-        let team2_filters = repo.list_by_team("team2", 100, 0).await.unwrap();
+        let team2_filters = repo.list_by_team(&team2_id, 100, 0).await.unwrap();
         assert_eq!(team2_filters.len(), 1);
 
         // Count
-        let count = repo.count_by_team("team1").await.unwrap();
+        let count = repo.count_by_team(&team1_id).await.unwrap();
         assert_eq!(count, 3);
     }
 
@@ -776,7 +777,6 @@ mod tests {
     async fn test_duplicate_name_conflict() {
         let _db = TestDatabase::new("wasm_filter_dup_name").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         let request = CreateCustomWasmFilterRequest {
@@ -790,7 +790,7 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             created_by: None,
         };
 
@@ -807,7 +807,6 @@ mod tests {
     async fn test_delete_filter() {
         let _db = TestDatabase::new("wasm_filter_delete").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         let request = CreateCustomWasmFilterRequest {
@@ -821,20 +820,20 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             created_by: None,
         };
 
         let created = repo.create(request).await.unwrap();
 
         // Verify exists
-        assert!(repo.exists_by_name("test-team", "to-delete").await.unwrap());
+        assert!(repo.exists_by_name(TEST_TEAM_ID, "to-delete").await.unwrap());
 
         // Delete
         repo.delete(&created.id).await.unwrap();
 
         // Verify gone
-        assert!(!repo.exists_by_name("test-team", "to-delete").await.unwrap());
+        assert!(!repo.exists_by_name(TEST_TEAM_ID, "to-delete").await.unwrap());
 
         // Get returns not found
         let result = repo.get_by_id(&created.id).await;
@@ -845,7 +844,6 @@ mod tests {
     async fn test_update_filter_metadata() {
         let _db = TestDatabase::new("wasm_filter_update").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "test-team").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
         let request = CreateCustomWasmFilterRequest {
@@ -859,7 +857,7 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "test-team".to_string(),
+            team: TEST_TEAM_ID.to_string(),
             created_by: None,
         };
 
@@ -920,12 +918,10 @@ mod tests {
     async fn test_list_by_teams() {
         let _db = TestDatabase::new("wasm_filter_list_by_teams").await;
         let pool = _db.pool.clone();
-        create_test_team(&pool, "team-a").await;
-        create_test_team(&pool, "team-b").await;
-        create_test_team(&pool, "team-c").await;
+        let team_c_id = create_test_team(&pool, "team-c").await;
         let repo = CustomWasmFilterRepository::new(pool);
 
-        // Create filter for team-a
+        // Create filter for team-a (pre-seeded)
         let request_a = CreateCustomWasmFilterRequest {
             name: "filter-a".to_string(),
             display_name: "Filter A".to_string(),
@@ -937,12 +933,12 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "team-a".to_string(),
+            team: TEAM_A_ID.to_string(),
             created_by: None,
         };
         repo.create(request_a).await.unwrap();
 
-        // Create filter for team-b
+        // Create filter for team-b (pre-seeded)
         let request_b = CreateCustomWasmFilterRequest {
             name: "filter-b".to_string(),
             display_name: "Filter B".to_string(),
@@ -954,7 +950,7 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "team-b".to_string(),
+            team: TEAM_B_ID.to_string(),
             created_by: None,
         };
         repo.create(request_b).await.unwrap();
@@ -971,17 +967,17 @@ mod tests {
             attachment_points: vec!["listener".to_string()],
             runtime: "envoy.wasm.runtime.v8".to_string(),
             failure_policy: "FAIL_CLOSED".to_string(),
-            team: "team-c".to_string(),
+            team: team_c_id.clone(),
             created_by: None,
         };
         repo.create(request_c).await.unwrap();
 
         // Query for team-a and team-b only
-        let teams = vec!["team-a".to_string(), "team-b".to_string()];
+        let teams = vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()];
         let filters = repo.list_by_teams(&teams, 100, 0).await.unwrap();
         assert_eq!(filters.len(), 2);
 
         // Verify team-c filter is not included
-        assert!(filters.iter().all(|f| f.team != "team-c"));
+        assert!(filters.iter().all(|f| f.team != team_c_id));
     }
 }

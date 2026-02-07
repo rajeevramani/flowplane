@@ -14,7 +14,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
         routes::ApiState,
     },
     auth::authorization::{extract_team_scopes, require_resource_access},
@@ -270,6 +270,18 @@ pub async fn list_aggregated_schemas_handler(
             .clone()
     };
 
+    // Resolve team name to UUID
+    use crate::storage::repositories::TeamRepository as _;
+    let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
+    let team_ids = team_repo
+        .resolve_team_ids(&[team])
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let team = team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
+
     // Validate min_confidence bounds
     if let Some(min_conf) = query.min_confidence {
         if !(0.0..=1.0).contains(&min_conf) {
@@ -350,7 +362,8 @@ pub async fn get_aggregated_schema_handler(
     })?;
 
     // Verify team access based on user's scope type
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -415,7 +428,8 @@ pub async fn compare_aggregated_schemas_handler(
     })?;
 
     // Verify team access based on user's scope type
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -517,7 +531,8 @@ pub async fn export_aggregated_schema_handler(
     // - Admin users (admin:all) can access all schemas
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -596,7 +611,8 @@ pub async fn export_multiple_schemas_handler(
     // - Admin users (admin:all) can access all schemas
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");

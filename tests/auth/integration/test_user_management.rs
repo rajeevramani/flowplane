@@ -460,7 +460,8 @@ async fn add_team_membership() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let membership: UserTeamMembership = read_json(response).await;
     assert_eq!(membership.user_id, created.id);
-    assert_eq!(membership.team, "engineering");
+    // Team is stored as UUID after FK migration (resolved from name "engineering")
+    assert!(uuid::Uuid::parse_str(&membership.team).is_ok(), "team should be a UUID");
     assert_eq!(membership.scopes.len(), 2);
 }
 

@@ -8,6 +8,7 @@ use crate::auth::models::AuthContext;
 use crate::domain::OrgId;
 use crate::internal_api::error::InternalError;
 use crate::observability::metrics::record_cross_team_access_attempt;
+use crate::storage::repositories::TeamRepository;
 
 /// Internal authentication context for API operations
 ///
@@ -69,6 +70,30 @@ impl InternalAuthContext {
             org_id: None,
             org_name: None,
         }
+    }
+
+    /// Resolve team names to UUIDs using the team repository.
+    ///
+    /// Converts `allowed_teams` from team names (extracted from auth scopes)
+    /// to team UUIDs (used in database queries after FK migration).
+    /// Admin contexts (empty allowed_teams) pass through unchanged.
+    /// Idempotent: if teams are already UUIDs, returns unchanged.
+    pub async fn resolve_teams(
+        mut self,
+        team_repo: &dyn TeamRepository,
+    ) -> Result<Self, InternalError> {
+        if !self.is_admin && !self.allowed_teams.is_empty() {
+            // Skip if already resolved (all values are UUIDs)
+            if self.allowed_teams.iter().all(|t| uuid::Uuid::parse_str(t).is_ok()) {
+                return Ok(self);
+            }
+            self.allowed_teams =
+                team_repo.resolve_team_ids(&self.allowed_teams).await.map_err(|e| {
+                    InternalError::internal(format!("Failed to resolve team IDs: {}", e))
+                })?;
+            self.team = self.allowed_teams.first().cloned();
+        }
+        Ok(self)
     }
 
     /// Check if this context can access a team-owned resource

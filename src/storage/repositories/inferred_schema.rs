@@ -263,26 +263,10 @@ impl InferredSchemaRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::test_helpers::TestDatabase;
-
-    /// Helper to create a test team in the database (idempotent)
-    async fn create_test_team(pool: &DbPool, name: &str) {
-        sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING"
-        )
-        .bind(format!("team-{}", uuid::Uuid::new_v4()))
-        .bind(name)
-        .bind(format!("Test {}", name))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
+    use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
 
     async fn create_test_session(pool: &DbPool) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
-
-        // Create the team first
-        create_test_team(pool, "test-team").await;
 
         sqlx::query(
             "INSERT INTO learning_sessions (
@@ -290,7 +274,7 @@ mod tests {
             ) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&session_id)
-        .bind("test-team")
+        .bind(TEST_TEAM_ID)
         .bind("/test/*")
         .bind("active")
         .bind(100)
@@ -315,7 +299,7 @@ mod tests {
                 sample_count, confidence, first_seen_at, last_seen_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
-        .bind("test-team")
+        .bind(TEST_TEAM_ID)
         .bind(session_id)
         .bind(method)
         .bind(path)
@@ -345,7 +329,7 @@ mod tests {
 
         assert_eq!(schemas.len(), 3);
         assert_eq!(schemas[0].session_id, session_id);
-        assert_eq!(schemas[0].team, "test-team");
+        assert_eq!(schemas[0].team, TEST_TEAM_ID);
     }
 
     #[tokio::test]
@@ -405,7 +389,7 @@ mod tests {
         insert_test_schema(&pool, &session2, "GET", "/products/{id}", Some(200)).await;
         insert_test_schema(&pool, &session1, "POST", "/products", Some(201)).await;
 
-        let schemas = repo.list_by_endpoint("test-team", "/products/{id}", "GET").await.unwrap();
+        let schemas = repo.list_by_endpoint(TEST_TEAM_ID, "/products/{id}", "GET").await.unwrap();
 
         assert_eq!(schemas.len(), 2);
         for schema in schemas {

@@ -148,7 +148,7 @@ mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
     use crate::storage::repositories::import_metadata::CreateImportMetadataRequest;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_openapi").await;
@@ -171,7 +171,7 @@ mod tests {
             spec_name: "petstore".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: Some("abc123".to_string()),
-            team: "team-a".to_string(),
+            team: TEAM_A_ID.to_string(),
             source_content: None,
             listener_name: Some("main-listener".to_string()),
         })
@@ -182,7 +182,7 @@ mod tests {
             spec_name: "orders-api".to_string(),
             spec_version: Some("2.0.0".to_string()),
             spec_checksum: Some("def456".to_string()),
-            team: "team-b".to_string(),
+            team: TEAM_B_ID.to_string(),
             source_content: None,
             listener_name: Some("api-listener".to_string()),
         })
@@ -209,7 +209,7 @@ mod tests {
             spec_name: "petstore".to_string(),
             spec_version: Some("1.0.0".to_string()),
             spec_checksum: None,
-            team: "team-a".to_string(),
+            team: TEAM_A_ID.to_string(),
             source_content: None,
             listener_name: None,
         })
@@ -220,7 +220,7 @@ mod tests {
             spec_name: "orders-api".to_string(),
             spec_version: Some("2.0.0".to_string()),
             spec_checksum: None,
-            team: "team-b".to_string(),
+            team: TEAM_B_ID.to_string(),
             source_content: None,
             listener_name: None,
         })
@@ -228,13 +228,13 @@ mod tests {
         .expect("create import");
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = ListOpenApiImportsRequest { limit: None, offset: None };
         let result = ops.list(req, &team_a_auth).await.expect("list imports");
 
         // Should only see team-a imports
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].team, "team-a");
+        assert_eq!(result[0].team, TEAM_A_ID);
         assert_eq!(result[0].spec_name, "petstore");
     }
 
@@ -253,7 +253,7 @@ mod tests {
                 spec_name: format!("api-{}", i),
                 spec_version: Some("1.0.0".to_string()),
                 spec_checksum: None,
-                team: "team-a".to_string(),
+                team: TEAM_A_ID.to_string(),
                 source_content: None,
                 listener_name: None,
             })
@@ -292,7 +292,7 @@ mod tests {
                 spec_name: "petstore".to_string(),
                 spec_version: Some("1.0.0".to_string()),
                 spec_checksum: Some("abc123".to_string()),
-                team: "test-team".to_string(),
+                team: TEST_TEAM_ID.to_string(),
                 source_content: None,
                 listener_name: Some("main-listener".to_string()),
             })
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(result.id, created.id);
         assert_eq!(result.spec_name, "petstore");
         assert_eq!(result.spec_version, Some("1.0.0".to_string()));
-        assert_eq!(result.team, "test-team");
+        assert_eq!(result.team, TEST_TEAM_ID);
     }
 
     #[tokio::test]
@@ -332,7 +332,7 @@ mod tests {
                 spec_name: "petstore".to_string(),
                 spec_version: Some("1.0.0".to_string()),
                 spec_checksum: None,
-                team: "team-a".to_string(),
+                team: TEAM_A_ID.to_string(),
                 source_content: None,
                 listener_name: None,
             })
@@ -340,7 +340,7 @@ mod tests {
             .expect("create import");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get(&created.id, &team_b_auth).await;
 
         assert!(result.is_err());

@@ -22,7 +22,7 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::auth::InternalAuthContext,
@@ -80,7 +80,8 @@ pub async fn create_listener_handler(
 
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -117,7 +118,8 @@ pub async fn list_listeners_handler(
 
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.list(internal_request, &auth).await?;
 
     let mut listeners = Vec::with_capacity(result.listeners.len());
@@ -150,7 +152,8 @@ pub async fn get_listener_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let listener = ops.get(&name, &auth).await?;
 
     let response = listener_response_from_data(listener)?;
@@ -197,7 +200,8 @@ pub async fn update_listener_handler(
 
     // Delegate to internal API layer (includes team access verification and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -226,7 +230,8 @@ pub async fn delete_listener_handler(
 
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -246,7 +251,7 @@ mod tests {
             resource_auth_context,
         },
         config::SimpleXdsConfig,
-        storage::test_helpers::TestDatabase,
+        storage::test_helpers::{TestDatabase, TEST_TEAM_ID},
         xds::resources::LISTENER_TYPE_URL,
         xds::route::{
             PathMatch, RouteActionConfig, RouteConfig as InlineRouteConfig, RouteMatchConfig,
@@ -270,12 +275,14 @@ mod tests {
         let pool = test_db.pool.clone();
 
         // Insert test dataplanes (TestDatabase runs all migrations automatically)
+        // After FK migration, dataplanes.team stores team UUIDs (FK to teams.id)
         sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
-            VALUES ('dp-test-123', 'test-team', 'test-dataplane', '10.0.0.1', 'Test dataplane')
+            VALUES ('dp-test-123', $1, 'test-dataplane', '10.0.0.1', 'Test dataplane')
         "#,
         )
+        .bind(TEST_TEAM_ID)
         .execute(&pool)
         .await
         .unwrap();

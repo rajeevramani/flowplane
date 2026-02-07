@@ -23,7 +23,7 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     errors::Error,
@@ -70,7 +70,8 @@ pub async fn create_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.create(internal_req, &auth).await?;
 
     // Convert to response
@@ -104,7 +105,8 @@ pub async fn list_clusters_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let list_req = ListClustersRequest {
         limit: params.limit,
         offset: params.offset,
@@ -145,7 +147,8 @@ pub async fn get_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let cluster = ops.get(&name, &auth).await?;
 
     // Convert to response DTO
@@ -196,7 +199,8 @@ pub async fn update_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.update(&name, internal_req, &auth).await?;
 
     // Convert to response DTO
@@ -228,7 +232,8 @@ pub async fn delete_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -245,6 +250,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::api::test_utils::{admin_auth_context, create_test_state};
+    use crate::storage::test_helpers::{PLATFORM_TEAM_ID, TEAM_A_ID, TEAM_B_ID};
 
     use types::{
         CircuitBreakerThresholdsRequest, CircuitBreakersRequest, CreateClusterBody,
@@ -515,10 +521,10 @@ mod tests {
         let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
-        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+        insert_cluster_with_team(&state, "team-b-cluster", Some(TEAM_B_ID))
             .await
             .expect("insert team-b cluster");
         insert_cluster_with_team(&state, "global-cluster", None)
@@ -579,7 +585,7 @@ mod tests {
         let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
 
@@ -647,7 +653,7 @@ mod tests {
         let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
 
@@ -691,10 +697,10 @@ mod tests {
         let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
-        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+        insert_cluster_with_team(&state, "team-b-cluster", Some(TEAM_B_ID))
             .await
             .expect("insert team-b cluster");
 
@@ -747,7 +753,7 @@ mod tests {
         // Verify the cluster was assigned to team-a
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
-        assert_eq!(stored.team, Some("team-a".to_string()));
+        assert_eq!(stored.team, Some(TEAM_A_ID.to_string()));
 
         // Verify that team-b user cannot access it
         let team_b_context = team_context("team-b", "clusters", &["read"]);
@@ -778,7 +784,7 @@ mod tests {
         // Verify the cluster is owned by the platform team
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
-        assert_eq!(stored.team, Some("platform".to_string()));
+        assert_eq!(stored.team, Some(PLATFORM_TEAM_ID.to_string()));
 
         // Verify that team users with platform team scope can access it
         let platform_team_context = team_context("platform", "clusters", &["read"]);

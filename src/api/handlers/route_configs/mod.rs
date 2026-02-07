@@ -23,7 +23,7 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::auth::InternalAuthContext,
@@ -79,7 +79,8 @@ pub async fn create_route_config_handler(
 
     // Delegate to internal API layer (includes XDS refresh and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
@@ -126,7 +127,8 @@ pub async fn list_route_configs_handler(
 
     // Delegate to internal API layer
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.list(internal_request, &auth).await?;
 
     let mut routes = Vec::with_capacity(result.routes.len());
@@ -159,7 +161,8 @@ pub async fn get_route_config_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let route_config = ops.get(&name, &auth).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
@@ -209,7 +212,8 @@ pub async fn update_route_config_handler(
 
     // Delegate to internal API layer (includes team access, XDS refresh, and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
@@ -247,7 +251,8 @@ pub async fn delete_route_config_handler(
 
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)

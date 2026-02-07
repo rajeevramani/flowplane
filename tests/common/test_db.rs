@@ -13,6 +13,13 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
+/// Predictable team IDs for seed data (UUIDs).
+/// Tests can reference these IDs when working with team-scoped resources.
+/// These match the constants defined in src/storage/test_helpers.rs
+pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
+pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
+
 /// A test database backed by a Testcontainers PostgreSQL instance.
 ///
 /// The container is automatically stopped and removed when this struct is dropped.

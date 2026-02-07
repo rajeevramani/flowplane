@@ -17,6 +17,7 @@ use testcontainers_modules::postgres::Postgres;
 pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
 pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
 pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
+pub const PLATFORM_TEAM_ID: &str = "00000000-0000-0000-0000-000000000004";
 
 /// Stop and remove stale testcontainer PostgreSQL containers from previous runs.
 ///
@@ -136,12 +137,14 @@ impl TestDatabase {
 /// - test-team: 00000000-0000-0000-0000-000000000001
 /// - team-a:    00000000-0000-0000-0000-000000000002
 /// - team-b:    00000000-0000-0000-0000-000000000003
+/// - platform:  00000000-0000-0000-0000-000000000004
 async fn seed_test_data(pool: &DbPool) {
     // Create common test teams with predictable UUIDs
     let teams = [
         ("test-team", "00000000-0000-0000-0000-000000000001"),
         ("team-a", "00000000-0000-0000-0000-000000000002"),
         ("team-b", "00000000-0000-0000-0000-000000000003"),
+        ("platform", "00000000-0000-0000-0000-000000000004"),
     ];
 
     for (team_name, team_id) in &teams {

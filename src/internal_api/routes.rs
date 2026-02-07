@@ -54,11 +54,18 @@ impl RouteConfigOperations {
         req: CreateRouteConfigRequest,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<RouteConfigData>, InternalError> {
+        // Resolve team name to UUID for database storage
+        let resolved_team = self
+            .xds_state
+            .resolve_optional_team(req.team.as_deref())
+            .await
+            .map_err(InternalError::from)?;
+
         // 1. Verify team access (can create in this team?)
-        if !auth.can_create_for_team(req.team.as_deref()) {
+        if !auth.can_create_for_team(resolved_team.as_deref()) {
             return Err(InternalError::forbidden(format!(
                 "Cannot create route config for team '{}'",
-                req.team.as_deref().unwrap_or("global")
+                resolved_team.as_deref().unwrap_or("global")
             )));
         }
 
@@ -73,7 +80,7 @@ impl RouteConfigOperations {
                 path_prefix,
                 cluster_summary,
                 req.config.clone(),
-                req.team,
+                resolved_team,
             )
             .await
             .map_err(|e| {
@@ -559,7 +566,7 @@ fn transform_action(action: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_routes").await;
@@ -591,7 +598,7 @@ mod tests {
 
         let req = CreateRouteConfigRequest {
             name: "test-routes".to_string(),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
         };
 
@@ -607,11 +614,11 @@ mod tests {
     async fn test_create_route_config_wrong_team() {
         let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateRouteConfigRequest {
             name: "wrong-team-routes".to_string(),
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             config: sample_config(),
         };
 

@@ -354,7 +354,7 @@ impl LearningSessionOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_learning").await;
@@ -370,7 +370,7 @@ mod tests {
         let auth = InternalAuthContext::admin();
 
         let req = CreateLearningSessionInternalRequest {
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             route_pattern: "^/api/users.*".to_string(),
             cluster_name: Some("users-api".to_string()),
             http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
@@ -382,7 +382,7 @@ mod tests {
         assert!(result.is_ok());
 
         let op_result = result.unwrap();
-        assert_eq!(op_result.data.team, "test-team");
+        assert_eq!(op_result.data.team, TEST_TEAM_ID);
         assert_eq!(op_result.data.route_pattern, "^/api/users.*");
         assert_eq!(op_result.data.status, LearningSessionStatus::Pending);
         assert!(op_result.message.is_some());
@@ -392,10 +392,10 @@ mod tests {
     async fn test_create_learning_session_team_user() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateLearningSessionInternalRequest {
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             route_pattern: "^/api/.*".to_string(),
             cluster_name: None,
             http_methods: None,
@@ -411,10 +411,10 @@ mod tests {
     async fn test_create_learning_session_wrong_team() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateLearningSessionInternalRequest {
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             route_pattern: "^/api/.*".to_string(),
             cluster_name: None,
             http_methods: None,
@@ -434,7 +434,7 @@ mod tests {
         let auth = InternalAuthContext::admin();
 
         let req = CreateLearningSessionInternalRequest {
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             route_pattern: "^/api/.*".to_string(),
             cluster_name: None,
             http_methods: None,
@@ -466,7 +466,7 @@ mod tests {
         // Create session as admin for team-a
         let admin_auth = InternalAuthContext::admin();
         let req = CreateLearningSessionInternalRequest {
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             route_pattern: "^/api/.*".to_string(),
             cluster_name: None,
             http_methods: None,
@@ -476,7 +476,7 @@ mod tests {
         let created = ops.create(req, &admin_auth).await.expect("create session");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get(&created.data.id, &team_b_auth).await;
 
         assert!(result.is_err());
@@ -491,7 +491,7 @@ mod tests {
         let admin_auth = InternalAuthContext::admin();
 
         // Create sessions for different teams
-        for (team, count) in [("team-a", 2), ("team-b", 1)] {
+        for (team, count) in [(TEAM_A_ID, 2), (TEAM_B_ID, 1)] {
             for i in 0..count {
                 let req = CreateLearningSessionInternalRequest {
                     team: Some(team.to_string()),
@@ -506,14 +506,14 @@ mod tests {
         }
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let list_req = ListLearningSessionsRequest { status: None, limit: None, offset: None };
         let result = ops.list(list_req, &team_a_auth).await.expect("list sessions");
 
         // Should only see team-a sessions
         assert_eq!(result.len(), 2);
         for session in &result {
-            assert_eq!(session.team, "team-a");
+            assert_eq!(session.team, TEAM_A_ID);
         }
     }
 
@@ -525,7 +525,7 @@ mod tests {
 
         // Create a session
         let create_req = CreateLearningSessionInternalRequest {
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             route_pattern: "^/api/.*".to_string(),
             cluster_name: None,
             http_methods: None,

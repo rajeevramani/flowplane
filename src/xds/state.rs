@@ -13,6 +13,7 @@ use crate::xds::secret::{secrets_from_database_entries, SECRET_TYPE_URL};
 use crate::{
     config::SimpleXdsConfig,
     services::{LearningSessionService, RouteHierarchySyncService, SecretEncryption},
+    storage::repositories::team::SqlxTeamRepository,
     storage::{
         AggregatedSchemaRepository, ClusterRepository, CustomWasmFilterRepository, DbPool,
         FilterRepository, ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
@@ -92,6 +93,8 @@ pub struct XdsState {
     pub custom_wasm_filter_repository: Option<CustomWasmFilterRepository>,
     /// MCP tool repository for AI assistant tools
     pub mcp_tool_repository: Option<crate::storage::McpToolRepository>,
+    /// Team repository for resolving team names to IDs
+    pub team_repository: Option<SqlxTeamRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -122,6 +125,7 @@ impl XdsState {
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: None,
             mcp_tool_repository: None,
+            team_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -148,6 +152,9 @@ impl XdsState {
 
         // MCP tool repository
         let mcp_tool_repository = crate::storage::McpToolRepository::new(pool.clone());
+
+        // Team repository for name → ID resolution
+        let team_repository = SqlxTeamRepository::new(pool.clone());
 
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
@@ -199,8 +206,52 @@ impl XdsState {
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
             mcp_tool_repository: Some(mcp_tool_repository),
+            team_repository: Some(team_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve a team name to its UUID for database storage.
+    ///
+    /// After the FK migration, the `team` column stores UUIDs, not names.
+    /// This method converts a team name to its UUID. If the input is already
+    /// a UUID, it is returned as-is (idempotent).
+    pub async fn resolve_team_name(&self, team_name: &str) -> crate::Result<String> {
+        // If it already looks like a UUID, pass through (idempotent)
+        if uuid::Uuid::parse_str(team_name).is_ok() {
+            return Ok(team_name.to_string());
+        }
+        use crate::storage::repositories::TeamRepository;
+        let team_repo = self
+            .team_repository
+            .as_ref()
+            .ok_or_else(|| crate::errors::Error::internal("Team repository unavailable"))?;
+        let ids = team_repo.resolve_team_ids(&[team_name.to_string()]).await?;
+        ids.into_iter().next().ok_or_else(|| crate::errors::Error::not_found("Team", team_name))
+    }
+
+    /// Resolve an optional team name to its UUID for database storage.
+    pub async fn resolve_optional_team(&self, team: Option<&str>) -> crate::Result<Option<String>> {
+        match team {
+            None => Ok(None),
+            Some(name) => self.resolve_team_name(name).await.map(Some),
+        }
+    }
+
+    /// Resolve auth context team names to UUIDs. Idempotent.
+    pub async fn resolve_auth(
+        &self,
+        auth: &crate::internal_api::auth::InternalAuthContext,
+    ) -> std::result::Result<
+        crate::internal_api::auth::InternalAuthContext,
+        crate::internal_api::error::InternalError,
+    > {
+        if let Some(ref team_repo) = self.team_repository {
+            let repo: &dyn crate::storage::repositories::TeamRepository = team_repo;
+            auth.clone().resolve_teams(repo).await
+        } else {
+            Ok(auth.clone())
         }
     }
 

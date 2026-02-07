@@ -358,19 +358,23 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
-        // Validate team exists (if team repository is available)
-        if let Some(ref team_repo) = self.team_repository {
-            if team_repo.get_team_by_name(&team).await?.is_none() {
-                return Err(Error::validation(format!(
+        // Resolve team name to UUID (FK migration: team column stores UUIDs)
+        let team_id = if let Some(ref team_repo) = self.team_repository {
+            let team_record = team_repo.get_team_by_name(&team).await?.ok_or_else(|| {
+                Error::validation(format!(
                     "Team '{}' does not exist. Please create the team first.",
                     team
-                )));
-            }
-        }
+                ))
+            })?;
+            team_record.id.to_string()
+        } else {
+            // No team repo available, assume team is already a UUID
+            team.clone()
+        };
 
         // Check if membership already exists
         if let Some(_existing) =
-            self.membership_repository.get_user_team_membership(user_id, &team).await?
+            self.membership_repository.get_user_team_membership(user_id, &team_id).await?
         {
             return Err(Error::validation(format!(
                 "User '{}' is already a member of team '{}'",
@@ -383,7 +387,7 @@ impl UserService {
         let new_membership = NewUserTeamMembership {
             id: membership_id,
             user_id: user_id.clone(),
-            team: team.clone(),
+            team: team_id.clone(),
             scopes: scopes.clone(),
         };
 
@@ -426,11 +430,17 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
+        // Resolve team name to UUID for DB lookup
+        let team_id = self.resolve_team_id(team).await?;
+
         // Verify membership exists
-        let membership =
-            self.membership_repository.get_user_team_membership(user_id, team).await?.ok_or_else(
-                || Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team)),
-            )?;
+        let membership = self
+            .membership_repository
+            .get_user_team_membership(user_id, &team_id)
+            .await?
+            .ok_or_else(|| {
+                Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team))
+            })?;
 
         // Delete membership
         self.membership_repository.delete_membership(&membership.id).await?;
@@ -472,11 +482,17 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
+        // Resolve team name to UUID for DB lookup
+        let team_id = self.resolve_team_id(team).await?;
+
         // Verify membership exists
-        let membership =
-            self.membership_repository.get_user_team_membership(user_id, team).await?.ok_or_else(
-                || Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team)),
-            )?;
+        let membership = self
+            .membership_repository
+            .get_user_team_membership(user_id, &team_id)
+            .await?
+            .ok_or_else(|| {
+                Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team))
+            })?;
 
         // Store old scopes for audit
         let old_scopes = membership.scopes.clone();
@@ -523,7 +539,25 @@ impl UserService {
 
     /// List all users in a team.
     pub async fn list_team_users(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
-        self.membership_repository.list_team_members(team).await
+        let team_id = self.resolve_team_id(team).await?;
+        self.membership_repository.list_team_members(&team_id).await
+    }
+
+    /// Resolve a team name to its UUID. Idempotent: UUIDs pass through.
+    async fn resolve_team_id(&self, team: &str) -> Result<String> {
+        // If already a UUID, pass through
+        if uuid::Uuid::parse_str(team).is_ok() {
+            return Ok(team.to_string());
+        }
+        if let Some(ref team_repo) = self.team_repository {
+            let team_record = team_repo
+                .get_team_by_name(team)
+                .await?
+                .ok_or_else(|| Error::not_found("Team", team))?;
+            Ok(team_record.id.to_string())
+        } else {
+            Ok(team.to_string())
+        }
     }
 }
 
@@ -550,17 +584,19 @@ mod tests {
         (test_db, service, pool)
     }
 
-    /// Helper to create a test team in the database
-    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) {
+    /// Helper to create a test team in the database, returns team ID
+    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) -> String {
+        let team_id = format!("team-{}", uuid::Uuid::new_v4());
         sqlx::query(
             "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
         )
-        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(&team_id)
         .bind(name)
         .bind(display_name)
         .execute(pool)
         .await
         .expect("create test team");
+        team_id
     }
 
     #[tokio::test]
@@ -732,7 +768,7 @@ mod tests {
         let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
-        create_test_team(&pool, "team-alpha", "Team Alpha").await;
+        let team_id = create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -759,7 +795,7 @@ mod tests {
             .expect("add team membership");
 
         assert_eq!(membership.user_id, user.id);
-        assert_eq!(membership.team, "team-alpha");
+        assert_eq!(membership.team, team_id);
         assert_eq!(membership.scopes.len(), 2);
     }
 
