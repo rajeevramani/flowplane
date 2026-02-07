@@ -314,7 +314,7 @@ pub async fn bootstrap_initialize_handler(
             let membership = NewUserTeamMembership {
                 id: format!("utm_{}", admin_user.id),
                 user_id: admin_user.id.clone(),
-                team: "platform-admin".to_string(),
+                team: created_team.id.to_string(),
                 scopes: vec!["team:platform-admin:*:*".to_string()],
             };
 
