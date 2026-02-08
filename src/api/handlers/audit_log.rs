@@ -30,6 +30,12 @@ pub struct ListAuditLogsQuery {
     /// Filter by user ID
     #[param(required = false)]
     pub user_id: Option<String>,
+    /// Filter by organization ID
+    #[param(required = false)]
+    pub org_id: Option<String>,
+    /// Filter by team ID
+    #[param(required = false)]
+    pub team_id: Option<String>,
     /// Filter by start date (ISO 8601 format)
     #[param(required = false, example = "2024-01-01T00:00:00Z")]
     pub start_date: Option<String>,
@@ -118,6 +124,8 @@ pub async fn list_audit_logs(
         resource_type: query.resource_type,
         action: query.action,
         user_id: query.user_id,
+        org_id: query.org_id,
+        team_id: query.team_id,
         start_date,
         end_date,
     };

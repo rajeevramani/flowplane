@@ -114,8 +114,19 @@ import type {
 	// Dataplane types
 	DataplaneResponse,
 	CreateDataplaneBody,
-	UpdateDataplaneBody
+	UpdateDataplaneBody,
+	// Organization types
+	OrganizationResponse,
+	OrgMembershipResponse,
+	CreateOrganizationRequest,
+	UpdateOrganizationRequest,
+	AddOrgMemberRequest,
+	AdminListOrgsResponse,
+	CurrentOrgResponse,
+	ListOrgTeamsResponse,
+	OrgRole
 } from './types';
+import { currentOrg } from '$lib/stores/org';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
 
@@ -238,6 +249,8 @@ class ApiClient {
 		if (typeof window !== 'undefined') {
 			sessionStorage.removeItem('csrf_token');
 		}
+		// Clear org context to prevent session leaking across logins
+		currentOrg.set({ organization: null, role: null });
 	}
 
 	// Generic methods for authenticated requests
@@ -251,7 +264,7 @@ class ApiClient {
 		return this.handleResponse<T>(response);
 	}
 
-	async post<T>(path: string, body: any): Promise<T> {
+	async post<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
 			headers: this.getHeaders(true), // Include CSRF
@@ -262,7 +275,7 @@ class ApiClient {
 		return this.handleResponse<T>(response);
 	}
 
-	async put<T>(path: string, body: any): Promise<T> {
+	async put<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PUT',
 			headers: this.getHeaders(true), // Include CSRF
@@ -1516,6 +1529,86 @@ class ApiClient {
 		}
 
 		return response.text();
+	}
+
+	// ============================================================================
+	// Admin Organization CRUD API
+	// ============================================================================
+
+	async createOrganization(data: CreateOrganizationRequest): Promise<OrganizationResponse> {
+		return this.post<OrganizationResponse>('/api/v1/admin/organizations', data);
+	}
+
+	async listOrganizations(limit?: number, offset?: number): Promise<AdminListOrgsResponse> {
+		const params = new URLSearchParams();
+		if (limit !== undefined) params.append('limit', limit.toString());
+		if (offset !== undefined) params.append('offset', offset.toString());
+
+		const query = params.toString();
+		return this.get<AdminListOrgsResponse>(`/api/v1/admin/organizations${query ? `?${query}` : ''}`);
+	}
+
+	async getOrganization(id: string): Promise<OrganizationResponse> {
+		return this.get<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`);
+	}
+
+	async updateOrganization(id: string, data: UpdateOrganizationRequest): Promise<OrganizationResponse> {
+		return this.put<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`, data);
+	}
+
+	async deleteOrganization(id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`);
+	}
+
+	// ============================================================================
+	// Admin Organization Members API
+	// ============================================================================
+
+	async listOrgMembers(orgId: string): Promise<OrgMembershipResponse[]> {
+		return this.get<OrgMembershipResponse[]>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members`
+		);
+	}
+
+	async addOrgMember(orgId: string, data: AddOrgMemberRequest): Promise<OrgMembershipResponse> {
+		return this.post<OrgMembershipResponse>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members`,
+			data
+		);
+	}
+
+	async updateOrgMemberRole(orgId: string, userId: string, role: OrgRole): Promise<OrgMembershipResponse> {
+		return this.put<OrgMembershipResponse>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+			{ role }
+		);
+	}
+
+	async removeOrgMember(orgId: string, userId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`
+		);
+	}
+
+	// ============================================================================
+	// Org-Scoped API
+	// ============================================================================
+
+	async getCurrentOrg(): Promise<CurrentOrgResponse> {
+		return this.get<CurrentOrgResponse>('/api/v1/orgs/current');
+	}
+
+	async listOrgTeams(orgName: string): Promise<ListOrgTeamsResponse> {
+		return this.get<ListOrgTeamsResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams`
+		);
+	}
+
+	async createOrgTeam(orgName: string, data: CreateTeamRequest): Promise<TeamResponse> {
+		return this.post<TeamResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams`,
+			data
+		);
 	}
 }
 

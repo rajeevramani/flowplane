@@ -5,7 +5,9 @@
 //! - `{resource}:{action}` - Resource-level permissions (e.g., `routes:read`)
 //! - `team:{name}:{resource}:{action}` - Team-scoped permissions (e.g., `team:platform:routes:read`)
 
+use crate::api::error::ApiError;
 use crate::auth::models::{AuthContext, AuthError};
+use crate::domain::OrgId;
 
 /// Admin bypass scope that grants access to all resources across all teams.
 pub const ADMIN_ALL_SCOPE: &str = "admin:all";
@@ -88,8 +90,11 @@ pub fn check_resource_access(
     }
 
     // Check resource-level permission (exact match)
+    // SECURITY: Global (non-team-prefixed) resource scopes like "clusters:read" grant
+    // access across ALL teams. Only platform admins should use these. Non-admin users
+    // must use team-prefixed scopes like "team:engineering:clusters:read".
     let resource_scope = format!("{}:{}", resource, action);
-    if context.has_scope(&resource_scope) {
+    if context.has_scope(&resource_scope) && has_admin_bypass(context) {
         return true;
     }
 
@@ -185,17 +190,16 @@ pub fn parse_team_wildcard_scope(scope: &str) -> Option<String> {
 /// use flowplane::auth::models::{AuthContext, AuthError};
 /// use flowplane::domain::TokenId;
 ///
+/// // Team-scoped user can access their team
 /// let ctx = AuthContext::new(
 ///     TokenId::from_str_unchecked("token-1"),
 ///     "demo".into(),
-///     vec!["routes:read".into()]
+///     vec!["team:platform:routes:read".into()]
 /// );
+/// require_resource_access(&ctx, "routes", "read", Some("platform")).unwrap();
 ///
-/// // Success
-/// require_resource_access(&ctx, "routes", "read", None).unwrap();
-///
-/// // Failure
-/// let err = require_resource_access(&ctx, "routes", "write", None).unwrap_err();
+/// // But not other teams
+/// let err = require_resource_access(&ctx, "routes", "read", Some("engineering")).unwrap_err();
 /// assert!(matches!(err, AuthError::Forbidden));
 /// ```
 pub fn require_resource_access(
@@ -367,6 +371,27 @@ pub fn has_org_membership(context: &AuthContext, org_name: &str) -> bool {
     let admin_scope = format!("org:{}:admin", org_name);
     let member_scope = format!("org:{}:member", org_name);
     context.has_scope(&admin_scope) || context.has_scope(&member_scope)
+}
+
+/// Check if a scope is a global (non-team-prefixed) resource scope.
+///
+/// Global resource scopes have the pattern `{resource}:{action}` (e.g., `clusters:read`).
+/// These grant access across ALL teams and should only be held by platform admins.
+/// Non-admin users should use team-prefixed scopes like `team:X:clusters:read`.
+///
+/// Returns `false` for:
+/// - `admin:all` (admin bypass, not a resource scope)
+/// - `team:X:resource:action` (team-prefixed, safe)
+/// - `org:X:role` (org scope, handled separately)
+///
+/// Returns `true` for:
+/// - `clusters:read`, `routes:write`, `listeners:read` etc.
+pub fn is_global_resource_scope(scope: &str) -> bool {
+    let parts: Vec<&str> = scope.split(':').collect();
+
+    // Pattern: {resource}:{action} — exactly 2 parts
+    // Exclude admin:all (admin bypass), team:* (team-prefixed), org:* (org scope)
+    parts.len() == 2 && parts[0] != "admin" && parts[0] != "team" && parts[0] != "org"
 }
 
 /// Check if the context has any team-scoped permissions.
@@ -567,6 +592,19 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return Some(sub_resource);
         }
 
+        // Special case: /api/v1/orgs - Org-scoped endpoints use handler-level authorization
+        // via org membership scopes (org:{name}:admin|member), not resource-level scopes.
+        // Returning None skips dynamic scope checks and lets the handler enforce access.
+        if parts[2] == "orgs" {
+            return None;
+        }
+
+        // Special case: /api/v1/admin/organizations - Admin org management endpoints
+        // enforce admin:all or org:X:admin in handlers. Skip dynamic scope middleware.
+        if parts[2] == "admin" && parts.len() >= 4 && parts[3] == "organizations" {
+            return None;
+        }
+
         // Special case: /api/v1/mcp - MCP endpoints implement method-level authorization
         // The HTTP method is always POST (JSON-RPC), but the actual operation is in the request body.
         // The MCP streamable HTTP handlers have their own comprehensive authorization based on the method field.
@@ -605,6 +643,41 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
         Some(parts[2])
     } else {
         None
+    }
+}
+
+/// Verifies that the requesting user's org matches the target team's org.
+///
+/// Platform admins (with `admin:all` scope) bypass this check.
+/// Returns 404 (not 403) for cross-org access to prevent enumeration.
+///
+/// # Arguments
+///
+/// * `context` - The authentication context from the request
+/// * `team_org_id` - The org_id of the team that owns the resource
+///
+/// # Returns
+///
+/// * `Ok(())` if access is allowed
+/// * `Err(ApiError::NotFound)` if the user's org doesn't match the team's org
+pub fn verify_org_boundary(
+    context: &AuthContext,
+    team_org_id: &Option<OrgId>,
+) -> Result<(), ApiError> {
+    // Platform admins can access any org
+    if has_admin_bypass(context) {
+        return Ok(());
+    }
+
+    match (&context.org_id, team_org_id) {
+        // User is in a different org than the team
+        (Some(user_org), Some(team_org)) if user_org != team_org => {
+            Err(ApiError::NotFound("Resource not found".to_string()))
+        }
+        // User has no org but team does -- deny
+        (None, Some(_)) => Err(ApiError::NotFound("Resource not found".to_string())),
+        // All other cases: org matches, team has no org (global), or both None
+        _ => Ok(()),
     }
 }
 
@@ -650,11 +723,13 @@ mod tests {
     }
 
     #[test]
-    fn resource_level_scope_works() {
+    fn global_scope_without_admin_denied() {
+        // SECURITY FIX: Non-admin users with global resource scopes should be denied.
+        // Global scopes like "routes:read" are now restricted to platform admins only.
         let ctx = global_read_context();
         assert!(!has_admin_bypass(&ctx));
-        assert!(check_resource_access(&ctx, "routes", "read", None));
-        assert!(check_resource_access(&ctx, "clusters", "read", None));
+        assert!(!check_resource_access(&ctx, "routes", "read", None));
+        assert!(!check_resource_access(&ctx, "clusters", "read", None));
         assert!(!check_resource_access(&ctx, "routes", "write", None));
         assert!(!check_resource_access(&ctx, "listeners", "read", None));
     }
@@ -745,15 +820,16 @@ mod tests {
     }
 
     #[test]
-    fn require_resource_access_returns_ok_when_allowed() {
-        let ctx = global_read_context();
-        assert!(require_resource_access(&ctx, "routes", "read", None).is_ok());
+    fn require_resource_access_returns_ok_for_team_scoped_user() {
+        let ctx = platform_team_context();
+        assert!(require_resource_access(&ctx, "routes", "read", Some("platform")).is_ok());
     }
 
     #[test]
     fn require_resource_access_returns_forbidden_when_denied() {
         let ctx = global_read_context();
-        let err = require_resource_access(&ctx, "routes", "write", None).unwrap_err();
+        // Non-admin with global scopes should be forbidden
+        let err = require_resource_access(&ctx, "routes", "read", None).unwrap_err();
         assert!(matches!(err, AuthError::Forbidden));
     }
 
@@ -1074,19 +1150,50 @@ mod tests {
         assert!(require_resource_access(&ctx, "openapi-import", "write", Some("platform")).is_err());
     }
 
-    /// Test that user with global resource scope (no team prefix) can access any team
+    /// SECURITY FIX: Non-admin user with global resource scope CANNOT access any team's resources.
+    /// Global scopes are now restricted to platform admins only.
     #[test]
-    fn user_with_global_scope_can_access_any_team() {
+    fn non_admin_with_global_scope_cannot_access_any_team() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("global-user"),
             "global".into(),
             vec!["openapi-import:write".into()],
         );
 
-        // Can access any team with global scope
+        // Non-admin with global scope should be denied access to all teams
+        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
+        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("random")).is_err());
+    }
+
+    /// Platform admin with global resource scope CAN access any team's resources.
+    #[test]
+    fn admin_with_global_scope_can_access_any_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("admin-global"),
+            "admin-global".into(),
+            vec!["admin:all".into(), "openapi-import:write".into()],
+        );
+
         assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
         assert!(check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
         assert!(require_resource_access(&ctx, "openapi-import", "write", Some("random")).is_ok());
+    }
+
+    /// Test is_global_resource_scope classification
+    #[test]
+    fn is_global_resource_scope_classification() {
+        // Global resource scopes (should be true)
+        assert!(is_global_resource_scope("clusters:read"));
+        assert!(is_global_resource_scope("routes:write"));
+        assert!(is_global_resource_scope("listeners:read"));
+        assert!(is_global_resource_scope("openapi-import:write"));
+
+        // NOT global resource scopes (should be false)
+        assert!(!is_global_resource_scope("admin:all"));
+        assert!(!is_global_resource_scope("team:eng:routes:read"));
+        assert!(!is_global_resource_scope("org:acme:admin"));
+        assert!(!is_global_resource_scope("team:platform:*:*"));
     }
 
     /// Test has_admin_bypass returns true only for admin:all scope
@@ -1225,6 +1332,35 @@ mod tests {
             "MCP API tools endpoint should bypass resource-level auth"
         );
 
+        // Org-scoped endpoints use handler-level auth, not resource-level scopes
+        assert_eq!(
+            resource_from_path("/api/v1/orgs/current"),
+            None,
+            "orgs/current should bypass resource-level auth (handler auth via org scopes)"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/orgs/acme/teams"),
+            None,
+            "org teams endpoint should bypass resource-level auth"
+        );
+
+        // Admin organization management endpoints also bypass resource-level auth
+        assert_eq!(
+            resource_from_path("/api/v1/admin/organizations"),
+            None,
+            "admin organizations list should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/admin/organizations/org-123"),
+            None,
+            "admin organizations detail should bypass resource-level auth"
+        );
+        assert_eq!(
+            resource_from_path("/api/v1/admin/organizations/org-123/members"),
+            None,
+            "admin org members should bypass resource-level auth"
+        );
+
         // OpenAPI import routes should map to "openapi-import" resource
         // URL structure: /api/v1/openapi/import, /api/v1/openapi/imports
         // Scope naming: team:X:openapi-import:write, openapi-import:read
@@ -1343,5 +1479,87 @@ mod tests {
 
         // But not for other teams
         assert!(!check_resource_access(&ctx, "generate-envoy-config", "read", Some("platform")));
+    }
+
+    // === Org boundary verification tests ===
+
+    #[test]
+    fn verify_org_boundary_admin_bypasses() {
+        let ctx = admin_context();
+        let org = OrgId::new();
+        // Admin can access any org
+        assert!(verify_org_boundary(&ctx, &Some(org)).is_ok());
+        assert!(verify_org_boundary(&ctx, &None).is_ok());
+    }
+
+    #[test]
+    fn verify_org_boundary_same_org_allowed() {
+        let org = OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-user"),
+            "org-user".into(),
+            vec!["team:eng:routes:read".into()],
+        )
+        .with_org(org.clone(), "acme".into());
+
+        assert!(verify_org_boundary(&ctx, &Some(org)).is_ok());
+    }
+
+    #[test]
+    fn verify_org_boundary_different_org_returns_not_found() {
+        let user_org = OrgId::new();
+        let team_org = OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-user"),
+            "org-user".into(),
+            vec!["team:eng:routes:read".into()],
+        )
+        .with_org(user_org, "acme".into());
+
+        let result = verify_org_boundary(&ctx, &Some(team_org));
+        assert!(result.is_err());
+        if let Err(ApiError::NotFound(msg)) = result {
+            assert_eq!(msg, "Resource not found");
+        } else {
+            panic!("Expected NotFound error");
+        }
+    }
+
+    #[test]
+    fn verify_org_boundary_user_no_org_team_has_org_denied() {
+        let team_org = OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("no-org-user"),
+            "no-org".into(),
+            vec!["team:eng:routes:read".into()],
+        );
+        // User has no org, team has org -- deny
+        let result = verify_org_boundary(&ctx, &Some(team_org));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_org_boundary_global_team_allowed() {
+        let user_org = OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-user"),
+            "org-user".into(),
+            vec!["team:eng:routes:read".into()],
+        )
+        .with_org(user_org, "acme".into());
+
+        // Team has no org (global) -- allow
+        assert!(verify_org_boundary(&ctx, &None).is_ok());
+    }
+
+    #[test]
+    fn verify_org_boundary_both_no_org_allowed() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("no-org"),
+            "no-org".into(),
+            vec!["routes:read".into()],
+        );
+        // Both have no org -- allow
+        assert!(verify_org_boundary(&ctx, &None).is_ok());
     }
 }

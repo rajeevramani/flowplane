@@ -273,6 +273,10 @@ pub async fn import_openapi_handler(
         .ok_or_else(|| ApiError::Internal("Cluster repository not configured".to_string()))?;
     let db_pool = cluster_repo.pool().clone();
 
+    // Resolve team name to UUID for FK-safe insert
+    let team_id =
+        crate::api::handlers::team_access::resolve_team_name(&state, &params.team).await?;
+
     // Create import metadata record
     let import_repo = ImportMetadataRepository::new(db_pool.clone());
     let import_metadata = import_repo
@@ -280,7 +284,7 @@ pub async fn import_openapi_handler(
             spec_name: spec_name.clone(),
             spec_version: spec_version.clone(),
             spec_checksum: spec_checksum.clone(),
-            team: params.team.clone(),
+            team: team_id.clone(),
             source_content: None, // TODO: optionally store source
             listener_name: Some(listener_name.clone()),
         })
@@ -289,19 +293,19 @@ pub async fn import_openapi_handler(
 
     let import_id = import_metadata.id.clone();
 
-    // Materialize clusters with deduplication
+    // Materialize clusters with deduplication (use team UUID for FK columns)
     let (clusters_created, clusters_reused) = materialize_clusters(
         &state.xds_state,
         &db_pool,
         &import_id,
-        &params.team,
+        &team_id,
         &plan.cluster_requests,
     )
     .await?;
 
     // Materialize routes
     let routes_count = if let Some(route_request) = plan.route_request {
-        materialize_route(&state.xds_state, &db_pool, &import_id, &params.team, route_request)
+        materialize_route(&state.xds_state, &db_pool, &import_id, &team_id, route_request)
             .await?;
         1
     } else if let Some(virtual_host) = plan.default_virtual_host {
@@ -310,7 +314,7 @@ pub async fn import_openapi_handler(
             &state.xds_state,
             &db_pool,
             &import_id,
-            &params.team,
+            &team_id,
             virtual_host,
             &listener_name,
         )
@@ -325,7 +329,7 @@ pub async fn import_openapi_handler(
             &state.xds_state,
             &db_pool,
             &import_id,
-            &params.team,
+            &team_id,
             listener_request,
         )
         .await?;
@@ -337,7 +341,7 @@ pub async fn import_openapi_handler(
     // Create route metadata from OpenAPI operation metadata
     // This happens after route hierarchy sync so routes are in the database
     if !plan.route_metadata.is_empty() {
-        create_route_metadata_from_plan(&db_pool, &params.team, &plan.route_metadata).await?;
+        create_route_metadata_from_plan(&db_pool, &team_id, &plan.route_metadata).await?;
     }
 
     // Trigger xDS refresh for all resource types

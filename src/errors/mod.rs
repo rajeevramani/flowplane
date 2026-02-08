@@ -118,6 +118,10 @@ pub enum FlowplaneError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
+
+    /// Cross-organization access violation
+    #[error("Cross-organization access denied: user org '{user_org}' cannot access resources in org '{attempted_org}'")]
+    CrossOrgViolation { attempted_org: String, user_org: String },
 }
 
 /// Authentication error subtypes
@@ -260,6 +264,14 @@ impl FlowplaneError {
         Self::Conversion { context: context.into(), source: Some(source) }
     }
 
+    /// Create a cross-organization violation error
+    pub fn cross_org_violation<A: Into<String>, U: Into<String>>(
+        attempted_org: A,
+        user_org: U,
+    ) -> Self {
+        Self::CrossOrgViolation { attempted_org: attempted_org.into(), user_org: user_org.into() }
+    }
+
     /// Create a serialization error with custom context
     pub fn serialization<S: Into<String>>(source: serde_json::Error, context: S) -> Self {
         Self::Serialization { source, context: context.into() }
@@ -306,6 +318,7 @@ impl FlowplaneError {
             FlowplaneError::Parse { .. } => 400,
             FlowplaneError::Sync { .. } => 500,
             FlowplaneError::Conversion { .. } => 400,
+            FlowplaneError::CrossOrgViolation { .. } => 403,
         }
     }
 
@@ -479,6 +492,16 @@ mod tests {
         assert_eq!(AuthErrorType::MissingToken.to_string(), "missing_token");
         assert_eq!(AuthErrorType::InsufficientPermissions.to_string(), "insufficient_permissions");
         assert_eq!(AuthErrorType::InvalidCredentials.to_string(), "invalid_credentials");
+    }
+
+    #[test]
+    fn test_cross_org_violation() {
+        let error = FlowplaneError::cross_org_violation("target-org", "user-org");
+        assert!(matches!(error, FlowplaneError::CrossOrgViolation { .. }));
+        assert_eq!(error.status_code(), 403);
+        assert!(error.to_string().contains("user-org"));
+        assert!(error.to_string().contains("target-org"));
+        assert!(!error.is_retryable());
     }
 
     #[test]

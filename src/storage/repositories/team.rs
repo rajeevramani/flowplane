@@ -22,7 +22,7 @@ struct TeamRow {
     pub display_name: String,
     pub description: Option<String>,
     pub owner_user_id: Option<String>,
-    pub org_id: Option<String>,
+    pub org_id: String,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
     pub envoy_admin_port: Option<i64>,
@@ -52,7 +52,7 @@ impl TryFrom<TeamRow> for Team {
             display_name: row.display_name,
             description: row.description,
             owner_user_id: row.owner_user_id.map(|id| id.into()),
-            org_id: row.org_id.map(|id| id.into()),
+            org_id: OrgId::from_string(row.org_id),
             settings,
             status,
             envoy_admin_port: row.envoy_admin_port.map(|p| p as u16),
@@ -95,8 +95,14 @@ pub trait TeamRepository: Send + Sync {
     /// Delete a team (will fail if there are resources referencing it due to FK RESTRICT)
     async fn delete_team(&self, id: &TeamId) -> Result<()>;
 
-    /// Check if a team name is available
+    /// Check if a team name is available (global — use is_name_available_in_org for org-scoped)
     async fn is_name_available(&self, name: &str) -> Result<bool>;
+
+    /// Check if a team name is available within a specific organization
+    async fn is_name_available_in_org(&self, org_id: &OrgId, name: &str) -> Result<bool>;
+
+    /// Get a team by org and name (org-scoped unique lookup)
+    async fn get_team_by_org_and_name(&self, org_id: &OrgId, name: &str) -> Result<Option<Team>>;
 
     /// List all teams belonging to an organization
     async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>>;
@@ -156,7 +162,7 @@ impl TeamRepository for SqlxTeamRepository {
         .bind(&request.display_name)
         .bind(&request.description)
         .bind(request.owner_user_id.as_ref().map(|id| id.as_str()))
-        .bind(request.org_id.as_ref().map(|id| id.as_str()))
+        .bind(request.org_id.as_str())
         .bind(settings_json.as_deref())
         .bind(TeamStatus::Active.as_str())
         .bind(next_port)
@@ -319,6 +325,39 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(org_id = %org_id, team_name = %name), name = "db_is_team_name_available_in_org")]
+    async fn is_name_available_in_org(&self, org_id: &OrgId, name: &str) -> Result<bool> {
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM teams WHERE org_id = $1 AND name = $2",
+        )
+        .bind(org_id.as_str())
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to check name availability in org: {}", name),
+        })?;
+
+        Ok(count == 0)
+    }
+
+    #[instrument(skip(self), fields(org_id = %org_id, team_name = %name), name = "db_get_team_by_org_and_name")]
+    async fn get_team_by_org_and_name(&self, org_id: &OrgId, name: &str) -> Result<Option<Team>> {
+        let row =
+            sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE org_id = $1 AND name = $2")
+                .bind(org_id.as_str())
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to fetch team by org and name: {}", name),
+                })?;
+
+        row.map(|r| r.try_into()).transpose()
+    }
+
     #[instrument(skip(self), fields(org_id = %org_id), name = "db_list_teams_by_org")]
     async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>> {
         let rows =
@@ -393,7 +432,12 @@ impl TeamRepository for SqlxTeamRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::OrgId;
     use crate::storage::test_helpers::TestDatabase;
+
+    fn test_org_id() -> OrgId {
+        OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID)
+    }
 
     #[tokio::test]
     async fn test_create_and_get_team() {
@@ -406,7 +450,7 @@ mod tests {
             display_name: "Engineering Team".to_string(),
             description: Some("Main engineering team".to_string()),
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: Some(serde_json::json!({"foo": "bar"})),
         };
 
@@ -439,7 +483,7 @@ mod tests {
             display_name: "Duplicate Test Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -461,7 +505,7 @@ mod tests {
             display_name: "DevOps".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -498,7 +542,7 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: test_org_id(),
                 settings: None,
             };
             repo.create_team(request).await.expect("create team");
@@ -524,7 +568,7 @@ mod tests {
             display_name: "Active Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         let active_team = repo.create_team(active_request).await.expect("create active team");
@@ -535,7 +579,7 @@ mod tests {
             display_name: "Suspended Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         let suspended_team =
@@ -574,7 +618,7 @@ mod tests {
             display_name: "Temporary Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -599,7 +643,7 @@ mod tests {
             display_name: "Existing Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         repo.create_team(request).await.expect("create team");
@@ -619,7 +663,7 @@ mod tests {
             display_name: "First Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -643,7 +687,7 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: test_org_id(),
                 settings: None,
             };
             let created = repo.create_team(request).await.expect("create team");
@@ -678,7 +722,7 @@ mod tests {
                 display_name: "Alpha Team".to_string(),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: test_org_id(),
                 settings: None,
             })
             .await
@@ -690,7 +734,7 @@ mod tests {
                 display_name: "Beta Team".to_string(),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: test_org_id(),
                 settings: None,
             })
             .await
@@ -717,7 +761,7 @@ mod tests {
             display_name: "Exists Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: test_org_id(),
             settings: None,
         })
         .await

@@ -7,6 +7,7 @@
 //! level, ensuring proper data isolation between teams.
 
 use flowplane::auth::team::CreateTeamRequest;
+use flowplane::domain::OrgId;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{
     ClusterRepository, CreateClusterRequest, CreateListenerRequest,
@@ -15,7 +16,7 @@ use flowplane::storage::{
 
 #[path = "../../common/mod.rs"]
 mod common;
-use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_ORG_ID};
 
 /// Set up a test database with migrations applied and create test teams
 /// Returns a tuple of (TestDatabase, DbPool, special_team_id, team_with_dashes_id)
@@ -34,7 +35,7 @@ async fn setup_test_db() -> (TestDatabase, DbPool, String, String) {
             display_name: "Test Team special-team".to_string(),
             description: Some("Team for storage team isolation tests".to_string()),
             owner_user_id: None,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked(TEST_ORG_ID),
             settings: None,
         })
         .await
@@ -46,7 +47,7 @@ async fn setup_test_db() -> (TestDatabase, DbPool, String, String) {
             display_name: "Test Team team-with-dashes_and_underscores".to_string(),
             description: Some("Team for storage team isolation tests".to_string()),
             owner_user_id: None,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked(TEST_ORG_ID),
             settings: None,
         })
         .await

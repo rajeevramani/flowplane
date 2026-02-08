@@ -20,6 +20,7 @@ struct ClusterRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -34,7 +35,10 @@ pub struct ClusterData {
     pub configuration: String, // JSON serialized
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -50,6 +54,7 @@ impl From<ClusterRow> for ClusterData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -155,7 +160,8 @@ impl ClusterRepository {
     #[instrument(skip(self), fields(cluster_id = %id), name = "db_get_cluster_by_id")]
     pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
         let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE id = $1"
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id WHERE c.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -180,7 +186,8 @@ impl ClusterRepository {
     #[instrument(skip(self), fields(cluster_name = %name), name = "db_get_cluster_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
         let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id WHERE c.name = $1 ORDER BY c.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -209,7 +216,8 @@ impl ClusterRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -266,13 +274,13 @@ impl ClusterRepository {
             .join(", ");
 
         // Always include NULL team clusters (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE c.team IN ({}) OR c.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at \
-             FROM clusters \
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY c.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
@@ -314,10 +322,10 @@ impl ClusterRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at \
-             FROM clusters \
-             WHERE team IS NULL \
-             ORDER BY created_at DESC \
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id \
+             WHERE c.team IS NULL \
+             ORDER BY c.created_at DESC \
              LIMIT $1 OFFSET $2",
         )
         .bind(limit)

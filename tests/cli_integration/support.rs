@@ -87,6 +87,27 @@ impl TestServer {
             .expect("create token")
     }
 
+    /// Issue a test token with admin:all + specified scopes.
+    /// Use this for tests that need global resource scope access (the security fix
+    /// restricts global resource scopes to platform admins only).
+    pub async fn issue_admin_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
+        let mut all_scopes = vec!["admin:all".to_string()];
+        all_scopes.extend(scopes.iter().map(|s| s.to_string()));
+        self.token_service
+            .create_token(
+                CreateTokenRequest::without_user(
+                    name.to_string(),
+                    None,
+                    None,
+                    all_scopes,
+                    Some("cli-integration-tests".into()),
+                ),
+                None,
+            )
+            .await
+            .expect("create token")
+    }
+
     /// Get the base URL for this test server
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
@@ -96,6 +117,7 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn create_team(&self, team_name: &str) {
         use flowplane::auth::CreateTeamRequest;
+        use flowplane::domain::OrgId;
         use flowplane::storage::repositories::{SqlxTeamRepository, TeamRepository};
 
         let team_repo = SqlxTeamRepository::new(self.pool.clone());
@@ -107,7 +129,7 @@ impl TestServer {
                 display_name: format!("Test Team {}", team_name),
                 description: Some("Team for CLI integration tests".to_string()),
                 owner_user_id: None,
-                org_id: None,
+                org_id: OrgId::from_str_unchecked(common::test_db::TEST_ORG_ID),
                 settings: None,
             })
             .await;

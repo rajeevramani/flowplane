@@ -33,7 +33,7 @@ async fn create_team_with_admin_token() {
     let app = setup_test_app().await;
 
     // Admin token
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -58,7 +58,7 @@ async fn create_team_with_admin_token() {
 #[tokio::test]
 async fn create_team_validates_name_format() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Invalid name with uppercase letters
     let response = send_request(
@@ -109,7 +109,7 @@ async fn create_team_validates_name_format() {
 #[tokio::test]
 async fn create_team_validates_required_fields() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Missing name
     let response = send_request(
@@ -143,7 +143,7 @@ async fn create_team_validates_required_fields() {
 #[tokio::test]
 async fn create_duplicate_team_returns_conflict() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create first team
     let response1 = send_request(
@@ -178,7 +178,7 @@ async fn create_duplicate_team_returns_conflict() {
 #[tokio::test]
 async fn get_team_by_id() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -216,7 +216,7 @@ async fn get_team_by_id() {
 #[tokio::test]
 async fn get_team_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -249,7 +249,7 @@ async fn get_team_requires_admin() {
 #[tokio::test]
 async fn get_nonexistent_team_returns_not_found() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -266,7 +266,7 @@ async fn get_nonexistent_team_returns_not_found() {
 #[tokio::test]
 async fn list_teams_with_pagination() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create multiple teams
     for i in 1..=5 {
@@ -316,7 +316,7 @@ async fn list_teams_requires_admin() {
 #[tokio::test]
 async fn update_team() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -360,7 +360,7 @@ async fn update_team() {
 #[tokio::test]
 async fn update_team_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -395,7 +395,7 @@ async fn update_team_requires_admin() {
 #[tokio::test]
 async fn update_nonexistent_team_returns_not_found() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -414,7 +414,7 @@ async fn update_nonexistent_team_returns_not_found() {
 #[tokio::test]
 async fn delete_team() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -458,7 +458,7 @@ async fn delete_team() {
 #[tokio::test]
 async fn delete_team_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team
     let create_response = send_request(
@@ -491,7 +491,7 @@ async fn delete_team_requires_admin() {
 #[tokio::test]
 async fn delete_nonexistent_team_returns_not_found() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,

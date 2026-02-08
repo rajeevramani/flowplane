@@ -483,7 +483,7 @@ pub async fn get_session_info_handler(
     let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
 
     // Get user information - need to find the user associated with this session
-    let (user_id_str, name, email, is_admin) =
+    let (user_id_str, name, email, is_admin, user_org_id) =
         match &session_info.token.created_by {
             Some(created_by) if created_by.starts_with("user:") => {
                 // Session created from login - extract user ID
@@ -501,7 +501,13 @@ pub async fn get_session_info_handler(
                     || ApiError::Internal("User not found for session token".to_string()),
                 )?;
 
-                (user_id_str.to_string(), user.name.clone(), user.email.clone(), user.is_admin)
+                (
+                    user_id_str.to_string(),
+                    user.name.clone(),
+                    user.email.clone(),
+                    user.is_admin,
+                    user.org_id.to_string(),
+                )
             }
             Some(created_by) if created_by.starts_with("setup_token:") => {
                 // For bootstrap sessions, we need to find the admin user
@@ -524,6 +530,7 @@ pub async fn get_session_info_handler(
                     admin_user.name.clone(),
                     admin_user.email.clone(),
                     admin_user.is_admin,
+                    admin_user.org_id.to_string(),
                 )
             }
             Some(_) => {
@@ -534,9 +541,9 @@ pub async fn get_session_info_handler(
             }
         };
 
-    // Extract org info from scopes
-    let (org_id, org_name) =
-        crate::auth::session::extract_org_from_scopes(&session_info.token.scopes);
+    // Extract org info: use user's org_id directly (scopes only contain org name, not ID)
+    let (_, org_name) = crate::auth::session::extract_org_from_scopes(&session_info.token.scopes);
+    let org_id = Some(user_org_id);
 
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
@@ -771,8 +778,9 @@ pub async fn login_handler(
         )
         .into();
 
-    // Extract org info from scopes
-    let (org_id, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
+    // Extract org info: use user's org_id directly (scopes only contain org name, not ID)
+    let (_, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
+    let org_id = Some(user.org_id.to_string());
 
     let response_body = LoginResponseBody {
         session_id: session_response.session_id,
@@ -917,12 +925,13 @@ mod tests {
         let (_db, state) = create_test_state().await;
         let body = sample_create_token_body();
 
-        // Create context that has tokens:write (for handler access) plus the scopes
-        // being granted (clusters:read, routes:read) for scope subset validation
+        // Use admin context: global resource scopes like "tokens:write" and "clusters:read"
+        // are restricted to platform admins. Admin can grant any scope.
         let context = AuthContext::new(
             crate::domain::TokenId::new(),
             "tokens-test-token".into(),
             vec![
+                "admin:all".into(),
                 "tokens:read".into(),
                 "tokens:write".into(),
                 "clusters:read".into(),

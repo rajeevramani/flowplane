@@ -4,6 +4,7 @@
 	import Sidebar from './Sidebar.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { apiClient } from '$lib/api/client';
+	import { currentOrg, isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -22,7 +23,7 @@
 		onTeamChange: (team: string) => void;
 		resourceCounts?: ResourceCounts;
 		statsEnabled?: boolean;
-		children: any;
+		children: import('svelte').Snippet;
 	}
 
 	let {
@@ -88,6 +89,16 @@
 
 				<!-- Right side: User menu -->
 				<div class="flex items-center gap-4">
+					<!-- Org badge -->
+					{#if sessionInfo.org_name}
+						<span
+							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800"
+							title="Organization: {sessionInfo.org_name}"
+						>
+							{sessionInfo.org_name}
+						</span>
+					{/if}
+
 					<!-- Role badge -->
 					{#if sessionInfo.isAdmin}
 						<span

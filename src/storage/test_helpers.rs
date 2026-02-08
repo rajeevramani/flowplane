@@ -19,6 +19,10 @@ pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
 pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
 pub const PLATFORM_TEAM_ID: &str = "00000000-0000-0000-0000-000000000004";
 
+/// Predictable organization ID for seed data.
+/// All seeded teams belong to this organization.
+pub const TEST_ORG_ID: &str = "00000000-0000-0000-0000-0000000000a1";
+
 /// Stop and remove stale testcontainer PostgreSQL containers from previous runs.
 ///
 /// Testcontainers-rs 0.26 has a known issue where `ContainerAsync::Drop` is async
@@ -139,6 +143,17 @@ impl TestDatabase {
 /// - team-b:    00000000-0000-0000-0000-000000000003
 /// - platform:  00000000-0000-0000-0000-000000000004
 async fn seed_test_data(pool: &DbPool) {
+    // Create test organization first (teams require org_id NOT NULL)
+    sqlx::query(
+        "INSERT INTO organizations (id, name, display_name, status, created_at, updated_at) \
+         VALUES ($1, 'test-org', 'Test Organization', 'active', NOW(), NOW()) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(TEST_ORG_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed test organization: {}", e));
+
     // Create common test teams with predictable UUIDs
     let teams = [
         ("test-team", "00000000-0000-0000-0000-000000000001"),
@@ -149,13 +164,14 @@ async fn seed_test_data(pool: &DbPool) {
 
     for (team_name, team_id) in &teams {
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) \
-             VALUES ($1, $2, $3, 'active') \
-             ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO teams (id, name, display_name, org_id, status) \
+             VALUES ($1, $2, $3, $4, 'active') \
+             ON CONFLICT (org_id, name) DO NOTHING",
         )
         .bind(team_id)
         .bind(team_name)
         .bind(format!("Test Team {}", team_name))
+        .bind(TEST_ORG_ID)
         .execute(pool)
         .await
         .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", team_name, e));

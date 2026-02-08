@@ -20,6 +20,10 @@ pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
 pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
 pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
 
+/// Predictable organization ID for seed data.
+/// All seeded teams belong to this organization.
+pub const TEST_ORG_ID: &str = "00000000-0000-0000-0000-0000000000a1";
+
 /// A test database backed by a Testcontainers PostgreSQL instance.
 ///
 /// The container is automatically stopped and removed when this struct is dropped.
@@ -65,8 +69,8 @@ impl TestDatabase {
             .await
             .unwrap_or_else(|e| panic!("Failed to create test pool for {}: {}", prefix, e));
 
-        // Seed common test teams with predictable UUIDs (matches src/storage/test_helpers.rs)
-        seed_test_teams(&pool).await;
+        // Seed common test data: org + teams (matches src/storage/test_helpers.rs)
+        seed_test_data(&pool).await;
 
         Self { pool, _container: container }
     }
@@ -77,22 +81,34 @@ impl TestDatabase {
     }
 }
 
-/// Seed common test teams with predictable UUIDs.
+/// Seed common test data: organization and teams with predictable UUIDs.
 ///
-/// Uses raw SQL to insert teams with specific UUIDs that match the constants
-/// defined above. This mirrors `src/storage/test_helpers.rs::seed_test_data()`.
-async fn seed_test_teams(pool: &DbPool) {
+/// Uses raw SQL to insert test org and teams with specific UUIDs that match
+/// the constants defined above. This mirrors `src/storage/test_helpers.rs::seed_test_data()`.
+async fn seed_test_data(pool: &DbPool) {
+    // Create test organization first (teams require org_id NOT NULL)
+    sqlx::query(
+        "INSERT INTO organizations (id, name, display_name, status, created_at, updated_at) \
+         VALUES ($1, 'test-org', 'Test Organization', 'active', NOW(), NOW()) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(TEST_ORG_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed test organization: {}", e));
+
     let teams = [("test-team", TEST_TEAM_ID), ("team-a", TEAM_A_ID), ("team-b", TEAM_B_ID)];
 
     for (team_name, team_id) in &teams {
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) \
-             VALUES ($1, $2, $3, 'active') \
-             ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO teams (id, name, display_name, org_id, status) \
+             VALUES ($1, $2, $3, $4, 'active') \
+             ON CONFLICT (org_id, name) DO NOTHING",
         )
         .bind(team_id)
         .bind(team_name)
         .bind(format!("Test Team {}", team_name))
+        .bind(TEST_ORG_ID)
         .execute(pool)
         .await
         .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", team_name, e));

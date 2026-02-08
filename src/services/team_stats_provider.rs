@@ -226,7 +226,7 @@ where
 mod tests {
     use super::*;
     use crate::auth::team::{CreateTeamRequest, Team, TeamStatus, UpdateTeamRequest};
-    use crate::domain::{ClusterStats, ResponseCodeMetrics, StatsSnapshot, TeamId};
+    use crate::domain::{ClusterStats, OrgId, ResponseCodeMetrics, StatsSnapshot, TeamId};
     use crate::services::stats_cache::StatsCacheConfig;
     use crate::services::stats_data_source::MockStatsDataSource;
     use crate::storage::repositories::TeamRepository;
@@ -251,7 +251,7 @@ mod tests {
                 display_name: name.to_string(),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: OrgId::from_str_unchecked("test-org"),
                 settings: None,
                 status: TeamStatus::Active,
                 envoy_admin_port: admin_port,
@@ -310,6 +310,18 @@ mod tests {
         }
 
         async fn resolve_team_ids(&self, _team_names: &[String]) -> Result<Vec<String>> {
+            unimplemented!()
+        }
+
+        async fn is_name_available_in_org(&self, _org_id: &OrgId, _name: &str) -> Result<bool> {
+            unimplemented!()
+        }
+
+        async fn get_team_by_org_and_name(
+            &self,
+            _org_id: &OrgId,
+            _name: &str,
+        ) -> Result<Option<Team>> {
             unimplemented!()
         }
     }

@@ -109,6 +109,12 @@ pub async fn create_user(
     // Validate request
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
+    // Resolve org_id: explicit payload > auth context > error
+    let org_id = payload
+        .org_id
+        .or_else(|| context.org_id.clone())
+        .ok_or_else(|| ApiError::BadRequest("org_id is required".to_string()))?;
+
     // Create user
     let service = user_service_for_state(&state)?;
     let user = service
@@ -117,7 +123,7 @@ pub async fn create_user(
             payload.password,
             payload.name,
             payload.is_admin,
-            payload.org_id,
+            org_id,
             Some(context.token_id.to_string()),
             Some(&context),
         )

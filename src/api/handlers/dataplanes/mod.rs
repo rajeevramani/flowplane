@@ -158,6 +158,9 @@ pub async fn list_all_dataplanes_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ListDataplanesQuery>,
 ) -> Result<Json<ListDataplanesResponse>, ApiError> {
+    // Authorization: require dataplanes:read scope
+    require_resource_access(&context, "dataplanes", "read", None)?;
+
     // Get effective teams for the user
     let cluster_repo = state
         .xds_state

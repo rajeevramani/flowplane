@@ -160,6 +160,7 @@ impl From<FlowplaneError> for ApiError {
             FlowplaneError::Parse { context, .. } => ApiError::BadRequest(context),
             FlowplaneError::Sync { context } => ApiError::Internal(context),
             FlowplaneError::Conversion { context, .. } => ApiError::BadRequest(context),
+            FlowplaneError::CrossOrgViolation { .. } => ApiError::Forbidden(err.to_string()),
         }
     }
 }

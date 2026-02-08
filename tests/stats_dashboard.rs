@@ -40,7 +40,7 @@ async fn list_apps_requires_admin() {
 async fn list_apps_with_admin_token() {
     let app = setup_test_app().await;
 
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response =
         send_request(&app, Method::GET, "/api/v1/admin/apps", Some(&admin_token.token), None).await;
@@ -55,7 +55,7 @@ async fn list_apps_with_admin_token() {
 #[tokio::test]
 async fn enable_stats_dashboard() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Enable the stats dashboard
     let response = send_request(
@@ -82,7 +82,7 @@ async fn enable_stats_dashboard() {
 #[tokio::test]
 async fn disable_stats_dashboard() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // First enable
     send_request(
@@ -115,7 +115,7 @@ async fn disable_stats_dashboard() {
 #[tokio::test]
 async fn stats_enabled_returns_false_when_disabled() {
     let app = setup_test_app().await;
-    let token = app.issue_token("user-token", &["stats:read"]).await;
+    let token = app.issue_token("user-token", &["admin:all", "stats:read"]).await;
 
     let response =
         send_request(&app, Method::GET, "/api/v1/stats/enabled", Some(&token.token), None).await;
@@ -129,8 +129,8 @@ async fn stats_enabled_returns_false_when_disabled() {
 #[tokio::test]
 async fn stats_enabled_returns_true_after_enabling() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
-    let user_token = app.issue_token("user-token", &["stats:read"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
+    let user_token = app.issue_token("user-token", &["admin:all", "stats:read"]).await;
 
     // Enable stats dashboard
     send_request(
@@ -158,7 +158,7 @@ async fn stats_enabled_returns_true_after_enabling() {
 #[tokio::test]
 async fn stats_overview_forbidden_when_disabled() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a team first
     support::create_team(&app, &admin_token.token, "test-team").await;
@@ -182,7 +182,7 @@ async fn stats_overview_forbidden_when_disabled() {
 #[tokio::test]
 async fn stats_overview_requires_team_scope() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Enable stats dashboard
     send_request(
@@ -219,7 +219,7 @@ async fn stats_overview_requires_team_scope() {
 #[tokio::test]
 async fn stats_clusters_forbidden_when_disabled() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a team first
     support::create_team(&app, &admin_token.token, "test-team").await;
@@ -243,7 +243,7 @@ async fn stats_clusters_forbidden_when_disabled() {
 #[tokio::test]
 async fn stats_single_cluster_not_found_when_cluster_missing() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Enable stats dashboard
     send_request(

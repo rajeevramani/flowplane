@@ -46,13 +46,17 @@ async fn smoke_test_auth_flow() {
     println!("✓ Bootstrap complete");
 
     // 2. Login (uses standard test credentials)
-    let session = with_timeout(TestTimeout::quick("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
+    let (session, login_resp) = with_timeout(TestTimeout::quick("Login"), async {
+        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await
     .expect("Login should succeed");
 
     assert!(!session.csrf_token.is_empty(), "CSRF token should be present");
+
+    // Verify org context from login (bootstrap creates default org)
+    assert!(login_resp.org_id.is_some(), "Login should include org_id after bootstrap");
+    assert!(login_resp.org_name.is_some(), "Login should include org_name after bootstrap");
     println!("✓ Login complete");
 
     // 3. Create PAT

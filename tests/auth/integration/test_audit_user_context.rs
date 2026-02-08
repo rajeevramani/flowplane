@@ -11,7 +11,7 @@ use flowplane::auth::user::UserResponse;
 #[tokio::test]
 async fn audit_log_captures_user_context_on_user_creation() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a user
     let response = send_request(
@@ -172,7 +172,7 @@ async fn audit_log_query_by_user_id() {
 #[tokio::test]
 async fn login_event_audit_trail() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a user
     let create_response = send_request(

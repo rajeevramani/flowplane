@@ -12,7 +12,9 @@ use tracing::{field, info, instrument};
 use utoipa::ToSchema;
 use validator::Validate;
 
-use crate::auth::authorization::{has_admin_bypass, parse_org_from_scope};
+use crate::auth::authorization::{
+    has_admin_bypass, is_global_resource_scope, parse_org_from_scope,
+};
 use crate::auth::hashing;
 use crate::auth::models::{
     AuthContext, NewPersonalAccessToken, PersonalAccessToken, TokenStatus,
@@ -261,6 +263,32 @@ impl TokenService {
         let correlation_id = uuid::Uuid::new_v4();
         tracing::Span::current().record("correlation_id", field::display(&correlation_id));
 
+        // Validate scope changes: requested scopes must be a subset of the caller's scopes
+        if let Some(ref new_scopes) = payload.scopes {
+            if let Some(ctx) = auth_context {
+                Self::validate_scope_subset(new_scopes, ctx)?;
+            }
+        }
+
+        // Verify ownership: if the token is user-scoped, the caller must own it or be admin
+        if let Some(ctx) = auth_context {
+            if !has_admin_bypass(ctx) {
+                let token_id_check = TokenId::from_str_unchecked(id);
+                let existing_token = self.repository.get_token(&token_id_check).await?;
+                // Only enforce ownership for user-scoped tokens (those with a user_id).
+                // System tokens (user_id: None) can be managed by anyone with tokens:write.
+                if let Some(ref token_uid) = existing_token.user_id {
+                    let caller_owns = ctx.user_id.as_ref().is_some_and(|cid| cid == token_uid);
+                    if !caller_owns {
+                        return Err(Error::auth(
+                            "Cannot update a token you do not own",
+                            AuthErrorType::InsufficientPermissions,
+                        ));
+                    }
+                }
+            }
+        }
+
         let status = if let Some(status) = payload.status.as_ref() {
             Some(TokenStatus::from_str(status).map_err(|_| Error::validation("Invalid status"))?)
         } else {
@@ -393,6 +421,20 @@ impl TokenService {
                     ));
                 }
                 continue;
+            }
+
+            // SECURITY: Reject global (non-team-prefixed) resource scopes for non-admin users.
+            // Scopes like "clusters:read" or "routes:write" (pattern: {resource}:{action})
+            // grant access across all teams. Only platform admins may hold these.
+            // Non-admin users must use team-prefixed scopes like "team:X:clusters:read".
+            if is_global_resource_scope(scope) {
+                return Err(Error::auth(
+                    format!(
+                        "Cannot grant scope '{}': global resource scopes are restricted to platform admins. Use team-prefixed scopes like 'team:{{team}}:{}'",
+                        scope, scope
+                    ),
+                    AuthErrorType::InsufficientPermissions,
+                ));
             }
 
             // For all other scopes, creator must have the exact scope
@@ -772,5 +814,41 @@ mod tests {
     fn empty_scopes_always_valid() {
         let ctx = team_user_context();
         assert!(TokenService::validate_scope_subset(&[], &ctx).is_ok());
+    }
+
+    // === SECURITY FIX: Global resource scope rejection for non-admin users ===
+
+    #[test]
+    fn non_admin_cannot_grant_global_resource_scope() {
+        let ctx = team_user_context(); // has team-scoped and org scopes, but NOT admin:all
+        let scopes = vec!["clusters:read".into()];
+        let err = TokenService::validate_scope_subset(&scopes, &ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("global resource scopes are restricted to platform admins"),
+            "Expected global scope rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn non_admin_cannot_grant_global_write_scope() {
+        let ctx = team_user_context();
+        let scopes = vec!["routes:write".into()];
+        let err = TokenService::validate_scope_subset(&scopes, &ctx).unwrap_err();
+        assert!(err.to_string().contains("global resource scopes are restricted"));
+    }
+
+    #[test]
+    fn admin_can_grant_global_resource_scope() {
+        let ctx = admin_context(); // has admin:all
+        let scopes = vec!["clusters:read".into(), "routes:write".into()];
+        assert!(TokenService::validate_scope_subset(&scopes, &ctx).is_ok());
+    }
+
+    #[test]
+    fn non_admin_can_still_grant_team_scoped_scope() {
+        let ctx = team_user_context(); // has team:engineering:routes:read
+        let scopes = vec!["team:engineering:routes:read".into()];
+        assert!(TokenService::validate_scope_subset(&scopes, &ctx).is_ok());
     }
 }

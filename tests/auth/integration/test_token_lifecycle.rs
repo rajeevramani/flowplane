@@ -14,7 +14,7 @@ async fn integration_token_lifecycle_flow() {
     let admin = app
         .issue_token(
             "token-admin",
-            &["tokens:write", "tokens:read", "clusters:read", "routes:read"],
+            &["admin:all", "tokens:write", "tokens:read", "clusters:read", "routes:read"],
         )
         .await;
 

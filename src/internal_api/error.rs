@@ -205,6 +205,7 @@ impl From<FlowplaneError> for InternalError {
             FlowplaneError::Parse { context, .. } => InternalError::validation(context),
             FlowplaneError::Sync { context } => InternalError::internal(context),
             FlowplaneError::Conversion { context, .. } => InternalError::validation(context),
+            FlowplaneError::CrossOrgViolation { .. } => InternalError::forbidden(err.to_string()),
         }
     }
 }

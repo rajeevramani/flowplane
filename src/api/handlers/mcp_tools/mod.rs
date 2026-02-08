@@ -14,7 +14,11 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        routes::ApiState,
+    },
     auth::{authorization::require_resource_access, models::AuthContext},
     storage::UpdateMcpToolRequest,
 };
@@ -144,13 +148,10 @@ pub async fn get_mcp_tool_handler(
         ApiError::NotFound(format!("MCP tool '{}' not found in team '{}'", name, team))
     })?;
 
-    // Verify team ownership (should already be correct from get_by_name, but double-check)
-    if tool.team != team {
-        return Err(ApiError::NotFound(format!(
-            "MCP tool '{}' not found in team '{}'",
-            name, team
-        )));
-    }
+    // Verify team access using the unified team access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let tool = verify_team_access(tool, &team_scopes).await?;
 
     Ok(Json(McpToolResponse::from(tool)))
 }
@@ -201,13 +202,10 @@ pub async fn update_mcp_tool_handler(
             ApiError::NotFound(format!("MCP tool '{}' not found in team '{}'", name, team))
         })?;
 
-    // Verify team ownership
-    if existing.team != team {
-        return Err(ApiError::NotFound(format!(
-            "MCP tool '{}' not found in team '{}'",
-            name, team
-        )));
-    }
+    // Verify team access using the unified team access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Build update request - pass all provided fields
     let update_request = UpdateMcpToolRequest {

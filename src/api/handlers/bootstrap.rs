@@ -159,15 +159,51 @@ pub async fn bootstrap_initialize_handler(
     let user_repo = SqlxUserRepository::new(pool.clone());
     let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
 
-    // CRITICAL: Check if system is already initialized (has active tokens OR users exist)
-    let active_count = token_repo.count_active_tokens().await.map_err(convert_error)?;
-    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+    // CRITICAL: Use PostgreSQL advisory lock to prevent TOCTOU race condition.
+    // Two concurrent bootstrap requests could both see user_count == 0 and create
+    // duplicate admin users. We use a transaction-scoped advisory lock (key=1) so
+    // only one request can proceed through the check-then-act section at a time.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| convert_error(Error::database(e, "begin bootstrap transaction".into())))?;
 
-    if active_count > 0 || user_count > 0 {
+    // Acquire advisory lock within transaction (blocks until available)
+    sqlx::query("SELECT pg_advisory_xact_lock(1)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| convert_error(Error::database(e, "acquire bootstrap advisory lock".into())))?;
+
+    // Check if system is already initialized (within the lock)
+    let active_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM personal_access_tokens WHERE status = 'active'")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                convert_error(Error::database(e, "count active tokens in bootstrap".into()))
+            })?;
+
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| convert_error(Error::database(e, "count users in bootstrap".into())))?;
+
+    if active_count.0 > 0 || user_count.0 > 0 {
+        // Commit to release advisory lock, then return error
+        tx.commit().await.map_err(|e| {
+            convert_error(Error::database(e, "commit bootstrap transaction".into()))
+        })?;
         return Err(ApiError::forbidden(
             "System already initialized. Bootstrap is only allowed for initial setup.",
         ));
     }
+
+    // Commit the transaction to release the advisory lock.
+    // We now know we are the sole bootstrap winner. Subsequent requests will see
+    // user_count > 0 and be rejected.
+    tx.commit()
+        .await
+        .map_err(|e| convert_error(Error::database(e, "commit bootstrap transaction".into())))?;
 
     // Get configuration from environment
     let ttl_days = std::env::var("FLOWPLANE_SETUP_TOKEN_TTL_DAYS")
@@ -181,6 +217,20 @@ pub async fn bootstrap_initialize_handler(
         .unwrap_or(1);
 
     // Create the first admin user
+    // Create default organization first (user needs org_id)
+    let org_repo = SqlxOrganizationRepository::new(pool.clone());
+    let create_org_request = CreateOrganizationRequest {
+        name: "default".to_string(),
+        display_name: "Default Organization".to_string(),
+        description: Some("Default organization created during system bootstrap".to_string()),
+        owner_user_id: None, // Will be updated after user creation
+        settings: None,
+    };
+
+    let default_org =
+        org_repo.create_organization(create_org_request).await.map_err(convert_error)?;
+
+    // Create admin user with org_id set from the start
     let user_id = UserId::new();
     let password_hash = hashing::hash_password(&payload.password).map_err(convert_error)?;
 
@@ -191,10 +241,25 @@ pub async fn bootstrap_initialize_handler(
         name: payload.name.clone(),
         status: UserStatus::Active,
         is_admin: true,
-        org_id: None,
+        org_id: default_org.id.clone(),
     };
 
-    let mut admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
+    let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
+
+    // Update org's owner_user_id to the admin user
+    org_repo
+        .update_organization(
+            &default_org.id,
+            crate::auth::organization::UpdateOrganizationRequest {
+                display_name: None,
+                description: None,
+                owner_user_id: Some(admin_user.id.clone()),
+                settings: None,
+                status: None,
+            },
+        )
+        .await
+        .map_err(convert_error)?;
 
     // Log admin user creation with user context
     audit_repository
@@ -206,6 +271,7 @@ pub async fn bootstrap_initialize_handler(
                 serde_json::json!({
                     "name": admin_user.name,
                     "is_admin": admin_user.is_admin,
+                    "org_id": default_org.id.as_str(),
                 }),
             )
             .with_user_context(
@@ -216,19 +282,6 @@ pub async fn bootstrap_initialize_handler(
         )
         .await
         .map_err(convert_error)?;
-
-    // Create default organization
-    let org_repo = SqlxOrganizationRepository::new(pool.clone());
-    let create_org_request = CreateOrganizationRequest {
-        name: "default".to_string(),
-        display_name: "Default Organization".to_string(),
-        description: Some("Default organization created during system bootstrap".to_string()),
-        owner_user_id: Some(admin_user.id.clone()),
-        settings: None,
-    };
-
-    let default_org =
-        org_repo.create_organization(create_org_request).await.map_err(convert_error)?;
 
     // Log organization creation
     audit_repository
@@ -281,19 +334,12 @@ pub async fn bootstrap_initialize_handler(
         .await
         .map_err(convert_error)?;
 
-    // Update admin user with org_id
-    user_repo
-        .update_user_org(&admin_user.id, Some(default_org.id.clone()))
-        .await
-        .map_err(convert_error)?;
-    admin_user.org_id = Some(default_org.id.clone());
-
     // Create platform-admin team
     let team_repo = SqlxTeamRepository::new(pool.clone());
     let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
 
-    // Check if platform-admin team already exists (idempotency)
-    let existing_team = team_repo.get_team_by_name("platform-admin").await;
+    // Check if platform-admin team already exists in the default org (idempotency)
+    let existing_team = team_repo.get_team_by_org_and_name(&default_org.id, "platform-admin").await;
 
     match existing_team {
         Ok(None) => {
@@ -303,7 +349,7 @@ pub async fn bootstrap_initialize_handler(
                 display_name: "Platform Admin".to_string(),
                 description: Some("Default team created during system bootstrap".to_string()),
                 owner_user_id: Some(admin_user.id.clone()),
-                org_id: Some(default_org.id.clone()),
+                org_id: default_org.id.clone(),
                 settings: None,
             };
 
@@ -381,10 +427,7 @@ pub async fn bootstrap_initialize_handler(
         status: TokenStatus::Active,
         expires_at: Some(expires_at),
         created_by: Some(format!("bootstrap:user:{}", admin_user.id)),
-        scopes: vec![
-            "bootstrap:initialize".to_string(),
-            format!("org:{}:*", default_org.id.as_str()),
-        ],
+        scopes: vec!["bootstrap:initialize".to_string(), format!("org:{}:admin", default_org.name)],
         is_setup_token: true,
         max_usage_count: Some(max_usage),
         usage_count: 0,
@@ -493,6 +536,7 @@ pub async fn bootstrap_status_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::OrgId;
     use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
@@ -516,27 +560,12 @@ mod tests {
             name: "Admin User".to_string(),
         };
 
-        // Hash password and create admin user
-        let user_id = UserId::new();
-        let password_hash = hashing::hash_password(&request.password).expect("hash password");
-        let new_user = NewUser {
-            id: user_id.clone(),
-            email: request.email.clone(),
-            password_hash,
-            name: request.name.clone(),
-            status: UserStatus::Active,
-            is_admin: true,
-            org_id: None,
-        };
-
-        let admin_user = user_repo.create_user(new_user).await.expect("create admin user");
-
-        // Create default organization
+        // Create default organization first (user needs org_id)
         let create_org_request = CreateOrganizationRequest {
             name: "default".to_string(),
             display_name: "Default Organization".to_string(),
             description: Some("Default organization created during system bootstrap".to_string()),
-            owner_user_id: Some(admin_user.id.clone()),
+            owner_user_id: None,
             settings: None,
         };
 
@@ -546,8 +575,23 @@ mod tests {
         // Verify org was created
         assert_eq!(default_org.name, "default");
         assert_eq!(default_org.display_name, "Default Organization");
-        assert_eq!(default_org.owner_user_id, Some(admin_user.id.clone()));
         assert!(default_org.is_active());
+
+        // Create admin user with org_id set
+        let user_id = UserId::new();
+        let password_hash = hashing::hash_password(&request.password).expect("hash password");
+        let new_user = NewUser {
+            id: user_id.clone(),
+            email: request.email.clone(),
+            password_hash,
+            name: request.name.clone(),
+            status: UserStatus::Active,
+            is_admin: true,
+            org_id: default_org.id.clone(),
+        };
+
+        let admin_user = user_repo.create_user(new_user).await.expect("create admin user");
+        assert_eq!(admin_user.org_id, default_org.id);
 
         // Create org membership for admin as Owner
         let membership = org_membership_repo
@@ -559,18 +603,6 @@ mod tests {
         assert_eq!(membership.user_id, admin_user.id);
         assert_eq!(membership.org_id, default_org.id);
         assert_eq!(membership.role, OrgRole::Owner);
-
-        // Update admin user with org_id
-        user_repo
-            .update_user_org(&admin_user.id, Some(default_org.id.clone()))
-            .await
-            .expect("update user org");
-
-        // Verify user was updated with org_id
-        let updated_user = user_repo.get_user(&admin_user.id).await.expect("get user");
-        assert!(updated_user.is_some());
-        let updated_user = updated_user.unwrap();
-        assert_eq!(updated_user.org_id, Some(default_org.id.clone()));
     }
 
     #[tokio::test]
@@ -600,8 +632,18 @@ mod tests {
         let pool = _db.pool.clone();
 
         let user_repo = SqlxUserRepository::new(pool.clone());
+        let org_repo = SqlxOrganizationRepository::new(pool.clone());
 
-        // Create a user
+        // Use the seeded test-org organization
+        use crate::storage::test_helpers::TEST_ORG_ID;
+        let org_id = OrgId::from_str_unchecked(TEST_ORG_ID);
+        let org = org_repo
+            .get_organization_by_id(&org_id)
+            .await
+            .expect("get org")
+            .expect("seeded org should exist");
+
+        // Create a user with org_id
         let user_id = UserId::new();
         let password_hash = hashing::hash_password("TestPassword123!").expect("hash password");
         let new_user = NewUser {
@@ -611,7 +653,7 @@ mod tests {
             name: "Test User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: org.id.clone(),
         };
 
         user_repo.create_user(new_user).await.expect("create user");

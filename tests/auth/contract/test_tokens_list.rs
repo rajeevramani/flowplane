@@ -7,7 +7,8 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_get_tokens_lists_tokens() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("tokens-reader", &["tokens:read", "tokens:write"]).await;
+    let admin =
+        app.issue_token("tokens-reader", &["admin:all", "tokens:read", "tokens:write"]).await;
 
     let _ = app
         .token_service

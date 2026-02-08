@@ -245,11 +245,28 @@ pub fn verify_same_org(
             if team_org == user_org {
                 Ok(())
             } else {
-                Err(ApiError::Forbidden("Cross-organization access denied".to_string()))
+                tracing::warn!(
+                    attempted_org = %team_org,
+                    user_org = %user_org,
+                    "cross-org access violation detected"
+                );
+                Err(ApiError::Forbidden(format!(
+                    "Cross-organization access denied: user org '{}' cannot access resources in org '{}'",
+                    user_org, team_org
+                )))
             }
         }
         // Team has org but user doesn't - deny
-        (Some(_), None) => Err(ApiError::Forbidden("Cross-organization access denied".to_string())),
+        (Some(team_org), None) => {
+            tracing::warn!(
+                attempted_org = %team_org,
+                "cross-org access violation: unscoped user accessing org-scoped team"
+            );
+            Err(ApiError::Forbidden(format!(
+                "Cross-organization access denied: unscoped user cannot access resources in org '{}'",
+                team_org
+            )))
+        }
         // Team has no org (global) or user has no org - allow
         // Global teams are accessible to all; unscoped users accessing unscoped teams is fine
         _ => Ok(()),

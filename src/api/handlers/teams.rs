@@ -19,7 +19,7 @@ use crate::{
         models::AuthContext,
         team::{CreateTeamRequest, Team, UpdateTeamRequest},
     },
-    domain::TeamId,
+    domain::{OrgId, TeamId, UserId},
     errors::Error,
     storage::repositories::{
         SqlxTeamMembershipRepository, SqlxTeamRepository, TeamMembershipRepository, TeamRepository,
@@ -405,6 +405,22 @@ pub struct AdminListTeamsResponse {
 ///
 /// Creates a new team with the specified details. The team name is immutable
 /// after creation and must be unique across all teams.
+/// API-level request for creating a team. `org_id` is optional and resolved from auth context.
+#[derive(Debug, Deserialize, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiCreateTeamBody {
+    #[validate(length(min = 1, max = 255), regex(path = "crate::utils::TEAM_NAME_REGEX"))]
+    name: String,
+    #[validate(length(min = 1, max = 255))]
+    display_name: String,
+    #[validate(length(max = 1000))]
+    description: Option<String>,
+    owner_user_id: Option<UserId>,
+    #[serde(default)]
+    org_id: Option<OrgId>,
+    settings: Option<serde_json::Value>,
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/admin/teams",
@@ -418,22 +434,32 @@ pub struct AdminListTeamsResponse {
     security(("bearer_auth" = ["admin:all"])),
     tag = "Administration"
 )]
-#[instrument(skip(state, payload), fields(team_name = %payload.name, user_id = ?context.user_id))]
+#[instrument(skip(state, body), fields(team_name = %body.name, user_id = ?context.user_id))]
 pub async fn admin_create_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(mut payload): Json<CreateTeamRequest>,
+    Json(body): Json<ApiCreateTeamBody>,
 ) -> Result<(StatusCode, Json<Team>), ApiError> {
     // Check admin authorization
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    body.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    // Set owner to current user if not specified
-    if payload.owner_user_id.is_none() {
-        payload.owner_user_id = context.user_id.clone();
-    }
+    // Resolve org_id: explicit body > auth context > error
+    let org_id = body
+        .org_id
+        .or_else(|| context.org_id.clone())
+        .ok_or_else(|| ApiError::BadRequest("org_id is required".to_string()))?;
+
+    let payload = CreateTeamRequest {
+        name: body.name.clone(),
+        display_name: body.display_name,
+        description: body.description,
+        owner_user_id: body.owner_user_id.or_else(|| context.user_id.clone()),
+        org_id,
+        settings: body.settings,
+    };
 
     // Check if name is available
     let repo = team_repository_for_state(&state)?;

@@ -1095,6 +1095,7 @@ mod tests {
         readonly_resource_auth_context, team_auth_context,
     };
     use crate::domain::filter::{FilterConfig, HeaderMutationEntry, HeaderMutationFilterConfig};
+    use crate::domain::OrgId;
 
     // Use test_utils helpers:
     // - admin_auth_context() -> admin_auth_context()
@@ -1123,7 +1124,7 @@ mod tests {
                     display_name: format!("Test Team {}", team_name),
                     description: Some("Test team".to_string()),
                     owner_user_id: None,
-                    org_id: None,
+                    org_id: OrgId::from_str_unchecked("test-org"),
                     settings: None,
                 })
                 .await

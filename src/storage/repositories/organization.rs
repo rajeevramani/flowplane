@@ -298,16 +298,31 @@ impl OrganizationRepository for SqlxOrganizationRepository {
         id: &OrgId,
         update: UpdateOrganizationRequest,
     ) -> Result<Organization> {
-        let current = self
-            .get_organization_by_id(id)
-            .await?
-            .ok_or_else(|| FlowplaneError::not_found("Organization", id.as_str()))?;
+        let mut tx = self.pool.begin().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to begin transaction for organization update".to_string(),
+        })?;
 
-        let display_name = update.display_name.unwrap_or(current.display_name);
-        let description = update.description.or(current.description);
-        let owner_user_id = update.owner_user_id.or(current.owner_user_id);
-        let settings = update.settings.or(current.settings);
-        let status = update.status.unwrap_or(current.status);
+        // SELECT ... FOR UPDATE to lock the row and prevent TOCTOU races
+        let current = sqlx::query_as::<_, OrganizationRow>(
+            "SELECT * FROM organizations WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to fetch organization for update: {}", id),
+        })?
+        .ok_or_else(|| FlowplaneError::not_found("Organization", id.as_str()))?;
+
+        let current_org = Organization::try_from(current)?;
+
+        let display_name = update.display_name.unwrap_or(current_org.display_name);
+        let description = update.description.or(current_org.description);
+        let owner_user_id = update.owner_user_id.or(current_org.owner_user_id);
+        let settings = update.settings.or(current_org.settings);
+        let status = update.status.unwrap_or(current_org.status);
 
         let settings_json = settings
             .as_ref()
@@ -333,11 +348,16 @@ impl OrganizationRepository for SqlxOrganizationRepository {
         .bind(settings_json.as_deref())
         .bind(status.as_str())
         .bind(Utc::now())
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| FlowplaneError::Database {
             source: e,
             context: format!("Failed to update organization: {}", id),
+        })?;
+
+        tx.commit().await.map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to commit organization update".to_string(),
         })?;
 
         row.try_into()
@@ -348,17 +368,31 @@ impl OrganizationRepository for SqlxOrganizationRepository {
         let result = sqlx::query("DELETE FROM organizations WHERE id = $1")
             .bind(id.as_str())
             .execute(&self.pool)
-            .await
-            .map_err(|e| FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to delete organization: {}", id),
-            })?;
+            .await;
 
-        if result.rows_affected() == 0 {
-            return Err(FlowplaneError::not_found("Organization", id.as_str()));
+        match result {
+            Ok(result) => {
+                if result.rows_affected() == 0 {
+                    Err(FlowplaneError::not_found("Organization", id.as_str()))
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => {
+                // Check for FK violation (PostgreSQL error code 23503)
+                if let Some(db_err) = e.as_database_error() {
+                    if db_err.code().as_deref() == Some("23503") {
+                        return Err(FlowplaneError::validation(
+                            "Cannot delete organization with active teams or members. Remove all teams and members first.",
+                        ));
+                    }
+                }
+                Err(FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to delete organization: {}", id),
+                })
+            }
         }
-
-        Ok(())
     }
 
     #[instrument(skip(self), fields(org_name = %name), name = "db_is_org_name_available")]
@@ -763,10 +797,11 @@ mod tests {
         }
 
         let orgs = repo.list_organizations(10, 0).await.expect("list orgs");
-        assert_eq!(orgs.len(), 3);
+        // 3 created + 1 from seed data (test-org)
+        assert_eq!(orgs.len(), 4);
 
         let count = repo.count_organizations().await.expect("count orgs");
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
     }
 
     #[tokio::test]
@@ -845,7 +880,7 @@ mod tests {
                 name: "Test Member".to_string(),
                 status: UserStatus::Active,
                 is_admin: false,
-                org_id: Some(org.id.clone()),
+                org_id: org.id.clone(),
             })
             .await
             .expect("create user");

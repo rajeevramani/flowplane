@@ -40,8 +40,8 @@
 			const response = await apiClient.adminListTeams(pageSize, offset);
 			teams = response.teams;
 			total = response.total;
-		} catch (err: any) {
-			error = err.message || 'Failed to load teams';
+		} catch (err: unknown) {
+			error = err instanceof Error ? err.message : 'Failed to load teams';
 		} finally {
 			isLoading = false;
 		}
@@ -224,6 +224,11 @@
 								<th
 									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 								>
+									Organization
+								</th>
+								<th
+									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+								>
 									Status
 								</th>
 								<th
@@ -256,6 +261,13 @@
 										<div class="text-sm text-gray-600 max-w-xs truncate">
 											{team.description || '-'}
 										</div>
+									</td>
+									<td class="px-6 py-4 whitespace-nowrap">
+										{#if team.org_id}
+											<span class="text-sm text-indigo-600 font-medium">{team.org_id}</span>
+										{:else}
+											<span class="text-sm text-gray-400">-</span>
+										{/if}
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap">
 										<span

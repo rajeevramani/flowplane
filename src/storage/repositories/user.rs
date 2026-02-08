@@ -6,7 +6,7 @@
 use crate::auth::user::{
     NewUser, NewUserTeamMembership, UpdateUser, User, UserStatus, UserTeamMembership,
 };
-use crate::domain::UserId;
+use crate::domain::{OrgId, UserId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ struct UserRow {
     pub name: String,
     pub status: String,
     pub is_admin: bool,
-    pub org_id: Option<String>,
+    pub org_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -62,11 +62,7 @@ pub trait UserRepository: Send + Sync {
     async fn update_password(&self, id: &UserId, password_hash: String) -> Result<()>;
 
     /// Update a user's organization ID
-    async fn update_user_org(
-        &self,
-        id: &UserId,
-        org_id: Option<crate::domain::OrgId>,
-    ) -> Result<()>;
+    async fn update_user_org(&self, id: &UserId, org_id: &crate::domain::OrgId) -> Result<()>;
 
     /// List all users (with pagination)
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>>;
@@ -145,7 +141,7 @@ impl SqlxUserRepository {
             name: row.name,
             status,
             is_admin: row.is_admin,
-            org_id: row.org_id.map(|id| id.into()),
+            org_id: OrgId::from_string(row.org_id),
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -171,7 +167,7 @@ impl UserRepository for SqlxUserRepository {
         .bind(&user.name)
         .bind(&status)
         .bind(user.is_admin)
-        .bind(user.org_id.as_ref().map(|id| id.as_str()))
+        .bind(user.org_id.as_str())
         .bind(Utc::now())
         .bind(Utc::now())
         .execute(&self.pool)
@@ -294,13 +290,9 @@ impl UserRepository for SqlxUserRepository {
     }
 
     #[instrument(skip(self), fields(user_id = %id), name = "db_update_user_org")]
-    async fn update_user_org(
-        &self,
-        id: &UserId,
-        org_id: Option<crate::domain::OrgId>,
-    ) -> Result<()> {
+    async fn update_user_org(&self, id: &UserId, org_id: &crate::domain::OrgId) -> Result<()> {
         sqlx::query("UPDATE users SET org_id = $1, updated_at = $2 WHERE id = $3")
-            .bind(org_id.as_ref().map(|id| id.as_str()))
+            .bind(org_id.as_str())
             .bind(Utc::now())
             .bind(id.to_string())
             .execute(&self.pool)

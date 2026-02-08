@@ -122,8 +122,8 @@ pub use error::{Result, SecretsError};
 pub use fallback::FallbackSecretsClient;
 pub use types::SecretString;
 pub use vault::{
-    parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri, GeneratedCertificate, PkiConfig,
-    VaultConfig, VaultSecretsClient,
+    parse_org_from_spiffe_uri, parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri,
+    GeneratedCertificate, PkiConfig, VaultConfig, VaultSecretsClient,
 };
 
 // Re-export backend types

@@ -75,8 +75,8 @@ pub struct Team {
     pub description: Option<String>,
     /// Optional owner user ID
     pub owner_user_id: Option<UserId>,
-    /// Organization this team belongs to
-    pub org_id: Option<OrgId>,
+    /// Organization this team belongs to (required — enforced at DB level)
+    pub org_id: OrgId,
     /// Team-specific settings (JSON)
     pub settings: Option<serde_json::Value>,
     /// Team status
@@ -114,8 +114,8 @@ pub struct CreateTeamRequest {
     pub description: Option<String>,
     /// Optional owner user ID
     pub owner_user_id: Option<UserId>,
-    /// Organization this team belongs to
-    pub org_id: Option<OrgId>,
+    /// Organization this team belongs to (required for org-scoped uniqueness)
+    pub org_id: OrgId,
     /// Optional team-specific settings
     pub settings: Option<serde_json::Value>,
 }
@@ -165,7 +165,7 @@ mod tests {
             display_name: "Engineering".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             settings: None,
             status: TeamStatus::Active,
             envoy_admin_port: Some(9901),

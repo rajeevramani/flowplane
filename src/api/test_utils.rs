@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
-use crate::domain::{TeamId, TokenId, UserId};
+use crate::domain::{OrgId, TeamId, TokenId, UserId};
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
 use crate::storage::test_helpers::TestDatabase;
 use crate::storage::DbPool;
@@ -145,22 +145,14 @@ pub fn admin_auth_context() -> AuthContext {
 /// Create a team member auth context for testing with common scopes
 pub fn team_auth_context(team: &str) -> AuthContext {
     let scopes = vec![
-        format!("{}:clusters:read", team),
-        format!("{}:clusters:write", team),
-        format!("{}:routes:read", team),
-        format!("{}:routes:write", team),
-        format!("{}:listeners:read", team),
-        format!("{}:listeners:write", team),
-        format!("{}:filters:read", team),
-        format!("{}:filters:write", team),
-        "clusters:read".to_string(),
-        "clusters:write".to_string(),
-        "routes:read".to_string(),
-        "routes:write".to_string(),
-        "listeners:read".to_string(),
-        "listeners:write".to_string(),
-        "filters:read".to_string(),
-        "filters:write".to_string(),
+        format!("team:{}:clusters:read", team),
+        format!("team:{}:clusters:write", team),
+        format!("team:{}:routes:read", team),
+        format!("team:{}:routes:write", team),
+        format!("team:{}:listeners:read", team),
+        format!("team:{}:listeners:write", team),
+        format!("team:{}:filters:read", team),
+        format!("team:{}:filters:write", team),
     ];
     AuthContext::new(TokenId::new(), format!("{}-test-token", team), scopes)
 }
@@ -168,14 +160,10 @@ pub fn team_auth_context(team: &str) -> AuthContext {
 /// Create a read-only auth context for testing
 pub fn readonly_auth_context(team: &str) -> AuthContext {
     let scopes = vec![
-        format!("{}:clusters:read", team),
-        format!("{}:routes:read", team),
-        format!("{}:listeners:read", team),
-        format!("{}:filters:read", team),
-        "clusters:read".to_string(),
-        "routes:read".to_string(),
-        "listeners:read".to_string(),
-        "filters:read".to_string(),
+        format!("team:{}:clusters:read", team),
+        format!("team:{}:routes:read", team),
+        format!("team:{}:listeners:read", team),
+        format!("team:{}:filters:read", team),
     ];
     AuthContext::new(TokenId::new(), format!("{}-readonly-token", team), scopes)
 }
@@ -185,11 +173,15 @@ pub fn minimal_auth_context() -> AuthContext {
     AuthContext::new(TokenId::new(), "minimal-token".to_string(), vec![])
 }
 
-/// Create an auth context with specific resource scopes (read + write)
+/// Create an auth context with admin privileges and specific resource scopes (read + write)
 ///
-/// Example: `resource_auth_context("tokens")` creates context with tokens:read and tokens:write
+/// Uses admin:all to grant full access. Used for testing handler logic where
+/// the test verifies handler behavior, not authorization.
+///
+/// Example: `resource_auth_context("tokens")` creates admin context with tokens:read and tokens:write
 pub fn resource_auth_context(resource: &str) -> AuthContext {
-    let scopes = vec![format!("{}:read", resource), format!("{}:write", resource)];
+    let scopes =
+        vec!["admin:all".to_string(), format!("{}:read", resource), format!("{}:write", resource)];
     AuthContext::new(TokenId::new(), format!("{}-test-token", resource), scopes)
 }
 
@@ -249,7 +241,7 @@ impl TestTeamBuilder {
                 display_name: self.display_name,
                 description: self.description,
                 owner_user_id: None,
-                org_id: None,
+                org_id: OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 settings: None,
             })
             .await
@@ -313,7 +305,7 @@ impl TestUserBuilder {
             name: self.name,
             status: UserStatus::Active,
             is_admin: self.is_admin,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
         };
 
         repo.create_user(new_user).await.expect("Failed to create test user");
@@ -371,15 +363,17 @@ mod tests {
     #[tokio::test]
     async fn test_team_auth_context() {
         let context = team_auth_context("my-team");
-        assert!(context.has_scope("clusters:write"));
-        assert!(context.has_scope("my-team:clusters:write"));
+        assert!(context.has_scope("team:my-team:clusters:write"));
+        assert!(context.has_scope("team:my-team:routes:read"));
+        assert!(!context.has_scope("clusters:write")); // No global scopes
     }
 
     #[tokio::test]
     async fn test_readonly_auth_context() {
         let context = readonly_auth_context("my-team");
-        assert!(context.has_scope("clusters:read"));
-        assert!(!context.has_scope("clusters:write"));
+        assert!(context.has_scope("team:my-team:clusters:read"));
+        assert!(!context.has_scope("team:my-team:clusters:write"));
+        assert!(!context.has_scope("clusters:read")); // No global scopes
     }
 
     #[tokio::test]
@@ -413,7 +407,7 @@ mod tests {
         let context = resource_auth_context("tokens");
         assert!(context.has_scope("tokens:read"));
         assert!(context.has_scope("tokens:write"));
-        assert!(!context.has_scope("admin:all"));
+        assert!(context.has_scope("admin:all")); // admin:all added for handler testing
     }
 
     #[tokio::test]

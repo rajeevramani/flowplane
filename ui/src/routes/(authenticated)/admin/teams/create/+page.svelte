@@ -2,35 +2,47 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import type { CreateTeamRequest, UserResponse } from '$lib/api/types';
+	import type { CreateTeamRequest, UserResponse, OrganizationResponse, SessionInfoResponse } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let formData = $state({
 		name: '',
 		displayName: '',
 		description: '',
-		ownerUserId: ''
+		ownerUserId: '',
+		orgId: ''
 	});
 
 	let users = $state<UserResponse[]>([]);
+	let organizations = $state<OrganizationResponse[]>([]);
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let errors = $state<Record<string, string>>({});
 	let isSubmitting = $state(false);
 	let error = $state<string | null>(null);
 	let isLoadingUsers = $state(true);
+	let isLoadingOrgs = $state(true);
+	let isSysAdmin = $state(false);
 
 	onMount(async () => {
-		// Check authentication and admin access
 		try {
-			const sessionInfo = await apiClient.getSessionInfo();
+			sessionInfo = await apiClient.getSessionInfo();
 			if (!sessionInfo.isAdmin) {
 				goto('/dashboard');
 				return;
 			}
 
-			// Load users for owner dropdown
-			await loadUsers();
-		} catch (err) {
+			isSysAdmin = isSystemAdmin(sessionInfo.scopes);
+
+			// Auto-populate org_id for non-system-admin org members
+			if (!isSysAdmin && sessionInfo.org_id) {
+				formData.orgId = sessionInfo.org_id;
+			}
+
+			// Load users and organizations in parallel
+			await Promise.all([loadUsers(), loadOrganizations()]);
+		} catch {
 			goto('/login');
 		}
 	});
@@ -44,6 +56,18 @@
 			error = 'Failed to load users: ' + (err instanceof Error ? err.message : 'Unknown error');
 		} finally {
 			isLoadingUsers = false;
+		}
+	}
+
+	async function loadOrganizations() {
+		isLoadingOrgs = true;
+		try {
+			const response = await apiClient.listOrganizations(100, 0);
+			organizations = response.organizations;
+		} catch {
+			// Non-fatal - org selector won't show
+		} finally {
+			isLoadingOrgs = false;
 		}
 	}
 
@@ -92,7 +116,8 @@
 				name: formData.name,
 				displayName: formData.displayName,
 				description: formData.description || null,
-				ownerUserId: formData.ownerUserId || null
+				ownerUserId: formData.ownerUserId || null,
+				org_id: formData.orgId || undefined
 			};
 
 			const team = await apiClient.adminCreateTeam(request);
@@ -187,6 +212,40 @@
 					></textarea>
 					{#if errors.description}
 						<p class="mt-1 text-sm text-red-600">{errors.description}</p>
+					{/if}
+				</div>
+
+				<!-- Organization -->
+				<div>
+					<label for="orgId" class="block text-sm font-medium text-gray-700 mb-2">
+						Organization
+					</label>
+					{#if isLoadingOrgs}
+						<div class="text-sm text-gray-500">Loading organizations...</div>
+					{:else if isSysAdmin}
+						<select
+							id="orgId"
+							bind:value={formData.orgId}
+							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+						>
+							<option value="">No organization (global)</option>
+							{#each organizations as org}
+								<option value={org.id}>{org.display_name} ({org.name})</option>
+							{/each}
+						</select>
+						<p class="mt-1 text-xs text-gray-500">
+							Assign this team to an organization
+						</p>
+					{:else if formData.orgId}
+						<input
+							type="text"
+							value={organizations.find((o) => o.id === formData.orgId)?.display_name || formData.orgId}
+							disabled
+							class="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500 cursor-not-allowed"
+						/>
+						<p class="mt-1 text-xs text-gray-500">
+							Auto-assigned to your organization
+						</p>
 					{/if}
 				</div>
 

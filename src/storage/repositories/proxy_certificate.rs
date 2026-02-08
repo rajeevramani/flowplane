@@ -448,6 +448,7 @@ mod tests {
 
     async fn create_test_team(pool: &DbPool) -> TeamId {
         use crate::auth::team::CreateTeamRequest;
+        use crate::domain::OrgId;
         use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
 
         let repo = SqlxTeamRepository::new(pool.clone());
@@ -456,7 +457,7 @@ mod tests {
             display_name: "Test Team".to_string(),
             description: None,
             owner_user_id: None,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
             settings: None,
         };
         let team = repo.create_team(request).await.expect("create team");

@@ -85,9 +85,27 @@ impl MockCertificateBackend {
         self.generated_count.store(0, Ordering::SeqCst);
     }
 
-    /// Build a SPIFFE URI for the given team and proxy_id.
+    /// Build a SPIFFE URI for the given team and proxy_id (legacy format).
     fn build_spiffe_uri(&self, team: &str, proxy_id: &str) -> String {
         format!("spiffe://{}/team/{}/proxy/{}", self.trust_domain, team, proxy_id)
+    }
+
+    /// Build a SPIFFE URI with optional org context.
+    ///
+    /// When `org` is provided:
+    /// `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+    ///
+    /// When `org` is `None`, uses legacy format:
+    /// `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+    #[allow(dead_code)]
+    fn build_spiffe_uri_with_org(&self, org: Option<&str>, team: &str, proxy_id: &str) -> String {
+        match org {
+            Some(org_val) => format!(
+                "spiffe://{}/org/{}/team/{}/proxy/{}",
+                self.trust_domain, org_val, team, proxy_id
+            ),
+            None => self.build_spiffe_uri(team, proxy_id),
+        }
     }
 }
 

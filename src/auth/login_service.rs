@@ -115,11 +115,8 @@ impl LoginService {
             warn!(user_id = %user.id, status = ?user.status, "login attempt for non-active user");
             metrics::record_authentication("account_not_active").await;
 
-            let status_str = match user.status {
-                UserStatus::Inactive => "inactive",
-                UserStatus::Suspended => "suspended",
-                UserStatus::Active => unreachable!(),
-            };
+            let status_str =
+                if user.status == UserStatus::Inactive { "inactive" } else { "suspended" };
 
             // Audit failed login
             self.audit_repository
@@ -227,7 +224,7 @@ pub fn compute_scopes_from_memberships(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::UserId;
+    use crate::domain::{OrgId, UserId};
     use chrono::Utc;
 
     #[test]
@@ -238,7 +235,7 @@ mod tests {
             name: "Admin User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -267,7 +264,7 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -293,7 +290,7 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -329,7 +326,7 @@ mod tests {
             name: "Regular User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -352,7 +349,7 @@ mod tests {
             name: "Org User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -403,7 +400,7 @@ mod tests {
             name: "Org Owner".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -434,7 +431,7 @@ mod tests {
             name: "Admin User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -43,6 +43,10 @@ pub struct TestContext {
     pub team_b_dev_token: Option<String>,
     /// Team B dataplane ID (created during setup)
     pub team_b_dataplane_id: String,
+    /// Default org ID (from bootstrap)
+    pub org_id: Option<String>,
+    /// Default org name (from bootstrap)
+    pub org_name: Option<String>,
 }
 
 /// API Client for flowplane
@@ -76,6 +80,10 @@ pub struct LoginResponse {
     pub teams: Vec<String>,
     #[serde(default)]
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub org_id: Option<String>,
+    #[serde(default)]
+    pub org_name: Option<String>,
 }
 
 /// Token creation response - matches backend TokenSecretResponse
@@ -98,6 +106,8 @@ pub struct TeamResponse {
     pub status: Option<String>,
     #[serde(default)]
     pub envoy_admin_port: Option<u16>,
+    #[serde(default)]
+    pub org_id: Option<String>,
 }
 
 /// Cluster response - matches backend ClusterResponse
@@ -261,6 +271,75 @@ pub struct ListCertificatesResponse {
     pub limit: i64,
     /// Pagination offset used
     pub offset: i64,
+}
+
+// ============================================================================
+// Organization API Response Types
+// ============================================================================
+
+/// Organization response - matches backend OrganizationResponse
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgResponse {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+/// List organizations response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOrgsResponse {
+    pub organizations: Vec<OrgResponse>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Organization membership response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgMemberResponse {
+    pub id: String,
+    pub user_id: String,
+    pub org_id: String,
+    #[serde(default)]
+    pub org_name: Option<String>,
+    pub role: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// List org members response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOrgMembersResponse {
+    pub members: Vec<OrgMemberResponse>,
+}
+
+/// Current org response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentOrgResponse {
+    pub organization: OrgResponse,
+    pub role: String,
+}
+
+/// List org teams response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOrgTeamsResponse {
+    pub teams: Vec<TeamResponse>,
 }
 
 // Request types - match backend CreateClusterBody
@@ -452,6 +531,16 @@ impl ApiClient {
 
     /// Login with email/password
     pub async fn login(&self, email: &str, password: &str) -> anyhow::Result<SessionInfo> {
+        let (session, _) = self.login_full(email, password).await?;
+        Ok(session)
+    }
+
+    /// Login with email/password and return full login response including org info
+    pub async fn login_full(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> anyhow::Result<(SessionInfo, LoginResponse)> {
         let url = format!("{}/api/v1/auth/login", self.base_url);
         let body = json!({
             "email": email,
@@ -475,8 +564,9 @@ impl ApiClient {
         }
 
         let login_resp: LoginResponse = resp.json().await?;
+        let session = SessionInfo { session_token, csrf_token: login_resp.csrf_token.clone() };
 
-        Ok(SessionInfo { session_token, csrf_token: login_resp.csrf_token })
+        Ok((session, login_resp))
     }
 
     /// Create a personal access token (PAT)
@@ -518,11 +608,13 @@ impl ApiClient {
         token: &str,
         name: &str,
         display_name: Option<&str>,
+        org_id: &str,
     ) -> anyhow::Result<TeamResponse> {
         let url = format!("{}/api/v1/admin/teams", self.base_url);
         let body = json!({
             "name": name,
             "displayName": display_name.unwrap_or(name),
+            "orgId": org_id,
         });
 
         let resp = self
@@ -1208,6 +1300,306 @@ impl ApiClient {
         Ok(result)
     }
 
+    // ========================================================================
+    // Organization API Methods
+    // ========================================================================
+
+    /// Create an organization (admin only)
+    pub async fn create_organization(
+        &self,
+        token: &str,
+        name: &str,
+        display_name: &str,
+        description: Option<&str>,
+    ) -> anyhow::Result<OrgResponse> {
+        let url = format!("{}/api/v1/admin/organizations", self.base_url);
+        let mut body = json!({
+            "name": name,
+            "displayName": display_name,
+        });
+        if let Some(desc) = description {
+            body["description"] = json!(desc);
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Create organization failed: {} - {}", status, text);
+        }
+
+        let result: OrgResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// List organizations (admin only)
+    pub async fn list_organizations(&self, token: &str) -> anyhow::Result<ListOrgsResponse> {
+        let url = format!("{}/api/v1/admin/organizations", self.base_url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List organizations failed: {} - {}", status, text);
+        }
+
+        let result: ListOrgsResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Get an organization by ID (admin only)
+    pub async fn get_organization(&self, token: &str, org_id: &str) -> anyhow::Result<OrgResponse> {
+        let url = format!("{}/api/v1/admin/organizations/{}", self.base_url, org_id);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Get organization failed: {} - {}", status, text);
+        }
+
+        let result: OrgResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Update an organization (admin only)
+    pub async fn update_organization(
+        &self,
+        token: &str,
+        org_id: &str,
+        display_name: Option<&str>,
+        description: Option<&str>,
+    ) -> anyhow::Result<OrgResponse> {
+        let url = format!("{}/api/v1/admin/organizations/{}", self.base_url, org_id);
+        let mut body = json!({});
+        if let Some(dn) = display_name {
+            body["displayName"] = json!(dn);
+        }
+        if let Some(desc) = description {
+            body["description"] = json!(desc);
+        }
+
+        let resp = self
+            .client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Update organization failed: {} - {}", status, text);
+        }
+
+        let result: OrgResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Delete an organization (admin only)
+    pub async fn delete_organization(&self, token: &str, org_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/admin/organizations/{}", self.base_url, org_id);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Delete organization failed: {} - {}", status, text);
+        }
+
+        Ok(())
+    }
+
+    /// List organization members (admin only)
+    pub async fn list_org_members(
+        &self,
+        token: &str,
+        org_id: &str,
+    ) -> anyhow::Result<ListOrgMembersResponse> {
+        let url = format!("{}/api/v1/admin/organizations/{}/members", self.base_url, org_id);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List org members failed: {} - {}", status, text);
+        }
+
+        let result: ListOrgMembersResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Add a member to an organization (admin only)
+    pub async fn add_org_member(
+        &self,
+        token: &str,
+        org_id: &str,
+        user_id: &str,
+        role: &str,
+    ) -> anyhow::Result<OrgMemberResponse> {
+        let url = format!("{}/api/v1/admin/organizations/{}/members", self.base_url, org_id);
+        let body = json!({
+            "userId": user_id,
+            "role": role,
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Add org member failed: {} - {}", status, text);
+        }
+
+        let result: OrgMemberResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Update a member's role in an organization (admin only)
+    pub async fn update_org_member_role(
+        &self,
+        token: &str,
+        org_id: &str,
+        user_id: &str,
+        role: &str,
+    ) -> anyhow::Result<OrgMemberResponse> {
+        let url =
+            format!("{}/api/v1/admin/organizations/{}/members/{}", self.base_url, org_id, user_id);
+        let body = json!({
+            "role": role,
+        });
+
+        let resp = self
+            .client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Update org member role failed: {} - {}", status, text);
+        }
+
+        let result: OrgMemberResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// Remove a member from an organization (admin only)
+    pub async fn remove_org_member(
+        &self,
+        token: &str,
+        org_id: &str,
+        user_id: &str,
+    ) -> anyhow::Result<()> {
+        let url =
+            format!("{}/api/v1/admin/organizations/{}/members/{}", self.base_url, org_id, user_id);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Remove org member failed: {} - {}", status, text);
+        }
+
+        Ok(())
+    }
+
+    /// Get current user's organization
+    pub async fn get_current_org(
+        &self,
+        session: &SessionInfo,
+    ) -> anyhow::Result<CurrentOrgResponse> {
+        let url = format!("{}/api/v1/orgs/current", self.base_url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", session.session_token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Get current org failed: {} - {}", status, text);
+        }
+
+        let result: CurrentOrgResponse = resp.json().await?;
+        Ok(result)
+    }
+
+    /// List teams in an organization
+    pub async fn list_org_teams(
+        &self,
+        token: &str,
+        org_name: &str,
+    ) -> anyhow::Result<ListOrgTeamsResponse> {
+        let url = format!("{}/api/v1/orgs/{}/teams", self.base_url, org_name);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List org teams failed: {} - {}", status, text);
+        }
+
+        let result: ListOrgTeamsResponse = resp.json().await?;
+        Ok(result)
+    }
+
     /// Generic GET request with token auth
     pub async fn get(&self, token: &str, path: &str) -> anyhow::Result<(StatusCode, Value)> {
         let url = format!("{}{}", self.base_url, path);
@@ -1280,11 +1672,13 @@ impl ApiClient {
         token: &str,
         name: &str,
         display_name: Option<&str>,
+        org_id: &str,
     ) -> anyhow::Result<TeamResponse> {
         let url = format!("{}/api/v1/admin/teams", self.base_url);
         let body = json!({
             "name": name,
             "displayName": display_name.unwrap_or(name),
+            "orgId": org_id,
         });
 
         let resp = self
@@ -1365,9 +1759,9 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         assert!(bootstrap.setup_token.starts_with("fp_setup_"));
     }
 
-    // Login with standard credentials
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
+    // Login with standard credentials (full response to capture org info)
+    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await?;
 
@@ -1380,12 +1774,26 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
 
+    // Resolve org_id: use login response, fallback to listing orgs for default
+    let org_id = match &login_resp.org_id {
+        Some(id) => id.clone(),
+        None => {
+            let orgs = api.list_organizations(&admin_token).await?;
+            orgs.organizations
+                .iter()
+                .find(|o| o.name == "default")
+                .map(|o| o.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("No default organization found"))?
+        }
+    };
+
     // Create Team A with unique name for this test
     let team_a = with_timeout(TestTimeout::default_with_label("Create Team A"), async {
         api.create_team_idempotent(
             &admin_token,
             &team_a_name,
             Some(&format!("Team A for {}", test_name)),
+            &org_id,
         )
         .await
     })
@@ -1397,6 +1805,7 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
             &admin_token,
             &team_b_name,
             Some(&format!("Team B for {}", test_name)),
+            &org_id,
         )
         .await
     })
@@ -1443,6 +1852,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         team_b_id: team_b.id,
         team_b_dev_token: None,
         team_b_dataplane_id: dataplane_b.id,
+        org_id: Some(org_id),
+        org_name: login_resp.org_name,
     })
 }
 
@@ -1477,9 +1888,9 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         assert!(bootstrap.setup_token.starts_with("fp_setup_"));
     }
 
-    // Login with standard credentials
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
+    // Login with standard credentials (full response to capture org info)
+    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await?;
 
@@ -1492,12 +1903,26 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
 
+    // Resolve org_id: use login response, fallback to listing orgs for default
+    let org_id = match &login_resp.org_id {
+        Some(id) => id.clone(),
+        None => {
+            let orgs = api.list_organizations(&admin_token).await?;
+            orgs.organizations
+                .iter()
+                .find(|o| o.name == "default")
+                .map(|o| o.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("No default organization found"))?
+        }
+    };
+
     // Create shared team (idempotent)
     let team = with_timeout(TestTimeout::default_with_label("Create shared team"), async {
         api.create_team_idempotent(
             &admin_token,
             &team_name,
             Some("Shared team for E2E tests requiring Envoy routing"),
+            &org_id,
         )
         .await
     })
@@ -1532,6 +1957,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         team_b_id: team.id,
         team_b_dev_token: None,
         team_b_dataplane_id: dataplane.id,
+        org_id: Some(org_id),
+        org_name: login_resp.org_name,
     })
 }
 

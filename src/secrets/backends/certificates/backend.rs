@@ -89,10 +89,14 @@ impl RetryConfig {
 ///
 /// # SPIFFE Identity
 ///
-/// All certificates include a SPIFFE URI in the Subject Alternative Name (SAN)
-/// with the format: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`.
+/// All certificates include a SPIFFE URI in the Subject Alternative Name (SAN).
+/// Two formats are supported:
+/// - Org-scoped: `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+/// - Legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+///
 /// The `team` parameter is critical for multi-tenant authorization - it determines
-/// which resources the proxy can access.
+/// which resources the proxy can access. The `org` parameter provides organization
+/// isolation when multi-org support is enabled.
 ///
 /// # Security
 ///

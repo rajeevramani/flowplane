@@ -204,6 +204,7 @@ mod tests {
     use super::*;
     use crate::auth::team::CreateTeamRequest;
     use crate::config::SimpleXdsConfig;
+    use crate::domain::OrgId;
     use crate::storage::repositories::aggregated_schema::CreateAggregatedSchemaRequest;
     use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
     use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
@@ -235,7 +236,7 @@ mod tests {
                 display_name: format!("Test {}", name),
                 description: None,
                 owner_user_id: None,
-                org_id: None,
+                org_id: OrgId::from_str_unchecked("test-org"),
                 settings: None,
             })
             .await

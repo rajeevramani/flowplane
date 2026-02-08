@@ -1016,10 +1016,11 @@ mod tests {
     async fn create_test_team(xds_state: &Arc<XdsState>, team_name: &str) {
         let pool = xds_state.cluster_repository.as_ref().unwrap().pool();
         let team_id = format!("team-{}", uuid::Uuid::new_v4());
-        sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO NOTHING")
+        sqlx::query("INSERT INTO teams (id, name, display_name, org_id, status) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (org_id, name) DO NOTHING")
             .bind(&team_id)
             .bind(team_name)
             .bind(format!("Test {}", team_name))
+            .bind(crate::storage::test_helpers::TEST_ORG_ID)
             .bind("active")
             .execute(pool)
             .await

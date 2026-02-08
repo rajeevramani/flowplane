@@ -64,8 +64,8 @@ pub struct User {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
-    /// Organization this user belongs to
-    pub org_id: Option<OrgId>,
+    /// Organization this user belongs to (required — enforced at DB level)
+    pub org_id: OrgId,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -91,7 +91,7 @@ pub struct NewUser {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
 }
 
 /// Update payload for an existing user.
@@ -205,7 +205,7 @@ pub struct UserResponse {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -262,7 +262,7 @@ mod tests {
             name: "Test User".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -332,7 +332,7 @@ mod tests {
             name: "Test User".to_string(),
             status: UserStatus::Active,
             is_admin: true,
-            org_id: None,
+            org_id: OrgId::from_str_unchecked("test-org"),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

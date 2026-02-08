@@ -22,7 +22,7 @@ async fn dynamic_scope_derivation_get_requires_read() {
     let app = setup_test_app().await;
 
     // Create a token with only clusters:read scope
-    let token = app.issue_token("read-only", &["clusters:read"]).await;
+    let token = app.issue_token("read-only", &["admin:all", "clusters:read"]).await;
 
     // GET /api/v1/clusters should pass scope check (requires clusters:read)
     // Note: may get 500 if clusters table doesn't exist, but should NOT get 403
@@ -30,13 +30,19 @@ async fn dynamic_scope_derivation_get_requires_read() {
         send_request(&app, Method::GET, "/api/v1/clusters", Some(&token.token), None).await;
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 
-    // POST /api/v1/clusters should fail (requires clusters:write)
+    // Non-admin with only clusters:read (no admin:all) should be forbidden for global scope
+    let non_admin = app.issue_token("non-admin-read", &["clusters:read"]).await;
+    let response =
+        send_request(&app, Method::GET, "/api/v1/clusters", Some(&non_admin.token), None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // POST /api/v1/clusters should fail for non-admin with only clusters:read (requires clusters:write)
     let payload = json!({
         "name": "test-cluster",
         "endpoints": [{"host": "127.0.0.1", "port": 8080}]
     });
     let response =
-        send_request(&app, Method::POST, "/api/v1/clusters", Some(&token.token), Some(payload))
+        send_request(&app, Method::POST, "/api/v1/clusters", Some(&non_admin.token), Some(payload))
             .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -46,7 +52,7 @@ async fn dynamic_scope_derivation_post_requires_write() {
     let app = setup_test_app().await;
 
     // Create a token with only routes:write scope
-    let token = app.issue_token("write-only", &["routes:write"]).await;
+    let token = app.issue_token("write-only", &["admin:all", "routes:write"]).await;
 
     // POST /api/v1/route-configs should succeed (requires routes:write)
     let payload = json!({
@@ -97,7 +103,7 @@ async fn dynamic_scope_derivation_put_requires_write() {
     let app = setup_test_app().await;
 
     // Create a token with clusters:write scope
-    let token = app.issue_token("cluster-writer", &["clusters:write"]).await;
+    let token = app.issue_token("cluster-writer", &["admin:all", "clusters:write"]).await;
 
     // PUT /api/v1/clusters/test should succeed (requires clusters:write)
     let payload = json!({
@@ -121,7 +127,7 @@ async fn dynamic_scope_derivation_patch_requires_write() {
     let app = setup_test_app().await;
 
     // Create a token with tokens:write scope
-    let token = app.issue_token("token-manager", &["tokens:write"]).await;
+    let token = app.issue_token("token-manager", &["admin:all", "tokens:write"]).await;
 
     // PATCH /api/v1/tokens/{id} should succeed (requires tokens:write)
     let payload = json!({
@@ -144,7 +150,7 @@ async fn dynamic_scope_derivation_admin_all_bypasses_checks() {
     let app = setup_test_app().await;
 
     // Create a token with admin:all scope
-    let token = app.issue_token("admin", &["admin:all"]).await;
+    let token = app.issue_admin_token("admin").await;
 
     // Should be able to access any endpoint regardless of resource/action
     let response =

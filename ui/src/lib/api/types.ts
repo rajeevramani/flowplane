@@ -13,6 +13,8 @@ export interface LoginResponse {
 	userEmail: string;
 	teams: string[];
 	scopes: string[];
+	org_id?: string;
+	org_name?: string;
 }
 
 export interface ChangePasswordRequest {
@@ -49,6 +51,9 @@ export interface SessionInfoResponse {
 	scopes: string[];
 	expiresAt: string | null;
 	version: string;
+	org_id?: string;
+	org_name?: string;
+	org_role?: string;
 }
 
 export interface ListTeamsResponse {
@@ -63,11 +68,12 @@ export interface TeamResponse {
 	displayName: string;
 	description: string | null;
 	ownerUserId: string | null;
-	settings: any | null;
+	settings: Record<string, unknown> | null;
 	status: TeamStatus;
 	envoyAdminPort: number | null;
 	createdAt: string;
 	updatedAt: string;
+	org_id?: string;
 }
 
 export interface CreateTeamRequest {
@@ -75,14 +81,15 @@ export interface CreateTeamRequest {
 	displayName: string;
 	description?: string | null;
 	ownerUserId?: string | null;
-	settings?: any | null;
+	settings?: Record<string, unknown> | null;
+	org_id?: string;
 }
 
 export interface UpdateTeamRequest {
 	displayName?: string;
 	description?: string | null;
 	ownerUserId?: string | null;
-	settings?: any | null;
+	settings?: Record<string, unknown> | null;
 	status?: TeamStatus;
 }
 
@@ -169,6 +176,7 @@ export interface OpenApiSpec {
 		url: string;
 		description?: string;
 	}>;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	paths: Record<string, any>;
 }
 
@@ -207,7 +215,8 @@ export interface ListenerResponse {
 	version: number;
 	importId?: string;
 	dataplaneId?: string | null;
-	config: any; // Full listener config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full listener config - dynamic Envoy structure
 }
 
 // Route types
@@ -218,7 +227,8 @@ export interface RouteResponse {
 	clusterTargets: string;
 	importId?: string;
 	routeOrder?: number;
-	config: any; // Full route config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full route config - dynamic Envoy structure
 }
 
 // Legacy type - no longer used after API definitions removal
@@ -230,7 +240,8 @@ export interface ClusterResponse {
 	team: string;
 	serviceName: string;
 	importId?: string;
-	config: any; // Full cluster config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full cluster config - dynamic Envoy structure
 }
 
 // Bootstrap configuration types
@@ -250,6 +261,7 @@ export interface UserResponse {
 	isAdmin: boolean;
 	createdAt: string;
 	updatedAt: string;
+	org_id?: string;
 }
 
 export interface UserTeamMembership {
@@ -276,6 +288,7 @@ export interface CreateUserRequest {
 	password: string;
 	name: string;
 	isAdmin?: boolean;
+	org_id?: string;
 }
 
 export interface UpdateUserRequest {
@@ -1813,4 +1826,64 @@ export interface ListDataplanesResponse {
 	total: number;
 	limit: number;
 	offset: number;
+}
+
+// ============================================================================
+// Organization Types (Org Multi-Tenancy)
+// ============================================================================
+
+export type OrgStatus = 'active' | 'suspended' | 'archived';
+export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+export interface OrganizationResponse {
+	id: string;
+	name: string;
+	display_name: string;
+	description?: string;
+	owner_user_id?: string;
+	settings?: Record<string, unknown>;
+	status: OrgStatus;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface OrgMembershipResponse {
+	id: string;
+	user_id: string;
+	org_id: string;
+	role: OrgRole;
+	created_at: string;
+	user_email?: string;
+	user_name?: string;
+}
+
+export interface CreateOrganizationRequest {
+	name: string;
+	display_name: string;
+	description?: string;
+}
+
+export interface UpdateOrganizationRequest {
+	display_name?: string;
+	description?: string;
+	status?: OrgStatus;
+}
+
+export interface AddOrgMemberRequest {
+	user_id: string;
+	role: OrgRole;
+}
+
+export interface AdminListOrgsResponse {
+	organizations: OrganizationResponse[];
+	total: number;
+}
+
+export interface CurrentOrgResponse {
+	organization: OrganizationResponse;
+	role: OrgRole;
+}
+
+export interface ListOrgTeamsResponse {
+	teams: TeamResponse[];
 }

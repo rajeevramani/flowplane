@@ -227,11 +227,13 @@ async fn test_102_team_isolation() {
     let team_a_name = ctx.team_a_name.clone();
 
     // Create Team B for isolation testing
+    let org_id = ctx.org_id.as_deref().expect("Context should have org_id");
     let team_b = with_timeout(TestTimeout::default_with_label("Create Team B"), async {
         api.create_team_idempotent(
             &ctx.admin_token,
             &format!("{}-isolation-b", team_a_name),
             Some("Team B for isolation testing"),
+            org_id,
         )
         .await
     })

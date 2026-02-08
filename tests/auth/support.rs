@@ -59,6 +59,13 @@ impl TestApp {
             .await
             .expect("create token")
     }
+
+    /// Issue an admin token with org context (for tests that create resources).
+    /// The token includes both `admin:all` and `org:test-org:admin` scopes,
+    /// so the auth middleware resolves the org_id from the seeded test org.
+    pub async fn issue_admin_token(&self, name: &str) -> TokenSecretResponse {
+        self.issue_token(name, &["admin:all", "org:test-org:admin"]).await
+    }
 }
 
 pub async fn setup_test_app() -> TestApp {

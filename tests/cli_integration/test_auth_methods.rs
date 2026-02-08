@@ -16,7 +16,7 @@ use super::support::{run_cli_command, TempTokenFile, TestServer};
 #[tokio::test]
 async fn test_auth_with_token_flag() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-token-flag", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("test-token-flag", &["clusters:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -36,7 +36,7 @@ async fn test_auth_with_token_flag() {
 #[tokio::test]
 async fn test_auth_with_token_file() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-token-file", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("test-token-file", &["clusters:read"]).await;
     let token_file = TempTokenFile::new(&token_response.token);
 
     let result = run_cli_command(&[
@@ -59,7 +59,7 @@ async fn test_auth_with_env_var() {
     use super::support::run_cli_command_with_env;
 
     let server = TestServer::start().await;
-    let token_response = server.issue_token("test-env-var", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("test-env-var", &["clusters:read"]).await;
 
     let result = run_cli_command_with_env(
         &["cluster", "list", "--base-url", &server.base_url(), "--output", "json"],
@@ -77,7 +77,7 @@ async fn test_auth_with_env_var() {
 #[tokio::test]
 async fn test_auth_precedence_token_flag_over_file() {
     let server = TestServer::start().await;
-    let valid_token = server.issue_token("valid-token", &["clusters:read"]).await;
+    let valid_token = server.issue_admin_token("valid-token", &["clusters:read"]).await;
     let invalid_token_file = TempTokenFile::new("invalid-token");
 
     // --token should take precedence over --token-file
@@ -103,7 +103,7 @@ async fn test_auth_precedence_token_file_over_env() {
     use super::support::run_cli_command_with_env;
 
     let server = TestServer::start().await;
-    let valid_token = server.issue_token("valid-file-token", &["clusters:read"]).await;
+    let valid_token = server.issue_admin_token("valid-file-token", &["clusters:read"]).await;
     let token_file = TempTokenFile::new(&valid_token.token);
 
     // --token-file should take precedence over env var

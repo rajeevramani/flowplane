@@ -61,7 +61,7 @@ impl UserService {
         password: String,
         name: String,
         is_admin: bool,
-        org_id: Option<crate::domain::OrgId>,
+        org_id: crate::domain::OrgId,
         created_by: Option<String>,
         auth_context: Option<&AuthContext>,
     ) -> Result<User> {
@@ -78,7 +78,7 @@ impl UserService {
 
         // Create user
         let user_id = UserId::new();
-        let org_id_for_audit = org_id.as_ref().map(|id| id.as_str().to_string());
+        let org_id_for_audit = Some(org_id.as_str().to_string());
 
         let new_user = NewUser {
             id: user_id.clone(),
@@ -564,6 +564,7 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::OrgId;
     use crate::storage::repositories::user::{SqlxTeamMembershipRepository, SqlxUserRepository};
     use crate::storage::test_helpers::TestDatabase;
     use crate::storage::DbPool;
@@ -588,11 +589,12 @@ mod tests {
     async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) -> String {
         let team_id = format!("team-{}", uuid::Uuid::new_v4());
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO teams (id, name, display_name, org_id, status) VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (org_id, name) DO NOTHING",
         )
         .bind(&team_id)
         .bind(name)
         .bind(display_name)
+        .bind(crate::storage::test_helpers::TEST_ORG_ID)
         .execute(pool)
         .await
         .expect("create test team");
@@ -609,7 +611,7 @@ mod tests {
                 "SecurePassword123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 Some("admin".to_string()),
                 None,
             )
@@ -633,7 +635,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -647,7 +649,7 @@ mod tests {
                 "Password456".to_string(),
                 "Another User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -667,7 +669,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -694,7 +696,7 @@ mod tests {
                     "Password123".to_string(),
                     format!("User {}", i),
                     false,
-                    None,
+                    OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                     None,
                     None,
                 )
@@ -716,7 +718,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -750,7 +752,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -776,7 +778,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -812,7 +814,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -856,7 +858,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -891,7 +893,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -931,7 +933,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -1004,7 +1006,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
-                None,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )

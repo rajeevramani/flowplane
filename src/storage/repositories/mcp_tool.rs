@@ -61,6 +61,24 @@ pub struct McpToolData {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl crate::api::handlers::TeamOwned for McpToolData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "MCP tool"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "mcp_tools"
+    }
+}
+
 impl TryFrom<McpToolRow> for McpToolData {
     type Error = FlowplaneError;
 

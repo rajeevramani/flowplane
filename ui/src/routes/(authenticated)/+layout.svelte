@@ -6,6 +6,7 @@
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
 	import { checkStatsEnabled } from '$lib/stores/stats';
+	import { currentOrg } from '$lib/stores/org';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -34,6 +35,21 @@
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
+
+			// Populate org store from session info
+			if (sessionInfo.org_id && sessionInfo.org_name) {
+				currentOrg.set({
+					organization: {
+						id: sessionInfo.org_id,
+						name: sessionInfo.org_name,
+						display_name: sessionInfo.org_name,
+						status: 'active',
+						created_at: '',
+						updated_at: ''
+					},
+					role: (sessionInfo.org_role as import('$lib/api/types').OrgRole) ?? null
+				});
+			}
 
 			// Load available teams
 			const teamsResponse = await apiClient.listTeams();

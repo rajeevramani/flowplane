@@ -8,7 +8,8 @@ use flowplane::auth::token_service::TokenSecretResponse;
 async fn integration_token_security_verifies_rotation_and_revocation() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("security-admin", &["tokens:write", "tokens:read"]).await;
+    let admin =
+        app.issue_token("security-admin", &["admin:all", "tokens:write", "tokens:read"]).await;
 
     let create_response = send_request(
         &app,
@@ -17,7 +18,7 @@ async fn integration_token_security_verifies_rotation_and_revocation() {
         Some(&admin.token),
         Some(json!({
             "name": "security-target",
-            "scopes": ["tokens:read"]
+            "scopes": ["admin:all", "tokens:read"]
         })),
     )
     .await;

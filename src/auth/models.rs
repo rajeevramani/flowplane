@@ -199,12 +199,31 @@ impl AuthContext {
         )
     }
 
+    /// Extract organization context for audit logging.
+    ///
+    /// Returns a tuple of (org_id, team_id) suitable for
+    /// use with `AuditEvent::with_org_context()`.
+    /// Note: team_id is not directly available on AuthContext, so it returns None.
+    /// Callers that have team context should set it explicitly.
+    pub fn to_org_audit_context(&self) -> (Option<String>, Option<String>) {
+        (self.org_id.as_ref().map(|id| id.to_string()), None)
+    }
+
     pub fn has_scope(&self, scope: &str) -> bool {
         self.scopes.contains(scope)
     }
 
     pub fn scopes(&self) -> impl Iterator<Item = &String> {
         self.scopes.iter()
+    }
+
+    /// Remove all org-scoped permissions from this context.
+    ///
+    /// Used when an org scope is present but the org cannot be resolved from the database.
+    /// This prevents granting org-level permissions for non-existent or unresolvable orgs.
+    pub fn strip_org_scopes(mut self) -> Self {
+        self.scopes.retain(|s| !s.starts_with("org:"));
+        self
     }
 }
 
@@ -279,5 +298,40 @@ mod tests {
 
         assert!(token.has_scope("listeners:write"));
         assert!(!token.has_scope("clusters:read"));
+    }
+
+    #[test]
+    fn strip_org_scopes_removes_only_org_scopes() {
+        let ctx = AuthContext::new(
+            TokenId::from_string("token-1".to_string()),
+            "demo".into(),
+            vec![
+                "org:default:admin".into(),
+                "org:acme:member".into(),
+                "clusters:read".into(),
+                "team:platform-admin:*:*".into(),
+            ],
+        );
+
+        let stripped = ctx.strip_org_scopes();
+        assert!(!stripped.has_scope("org:default:admin"));
+        assert!(!stripped.has_scope("org:acme:member"));
+        assert!(stripped.has_scope("clusters:read"));
+        assert!(stripped.has_scope("team:platform-admin:*:*"));
+        assert_eq!(stripped.scopes().count(), 2);
+    }
+
+    #[test]
+    fn strip_org_scopes_noop_when_no_org_scopes() {
+        let ctx = AuthContext::new(
+            TokenId::from_string("token-1".to_string()),
+            "demo".into(),
+            vec!["clusters:read".into(), "admin:all".into()],
+        );
+
+        let stripped = ctx.strip_org_scopes();
+        assert!(stripped.has_scope("clusters:read"));
+        assert!(stripped.has_scope("admin:all"));
+        assert_eq!(stripped.scopes().count(), 2);
     }
 }

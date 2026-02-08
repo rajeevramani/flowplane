@@ -12,7 +12,7 @@
 mod common;
 
 use common::db_metadata::{get_column_names, get_index_names};
-use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_ORG_ID};
 use flowplane::storage::DbPool;
 use sqlx::Row;
 
@@ -35,12 +35,13 @@ async fn create_test_pool() -> (TestDatabase, DbPool) {
     ];
     for (name, id) in &additional_teams {
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) \
-             VALUES ($1, $2, $3, 'active') ON CONFLICT (name) DO NOTHING",
+            "INSERT INTO teams (id, name, display_name, org_id, status) \
+             VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (org_id, name) DO NOTHING",
         )
         .bind(id)
         .bind(name)
         .bind(format!("Test Team {}", name))
+        .bind(TEST_ORG_ID)
         .execute(&pool)
         .await
         .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", name, e));
@@ -106,8 +107,8 @@ async fn test_users_email_unique_constraint() {
     // Insert a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', 'active', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', 'active', FALSE, '00000000-0000-0000-0000-0000000000a1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -117,8 +118,8 @@ async fn test_users_email_unique_constraint() {
     // Try to insert another user with the same email
     let result = sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
-        VALUES ('user-2', 'test@example.com', 'hash456', 'Test User 2', 'active', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at)
+        VALUES ('user-2', 'test@example.com', 'hash456', 'Test User 2', 'active', FALSE, '00000000-0000-0000-0000-0000000000a1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         "#,
     )
     .execute(&pool)
@@ -135,8 +136,8 @@ async fn test_users_default_values() {
     // Insert a user with minimal fields
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User')
+        INSERT INTO users (id, email, password_hash, name, org_id)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)
@@ -206,8 +207,8 @@ async fn test_user_team_memberships_unique_constraint() {
     // First create a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User')
+        INSERT INTO users (id, email, password_hash, name, org_id)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)
@@ -248,8 +249,8 @@ async fn test_user_team_memberships_foreign_key_cascade() {
     // Create a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User')
+        INSERT INTO users (id, email, password_hash, name, org_id)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)
@@ -371,8 +372,8 @@ async fn test_personal_access_tokens_with_user_data() {
     // Create a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User')
+        INSERT INTO users (id, email, password_hash, name, org_id)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)
@@ -412,8 +413,8 @@ async fn test_query_tokens_by_user() {
     // Create a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name)
-        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User')
+        INSERT INTO users (id, email, password_hash, name, org_id)
+        VALUES ('user-1', 'test@example.com', 'hash123', 'Test User', '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)
@@ -466,8 +467,8 @@ async fn test_complete_user_workflow() {
     // 1. Create a user
     sqlx::query(
         r#"
-        INSERT INTO users (id, email, password_hash, name, is_admin)
-        VALUES ('user-1', 'admin@example.com', 'hash123', 'Admin User', TRUE)
+        INSERT INTO users (id, email, password_hash, name, is_admin, org_id)
+        VALUES ('user-1', 'admin@example.com', 'hash123', 'Admin User', TRUE, '00000000-0000-0000-0000-0000000000a1')
         "#,
     )
     .execute(&pool)

@@ -16,8 +16,9 @@ enum OperationResult {
 #[tokio::test]
 async fn concurrent_token_workloads_complete_successfully() {
     let app = Arc::new(setup_test_app().await);
-    let admin =
-        app.issue_token("load-admin", &["tokens:read", "tokens:write", "clusters:read"]).await;
+    let admin = app
+        .issue_token("load-admin", &["admin:all", "tokens:read", "tokens:write", "clusters:read"])
+        .await;
     let admin_token = admin.token.clone();
 
     let create_workers = 20usize;

@@ -48,6 +48,18 @@ async fn test_100_initialize_app() {
     );
 
     println!("✓ Bootstrap successful, setup_token: {}...", &bootstrap.setup_token[..20]);
+
+    // Verify org was created by logging in and checking org fields
+    let (_session, login_resp) =
+        with_timeout(TestTimeout::default_with_label("Login to verify org"), async {
+            api.login_full("admin@e2e.test", "SecurePass123!").await
+        })
+        .await
+        .expect("Login should succeed after bootstrap");
+
+    assert!(login_resp.org_id.is_some(), "Login should include org_id after bootstrap");
+    assert!(login_resp.org_name.is_some(), "Login should include org_name after bootstrap");
+    println!("✓ Org context verified: org_name={:?}", login_resp.org_name);
 }
 
 /// Test login flow
@@ -67,8 +79,8 @@ async fn test_101_login() {
         .expect("Bootstrap should succeed");
 
     // Login
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login("admin@e2e.test", "SecurePass123!").await
+    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login_full("admin@e2e.test", "SecurePass123!").await
     })
     .await
     .expect("Login should succeed");
@@ -77,9 +89,14 @@ async fn test_101_login() {
     assert!(!session.session_token.is_empty(), "Session token should not be empty");
     assert!(!session.csrf_token.is_empty(), "CSRF token should not be empty");
 
+    // Verify org context
+    assert!(login_resp.org_id.is_some(), "Login should include org_id");
+    assert_eq!(login_resp.org_name.as_deref(), Some("default"), "Default org should be 'default'");
+
     println!(
-        "✓ Login successful, csrf_token: {}...",
-        &session.csrf_token[..20.min(session.csrf_token.len())]
+        "✓ Login successful, csrf_token: {}..., org={:?}",
+        &session.csrf_token[..20.min(session.csrf_token.len())],
+        login_resp.org_name
     );
 }
 
@@ -100,8 +117,12 @@ async fn test_102_create_admin_token() {
         .await
         .expect("Bootstrap should succeed");
 
-    let session =
-        api.login("admin@e2e.test", "SecurePass123!").await.expect("Login should succeed");
+    let (session, login_resp) =
+        api.login_full("admin@e2e.test", "SecurePass123!").await.expect("Login should succeed");
+
+    // Verify org context in login response
+    assert!(login_resp.org_id.is_some(), "Login should include org_id");
+    assert!(login_resp.org_name.is_some(), "Login should include org_name");
 
     // Create admin token
     let token = with_timeout(TestTimeout::default_with_label("Create PAT"), async {
@@ -141,9 +162,13 @@ async fn test_103_create_team() {
     assert!(!ctx.team_a_id.is_empty(), "Team A should have valid ID");
     assert!(!ctx.team_b_id.is_empty(), "Team B should have valid ID");
 
+    // Verify org context was captured from login
+    assert!(ctx.org_id.is_some(), "Context should include org_id");
+    assert!(ctx.org_name.is_some(), "Context should include org_name");
+
     println!(
-        "✓ Teams created: {} (id={}), {} (id={})",
-        ctx.team_a_name, ctx.team_a_id, ctx.team_b_name, ctx.team_b_id
+        "✓ Teams created: {} (id={}), {} (id={}), org={:?}",
+        ctx.team_a_name, ctx.team_a_id, ctx.team_b_name, ctx.team_b_id, ctx.org_name
     );
 }
 
