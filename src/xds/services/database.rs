@@ -753,7 +753,7 @@ fn spawn_cluster_watcher(state: Arc<XdsState>, repository: ClusterRepository) {
             // Query actual cluster data: count and max updated_at timestamp
             // This only changes when clusters are actually added/removed/modified
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM clusters",
+                "SELECT COUNT(*), MAX(updated_at)::TEXT FROM clusters",
             )
             .fetch_one(repository.pool())
             .await;
@@ -805,7 +805,7 @@ fn spawn_route_config_watcher(state: Arc<XdsState>, repository: RouteConfigRepos
             // Query actual route config data: count and max updated_at timestamp
             // This only changes when route configs are actually added/removed/modified
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM route_configs",
+                "SELECT COUNT(*), MAX(updated_at)::TEXT FROM route_configs",
             )
             .fetch_one(repository.pool())
             .await;
@@ -857,7 +857,7 @@ fn spawn_listener_watcher(state: Arc<XdsState>, repository: ListenerRepository) 
             // Query actual listener data: count and max updated_at timestamp
             // This only changes when listeners are actually added/removed/modified
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM listeners",
+                "SELECT COUNT(*), MAX(updated_at)::TEXT FROM listeners",
             )
             .fetch_one(repository.pool())
             .await;
@@ -907,7 +907,7 @@ fn spawn_secret_watcher(state: Arc<XdsState>, repository: SecretRepository) {
         loop {
             // Query actual secret data: count and max updated_at timestamp
             let poll_result = sqlx::query_as::<_, (i64, Option<String>)>(
-                "SELECT COUNT(*), MAX(updated_at) FROM secrets",
+                "SELECT COUNT(*), MAX(updated_at)::TEXT FROM secrets",
             )
             .fetch_one(repository.pool())
             .await;
