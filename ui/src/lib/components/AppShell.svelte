@@ -90,12 +90,12 @@
 				<!-- Right side: User menu -->
 				<div class="flex items-center gap-4">
 					<!-- Org badge -->
-					{#if sessionInfo.org_name}
+					{#if sessionInfo.orgName}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800"
-							title="Organization: {sessionInfo.org_name}"
+							title="Organization: {sessionInfo.orgName}"
 						>
-							{sessionInfo.org_name}
+							{sessionInfo.orgName}
 						</span>
 					{/if}
 

@@ -63,7 +63,7 @@
 
 		try {
 			org = await apiClient.getOrganization(orgId);
-			formData.displayName = org.display_name;
+			formData.displayName = org.displayName;
 			formData.description = org.description || '';
 			formData.status = org.status;
 		} catch (err: unknown) {
@@ -165,7 +165,7 @@
 
 		try {
 			const request: UpdateOrganizationRequest = {
-				display_name: formData.displayName,
+				displayName: formData.displayName,
 				description: formData.description || undefined,
 				status: formData.status
 			};
@@ -205,7 +205,7 @@
 
 		try {
 			await apiClient.addOrgMember(orgId, {
-				user_id: addMemberData.userId,
+				userId: addMemberData.userId,
 				role: addMemberData.role
 			});
 			showAddMember = false;
@@ -246,7 +246,7 @@
 
 	function handleCancelEdit() {
 		if (org) {
-			formData.displayName = org.display_name;
+			formData.displayName = org.displayName;
 			formData.description = org.description || '';
 			formData.status = org.status;
 		}
@@ -257,7 +257,7 @@
 
 	// Filter users not already members
 	let availableUsers = $derived.by(() => {
-		const memberUserIds = new Set(members.map((m) => m.user_id));
+		const memberUserIds = new Set(members.map((m) => m.userId));
 		return users.filter((u) => !memberUserIds.has(u.id));
 	});
 </script>
@@ -346,7 +346,7 @@
 
 					<div>
 						<label class="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
-						<p class="text-gray-900">{org.display_name}</p>
+						<p class="text-gray-900">{org.displayName}</p>
 					</div>
 
 					<div>
@@ -357,11 +357,11 @@
 					<div class="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
 						<div>
 							<label class="block text-sm font-medium text-gray-700 mb-1">Created</label>
-							<p class="text-gray-600 text-sm">{formatDate(org.created_at)}</p>
+							<p class="text-gray-600 text-sm">{formatDate(org.createdAt)}</p>
 						</div>
 						<div>
 							<label class="block text-sm font-medium text-gray-700 mb-1">Last Updated</label>
-							<p class="text-gray-600 text-sm">{formatDate(org.updated_at)}</p>
+							<p class="text-gray-600 text-sm">{formatDate(org.updatedAt)}</p>
 						</div>
 					</div>
 				</div>
@@ -585,17 +585,17 @@
 										<tr class="hover:bg-gray-50">
 											<td class="px-6 py-4 whitespace-nowrap">
 												<div class="text-sm font-medium text-gray-900">
-													{member.user_name || 'Unknown'}
+													{member.userName || 'Unknown'}
 												</div>
 												<div class="text-xs text-gray-500">
-													{member.user_email || member.user_id}
+													{member.userEmail || member.userId}
 												</div>
 											</td>
 											<td class="px-6 py-4 whitespace-nowrap">
 												<select
 													value={member.role}
 													onchange={(e) =>
-														handleChangeRole(member.user_id, e.currentTarget.value as OrgRole)}
+														handleChangeRole(member.userId, e.currentTarget.value as OrgRole)}
 													class="text-xs font-medium px-2 py-1 rounded-full border-0 cursor-pointer {getRoleColor(
 														member.role
 													)}"
@@ -608,11 +608,11 @@
 												</select>
 											</td>
 											<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-												{formatDate(member.created_at)}
+												{formatDate(member.createdAt)}
 											</td>
 											<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
 												<button
-													onclick={() => (showRemoveMemberConfirm = member.user_id)}
+													onclick={() => (showRemoveMemberConfirm = member.userId)}
 													class="text-red-600 hover:text-red-900"
 												>
 													Remove

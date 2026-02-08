@@ -35,9 +35,9 @@
 
 			isSysAdmin = isSystemAdmin(sessionInfo.scopes);
 
-			// Auto-populate org_id for non-system-admin org members
-			if (!isSysAdmin && sessionInfo.org_id) {
-				formData.orgId = sessionInfo.org_id;
+			// Auto-populate orgId for non-system-admin org members
+			if (!isSysAdmin && sessionInfo.orgId) {
+				formData.orgId = sessionInfo.orgId;
 			}
 
 			// Load users and organizations in parallel
@@ -117,7 +117,7 @@
 				displayName: formData.displayName,
 				description: formData.description || null,
 				ownerUserId: formData.ownerUserId || null,
-				org_id: formData.orgId || undefined
+				orgId: formData.orgId || undefined
 			};
 
 			const team = await apiClient.adminCreateTeam(request);
@@ -230,7 +230,7 @@
 						>
 							<option value="">No organization (global)</option>
 							{#each organizations as org}
-								<option value={org.id}>{org.display_name} ({org.name})</option>
+								<option value={org.id}>{org.displayName} ({org.name})</option>
 							{/each}
 						</select>
 						<p class="mt-1 text-xs text-gray-500">
@@ -239,7 +239,7 @@
 					{:else if formData.orgId}
 						<input
 							type="text"
-							value={organizations.find((o) => o.id === formData.orgId)?.display_name || formData.orgId}
+							value={organizations.find((o) => o.id === formData.orgId)?.displayName || formData.orgId}
 							disabled
 							class="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500 cursor-not-allowed"
 						/>

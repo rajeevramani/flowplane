@@ -263,8 +263,8 @@
 										</div>
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap">
-										{#if team.org_id}
-											<span class="text-sm text-indigo-600 font-medium">{team.org_id}</span>
+										{#if team.orgId}
+											<span class="text-sm text-indigo-600 font-medium">{team.orgId}</span>
 										{:else}
 											<span class="text-sm text-gray-400">-</span>
 										{/if}

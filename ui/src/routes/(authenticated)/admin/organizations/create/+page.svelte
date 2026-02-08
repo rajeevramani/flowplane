@@ -68,7 +68,7 @@
 		try {
 			const request: CreateOrganizationRequest = {
 				name: formData.name,
-				display_name: formData.displayName,
+				displayName: formData.displayName,
 				description: formData.description || undefined
 			};
 

@@ -54,7 +54,7 @@
 			filtered = filtered.filter(
 				(org) =>
 					org.name.toLowerCase().includes(query) ||
-					org.display_name.toLowerCase().includes(query) ||
+					org.displayName.toLowerCase().includes(query) ||
 					(org.description && org.description.toLowerCase().includes(query))
 			);
 		}
@@ -242,7 +242,7 @@
 										<div class="text-sm font-medium text-gray-900 font-mono">{org.name}</div>
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap">
-										<div class="text-sm text-gray-900">{org.display_name}</div>
+										<div class="text-sm text-gray-900">{org.displayName}</div>
 									</td>
 									<td class="px-6 py-4">
 										<div class="text-sm text-gray-600 max-w-xs truncate">
@@ -259,7 +259,7 @@
 										</span>
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-										{formatDate(org.created_at)}
+										{formatDate(org.createdAt)}
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
 										<button

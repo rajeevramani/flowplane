@@ -13,8 +13,8 @@ export interface LoginResponse {
 	userEmail: string;
 	teams: string[];
 	scopes: string[];
-	org_id?: string;
-	org_name?: string;
+	orgId?: string;
+	orgName?: string;
 }
 
 export interface ChangePasswordRequest {
@@ -51,9 +51,9 @@ export interface SessionInfoResponse {
 	scopes: string[];
 	expiresAt: string | null;
 	version: string;
-	org_id?: string;
-	org_name?: string;
-	org_role?: string;
+	orgId?: string;
+	orgName?: string;
+	orgRole?: string;
 }
 
 export interface ListTeamsResponse {
@@ -73,7 +73,7 @@ export interface TeamResponse {
 	envoyAdminPort: number | null;
 	createdAt: string;
 	updatedAt: string;
-	org_id?: string;
+	orgId?: string;
 }
 
 export interface CreateTeamRequest {
@@ -82,7 +82,7 @@ export interface CreateTeamRequest {
 	description?: string | null;
 	ownerUserId?: string | null;
 	settings?: Record<string, unknown> | null;
-	org_id?: string;
+	orgId?: string;
 }
 
 export interface UpdateTeamRequest {
@@ -261,7 +261,7 @@ export interface UserResponse {
 	isAdmin: boolean;
 	createdAt: string;
 	updatedAt: string;
-	org_id?: string;
+	orgId?: string;
 }
 
 export interface UserTeamMembership {
@@ -288,7 +288,7 @@ export interface CreateUserRequest {
 	password: string;
 	name: string;
 	isAdmin?: boolean;
-	org_id?: string;
+	orgId?: string;
 }
 
 export interface UpdateUserRequest {
@@ -1838,39 +1838,39 @@ export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
 export interface OrganizationResponse {
 	id: string;
 	name: string;
-	display_name: string;
+	displayName: string;
 	description?: string;
-	owner_user_id?: string;
+	ownerUserId?: string;
 	settings?: Record<string, unknown>;
 	status: OrgStatus;
-	created_at: string;
-	updated_at: string;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface OrgMembershipResponse {
 	id: string;
-	user_id: string;
-	org_id: string;
+	userId: string;
+	orgId: string;
 	role: OrgRole;
-	created_at: string;
-	user_email?: string;
-	user_name?: string;
+	createdAt: string;
+	userEmail?: string;
+	userName?: string;
 }
 
 export interface CreateOrganizationRequest {
 	name: string;
-	display_name: string;
+	displayName: string;
 	description?: string;
 }
 
 export interface UpdateOrganizationRequest {
-	display_name?: string;
+	displayName?: string;
 	description?: string;
 	status?: OrgStatus;
 }
 
 export interface AddOrgMemberRequest {
-	user_id: string;
+	userId: string;
 	role: OrgRole;
 }
 

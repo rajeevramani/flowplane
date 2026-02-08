@@ -338,9 +338,9 @@
 					Admin
 				</h3>
 				<div class="space-y-1">
-					{#if sessionInfo.org_id}
+					{#if sessionInfo.orgId}
 						<a
-							href="/admin/organizations/{sessionInfo.org_id}"
+							href="/admin/organizations/{sessionInfo.orgId}"
 							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
 								{isActive('/admin/organizations/')
 								? 'bg-blue-600 text-white'

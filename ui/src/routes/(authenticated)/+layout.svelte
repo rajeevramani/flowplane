@@ -37,17 +37,17 @@
 			sessionInfo = await apiClient.getSessionInfo();
 
 			// Populate org store from session info
-			if (sessionInfo.org_id && sessionInfo.org_name) {
+			if (sessionInfo.orgId && sessionInfo.orgName) {
 				currentOrg.set({
 					organization: {
-						id: sessionInfo.org_id,
-						name: sessionInfo.org_name,
-						display_name: sessionInfo.org_name,
+						id: sessionInfo.orgId,
+						name: sessionInfo.orgName,
+						displayName: sessionInfo.orgName,
 						status: 'active',
-						created_at: '',
-						updated_at: ''
+						createdAt: '',
+						updatedAt: ''
 					},
-					role: (sessionInfo.org_role as import('$lib/api/types').OrgRole) ?? null
+					role: (sessionInfo.orgRole as import('$lib/api/types').OrgRole) ?? null
 				});
 			}
 
