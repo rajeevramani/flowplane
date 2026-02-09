@@ -91,21 +91,21 @@
 		}
 	}
 
-	// Download bootstrap config
-	async function handleDownloadBootstrap(dataplane: DataplaneResponse) {
+	// Download envoy config
+	async function handleDownloadEnvoyConfig(dataplane: DataplaneResponse) {
 		try {
-			const bootstrap = await apiClient.getDataplaneBootstrap(dataplane.team, dataplane.name, { format: 'yaml' });
-			const blob = new Blob([bootstrap], { type: 'application/yaml' });
+			const config = await apiClient.getDataplaneEnvoyConfig(dataplane.team, dataplane.name, { format: 'yaml' });
+			const blob = new Blob([config], { type: 'application/yaml' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `envoy-bootstrap-${dataplane.name}.yaml`;
+			a.download = `envoy-config-${dataplane.name}.yaml`;
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
 			URL.revokeObjectURL(url);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to download bootstrap';
+			error = err instanceof Error ? err.message : 'Failed to download envoy config';
 		}
 	}
 
@@ -315,9 +315,9 @@
 							<td class="px-6 py-4 text-right">
 								<div class="flex justify-end gap-2">
 									<button
-										onclick={() => handleDownloadBootstrap(dataplane)}
+										onclick={() => handleDownloadEnvoyConfig(dataplane)}
 										class="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
-										title="Download bootstrap config"
+										title="Download envoy config"
 									>
 										<Download class="h-4 w-4" />
 									</button>

@@ -64,7 +64,6 @@ use crate::xds::{
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
         // Team endpoints
-        crate::api::handlers::teams::get_team_bootstrap_handler,
         crate::api::handlers::teams::list_teams_handler,
         crate::api::handlers::teams::admin_create_team,
         crate::api::handlers::teams::admin_list_teams,
@@ -195,7 +194,6 @@ use crate::xds::{
             crate::api::handlers::listeners::CreateListenerBody,
             crate::api::handlers::listeners::UpdateListenerBody,
             // Team schemas
-            crate::api::handlers::teams::BootstrapQuery,
             crate::api::handlers::teams::ListTeamsResponse,
             crate::api::handlers::teams::AdminListTeamsResponse,
             crate::api::handlers::teams::MtlsStatusResponse,
@@ -430,12 +428,8 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
         );
 
-        // Team endpoints (7)
+        // Team endpoints (6)
         assert!(paths.contains_key("/api/v1/teams"), "Missing GET /api/v1/teams");
-        assert!(
-            paths.contains_key("/api/v1/teams/{team}/bootstrap"),
-            "Missing GET /api/v1/teams/{{team}}/bootstrap"
-        );
         assert!(paths.contains_key("/api/v1/admin/teams"), "Missing GET/POST /api/v1/admin/teams");
         assert!(
             paths.contains_key("/api/v1/admin/teams/{id}"),
@@ -626,7 +620,6 @@ mod tests {
         assert!(schemas.contains_key("UpdateListenerBody"), "Missing UpdateListenerBody schema");
 
         // Team schemas
-        assert!(schemas.contains_key("BootstrapQuery"), "Missing BootstrapQuery schema");
         assert!(schemas.contains_key("ListTeamsResponse"), "Missing ListTeamsResponse schema");
         assert!(
             schemas.contains_key("AdminListTeamsResponse"),

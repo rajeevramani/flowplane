@@ -113,7 +113,7 @@ pub use stats::{
 };
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
-    get_mtls_status_handler, get_team_bootstrap_handler, list_teams_handler,
+    get_mtls_status_handler, list_teams_handler,
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
@@ -162,8 +162,7 @@ pub use secrets::{
     UpdateSecretRequest,
 };
 pub use teams::{
-    AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse,
-    MtlsStatusResponse,
+    AdminListTeamsQuery, AdminListTeamsResponse, ListTeamsResponse, MtlsStatusResponse,
 };
 pub use users::ListUsersResponse;
 
@@ -175,8 +174,8 @@ pub use custom_wasm_filters::{
 
 // Dataplane DTOs
 pub use dataplanes::{
-    BootstrapQuery as DataplaneBootstrapQuery, CreateDataplaneBody, DataplaneResponse,
-    ListDataplanesQuery, ListDataplanesResponse, UpdateDataplaneBody,
+    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, ListDataplanesQuery,
+    ListDataplanesResponse, UpdateDataplaneBody,
 };
 
 // Hierarchy DTOs for route hierarchy filter attachment

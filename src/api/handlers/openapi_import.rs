@@ -305,8 +305,7 @@ pub async fn import_openapi_handler(
 
     // Materialize routes
     let routes_count = if let Some(route_request) = plan.route_request {
-        materialize_route(&state.xds_state, &db_pool, &import_id, &team_id, route_request)
-            .await?;
+        materialize_route(&state.xds_state, &db_pool, &import_id, &team_id, route_request).await?;
         1
     } else if let Some(virtual_host) = plan.default_virtual_host {
         // For existing listener mode, merge virtual host into the listener's route config
@@ -325,14 +324,8 @@ pub async fn import_openapi_handler(
 
     // Materialize listener (if needed)
     let listener_created = if let Some(listener_request) = plan.listener_request {
-        materialize_listener(
-            &state.xds_state,
-            &db_pool,
-            &import_id,
-            &team_id,
-            listener_request,
-        )
-        .await?;
+        materialize_listener(&state.xds_state, &db_pool, &import_id, &team_id, listener_request)
+            .await?;
         Some(listener_name)
     } else {
         None

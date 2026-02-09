@@ -244,8 +244,8 @@ export interface ClusterResponse {
 	config: any; // Full cluster config - dynamic Envoy structure
 }
 
-// Bootstrap configuration types
-export interface BootstrapConfigRequest {
+// Envoy configuration types
+export interface EnvoyConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
 }
@@ -1037,9 +1037,9 @@ export interface ListCertificatesQuery {
 	offset?: number;
 }
 
-// Bootstrap configuration request with mTLS options
-export interface BootstrapConfigRequestWithMtls extends BootstrapConfigRequest {
-	/** Enable mTLS configuration in bootstrap */
+// Envoy configuration request with mTLS options
+export interface EnvoyConfigRequestWithMtls extends EnvoyConfigRequest {
+	/** Enable mTLS configuration in envoy config */
 	mtls?: boolean;
 	/** Path to client certificate file */
 	certPath?: string;
