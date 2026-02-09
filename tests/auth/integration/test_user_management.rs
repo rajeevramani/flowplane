@@ -2,7 +2,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 
 use crate::support::{create_team, read_json, send_request, setup_test_app};
-use flowplane::api::handlers::ListUsersResponse;
+use flowplane::api::handlers::PaginatedResponse;
 use flowplane::auth::user::{UserResponse, UserTeamMembership, UserWithTeamsResponse};
 
 #[tokio::test]
@@ -253,8 +253,8 @@ async fn list_users_with_pagination() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let list: ListUsersResponse = read_json(response).await;
-    assert!(list.users.len() >= 3);
+    let list: PaginatedResponse<UserResponse> = read_json(response).await;
+    assert!(list.items.len() >= 3);
     assert!(list.total >= 3);
     assert_eq!(list.limit, 10);
     assert_eq!(list.offset, 0);

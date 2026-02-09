@@ -10,9 +10,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::api::error::ApiError;
@@ -47,27 +45,7 @@ fn user_service_for_state(state: &ApiState) -> Result<UserService, ApiError> {
     Ok(UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo))
 }
 
-/// Query parameters for list_users endpoint.
-#[derive(Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListUsersQuery {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-}
-
-use super::team_access::default_limit;
-
-/// Response for list_users endpoint.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListUsersResponse {
-    pub users: Vec<UserResponse>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 /// Create a new user (admin only).
 ///
@@ -167,9 +145,9 @@ pub async fn get_user(
 #[utoipa::path(
     get,
     path = "/api/v1/users",
-    params(ListUsersQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Users listed successfully", body = ListUsersResponse),
+        (status = 200, description = "Users listed successfully", body = PaginatedResponse<UserResponse>),
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -179,22 +157,24 @@ pub async fn get_user(
 pub async fn list_users(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<ListUsersQuery>,
-) -> Result<Json<ListUsersResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<UserResponse>>, ApiError> {
     // Check admin authorization
     require_admin(&context)?;
 
+    let (limit, offset) = query.clamp(100);
+
     // List users
     let service = user_service_for_state(&state)?;
-    let users = service.list_users(query.limit, query.offset).await.map_err(ApiError::from)?;
+    let users = service.list_users(limit, offset).await.map_err(ApiError::from)?;
     let total = service.count_users().await.map_err(ApiError::from)?;
 
-    Ok(Json(ListUsersResponse {
-        users: users.into_iter().map(|u| u.into()).collect(),
+    Ok(Json(PaginatedResponse::new(
+        users.into_iter().map(|u| u.into()).collect(),
         total,
-        limit: query.limit,
-        offset: query.offset,
-    }))
+        limit,
+        offset,
+    )))
 }
 
 /// Update a user (admin only).

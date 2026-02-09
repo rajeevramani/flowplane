@@ -9,10 +9,12 @@ mod validation;
 
 // Re-export public types for backward compatibility
 pub use types::{
-    CreateListenerBody, ListListenersQuery, ListenerAccessLogInput, ListenerFilterChainInput,
-    ListenerFilterInput, ListenerFilterTypeInput, ListenerResponse, ListenerTlsContextInput,
-    ListenerTracingInput, UpdateListenerBody,
+    CreateListenerBody, ListenerAccessLogInput, ListenerFilterChainInput, ListenerFilterInput,
+    ListenerFilterTypeInput, ListenerResponse, ListenerTlsContextInput, ListenerTracingInput,
+    UpdateListenerBody,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -91,12 +93,9 @@ pub async fn create_listener_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/listeners",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of listeners to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of listeners", body = [ListenerResponse]),
+        (status = 200, description = "List of listeners", body = PaginatedResponse<ListenerResponse>),
         (status = 503, description = "Listener repository unavailable"),
     ),
     tag = "Listeners"
@@ -104,15 +103,17 @@ pub async fn create_listener_handler(
 pub async fn list_listeners_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListListenersQuery>,
-) -> Result<Json<Vec<types::ListenerResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<types::ListenerResponse>>, ApiError> {
     // Authorization: require listeners:read scope
     require_resource_access(&context, "listeners", "read", None)?;
 
+    let (limit, offset) = params.clamp(1000);
+
     // Create internal API request (REST API: include default resources)
     let internal_request = InternalListListenersRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         include_defaults: true,
     };
 
@@ -121,13 +122,14 @@ pub async fn list_listeners_handler(
     let team_repo = team_repo_from_state(&state)?;
     let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.list(internal_request, &auth).await?;
+    let total = result.count as i64;
 
     let mut listeners = Vec::with_capacity(result.listeners.len());
     for row in result.listeners {
         listeners.push(listener_response_from_data(row)?);
     }
 
-    Ok(Json(listeners))
+    Ok(Json(PaginatedResponse::new(listeners, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -554,14 +556,14 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(admin_auth_context()),
-            Query(types::ListListenersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let listeners = result.unwrap().0;
-        assert_eq!(listeners.len(), 1);
-        assert_eq!(listeners[0].name, "edge-listener");
+        let resp = result.unwrap().0;
+        assert_eq!(resp.items.len(), 1);
+        assert_eq!(resp.items[0].name, "edge-listener");
     }
 
     #[tokio::test]
@@ -685,7 +687,7 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(minimal_auth_context()),
-            Query(types::ListListenersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
@@ -875,12 +877,12 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(admin_auth_context()),
-            Query(types::ListListenersQuery { limit: Some(2), offset: Some(0) }),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let listeners = result.unwrap().0;
+        let listeners = &result.unwrap().0.items;
         assert_eq!(listeners.len(), 2);
     }
 
@@ -906,12 +908,12 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(admin_auth_context()),
-            Query(types::ListListenersQuery { limit: Some(10), offset: Some(2) }),
+            Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let listeners = result.unwrap().0;
+        let listeners = &result.unwrap().0.items;
         assert_eq!(listeners.len(), 3); // 5 total - 2 offset = 3 remaining
     }
 }

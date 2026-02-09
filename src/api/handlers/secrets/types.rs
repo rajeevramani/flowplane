@@ -1,8 +1,9 @@
 //! Request and response types for secrets API
 
+use crate::api::handlers::pagination::default_limit;
 use crate::domain::{SecretId, SecretType};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 /// Request to create a new secret
@@ -144,16 +145,16 @@ impl SecretResponse {
 }
 
 /// Query parameters for listing secrets
-#[derive(Debug, Clone, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, Deserialize, ToSchema, IntoParams, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSecretsQuery {
-    /// Maximum number of secrets to return
-    #[serde(default)]
-    pub limit: Option<i64>,
+    /// Maximum number of secrets to return (default: 50)
+    #[serde(default = "default_limit")]
+    pub limit: i64,
 
-    /// Offset for pagination
+    /// Offset for pagination (default: 0)
     #[serde(default)]
-    pub offset: Option<i64>,
+    pub offset: i64,
 
     /// Filter by secret type
     #[serde(default)]

@@ -66,9 +66,10 @@ pub fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
 }
 
 /// Default limit for paginated list queries.
-pub fn default_limit() -> i64 {
-    50
-}
+///
+/// Re-exported from `pagination` module for backward compatibility with
+/// existing `#[serde(default = "default_limit")]` usages.
+pub use super::pagination::default_limit;
 
 /// Get effective team scopes from auth context.
 ///

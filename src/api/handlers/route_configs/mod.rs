@@ -9,11 +9,12 @@ mod validation;
 
 // Re-export public types
 pub use types::{
-    HeaderMatchDefinition, ListRouteConfigsQuery, PathMatchDefinition,
-    QueryParameterMatchDefinition, RouteActionDefinition, RouteConfigDefinition,
-    RouteConfigResponse, RouteMatchDefinition, RouteRuleDefinition, VirtualHostDefinition,
-    WeightedClusterDefinition,
+    HeaderMatchDefinition, PathMatchDefinition, QueryParameterMatchDefinition,
+    RouteActionDefinition, RouteConfigDefinition, RouteConfigResponse, RouteMatchDefinition,
+    RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -99,29 +100,28 @@ pub async fn create_route_config_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/route-configs",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of route configs to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of route configs", body = [RouteConfigResponse]),
+        (status = 200, description = "List of route configs", body = PaginatedResponse<RouteConfigResponse>),
         (status = 503, description = "Route config repository unavailable"),
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_route_configs_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListRouteConfigsQuery>,
-) -> Result<Json<Vec<RouteConfigResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<RouteConfigResponse>>, ApiError> {
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
+    let (limit, offset) = params.clamp(1000);
+
     // Create internal API request (REST API: include default resources)
     let internal_request = InternalListRouteConfigsRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         include_defaults: true,
     };
 
@@ -130,13 +130,14 @@ pub async fn list_route_configs_handler(
     let team_repo = team_repo_from_state(&state)?;
     let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let result = ops.list(internal_request, &auth).await?;
+    let total = result.count as i64;
 
     let mut routes = Vec::with_capacity(result.routes.len());
     for row in result.routes {
         routes.push(route_config_response_from_data(row)?);
     }
 
-    Ok(Json(routes))
+    Ok(Json(PaginatedResponse::new(routes, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -411,13 +412,13 @@ mod tests {
         let response = list_route_configs_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(types::ListRouteConfigsQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list route configs");
 
-        assert_eq!(response.0.len(), 1);
-        assert_eq!(response.0[0].name, "primary-routes");
+        assert_eq!(response.0.items.len(), 1);
+        assert_eq!(response.0.items[0].name, "primary-routes");
     }
 
     #[tokio::test]
@@ -662,7 +663,7 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(minimal_auth_context()),
-            Query(types::ListRouteConfigsQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
@@ -915,12 +916,12 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(types::ListRouteConfigsQuery { limit: Some(2), offset: Some(0) }),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let routes = result.unwrap().0;
+        let routes = &result.unwrap().0.items;
         assert_eq!(routes.len(), 2);
     }
 
@@ -945,12 +946,12 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(types::ListRouteConfigsQuery { limit: Some(10), offset: Some(2) }),
+            Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let routes = result.unwrap().0;
+        let routes = &result.unwrap().0.items;
         assert_eq!(routes.len(), 3); // 5 total - 2 offset = 3 remaining
     }
 }

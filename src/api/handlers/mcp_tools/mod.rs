@@ -5,7 +5,7 @@
 
 pub mod types;
 
-pub use types::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use types::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 
 use axum::{
     extract::{Path, Query, State},
@@ -16,7 +16,10 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        handlers::{
+            pagination::PaginatedResponse,
+            team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        },
         routes::ApiState,
     },
     auth::{authorization::require_resource_access, models::AuthContext},
@@ -33,7 +36,7 @@ use crate::{
         ListMcpToolsQuery
     ),
     responses(
-        (status = 200, description = "List of MCP tools", body = ListMcpToolsResponse),
+        (status = 200, description = "List of MCP tools", body = PaginatedResponse<McpToolResponse>),
         (status = 403, description = "Forbidden - insufficient permissions"),
     ),
     tag = "MCP Tools"
@@ -44,7 +47,7 @@ pub async fn list_mcp_tools_handler(
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
     Query(query): Query<ListMcpToolsQuery>,
-) -> Result<Json<ListMcpToolsResponse>, ApiError> {
+) -> Result<Json<PaginatedResponse<McpToolResponse>>, ApiError> {
     // Authorization: require mcp:read scope
     require_resource_access(&context, "mcp", "read", Some(&team))?;
 
@@ -98,15 +101,15 @@ pub async fn list_mcp_tools_handler(
 
     // === Phase 5: Pagination ===
     let total = tools.len() as i64;
-    let limit = query.limit.unwrap_or(100).min(1000); // Cap at 1000
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.min(1000); // Cap at 1000
+    let offset = query.offset;
 
     let start = offset as usize;
     let end = (offset + limit) as usize;
     let paginated_tools =
         if start < tools.len() { tools[start..end.min(tools.len())].to_vec() } else { vec![] };
 
-    Ok(Json(ListMcpToolsResponse { tools: paginated_tools, total, limit, offset }))
+    Ok(Json(PaginatedResponse::new(paginated_tools, total, limit, offset)))
 }
 
 #[utoipa::path(

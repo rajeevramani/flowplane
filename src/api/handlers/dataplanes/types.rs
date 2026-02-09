@@ -70,24 +70,6 @@ pub struct DataplaneResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Response for listing dataplanes
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListDataplanesResponse {
-    pub dataplanes: Vec<DataplaneResponse>,
-}
-
-/// Query parameters for listing dataplanes
-#[derive(Debug, Clone, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListDataplanesQuery {
-    /// Maximum number of results
-    pub limit: Option<i32>,
-
-    /// Offset for pagination
-    pub offset: Option<i32>,
-}
-
 /// Path parameter for team-scoped dataplane operations
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 pub struct TeamDataplanePath {

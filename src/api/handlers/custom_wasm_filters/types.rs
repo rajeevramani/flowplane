@@ -13,19 +13,6 @@ pub struct CustomFilterPath {
     pub id: String,
 }
 
-/// Query parameters for listing custom filters
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ListCustomFiltersQuery {
-    /// Maximum number of results to return
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    /// Offset for pagination
-    #[serde(default)]
-    pub offset: i64,
-}
-
-use crate::api::handlers::team_access::default_limit;
-
 /// Request to create a custom WASM filter (JSON API)
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct CreateCustomWasmFilterRequest {
@@ -166,13 +153,4 @@ impl CustomWasmFilterResponse {
             filter_type: format!("custom_wasm_{}", data.id),
         }
     }
-}
-
-/// Response for listing custom WASM filters
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ListCustomWasmFiltersResponse {
-    /// List of custom filters
-    pub items: Vec<CustomWasmFilterResponse>,
-    /// Total count for pagination
-    pub total: i64,
 }

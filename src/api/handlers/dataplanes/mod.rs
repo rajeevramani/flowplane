@@ -7,9 +7,11 @@
 pub mod types;
 
 pub use types::{
-    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, ListDataplanesQuery,
-    ListDataplanesResponse, TeamDataplanePath, UpdateDataplaneBody,
+    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, TeamDataplanePath,
+    UpdateDataplaneBody,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -101,24 +103,26 @@ pub async fn create_dataplane_handler(
     get,
     path = "/api/v1/teams/{team}/dataplanes",
     responses(
-        (status = 200, description = "List of dataplanes", body = ListDataplanesResponse),
+        (status = 200, description = "List of dataplanes", body = PaginatedResponse<DataplaneResponse>),
         (status = 403, description = "Forbidden - insufficient permissions")
     ),
     params(
         ("team" = String, Path, description = "Team name"),
-        ListDataplanesQuery
+        PaginationQuery
     ),
     tag = "Dataplanes"
 )]
-#[instrument(skip(state, query), fields(team = %team, user_id = ?context.user_id, limit = ?query.limit))]
+#[instrument(skip(state, query), fields(team = %team, user_id = ?context.user_id, limit = %query.limit))]
 pub async fn list_dataplanes_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Query(query): Query<ListDataplanesQuery>,
-) -> Result<Json<ListDataplanesResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<DataplaneResponse>>, ApiError> {
     // Authorization
     require_resource_access(&context, "dataplanes", "read", Some(&team))?;
+
+    let (limit, offset) = query.clamp(1000);
 
     // Resolve team name to UUID for database storage
     let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
@@ -132,14 +136,16 @@ pub async fn list_dataplanes_handler(
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
-    let dataplanes =
-        repo.list_by_team(&team_id, query.limit, query.offset).await.map_err(ApiError::from)?;
+    let dataplanes = repo
+        .list_by_team(&team_id, Some(limit as i32), Some(offset as i32))
+        .await
+        .map_err(ApiError::from)?;
 
-    let response = ListDataplanesResponse {
-        dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
-    };
+    let total = dataplanes.len() as i64;
+    let items: Vec<DataplaneResponse> =
+        dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(response))
+    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
 }
 
 /// List all dataplanes (admin or multi-team access)
@@ -147,20 +153,22 @@ pub async fn list_dataplanes_handler(
     get,
     path = "/api/v1/dataplanes",
     responses(
-        (status = 200, description = "List of all dataplanes", body = ListDataplanesResponse),
+        (status = 200, description = "List of all dataplanes", body = PaginatedResponse<DataplaneResponse>),
         (status = 403, description = "Forbidden - insufficient permissions")
     ),
-    params(ListDataplanesQuery),
+    params(PaginationQuery),
     tag = "Dataplanes"
 )]
-#[instrument(skip(state, query), fields(user_id = ?context.user_id, limit = ?query.limit))]
+#[instrument(skip(state, query), fields(user_id = ?context.user_id, limit = %query.limit))]
 pub async fn list_all_dataplanes_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<ListDataplanesQuery>,
-) -> Result<Json<ListDataplanesResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<DataplaneResponse>>, ApiError> {
     // Authorization: require dataplanes:read scope
     require_resource_access(&context, "dataplanes", "read", None)?;
+
+    let (limit, offset) = query.clamp(1000);
 
     // Get effective teams for the user
     let cluster_repo = state
@@ -176,14 +184,16 @@ pub async fn list_all_dataplanes_handler(
 
     let repo = DataplaneRepository::new(pool);
 
-    let dataplanes =
-        repo.list_by_teams(&teams, query.limit, query.offset).await.map_err(ApiError::from)?;
+    let dataplanes = repo
+        .list_by_teams(&teams, Some(limit as i32), Some(offset as i32))
+        .await
+        .map_err(ApiError::from)?;
 
-    let response = ListDataplanesResponse {
-        dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
-    };
+    let total = dataplanes.len() as i64;
+    let items: Vec<DataplaneResponse> =
+        dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(response))
+    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
 }
 
 /// Get a specific dataplane by name

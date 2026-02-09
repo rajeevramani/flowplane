@@ -8,7 +8,7 @@ pub mod types;
 use super::team_access::TeamPath;
 pub use types::{
     CreateCustomWasmFilterRequest, CustomFilterPath, CustomWasmFilterResponse,
-    ListCustomFiltersQuery, ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+    UpdateCustomWasmFilterRequest,
 };
 
 use axum::{
@@ -24,7 +24,10 @@ use tracing::{info, instrument, warn};
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        handlers::{
+            pagination::{PaginatedResponse, PaginationQuery},
+            team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        },
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
@@ -152,13 +155,12 @@ pub async fn create_custom_wasm_filter_handler(
     get,
     path = "/api/v1/teams/{team}/custom-filters",
     responses(
-        (status = 200, description = "List of custom filters", body = ListCustomWasmFiltersResponse),
+        (status = 200, description = "List of custom filters", body = PaginatedResponse<CustomWasmFilterResponse>),
         (status = 503, description = "Service unavailable")
     ),
     params(
         ("team" = String, Path, description = "Team name"),
-        ("limit" = Option<i64>, Query, description = "Maximum results to return"),
-        ("offset" = Option<i64>, Query, description = "Offset for pagination")
+        PaginationQuery
     ),
     tag = "Custom WASM Filters",
     security(("bearerAuth" = []))
@@ -168,8 +170,8 @@ pub async fn list_custom_wasm_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Query(query): Query<ListCustomFiltersQuery>,
-) -> Result<Json<ListCustomWasmFiltersResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<CustomWasmFilterResponse>>, ApiError> {
     // Verify user has read access
     require_team_resource_access(&context, &team, "read")?;
 
@@ -184,7 +186,7 @@ pub async fn list_custom_wasm_filters_handler(
 
     let items = filters.iter().map(CustomWasmFilterResponse::from_data).collect();
 
-    Ok(Json(ListCustomWasmFiltersResponse { items, total }))
+    Ok(Json(PaginatedResponse::new(items, total, query.limit, query.offset)))
 }
 
 /// Get a custom WASM filter by ID

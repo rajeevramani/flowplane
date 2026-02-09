@@ -64,15 +64,6 @@ impl ClusterCreationConfig {
     }
 }
 
-/// Query parameters for listing filters
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ListFiltersQuery {
-    #[serde(default)]
-    pub limit: Option<i32>,
-    #[serde(default)]
-    pub offset: Option<i32>,
-}
-
 /// Request body for creating a filter
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

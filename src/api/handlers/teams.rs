@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
@@ -102,27 +102,7 @@ fn team_repository_for_state(state: &ApiState) -> Result<Arc<dyn TeamRepository>
     Ok(Arc::new(SqlxTeamRepository::new(pool)))
 }
 
-/// Query parameters for admin list_teams endpoint.
-#[derive(Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminListTeamsQuery {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-}
-
-use super::team_access::default_limit;
-
-/// Response for admin list_teams endpoint.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminListTeamsResponse {
-    pub teams: Vec<Team>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 /// Create a new team (admin only).
 ///
@@ -243,9 +223,9 @@ pub async fn admin_get_team(
 #[utoipa::path(
     get,
     path = "/api/v1/admin/teams",
-    params(AdminListTeamsQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Teams listed successfully", body = AdminListTeamsResponse),
+        (status = 200, description = "Teams listed successfully", body = PaginatedResponse<Team>),
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -255,17 +235,19 @@ pub async fn admin_get_team(
 pub async fn admin_list_teams(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<AdminListTeamsQuery>,
-) -> Result<Json<AdminListTeamsResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<Team>>, ApiError> {
     // Check admin authorization
     require_admin(&context)?;
 
+    let (limit, offset) = query.clamp(100);
+
     // List teams
     let repo = team_repository_for_state(&state)?;
-    let teams = repo.list_teams(query.limit, query.offset).await.map_err(ApiError::from)?;
+    let teams = repo.list_teams(limit, offset).await.map_err(ApiError::from)?;
     let total = repo.count_teams().await.map_err(ApiError::from)?;
 
-    Ok(Json(AdminListTeamsResponse { teams, total, limit: query.limit, offset: query.offset }))
+    Ok(Json(PaginatedResponse::new(teams, total, limit, offset)))
 }
 
 /// Update a team (admin only).

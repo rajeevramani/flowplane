@@ -7,9 +7,9 @@ use axum::{
     Extension, Json,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::IntoParams;
 
 use crate::{
     api::{error::ApiError, routes::ApiState},
@@ -50,15 +50,7 @@ pub struct ListAuditLogsQuery {
     pub offset: Option<i32>,
 }
 
-/// Response for listing audit logs
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListAuditLogsResponse {
-    pub entries: Vec<AuditLogEntry>,
-    pub total: i64,
-    pub limit: i32,
-    pub offset: i32,
-}
+use super::pagination::PaginatedResponse;
 
 /// List audit logs with optional filtering and pagination
 ///
@@ -68,7 +60,7 @@ pub struct ListAuditLogsResponse {
     path = "/api/v1/audit-logs",
     params(ListAuditLogsQuery),
     responses(
-        (status = 200, description = "Audit logs retrieved successfully", body = ListAuditLogsResponse),
+        (status = 200, description = "Audit logs retrieved successfully", body = PaginatedResponse<AuditLogEntry>),
         (status = 400, description = "Invalid query parameters"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden - admin access required"),
@@ -82,7 +74,7 @@ pub async fn list_audit_logs(
     State(state): State<ApiState>,
     Extension(auth_context): Extension<AuthContext>,
     Query(query): Query<ListAuditLogsQuery>,
-) -> Result<Json<ListAuditLogsResponse>, ApiError> {
+) -> Result<Json<PaginatedResponse<AuditLogEntry>>, ApiError> {
     // Check admin privileges
     if !has_admin_bypass(&auth_context) {
         return Err(ApiError::forbidden("Admin privileges required to access audit logs"));
@@ -142,8 +134,8 @@ pub async fn list_audit_logs(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to count audit logs: {}", e)))?;
 
-    let limit = query.limit.unwrap_or(50).min(1000);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).min(1000) as i64;
+    let offset = query.offset.unwrap_or(0) as i64;
 
-    Ok(Json(ListAuditLogsResponse { entries, total, limit, offset }))
+    Ok(Json(PaginatedResponse::new(entries, total, limit, offset)))
 }

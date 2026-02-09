@@ -7,7 +7,7 @@
 //! belonging to other teams through the Native API HTTP endpoints.
 
 use axum::http::{Method, StatusCode};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use axum::{body::to_bytes, body::Body, http::Request, Router};
@@ -22,7 +22,6 @@ use flowplane::{
 };
 use hyper::Response;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use tower::ServiceExt;
 
 #[path = "common/mod.rs"]
@@ -170,7 +169,8 @@ async fn team_a_cannot_list_team_b_clusters() {
         send_request(&app, Method::GET, "/api/v1/clusters", Some(&team_a_token.token), None).await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let clusters: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let clusters = body["items"].as_array().expect("items array");
     assert!(
         !clusters.iter().any(|c| c["name"] == "team-b-backend"),
         "Team A should not see Team B's cluster in list"
@@ -389,7 +389,8 @@ async fn team_a_cannot_list_team_b_routes() {
             .await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let routes: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let routes = body["items"].as_array().expect("items array");
     assert!(
         !routes.iter().any(|r| r["name"] == "team-b-route"),
         "Team A should not see Team B's route in list"
@@ -570,7 +571,8 @@ async fn team_a_cannot_list_team_b_listeners() {
         send_request(&app, Method::GET, "/api/v1/listeners", Some(&team_a_token.token), None).await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let listeners: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let listeners = body["items"].as_array().expect("items array");
     assert!(
         !listeners.iter().any(|l| l["name"] == "team-b-listener"),
         "Team A should not see Team B's listener in list"
@@ -728,7 +730,8 @@ async fn admin_users_can_access_all_team_resources() {
         send_request(&app, Method::GET, "/api/v1/clusters", Some(&admin_token.token), None).await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let clusters: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let clusters = body["items"].as_array().expect("items array");
     assert!(clusters.iter().any(|c| c["name"] == "team-a-cluster"));
     assert!(clusters.iter().any(|c| c["name"] == "team-b-cluster"));
 

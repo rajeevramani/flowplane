@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
@@ -74,37 +74,7 @@ pub struct GenerateCertificateResponse {
     pub expires_at: String,
 }
 
-/// Query parameters for listing certificates.
-#[derive(Debug, Clone, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListCertificatesQuery {
-    /// Maximum number of certificates to return
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-
-    /// Offset for pagination
-    #[serde(default)]
-    pub offset: i64,
-}
-
-use super::team_access::default_limit;
-
-/// Response for listing certificates.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListCertificatesResponse {
-    /// List of certificates (without private keys)
-    pub certificates: Vec<CertificateMetadata>,
-
-    /// Total number of certificates for this team
-    pub total: i64,
-
-    /// Pagination limit used
-    pub limit: i64,
-
-    /// Pagination offset used
-    pub offset: i64,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 /// Certificate metadata (without private key).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -329,10 +299,10 @@ pub async fn generate_certificate_handler(
     path = "/api/v1/teams/{team}/proxy-certificates",
     params(
         ("team" = String, Path, description = "Team name"),
-        ListCertificatesQuery
+        PaginationQuery
     ),
     responses(
-        (status = 200, description = "List of certificates", body = ListCertificatesResponse),
+        (status = 200, description = "List of certificates", body = PaginatedResponse<CertificateMetadata>),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Team not found")
     ),
@@ -343,8 +313,8 @@ pub async fn list_certificates_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Query(query): Query<ListCertificatesQuery>,
-) -> Result<Json<ListCertificatesResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<CertificateMetadata>>, ApiError> {
     // Authorization
     require_resource_access(&context, "proxy-certificates", "read", Some(&team))?;
 
@@ -365,12 +335,12 @@ pub async fn list_certificates_handler(
 
     let total = cert_repo.count_by_team(&team_data.id).await.map_err(ApiError::from)?;
 
-    Ok(Json(ListCertificatesResponse {
-        certificates: certificates.into_iter().map(CertificateMetadata::from).collect(),
+    Ok(Json(PaginatedResponse::new(
+        certificates.into_iter().map(CertificateMetadata::from).collect(),
         total,
-        limit: query.limit,
-        offset: query.offset,
-    }))
+        query.limit,
+        query.offset,
+    )))
 }
 
 /// Get a specific proxy certificate by ID.

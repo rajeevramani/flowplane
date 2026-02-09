@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
@@ -95,27 +95,7 @@ fn require_admin_or_org_admin(context: &AuthContext, org_name: &str) -> Result<(
 
 // ===== Request/Response Types =====
 
-/// Query parameters for listing organizations.
-#[derive(Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListOrganizationsQuery {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-}
-
-use super::team_access::default_limit;
-
-/// Response for listing organizations.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListOrganizationsResponse {
-    pub organizations: Vec<OrganizationResponse>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 /// Request to add a member to an organization.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
@@ -195,9 +175,9 @@ pub async fn admin_create_organization(
 #[utoipa::path(
     get,
     path = "/api/v1/admin/organizations",
-    params(ListOrganizationsQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Organizations listed successfully", body = ListOrganizationsResponse),
+        (status = 200, description = "Organizations listed successfully", body = PaginatedResponse<OrganizationResponse>),
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -207,24 +187,22 @@ pub async fn admin_create_organization(
 pub async fn admin_list_organizations(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<ListOrganizationsQuery>,
-) -> Result<Json<ListOrganizationsResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<OrganizationResponse>>, ApiError> {
     require_admin(&context)?;
 
-    // Clamp pagination parameters to safe bounds
-    let limit = query.limit.clamp(1, 100);
-    let offset = query.offset.max(0);
+    let (limit, offset) = query.clamp(100);
 
     let repo = org_repository_for_state(&state)?;
     let organizations = repo.list_organizations(limit, offset).await.map_err(ApiError::from)?;
     let total = repo.count_organizations().await.map_err(ApiError::from)?;
 
-    Ok(Json(ListOrganizationsResponse {
-        organizations: organizations.into_iter().map(|o| o.into()).collect(),
+    Ok(Json(PaginatedResponse::new(
+        organizations.into_iter().map(|o| o.into()).collect(),
         total,
         limit,
         offset,
-    }))
+    )))
 }
 
 /// Get an organization by ID (admin only).

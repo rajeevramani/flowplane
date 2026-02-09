@@ -12,8 +12,10 @@ mod validation;
 // Re-export public types for backward compatibility
 pub use types::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
-    EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
+    EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -83,36 +85,36 @@ pub async fn create_cluster_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/clusters",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of clusters to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of clusters", body = [ClusterResponse]),
+        (status = 200, description = "List of clusters", body = PaginatedResponse<ClusterResponse>),
         (status = 503, description = "Cluster repository unavailable"),
     ),
     tag = "Clusters"
 )]
-#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_clusters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListClustersQuery>,
-) -> Result<Json<Vec<types::ClusterResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<types::ClusterResponse>>, ApiError> {
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
+
+    let (limit, offset) = params.clamp(1000);
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
     let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
     let list_req = ListClustersRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         include_defaults: true, // REST API includes default resources
     };
 
     let result = ops.list(list_req, &auth).await?;
+    let total = result.count as i64;
 
     // Convert to response DTOs
     let service = ClusterService::new(state.xds_state.clone());
@@ -121,7 +123,7 @@ pub async fn list_clusters_handler(
         clusters.push(cluster_response_from_data(&service, row)?);
     }
 
-    Ok(Json(clusters))
+    Ok(Json(PaginatedResponse::new(clusters, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -253,8 +255,9 @@ mod tests {
 
     use types::{
         CircuitBreakerThresholdsRequest, CircuitBreakersRequest, CreateClusterBody,
-        EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
+        EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
     };
+    // PaginationQuery and PaginatedResponse come from `use super::*;`
 
     // Use test_utils::create_test_state() which runs full migrations
     // and test_utils::admin_auth_context() for admin permissions
@@ -377,12 +380,12 @@ mod tests {
         let response = list_clusters_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters");
 
-        let clusters = response.0;
+        let clusters = &response.0.items;
         // Seed data adds global clusters; verify our created cluster is present
         assert!(clusters.iter().any(|c| c.name == "api-cluster"));
     }
@@ -535,12 +538,12 @@ mod tests {
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_a_context),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters for team-a");
 
-        let clusters = response.0;
+        let clusters = &response.0.items;
         // Should see team-a-cluster + global clusters (seed + test-created)
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-a-cluster"));
@@ -552,12 +555,12 @@ mod tests {
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_b_context),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters for team-b");
 
-        let clusters = response.0;
+        let clusters = &response.0.items;
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-b-cluster"));
         assert!(names.contains(&"global-cluster"));
@@ -567,12 +570,12 @@ mod tests {
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(admin_auth_context()),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters for admin");
 
-        let clusters = response.0;
+        let clusters = &response.0.items;
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-a-cluster"));
         assert!(names.contains(&"team-b-cluster"));

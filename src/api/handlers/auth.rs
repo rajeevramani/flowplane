@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::api::error::ApiError;
@@ -126,12 +126,7 @@ impl UpdateTokenBody {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListTokensQuery {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 #[utoipa::path(
     post,
@@ -168,25 +163,24 @@ pub async fn create_token_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/tokens",
-    params(ListTokensQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Tokens list", body = [PersonalAccessToken]),
+        (status = 200, description = "Tokens list", body = PaginatedResponse<PersonalAccessToken>),
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
     tag = "Authentication"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<ListTokensQuery>,
-) -> Result<Json<Vec<PersonalAccessToken>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<PersonalAccessToken>>, ApiError> {
     // Authorization: require tokens:read scope
     require_resource_access(&context, "tokens", "read", None)?;
 
-    let limit = params.limit.unwrap_or(50).clamp(1, 1000);
-    let offset = params.offset.unwrap_or(0).max(0);
+    let (limit, offset) = params.clamp(1000);
 
     // Filter tokens by current user - only show tokens created by this user
     let created_by_filter = context.user_id.as_ref().map(|user_id| format!("user:{}", user_id));
@@ -197,7 +191,8 @@ pub async fn list_tokens_handler(
         .await
         .map_err(ApiError::from)?;
 
-    Ok(Json(tokens))
+    let total = tokens.len() as i64;
+    Ok(Json(PaginatedResponse::new(tokens, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -1018,13 +1013,13 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListTokensQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let Json(tokens) = result.unwrap();
-        assert!(!tokens.is_empty());
+        let Json(resp) = result.unwrap();
+        assert!(!resp.items.is_empty());
     }
 
     #[tokio::test]
@@ -1034,7 +1029,7 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(minimal_auth_context()),
-            Query(ListTokensQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
@@ -1065,13 +1060,13 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListTokensQuery { limit: Some(2), offset: Some(0) }),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let Json(tokens) = result.unwrap();
-        assert_eq!(tokens.len(), 2);
+        let Json(resp) = result.unwrap();
+        assert_eq!(resp.items.len(), 2);
     }
 
     #[tokio::test]
