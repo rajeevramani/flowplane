@@ -7,6 +7,7 @@ use validator::Validate;
 
 /// Request to create a new secret
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSecretRequest {
     /// Name of the secret (must be unique within the team)
     #[validate(length(min = 1, max = 255))]
@@ -32,6 +33,7 @@ pub struct CreateSecretRequest {
 
 /// Request to create a reference-based secret (external backend)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSecretReferenceRequest {
     /// Name of the secret (must be unique within the team)
     #[validate(length(min = 1, max = 255))]
@@ -61,6 +63,7 @@ pub struct CreateSecretReferenceRequest {
 
 /// Request to update an existing secret
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSecretRequest {
     /// Optional description update
     pub description: Option<String>,
@@ -74,6 +77,7 @@ pub struct UpdateSecretRequest {
 
 /// Secret metadata response (never includes decrypted secret values)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SecretResponse {
     /// Unique identifier
     pub id: String,
@@ -141,6 +145,7 @@ impl SecretResponse {
 
 /// Query parameters for listing secrets
 #[derive(Debug, Clone, Deserialize, ToSchema, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ListSecretsQuery {
     /// Maximum number of secrets to return
     #[serde(default)]
@@ -157,13 +162,8 @@ pub struct ListSecretsQuery {
 
 /// Path parameters for team-scoped secret operations
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamSecretPath {
     pub team: String,
     pub secret_id: SecretId,
-}
-
-/// Path parameters for team-scoped operations
-#[derive(Debug, Clone, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
 }

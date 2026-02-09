@@ -5,17 +5,17 @@
 mod types;
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::{get_db_pool, TeamPath};
 use crate::api::routes::ApiState;
 use crate::auth::authorization::require_resource_access;
 use crate::auth::models::AuthContext;
-use crate::services::mcp_service::{EnableMcpRequest, McpService, McpServiceError};
+use crate::services::mcp_service::{EnableMcpRequest, McpService};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Extension, Json,
 };
 use serde::Deserialize;
-use std::sync::Arc;
 use tracing::instrument;
 
 pub use types::{
@@ -28,32 +28,6 @@ pub use types::{
 pub struct TeamRoutePath {
     pub team: String,
     pub route_id: String,
-}
-
-/// Path parameters for team-level MCP endpoints
-#[derive(Debug, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
-}
-
-/// Convert McpServiceError to ApiError
-fn to_api_error(e: McpServiceError) -> ApiError {
-    match e {
-        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
-        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
-        McpServiceError::Database(e) => ApiError::internal(format!("Database error: {}", e)),
-        McpServiceError::Internal(msg) => ApiError::internal(msg),
-    }
-}
-
-/// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<crate::storage::DbPool>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("Database not available"))?;
-    Ok(Arc::new(cluster_repo.pool().clone()))
 }
 
 /// Get MCP status for a route
@@ -85,7 +59,7 @@ pub async fn get_mcp_status_handler(
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let status = service.get_status(&team, &route_id).await.map_err(to_api_error)?;
+    let status = service.get_status(&team, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(McpStatusResponse::from(status)))
 }
@@ -130,7 +104,7 @@ pub async fn enable_mcp_handler(
         http_method: body.http_method,
     };
 
-    let tool = service.enable(&team, &route_id, request).await.map_err(to_api_error)?;
+    let tool = service.enable(&team, &route_id, request).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(tool.into())))
 }
@@ -164,7 +138,7 @@ pub async fn disable_mcp_handler(
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    service.disable(&team, &route_id).await.map_err(to_api_error)?;
+    service.disable(&team, &route_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -198,7 +172,7 @@ pub async fn refresh_mcp_schema_handler(
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let result = service.refresh_schema(&team, &route_id).await.map_err(to_api_error)?;
+    let result = service.refresh_schema(&team, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(RefreshSchemaResponse::from(result)))
 }

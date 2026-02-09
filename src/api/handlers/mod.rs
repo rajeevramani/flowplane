@@ -121,7 +121,10 @@ pub use users::{
 };
 
 // Re-export team access utilities for use across handlers
-pub use team_access::{get_effective_team_scopes, verify_team_access, TeamOwned};
+pub use team_access::{
+    default_limit, get_db_pool, get_effective_team_scopes, require_admin, verify_team_access,
+    TeamOwned, TeamPath,
+};
 
 // Re-export hierarchy handlers for route hierarchy filter attachment
 pub use hierarchy::{
@@ -158,8 +161,7 @@ pub use proxy_certificates::{
     ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
 };
 pub use secrets::{
-    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath, TeamSecretPath,
-    UpdateSecretRequest,
+    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamSecretPath, UpdateSecretRequest,
 };
 pub use teams::{
     AdminListTeamsQuery, AdminListTeamsResponse, ListTeamsResponse, MtlsStatusResponse,

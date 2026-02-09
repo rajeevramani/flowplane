@@ -239,30 +239,9 @@ pub use types::{
     LearnedSchemaInfoResponse,
 };
 
-use std::sync::Arc;
-
+use crate::api::handlers::team_access::get_db_pool;
 use crate::domain::RouteId;
 use crate::services::{McpService, McpServiceError};
-
-/// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<crate::storage::DbPool>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("Database not available".to_string()))?;
-    Ok(Arc::new(cluster_repo.pool().clone()))
-}
-
-/// Convert McpServiceError to ApiError
-fn to_api_error(e: McpServiceError) -> ApiError {
-    match e {
-        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
-        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
-        McpServiceError::Database(e) => ApiError::Internal(format!("Database error: {}", e)),
-        McpServiceError::Internal(msg) => ApiError::Internal(msg),
-    }
-}
 
 #[utoipa::path(
     get,
@@ -294,7 +273,7 @@ pub async fn check_learned_schema_handler(
     let availability = mcp_service
         .check_learned_schema_availability(&team, &route_id)
         .await
-        .map_err(to_api_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(CheckLearnedSchemaResponse {
         available: availability.available,
@@ -348,7 +327,7 @@ pub async fn apply_learned_schema_handler(
             McpServiceError::Validation(msg) if msg.contains("force=true") => {
                 ApiError::Conflict(msg.clone())
             }
-            _ => to_api_error(e),
+            _ => ApiError::from(e),
         })?;
 
     Ok(Json(ApplyLearnedSchemaResponse {

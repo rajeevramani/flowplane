@@ -22,13 +22,12 @@ use validator::Validate;
 use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::{authorization::require_resource_access, models::AuthContext},
-    errors::Error,
     storage::repositories::{
         CreateDataplaneRequest, DataplaneRepository, TeamRepository, UpdateDataplaneRequest,
     },
 };
 
-use super::team_access::{get_effective_team_ids, team_repo_from_state};
+use super::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access};
 
 /// Create a new dataplane
 #[utoipa::path(
@@ -54,7 +53,7 @@ pub async fn create_dataplane_handler(
     Json(payload): Json<CreateDataplaneBody>,
 ) -> Result<(StatusCode, Json<DataplaneResponse>), ApiError> {
     // Validate request
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Validate team matches
     if payload.team != team {
@@ -77,7 +76,7 @@ pub async fn create_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     // Check if name is available
-    if repo.exists_by_name(&team_id, &payload.name).await.map_err(convert_error)? {
+    if repo.exists_by_name(&team_id, &payload.name).await.map_err(ApiError::from)? {
         return Err(ApiError::Conflict(format!(
             "Dataplane with name '{}' already exists for team '{}'",
             payload.name, team
@@ -92,7 +91,7 @@ pub async fn create_dataplane_handler(
         description: payload.description,
     };
 
-    let dataplane = repo.create(request).await.map_err(convert_error)?;
+    let dataplane = repo.create(request).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(DataplaneResponse::from(dataplane))))
 }
@@ -134,7 +133,7 @@ pub async fn list_dataplanes_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     let dataplanes =
-        repo.list_by_team(&team_id, query.limit, query.offset).await.map_err(convert_error)?;
+        repo.list_by_team(&team_id, query.limit, query.offset).await.map_err(ApiError::from)?;
 
     let response = ListDataplanesResponse {
         dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
@@ -178,7 +177,7 @@ pub async fn list_all_dataplanes_handler(
     let repo = DataplaneRepository::new(pool);
 
     let dataplanes =
-        repo.list_by_teams(&teams, query.limit, query.offset).await.map_err(convert_error)?;
+        repo.list_by_teams(&teams, query.limit, query.offset).await.map_err(ApiError::from)?;
 
     let response = ListDataplanesResponse {
         dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
@@ -226,9 +225,14 @@ pub async fn get_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     Ok(Json(DataplaneResponse::from(dataplane)))
 }
@@ -260,7 +264,7 @@ pub async fn update_dataplane_handler(
     let (team, name) = path;
 
     // Validate request
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization
     require_resource_access(&context, "dataplanes", "write", Some(&team))?;
@@ -279,9 +283,14 @@ pub async fn update_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     // Update dataplane
     let request = UpdateDataplaneRequest {
@@ -289,7 +298,7 @@ pub async fn update_dataplane_handler(
         description: Some(payload.description),
     };
 
-    let updated = repo.update(&dataplane.id, request).await.map_err(convert_error)?;
+    let updated = repo.update(&dataplane.id, request).await.map_err(ApiError::from)?;
 
     Ok(Json(DataplaneResponse::from(updated)))
 }
@@ -334,12 +343,17 @@ pub async fn delete_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+
     // Delete dataplane
-    repo.delete(&dataplane.id).await.map_err(convert_error)?;
+    repo.delete(&dataplane.id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -437,9 +451,14 @@ pub async fn generate_envoy_config_handler(
 
     // Get dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     let format = query.format.as_deref().unwrap_or("yaml").to_lowercase();
 
@@ -486,7 +505,7 @@ pub async fn generate_envoy_config_handler(
 
     // Try to get team-specific admin port from database
     let team_repo = team_repo_from_state(&state)?;
-    let team_data = team_repo.get_team_by_name(&team).await.map_err(convert_error)?;
+    let team_data = team_repo.get_team_by_name(&team).await.map_err(ApiError::from)?;
 
     // Use team-specific port if available, otherwise fall back to global config
     let admin_port =
@@ -595,9 +614,4 @@ pub async fn generate_envoy_config_handler(
     };
 
     Ok(response)
-}
-
-/// Convert domain errors to API errors
-fn convert_error(error: crate::errors::Error) -> ApiError {
-    ApiError::from(error)
 }

@@ -54,6 +54,24 @@ pub struct CustomWasmFilterData {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl crate::api::handlers::TeamOwned for CustomWasmFilterData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "Custom WASM filter"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "custom_wasm_filters"
+    }
+}
+
 impl TryFrom<CustomWasmFilterListRow> for CustomWasmFilterData {
     type Error = FlowplaneError;
 

@@ -208,7 +208,7 @@ pub async fn create_learning_session_handler(
 
     // Validate payload
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Validate regex pattern
     if let Err(e) = regex::Regex::new(&payload.route_pattern) {

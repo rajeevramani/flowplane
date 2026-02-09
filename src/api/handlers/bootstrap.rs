@@ -82,10 +82,6 @@ pub struct BootstrapStatusResponse {
     pub message: String,
 }
 
-fn convert_error(err: Error) -> ApiError {
-    ApiError::from(err)
-}
-
 /// Extract client IP from headers, preferring X-Forwarded-For
 fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
     // Try X-Forwarded-For header first (for proxied requests)
@@ -139,7 +135,7 @@ pub async fn bootstrap_initialize_handler(
     Json(payload): Json<BootstrapInitializeRequest>,
 ) -> Result<(StatusCode, Json<BootstrapInitializeResponse>), ApiError> {
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Extract client context from headers for audit logging
     let client_ip = extract_client_ip(&headers);
@@ -166,13 +162,12 @@ pub async fn bootstrap_initialize_handler(
     let mut tx = pool
         .begin()
         .await
-        .map_err(|e| convert_error(Error::database(e, "begin bootstrap transaction".into())))?;
+        .map_err(|e| ApiError::from(Error::database(e, "begin bootstrap transaction".into())))?;
 
     // Acquire advisory lock within transaction (blocks until available)
-    sqlx::query("SELECT pg_advisory_xact_lock(1)")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| convert_error(Error::database(e, "acquire bootstrap advisory lock".into())))?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1)").execute(&mut *tx).await.map_err(|e| {
+        ApiError::from(Error::database(e, "acquire bootstrap advisory lock".into()))
+    })?;
 
     // Check if system is already initialized (within the lock)
     let active_count: (i64,) =
@@ -180,18 +175,18 @@ pub async fn bootstrap_initialize_handler(
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| {
-                convert_error(Error::database(e, "count active tokens in bootstrap".into()))
+                ApiError::from(Error::database(e, "count active tokens in bootstrap".into()))
             })?;
 
     let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| convert_error(Error::database(e, "count users in bootstrap".into())))?;
+        .map_err(|e| ApiError::from(Error::database(e, "count users in bootstrap".into())))?;
 
     if active_count.0 > 0 || user_count.0 > 0 {
         // Commit to release advisory lock, then return error
         tx.commit().await.map_err(|e| {
-            convert_error(Error::database(e, "commit bootstrap transaction".into()))
+            ApiError::from(Error::database(e, "commit bootstrap transaction".into()))
         })?;
         return Err(ApiError::forbidden(
             "System already initialized. Bootstrap is only allowed for initial setup.",
@@ -203,7 +198,7 @@ pub async fn bootstrap_initialize_handler(
     // user_count > 0 and be rejected.
     tx.commit()
         .await
-        .map_err(|e| convert_error(Error::database(e, "commit bootstrap transaction".into())))?;
+        .map_err(|e| ApiError::from(Error::database(e, "commit bootstrap transaction".into())))?;
 
     // Get configuration from environment
     let ttl_days = std::env::var("FLOWPLANE_SETUP_TOKEN_TTL_DAYS")
@@ -228,11 +223,11 @@ pub async fn bootstrap_initialize_handler(
     };
 
     let default_org =
-        org_repo.create_organization(create_org_request).await.map_err(convert_error)?;
+        org_repo.create_organization(create_org_request).await.map_err(ApiError::from)?;
 
     // Create admin user with org_id set from the start
     let user_id = UserId::new();
-    let password_hash = hashing::hash_password(&payload.password).map_err(convert_error)?;
+    let password_hash = hashing::hash_password(&payload.password).map_err(ApiError::from)?;
 
     let new_user = NewUser {
         id: user_id.clone(),
@@ -244,7 +239,7 @@ pub async fn bootstrap_initialize_handler(
         org_id: default_org.id.clone(),
     };
 
-    let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
+    let admin_user = user_repo.create_user(new_user).await.map_err(ApiError::from)?;
 
     // Update org's owner_user_id to the admin user
     org_repo
@@ -259,7 +254,7 @@ pub async fn bootstrap_initialize_handler(
             },
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Log admin user creation with user context
     audit_repository
@@ -281,7 +276,7 @@ pub async fn bootstrap_initialize_handler(
             ),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Log organization creation
     audit_repository
@@ -303,14 +298,14 @@ pub async fn bootstrap_initialize_handler(
             ),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Create organization membership for admin user as Owner
     let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     org_membership_repo
         .create_membership(&admin_user.id, &default_org.id, OrgRole::Owner)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Log org membership creation
     audit_repository
@@ -332,7 +327,7 @@ pub async fn bootstrap_initialize_handler(
             ),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Create platform-admin team
     let team_repo = SqlxTeamRepository::new(pool.clone());
@@ -354,7 +349,7 @@ pub async fn bootstrap_initialize_handler(
             };
 
             let created_team =
-                team_repo.create_team(create_team_request).await.map_err(convert_error)?;
+                team_repo.create_team(create_team_request).await.map_err(ApiError::from)?;
 
             // Add admin to platform-admin team with full permissions
             let membership = NewUserTeamMembership {
@@ -364,7 +359,7 @@ pub async fn bootstrap_initialize_handler(
                 scopes: vec!["team:platform-admin:*:*".to_string()],
             };
 
-            membership_repo.create_membership(membership).await.map_err(convert_error)?;
+            membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
 
             // Log team creation with user context
             audit_repository
@@ -387,7 +382,7 @@ pub async fn bootstrap_initialize_handler(
                     ),
                 )
                 .await
-                .map_err(convert_error)?;
+                .map_err(ApiError::from)?;
         }
         Ok(Some(_)) => {
             // Team already exists - log warning but continue
@@ -398,21 +393,21 @@ pub async fn bootstrap_initialize_handler(
         Err(e) => {
             // Database error - log and propagate
             tracing::error!("Failed to check for platform-admin team: {:?}", e);
-            return Err(convert_error(e));
+            return Err(ApiError::from(e));
         }
     }
 
     // Generate setup token
     let setup_token_generator = SetupToken::new();
     let (token_value, hashed_secret, expires_at) =
-        setup_token_generator.generate(Some(max_usage), Some(ttl_days)).map_err(convert_error)?;
+        setup_token_generator.generate(Some(max_usage), Some(ttl_days)).map_err(ApiError::from)?;
 
     // Extract token ID from token value (format: fp_setup_{id}.{secret})
     let token_id = token_value
         .strip_prefix("fp_setup_")
         .and_then(|s| s.split('.').next())
         .ok_or_else(|| {
-            convert_error(Error::internal("Failed to extract token ID from generated setup token"))
+            ApiError::from(Error::internal("Failed to extract token ID from generated setup token"))
         })?;
 
     // Store setup token in database for the admin user
@@ -437,7 +432,7 @@ pub async fn bootstrap_initialize_handler(
         user_email: Some(payload.email.clone()),
     };
 
-    token_repo.create_token(new_token).await.map_err(convert_error)?;
+    token_repo.create_token(new_token).await.map_err(ApiError::from)?;
 
     // Log audit event for setup token generation with user context
     audit_repository
@@ -458,7 +453,7 @@ pub async fn bootstrap_initialize_handler(
             .with_user_context(Some(admin_user.id.to_string()), client_ip, user_agent),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Build response with next steps
     let next_steps = vec![
@@ -522,7 +517,7 @@ pub async fn bootstrap_status_handler(
     let user_repo = SqlxUserRepository::new(pool.clone());
 
     // Check if any users exist
-    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+    let user_count = user_repo.count_users().await.map_err(ApiError::from)?;
 
     let (needs_initialization, message) = if user_count == 0 {
         (true, "System requires initialization. Please create the first admin user.".to_string())

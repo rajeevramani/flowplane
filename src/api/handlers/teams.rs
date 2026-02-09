@@ -13,7 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
     auth::{
         authorization::has_admin_bypass,
         models::AuthContext,
@@ -102,14 +102,6 @@ fn team_repository_for_state(state: &ApiState) -> Result<Arc<dyn TeamRepository>
     Ok(Arc::new(SqlxTeamRepository::new(pool)))
 }
 
-/// Check if the current context has admin privileges.
-fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
-    if !has_admin_bypass(context) {
-        return Err(ApiError::forbidden("Admin privileges required"));
-    }
-    Ok(())
-}
-
 /// Query parameters for admin list_teams endpoint.
 #[derive(Debug, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -120,9 +112,7 @@ pub struct AdminListTeamsQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 {
-    50
-}
+use super::team_access::default_limit;
 
 /// Response for admin list_teams endpoint.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -177,7 +167,7 @@ pub async fn admin_create_team(
     require_admin(&context)?;
 
     // Validate request
-    body.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    body.validate().map_err(ApiError::from)?;
 
     // Resolve org_id: explicit body > auth context > error
     let org_id = body
@@ -196,7 +186,7 @@ pub async fn admin_create_team(
 
     // Check if name is available
     let repo = team_repository_for_state(&state)?;
-    let is_available = repo.is_name_available(&payload.name).await.map_err(convert_error)?;
+    let is_available = repo.is_name_available(&payload.name).await.map_err(ApiError::from)?;
 
     if !is_available {
         return Err(ApiError::Conflict(format!(
@@ -206,7 +196,7 @@ pub async fn admin_create_team(
     }
 
     // Create team
-    let team = repo.create_team(payload).await.map_err(convert_error)?;
+    let team = repo.create_team(payload).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(team)))
 }
@@ -243,7 +233,7 @@ pub async fn admin_get_team(
     let team = repo
         .get_team_by_id(&team_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
 
     Ok(Json(team))
@@ -272,8 +262,8 @@ pub async fn admin_list_teams(
 
     // List teams
     let repo = team_repository_for_state(&state)?;
-    let teams = repo.list_teams(query.limit, query.offset).await.map_err(convert_error)?;
-    let total = repo.count_teams().await.map_err(convert_error)?;
+    let teams = repo.list_teams(query.limit, query.offset).await.map_err(ApiError::from)?;
+    let total = repo.count_teams().await.map_err(ApiError::from)?;
 
     Ok(Json(AdminListTeamsResponse { teams, total, limit: query.limit, offset: query.offset }))
 }
@@ -308,14 +298,14 @@ pub async fn admin_update_team(
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Parse team ID
     let team_id = TeamId::from_string(id);
 
     // Update team
     let repo = team_repository_for_state(&state)?;
-    let team = repo.update_team(&team_id, payload).await.map_err(convert_error)?;
+    let team = repo.update_team(&team_id, payload).await.map_err(ApiError::from)?;
 
     Ok(Json(team))
 }
@@ -353,14 +343,9 @@ pub async fn admin_delete_team(
 
     // Delete team
     let repo = team_repository_for_state(&state)?;
-    repo.delete_team(&team_id).await.map_err(convert_error)?;
+    repo.delete_team(&team_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Convert domain errors to API errors.
-fn convert_error(error: Error) -> ApiError {
-    ApiError::from(error)
 }
 
 /// Response for mTLS status endpoint

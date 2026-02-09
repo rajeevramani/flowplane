@@ -26,7 +26,6 @@ use crate::{
     api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
-    errors::Error,
     internal_api::{
         ClusterOperations, CreateClusterRequest, InternalAuthContext, ListClustersRequest,
         UpdateClusterRequest,
@@ -56,7 +55,7 @@ pub async fn create_cluster_handler(
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "clusters", "write", Some(&payload.team))?;
@@ -182,7 +181,7 @@ pub async fn update_cluster_handler(
     require_resource_access(&context, "clusters", "write", None)?;
 
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let ClusterConfigParts { name: payload_name, service_name, config } =
         cluster_parts_from_body(payload);

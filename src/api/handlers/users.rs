@@ -16,8 +16,8 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::require_admin;
 use crate::api::routes::ApiState;
-use crate::auth::authorization::has_admin_bypass;
 use crate::auth::models::AuthContext;
 use crate::auth::user::{
     CreateTeamMembershipRequest, CreateUserRequest, UpdateTeamMembershipRequest, UpdateUser,
@@ -25,7 +25,6 @@ use crate::auth::user::{
 };
 use crate::auth::user_service::UserService;
 use crate::domain::UserId;
-use crate::errors::Error;
 use crate::storage::repositories::user::{SqlxTeamMembershipRepository, SqlxUserRepository};
 use crate::storage::repositories::AuditLogRepository;
 
@@ -48,14 +47,6 @@ fn user_service_for_state(state: &ApiState) -> Result<UserService, ApiError> {
     Ok(UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo))
 }
 
-/// Check if the current context has admin privileges.
-fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
-    if !has_admin_bypass(context) {
-        return Err(ApiError::forbidden("Admin privileges required"));
-    }
-    Ok(())
-}
-
 /// Query parameters for list_users endpoint.
 #[derive(Debug, Deserialize, IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -66,9 +57,7 @@ pub struct ListUsersQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 {
-    50
-}
+use super::team_access::default_limit;
 
 /// Response for list_users endpoint.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -107,7 +96,7 @@ pub async fn create_user(
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Resolve org_id: explicit payload > auth context > error
     let org_id = payload
@@ -128,7 +117,7 @@ pub async fn create_user(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(user.into())))
 }
@@ -165,11 +154,11 @@ pub async fn get_user(
     let user = service
         .get_user(&user_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
 
     // Get team memberships
-    let teams = service.list_user_teams(&user_id).await.map_err(convert_error)?;
+    let teams = service.list_user_teams(&user_id).await.map_err(ApiError::from)?;
 
     Ok(Json(UserWithTeamsResponse { user: user.into(), teams }))
 }
@@ -197,8 +186,8 @@ pub async fn list_users(
 
     // List users
     let service = user_service_for_state(&state)?;
-    let users = service.list_users(query.limit, query.offset).await.map_err(convert_error)?;
-    let total = service.count_users().await.map_err(convert_error)?;
+    let users = service.list_users(query.limit, query.offset).await.map_err(ApiError::from)?;
+    let total = service.count_users().await.map_err(ApiError::from)?;
 
     Ok(Json(ListUsersResponse {
         users: users.into_iter().map(|u| u.into()).collect(),
@@ -236,7 +225,7 @@ pub async fn update_user(
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Parse user ID
     let user_id = UserId::from_string(id);
@@ -254,7 +243,7 @@ pub async fn update_user(
     let user = service
         .update_user(&user_id, update, Some(context.token_id.to_string()), Some(&context))
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(user.into()))
 }
@@ -291,7 +280,7 @@ pub async fn delete_user(
     service
         .delete_user(&user_id, Some(context.token_id.to_string()), Some(&context))
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -325,7 +314,7 @@ pub async fn add_team_membership(
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Parse user ID
     let user_id = UserId::from_string(id);
@@ -346,7 +335,7 @@ pub async fn add_team_membership(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(membership)))
 }
@@ -384,7 +373,7 @@ pub async fn remove_team_membership(
     service
         .remove_team_membership(&user_id, &team, Some(context.token_id.to_string()), Some(&context))
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -418,7 +407,7 @@ pub async fn update_team_membership_scopes(
     require_admin(&context)?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Parse user ID
     let user_id = UserId::from_string(id);
@@ -434,7 +423,7 @@ pub async fn update_team_membership_scopes(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(membership))
 }
@@ -468,12 +457,7 @@ pub async fn list_user_teams(
 
     // List user teams
     let service = user_service_for_state(&state)?;
-    let teams = service.list_user_teams(&user_id).await.map_err(convert_error)?;
+    let teams = service.list_user_teams(&user_id).await.map_err(ApiError::from)?;
 
     Ok(Json(teams))
-}
-
-/// Convert domain errors to API errors.
-fn convert_error(error: Error) -> ApiError {
-    ApiError::from(error)
 }

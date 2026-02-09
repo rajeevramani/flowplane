@@ -23,7 +23,6 @@ use crate::auth::{
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
 use crate::domain::UserId;
-use crate::errors::Error;
 use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
@@ -134,10 +133,6 @@ pub struct ListTokensQuery {
     pub offset: Option<i64>,
 }
 
-fn convert_error(err: Error) -> ApiError {
-    ApiError::from(err)
-}
-
 #[utoipa::path(
     post,
     path = "/api/v1/tokens",
@@ -159,13 +154,13 @@ pub async fn create_token_handler(
     // Authorization: require tokens:write scope
     require_resource_access(&context, "tokens", "write", None)?;
 
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let request = payload.into_request(&context);
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.create_token(request, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.create_token(request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(secret)))
 }
@@ -200,7 +195,7 @@ pub async fn list_tokens_handler(
     let tokens = service
         .list_tokens(limit, offset, created_by_filter.as_deref())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(tokens))
 }
@@ -227,7 +222,7 @@ pub async fn get_token_handler(
     require_resource_access(&context, "tokens", "read", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.get_token(&id).await.map_err(convert_error)?;
+    let token = service.get_token(&id).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -256,10 +251,10 @@ pub async fn update_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let request = payload.into_request();
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.update_token(&id, request, Some(&context)).await.map_err(convert_error)?;
+    let token = service.update_token(&id, request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok(Json(token))
 }
@@ -286,7 +281,7 @@ pub async fn revoke_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.revoke_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let token = service.revoke_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -312,7 +307,7 @@ pub async fn rotate_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.rotate_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.rotate_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(secret))
 }
 
@@ -385,7 +380,7 @@ pub async fn create_session_handler(
     Json(payload): Json<CreateSessionBody>,
 ) -> Result<SessionCreatedResponse, ApiError> {
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Create session service
     let service = session_service_for_state(&state)?;
@@ -394,7 +389,7 @@ pub async fn create_session_handler(
     let session_response = service
         .create_session_from_setup_token(&payload.setup_token)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Build secure session cookie
     // Note: .secure(false) allows cookie to work over HTTP in development
@@ -480,7 +475,7 @@ pub async fn get_session_info_handler(
     let service = session_service_for_state(&state)?;
 
     // Validate session
-    let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
+    let session_info = service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Get user information - need to find the user associated with this session
     let (user_id_str, name, email, is_admin, user_org_id) =
@@ -497,7 +492,7 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 let user_id = UserId::from_string(user_id_str.to_string());
-                let user = user_repo.get_user(&user_id).await.map_err(convert_error)?.ok_or_else(
+                let user = user_repo.get_user(&user_id).await.map_err(ApiError::from)?.ok_or_else(
                     || ApiError::Internal("User not found for session token".to_string()),
                 )?;
 
@@ -519,7 +514,7 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 // Get all users and find the admin (during bootstrap, there's only one user)
-                let users = user_repo.list_users(100, 0).await.map_err(convert_error)?;
+                let users = user_repo.list_users(100, 0).await.map_err(ApiError::from)?;
                 let admin_user = users
                     .iter()
                     .find(|u| u.is_admin)
@@ -628,12 +623,12 @@ pub async fn logout_handler(
     let session_service = session_service_for_state(&state)?;
 
     // Validate the session exists and is active before revoking
-    session_service.validate_session(&session_token).await.map_err(convert_error)?;
+    session_service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Create token service and revoke the session token
     // Note: No AuthContext available for logout since we're terminating the session
     let token_service = token_service_for_state(&state)?;
-    token_service.revoke_token(token_id, None).await.map_err(convert_error)?;
+    token_service.revoke_token(token_id, None).await.map_err(ApiError::from)?;
 
     // Build cookie clearing directive (same name, empty value, immediate expiration)
     let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
@@ -728,7 +723,7 @@ pub async fn login_handler(
     use crate::auth::LoginRequest;
 
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Extract client context from headers for audit logging
     let client_ip = extract_client_ip(&headers);
@@ -751,7 +746,7 @@ pub async fn login_handler(
     let (user, scopes) = login_service
         .login(&login_request, client_ip.clone(), user_agent.clone())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Create session service
     let session_service = session_service_for_state(&state)?;
@@ -760,7 +755,7 @@ pub async fn login_handler(
     let session_response = session_service
         .create_session_from_user(&user.id, &user.email, scopes.clone(), client_ip, user_agent)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Extract teams from scopes
     let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
@@ -830,7 +825,7 @@ pub async fn change_password_handler(
     use crate::auth::user_service::UserService;
 
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Ensure user is authenticated via session (not PAT)
     let user_id_str = context
@@ -866,7 +861,7 @@ pub async fn change_password_handler(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }

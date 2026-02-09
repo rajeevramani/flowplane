@@ -5,8 +5,9 @@
 
 pub mod types;
 
+use super::team_access::TeamPath;
 pub use types::{
-    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath,
+    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse,
     TeamSecretPath, UpdateSecretRequest,
 };
 
@@ -26,7 +27,6 @@ use crate::{
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::SecretSpec,
-    errors::Error,
     storage::CreateSecretRequest as DbCreateSecretRequest,
     storage::UpdateSecretRequest as DbUpdateSecretRequest,
 };
@@ -52,7 +52,7 @@ pub async fn create_secret_handler(
     Json(payload): Json<CreateSecretRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "secrets", "write", Some(&team))?;
@@ -129,7 +129,7 @@ pub async fn create_secret_reference_handler(
     Json(payload): Json<CreateSecretReferenceRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     require_resource_access(&context, "secrets", "write", Some(&team))?;
@@ -310,7 +310,7 @@ pub async fn update_secret_handler(
     Json(payload): Json<UpdateSecretRequest>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization: require secrets:write scope
     require_resource_access(&context, "secrets", "write", Some(&path.team))?;

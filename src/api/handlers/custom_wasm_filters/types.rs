@@ -6,12 +6,6 @@ use validator::Validate;
 
 use crate::storage::CustomWasmFilterData;
 
-/// Path parameters for team-scoped routes
-#[derive(Debug, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
-}
-
 /// Path parameters for custom filter by ID
 #[derive(Debug, Deserialize)]
 pub struct CustomFilterPath {
@@ -30,9 +24,7 @@ pub struct ListCustomFiltersQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 {
-    50
-}
+use crate::api::handlers::team_access::default_limit;
 
 /// Request to create a custom WASM filter (JSON API)
 #[derive(Debug, Deserialize, Validate, ToSchema)]

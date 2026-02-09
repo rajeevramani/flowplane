@@ -61,17 +61,17 @@ pub(super) fn validate_route_config_payload(
 ) -> Result<(), ApiError> {
     use validator::Validate;
 
-    definition.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    definition.validate().map_err(ApiError::from)?;
 
     for virtual_host in &definition.virtual_hosts {
-        virtual_host.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+        virtual_host.validate().map_err(ApiError::from)?;
 
         if virtual_host.domains.iter().any(|domain| domain.trim().is_empty()) {
             return Err(validation_error("Virtual host domains must not be empty"));
         }
 
         for route in &virtual_host.routes {
-            route.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+            route.validate().map_err(ApiError::from)?;
             validate_route_match(&route.r#match)?;
             validate_route_action(&route.action)?;
 

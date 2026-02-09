@@ -17,7 +17,6 @@ use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::{authorization::require_resource_access, models::AuthContext},
     domain::ProxyCertificateId,
-    errors::Error,
     storage::repositories::{
         CreateProxyCertificateRequest, DataplaneRepository, ProxyCertificateData,
         ProxyCertificateRepository, SqlxProxyCertificateRepository, SqlxTeamRepository,
@@ -88,9 +87,7 @@ pub struct ListCertificatesQuery {
     pub offset: i64,
 }
 
-fn default_limit() -> i64 {
-    50
-}
+use super::team_access::default_limit;
 
 /// Response for listing certificates.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -193,7 +190,7 @@ pub async fn generate_certificate_handler(
     Json(payload): Json<GenerateCertificateRequest>,
 ) -> Result<(StatusCode, Json<GenerateCertificateResponse>), ApiError> {
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization: user must have access to the team
     require_resource_access(&context, "proxy-certificates", "create", Some(&team))?;
@@ -234,7 +231,7 @@ pub async fn generate_certificate_handler(
     let team_data = team_repo
         .get_team_by_name(&team)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
     // Generate certificate via the configured backend (Vault PKI or Mock)
@@ -256,7 +253,7 @@ pub async fn generate_certificate_handler(
             issued_by_user_id: context.user_id,
         })
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Update dataplane certificate tracking if proxy_id matches a dataplane name.
     // This is best-effort: certificate issuance succeeds even if tracking update fails.
@@ -356,7 +353,7 @@ pub async fn list_certificates_handler(
     let team_data = team_repo
         .get_team_by_name(&team)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
     // List certificates
@@ -364,9 +361,9 @@ pub async fn list_certificates_handler(
     let certificates = cert_repo
         .list_by_team(&team_data.id, query.limit, query.offset)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
-    let total = cert_repo.count_by_team(&team_data.id).await.map_err(convert_error)?;
+    let total = cert_repo.count_by_team(&team_data.id).await.map_err(ApiError::from)?;
 
     Ok(Json(ListCertificatesResponse {
         certificates: certificates.into_iter().map(CertificateMetadata::from).collect(),
@@ -407,7 +404,7 @@ pub async fn get_certificate_handler(
     let team_data = team_repo
         .get_team_by_name(&team)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
     // Get certificate
@@ -416,7 +413,7 @@ pub async fn get_certificate_handler(
     let certificate = cert_repo
         .get_by_id(&cert_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Certificate not found".to_string()))?;
 
     // SECURITY: Verify certificate belongs to the requested team
@@ -461,7 +458,7 @@ pub async fn revoke_certificate_handler(
     Json(payload): Json<RevokeCertificateRequest>,
 ) -> Result<Json<CertificateMetadata>, ApiError> {
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization
     require_resource_access(&context, "proxy-certificates", "delete", Some(&team))?;
@@ -471,7 +468,7 @@ pub async fn revoke_certificate_handler(
     let team_data = team_repo
         .get_team_by_name(&team)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
 
     // First fetch the certificate to verify team ownership
@@ -480,7 +477,7 @@ pub async fn revoke_certificate_handler(
     let certificate = cert_repo
         .get_by_id(&cert_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Certificate not found".to_string()))?;
 
     // SECURITY: Verify certificate belongs to the requested team
@@ -498,7 +495,7 @@ pub async fn revoke_certificate_handler(
     }
 
     // Revoke certificate (team ownership verified above)
-    let revoked = cert_repo.revoke(&cert_id, &payload.reason).await.map_err(convert_error)?;
+    let revoked = cert_repo.revoke(&cert_id, &payload.reason).await.map_err(ApiError::from)?;
 
     Ok(Json(CertificateMetadata::from(revoked)))
 }
@@ -540,10 +537,6 @@ fn get_dataplane_repository(state: &ApiState) -> Result<DataplaneRepository, Api
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let pool = cluster_repo.pool().clone();
     Ok(DataplaneRepository::new(pool))
-}
-
-fn convert_error(error: Error) -> ApiError {
-    ApiError::from(error)
 }
 
 #[cfg(test)]
