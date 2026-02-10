@@ -128,7 +128,7 @@ struct AuditLogRow {
     pub user_agent: Option<String>,
     pub org_id: Option<String>,
     pub team_id: Option<String>,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 impl From<AuditLogRow> for AuditLogEntry {
@@ -146,9 +146,40 @@ impl From<AuditLogRow> for AuditLogEntry {
             user_agent: row.user_agent,
             org_id: row.org_id,
             team_id: row.team_id,
-            created_at: DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// Sanitized audit log entry for MCP responses.
+///
+/// Excludes PII and sensitive data: `client_ip`, `user_agent`,
+/// `old_configuration`, `new_configuration`. Used by `ops_audit_query`
+/// to prevent leaking operational details through the MCP interface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogSummary {
+    pub id: i64,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub resource_name: Option<String>,
+    pub action: String,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<AuditLogEntry> for AuditLogSummary {
+    fn from(entry: AuditLogEntry) -> Self {
+        Self {
+            id: entry.id,
+            resource_type: entry.resource_type,
+            resource_id: entry.resource_id,
+            resource_name: entry.resource_name,
+            action: entry.action,
+            org_id: entry.org_id,
+            team_id: entry.team_id,
+            created_at: entry.created_at,
         }
     }
 }

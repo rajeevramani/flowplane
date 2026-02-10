@@ -39,7 +39,9 @@ pub mod virtual_host_filter;
 pub use aggregated_schema::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
 };
-pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
+pub use audit_log::{
+    AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository, AuditLogSummary,
+};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
 pub use cluster_endpoint::{
     ClusterEndpointData, ClusterEndpointRepository, CreateEndpointRequest, UpdateEndpointRequest,
@@ -88,7 +90,11 @@ pub use proxy_certificate::{
     CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
     SqlxProxyCertificateRepository,
 };
-pub use reporting::{ReportingRepository, RouteFlowRow};
+pub use reporting::{
+    OrphanClusterRow, OrphanRouteConfigRow, ReportingRepository, RequestTraceResult,
+    RequestTraceRow, RouteFlowRow, ServiceClusterInfo, ServiceListenerRow, ServiceRouteConfigRow,
+    ServiceSummaryResult, TopologyResult, TopologyRow, TopologySummary, TraceEndpointRow,
+};
 pub use route::{
     CreateRouteRequest, RouteData, RouteRepository, RouteWithRelatedData, UpdateRouteRequest,
 };

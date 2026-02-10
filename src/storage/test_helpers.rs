@@ -196,3 +196,248 @@ async fn seed_test_data(pool: &DbPool) {
         .unwrap_or_else(|e| panic!("Failed to seed cluster '{}': {}", cluster_name, e));
     }
 }
+
+/// Seed extended resources for reporting, topology, and trace tests.
+///
+/// Creates a full request flow for both team-a and team-b:
+///   cluster → route_config → virtual_host → route → listener (via junction table)
+///   + cluster_endpoints (healthy/unhealthy mix)
+///   + 1 orphan cluster (team-a, no route_configs reference it)
+///   + 1 orphan route_config (team-a, no listener bound)
+pub async fn seed_reporting_data(pool: &DbPool) {
+    let valid_cluster_config = r#"{"endpoints":[{"host":"10.0.1.5","port":8080}]}"#;
+    let valid_listener_config = r#"{"route_config_name":"placeholder"}"#;
+    let valid_rc_config = r#"{"virtual_hosts":[]}"#;
+
+    // ====================================================================
+    // Team-A: orders-svc stack
+    // ====================================================================
+
+    // Cluster: orders-svc (team-a)
+    let orders_cluster_id = "c-orders-svc";
+    sqlx::query(
+        "INSERT INTO clusters (id, name, service_name, configuration, version, team) \
+         VALUES ($1, 'orders-svc', 'orders-service', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(orders_cluster_id)
+    .bind(valid_cluster_config)
+    .bind(TEAM_A_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders-svc cluster: {}", e));
+
+    // Cluster endpoints for orders-svc: 1 healthy, 1 unhealthy
+    sqlx::query(
+        "INSERT INTO cluster_endpoints (id, cluster_id, address, port, health_status) \
+         VALUES ($1, $2, '10.0.1.5', 8080, 'healthy') \
+         ON CONFLICT (cluster_id, address, port) DO NOTHING",
+    )
+    .bind("ce-orders-healthy")
+    .bind(orders_cluster_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders endpoint (healthy): {}", e));
+
+    sqlx::query(
+        "INSERT INTO cluster_endpoints (id, cluster_id, address, port, health_status) \
+         VALUES ($1, $2, '10.0.1.6', 8080, 'unhealthy') \
+         ON CONFLICT (cluster_id, address, port) DO NOTHING",
+    )
+    .bind("ce-orders-unhealthy")
+    .bind(orders_cluster_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders endpoint (unhealthy): {}", e));
+
+    // Route config: orders-routes (team-a, cluster=orders-svc)
+    let orders_rc_id = "rc-orders-routes";
+    sqlx::query(
+        "INSERT INTO route_configs (id, name, path_prefix, cluster_name, configuration, version, team) \
+         VALUES ($1, 'orders-routes', '/api/orders', 'orders-svc', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(orders_rc_id)
+    .bind(valid_rc_config)
+    .bind(TEAM_A_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders-routes route config: {}", e));
+
+    // Virtual host: orders-vhost (on orders-routes)
+    let orders_vh_id = "vh-orders-vhost";
+    sqlx::query(
+        "INSERT INTO virtual_hosts (id, route_config_id, name, domains, rule_order) \
+         VALUES ($1, $2, 'orders-vhost', '[\"*\"]', 0) \
+         ON CONFLICT (route_config_id, name) DO NOTHING",
+    )
+    .bind(orders_vh_id)
+    .bind(orders_rc_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders-vhost: {}", e));
+
+    // Route: /api/orders (prefix match, on orders-vhost)
+    sqlx::query(
+        "INSERT INTO routes (id, virtual_host_id, name, path_pattern, match_type, rule_order) \
+         VALUES ($1, $2, 'orders-route', '/api/orders', 'prefix', 0) \
+         ON CONFLICT (virtual_host_id, name) DO NOTHING",
+    )
+    .bind("r-orders-route")
+    .bind(orders_vh_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orders route: {}", e));
+
+    // Listener: http-8080 (team-a)
+    let listener_8080_id = "l-http-8080";
+    sqlx::query(
+        "INSERT INTO listeners (id, name, address, port, configuration, version, team) \
+         VALUES ($1, 'http-8080', '0.0.0.0', 8080, $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(listener_8080_id)
+    .bind(valid_listener_config)
+    .bind(TEAM_A_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed http-8080 listener: {}", e));
+
+    // Junction: http-8080 → orders-routes
+    sqlx::query(
+        "INSERT INTO listener_route_configs (listener_id, route_config_id, route_order) \
+         VALUES ($1, $2, 0) \
+         ON CONFLICT (listener_id, route_config_id) DO NOTHING",
+    )
+    .bind(listener_8080_id)
+    .bind(orders_rc_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed listener-route-config (8080→orders): {}", e));
+
+    // ====================================================================
+    // Team-B: payments-svc stack
+    // ====================================================================
+
+    // Cluster: payments-svc (team-b)
+    let payments_cluster_id = "c-payments-svc";
+    sqlx::query(
+        "INSERT INTO clusters (id, name, service_name, configuration, version, team) \
+         VALUES ($1, 'payments-svc', 'payments-service', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(payments_cluster_id)
+    .bind(valid_cluster_config)
+    .bind(TEAM_B_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed payments-svc cluster: {}", e));
+
+    // 1 healthy endpoint for payments-svc
+    sqlx::query(
+        "INSERT INTO cluster_endpoints (id, cluster_id, address, port, health_status) \
+         VALUES ($1, $2, '10.0.2.5', 9090, 'healthy') \
+         ON CONFLICT (cluster_id, address, port) DO NOTHING",
+    )
+    .bind("ce-payments-healthy")
+    .bind(payments_cluster_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed payments endpoint: {}", e));
+
+    // Route config: payments-routes (team-b, cluster=payments-svc)
+    let payments_rc_id = "rc-payments-routes";
+    sqlx::query(
+        "INSERT INTO route_configs (id, name, path_prefix, cluster_name, configuration, version, team) \
+         VALUES ($1, 'payments-routes', '/api/payments', 'payments-svc', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(payments_rc_id)
+    .bind(valid_rc_config)
+    .bind(TEAM_B_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed payments-routes route config: {}", e));
+
+    // Virtual host: payments-vhost (on payments-routes)
+    let payments_vh_id = "vh-payments-vhost";
+    sqlx::query(
+        "INSERT INTO virtual_hosts (id, route_config_id, name, domains, rule_order) \
+         VALUES ($1, $2, 'payments-vhost', '[\"*\"]', 0) \
+         ON CONFLICT (route_config_id, name) DO NOTHING",
+    )
+    .bind(payments_vh_id)
+    .bind(payments_rc_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed payments-vhost: {}", e));
+
+    // Route: /api/payments (prefix match, on payments-vhost)
+    sqlx::query(
+        "INSERT INTO routes (id, virtual_host_id, name, path_pattern, match_type, rule_order) \
+         VALUES ($1, $2, 'payments-route', '/api/payments', 'prefix', 0) \
+         ON CONFLICT (virtual_host_id, name) DO NOTHING",
+    )
+    .bind("r-payments-route")
+    .bind(payments_vh_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed payments route: {}", e));
+
+    // Listener: http-9090 (team-b)
+    let listener_9090_id = "l-http-9090";
+    sqlx::query(
+        "INSERT INTO listeners (id, name, address, port, configuration, version, team) \
+         VALUES ($1, 'http-9090', '0.0.0.0', 9090, $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(listener_9090_id)
+    .bind(valid_listener_config)
+    .bind(TEAM_B_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed http-9090 listener: {}", e));
+
+    // Junction: http-9090 → payments-routes
+    sqlx::query(
+        "INSERT INTO listener_route_configs (listener_id, route_config_id, route_order) \
+         VALUES ($1, $2, 0) \
+         ON CONFLICT (listener_id, route_config_id) DO NOTHING",
+    )
+    .bind(listener_9090_id)
+    .bind(payments_rc_id)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed listener-route-config (9090→payments): {}", e));
+
+    // ====================================================================
+    // Orphans (team-a)
+    // ====================================================================
+
+    // Orphan cluster: no route_configs reference it
+    sqlx::query(
+        "INSERT INTO clusters (id, name, service_name, configuration, version, team) \
+         VALUES ($1, 'orphan-cluster', 'orphan-service', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind("c-orphan-cluster")
+    .bind(valid_cluster_config)
+    .bind(TEAM_A_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orphan-cluster: {}", e));
+
+    // Orphan route config: no listener bound to it
+    // Note: references orders-svc which exists, so FK is satisfied
+    sqlx::query(
+        "INSERT INTO route_configs (id, name, path_prefix, cluster_name, configuration, version, team) \
+         VALUES ($1, 'orphan-rc', '/api/orphan', 'orders-svc', $2, 1, $3) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind("rc-orphan-rc")
+    .bind(valid_rc_config)
+    .bind(TEAM_A_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed orphan-rc route config: {}", e));
+}
