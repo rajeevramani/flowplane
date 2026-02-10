@@ -827,6 +827,37 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
         );
 
         // ============================================================================
+        // OPS AGENT DIAGNOSTIC TOOLS (cp:read, SAFE — read-only reporting queries)
+        // ============================================================================
+        m.insert(
+            "ops_trace_request",
+            ToolAuthorization {
+                resource: "routes",
+                action: "read",
+                description: "Trace request path requires routes:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "ops_topology",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "View topology requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "ops_config_validate",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "Validate config requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+
+        // ============================================================================
         // AUDIT TOOLS (requires audit:* scope — NOT covered by cp:read)
         // ============================================================================
         m.insert(
@@ -1234,6 +1265,9 @@ mod tests {
             "cp_list_filter_types",
             "cp_get_filter_type",
             "devops_get_deployment_status",
+            "ops_trace_request",
+            "ops_topology",
+            "ops_config_validate",
         ];
 
         for tool_name in &read_tools {

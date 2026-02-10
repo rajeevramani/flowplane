@@ -13,6 +13,7 @@ pub mod filters;
 pub mod learning;
 pub mod listeners;
 pub mod openapi;
+pub mod ops_agent;
 pub mod routes;
 pub mod schemas;
 pub mod virtual_hosts;
@@ -112,6 +113,10 @@ pub use filter_types::{execute_get_filter_type, execute_list_filter_types};
 pub use devops_agent::devops_get_deployment_status_tool;
 pub use devops_agent::execute_devops_get_deployment_status;
 
+// Re-export Ops agent tools
+pub use ops_agent::{execute_ops_config_validate, execute_ops_topology, execute_ops_trace_request};
+pub use ops_agent::{ops_config_validate_tool, ops_topology_tool, ops_trace_request_tool};
+
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::storage::DbPool;
@@ -187,6 +192,10 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_get_filter_type_tool(),
         // DevOps agent workflow tools
         devops_get_deployment_status_tool(),
+        // Ops agent diagnostic tools
+        ops_trace_request_tool(),
+        ops_topology_tool(),
+        ops_config_validate_tool(),
     ]
 }
 
@@ -232,8 +241,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status = 51 total
-        assert_eq!(tools.len(), 51);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 3 ops agent = 54 total
+        assert_eq!(tools.len(), 54);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

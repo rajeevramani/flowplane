@@ -258,7 +258,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (51 tools)
+        // Use get_all_tools() as single source of truth (54 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry
@@ -323,9 +323,28 @@ impl McpHandler {
                     .await
             }
             // Ops tools that only need db_pool (diagnostic/reporting queries)
-            // This dispatch category is for ops tools that run read-only queries
-            // directly against the database without needing xds_state.
-            // New ops tools (ops_trace_request, ops_topology, etc.) will be added here.
+            "ops_trace_request" => {
+                tools::execute_ops_trace_request(
+                    &self.db_pool,
+                    &self.team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
+            "ops_topology" => {
+                tools::execute_ops_topology(&self.db_pool, &self.team, self.org_id.as_ref(), args)
+                    .await
+            }
+            "ops_config_validate" => {
+                tools::execute_ops_config_validate(
+                    &self.db_pool,
+                    &self.team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
 
             // Operations that require xds_state (internal API layer)
             "cp_list_clusters"
