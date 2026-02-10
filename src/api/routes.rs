@@ -115,7 +115,6 @@ use super::{
         get_stats_clusters_handler,
         get_stats_enabled_handler,
         get_stats_overview_handler,
-        get_team_bootstrap_handler,
         get_token_handler,
         get_user,
         health_handler,
@@ -534,7 +533,6 @@ pub fn build_router_with_registry(
         )
         // Team endpoints
         .route("/api/v1/teams", get(list_teams_handler))
-        .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
         // mTLS status endpoint
         .route("/api/v1/mtls/status", get(get_mtls_status_handler))
         // Proxy certificate endpoints (mTLS)

@@ -5,8 +5,9 @@
 
 pub mod types;
 
+use super::team_access::TeamPath;
 pub use types::{
-    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath,
+    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse,
     TeamSecretPath, UpdateSecretRequest,
 };
 
@@ -20,15 +21,17 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{
-            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-            verify_team_access,
+        handlers::{
+            pagination::PaginatedResponse,
+            team_access::{
+                get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+                verify_team_access,
+            },
         },
         routes::ApiState,
     },
     auth::models::AuthContext,
     domain::SecretSpec,
-    errors::Error,
     storage::CreateSecretRequest as DbCreateSecretRequest,
     storage::UpdateSecretRequest as DbUpdateSecretRequest,
 };
@@ -54,7 +57,7 @@ pub async fn create_secret_handler(
     Json(payload): Json<CreateSecretRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     require_resource_access_resolved(
@@ -144,7 +147,7 @@ pub async fn create_secret_reference_handler(
     Json(payload): Json<CreateSecretReferenceRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     require_resource_access_resolved(
@@ -213,12 +216,11 @@ pub async fn create_secret_reference_handler(
     get,
     path = "/api/v1/teams/{team}/secrets",
     params(
-        ("limit" = Option<i64>, Query, description = "Maximum number of secrets to return"),
-        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
-        ("secret_type" = Option<String>, Query, description = "Filter by secret type"),
+        ("team" = String, Path, description = "Team name"),
+        ListSecretsQuery
     ),
     responses(
-        (status = 200, description = "List of secrets (metadata only)", body = [SecretResponse]),
+        (status = 200, description = "List of secrets (metadata only)", body = PaginatedResponse<SecretResponse>),
         (status = 503, description = "Secret repository unavailable"),
     ),
     tag = "Secrets"
@@ -229,7 +231,7 @@ pub async fn list_secrets_handler(
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
     Query(params): Query<ListSecretsQuery>,
-) -> Result<Json<Vec<SecretResponse>>, ApiError> {
+) -> Result<Json<PaginatedResponse<SecretResponse>>, ApiError> {
     // Authorization: require secrets:read scope
     require_resource_access_resolved(
         &state,
@@ -263,7 +265,7 @@ pub async fn list_secrets_handler(
         .ok_or_else(|| ApiError::service_unavailable("Secret repository unavailable"))?;
 
     let secrets = repo
-        .list_by_teams(&[team_id], params.limit.map(|l| l as i32), params.offset.map(|o| o as i32))
+        .list_by_teams(&[team_id], Some(params.limit as i32), Some(params.offset as i32))
         .await
         .map_err(ApiError::from)?;
 
@@ -274,8 +276,9 @@ pub async fn list_secrets_handler(
     };
 
     let responses: Vec<SecretResponse> = secrets.iter().map(SecretResponse::from_data).collect();
+    let total = responses.len() as i64;
 
-    Ok(Json(responses))
+    Ok(Json(PaginatedResponse::new(responses, total, params.limit, params.offset)))
 }
 
 #[utoipa::path(
@@ -364,7 +367,7 @@ pub async fn update_secret_handler(
     Json(payload): Json<UpdateSecretRequest>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization: require secrets:write scope
     require_resource_access_resolved(

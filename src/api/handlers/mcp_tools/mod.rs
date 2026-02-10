@@ -5,7 +5,7 @@
 
 pub mod types;
 
-pub use types::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use types::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 
 use axum::{
     extract::{Path, Query, State},
@@ -16,9 +16,12 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{
-            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-            verify_team_access,
+        handlers::{
+            pagination::PaginatedResponse,
+            team_access::{
+                get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+                verify_team_access,
+            },
         },
         routes::ApiState,
     },
@@ -36,7 +39,7 @@ use crate::{
         ListMcpToolsQuery
     ),
     responses(
-        (status = 200, description = "List of MCP tools", body = ListMcpToolsResponse),
+        (status = 200, description = "List of MCP tools", body = PaginatedResponse<McpToolResponse>),
         (status = 403, description = "Forbidden - insufficient permissions"),
     ),
     tag = "MCP Tools"
@@ -47,7 +50,7 @@ pub async fn list_mcp_tools_handler(
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
     Query(query): Query<ListMcpToolsQuery>,
-) -> Result<Json<ListMcpToolsResponse>, ApiError> {
+) -> Result<Json<PaginatedResponse<McpToolResponse>>, ApiError> {
     // Authorization: require mcp:read scope
     require_resource_access_resolved(
         &state,
@@ -109,15 +112,15 @@ pub async fn list_mcp_tools_handler(
 
     // === Phase 5: Pagination ===
     let total = tools.len() as i64;
-    let limit = query.limit.unwrap_or(100).min(1000); // Cap at 1000
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.min(1000); // Cap at 1000
+    let offset = query.offset;
 
     let start = offset as usize;
     let end = (offset + limit) as usize;
     let paginated_tools =
         if start < tools.len() { tools[start..end.min(tools.len())].to_vec() } else { vec![] };
 
-    Ok(Json(ListMcpToolsResponse { tools: paginated_tools, total, limit, offset }))
+    Ok(Json(PaginatedResponse::new(paginated_tools, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -266,30 +269,9 @@ pub use types::{
     LearnedSchemaInfoResponse,
 };
 
-use std::sync::Arc;
-
+use crate::api::handlers::team_access::get_db_pool;
 use crate::domain::RouteId;
 use crate::services::{McpService, McpServiceError};
-
-/// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<crate::storage::DbPool>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("Database not available".to_string()))?;
-    Ok(Arc::new(cluster_repo.pool().clone()))
-}
-
-/// Convert McpServiceError to ApiError
-fn to_api_error(e: McpServiceError) -> ApiError {
-    match e {
-        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
-        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
-        McpServiceError::Database(e) => ApiError::Internal(format!("Database error: {}", e)),
-        McpServiceError::Internal(msg) => ApiError::Internal(msg),
-    }
-}
 
 #[utoipa::path(
     get,
@@ -329,7 +311,7 @@ pub async fn check_learned_schema_handler(
     let availability = mcp_service
         .check_learned_schema_availability(&team, &route_id)
         .await
-        .map_err(to_api_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(CheckLearnedSchemaResponse {
         available: availability.available,
@@ -391,7 +373,7 @@ pub async fn apply_learned_schema_handler(
             McpServiceError::Validation(msg) if msg.contains("force=true") => {
                 ApiError::Conflict(msg.clone())
             }
-            _ => to_api_error(e),
+            _ => ApiError::from(e),
         })?;
 
     Ok(Json(ApplyLearnedSchemaResponse {

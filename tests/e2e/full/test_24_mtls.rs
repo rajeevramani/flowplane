@@ -462,7 +462,7 @@ async fn test_201_list_certificates() {
     .await
     .expect("List certificates should succeed");
 
-    assert_eq!(list1.certificates.len(), 2, "Should return 2 certificates with limit=2");
+    assert_eq!(list1.items.len(), 2, "Should return 2 certificates with limit=2");
     assert!(list1.total >= 3, "Total should be at least 3, got: {}", list1.total);
     assert_eq!(list1.limit, 2, "Limit should be 2");
     assert_eq!(list1.offset, 0, "Offset should be 0");
@@ -474,12 +474,12 @@ async fn test_201_list_certificates() {
     .await
     .expect("List certificates page 2 should succeed");
 
-    assert!(!list2.certificates.is_empty(), "Should return at least 1 certificate with offset=2");
+    assert!(!list2.items.is_empty(), "Should return at least 1 certificate with offset=2");
     assert_eq!(list2.offset, 2, "Offset should be 2");
 
     println!("✓ Pagination verified:");
-    println!("  - Page 1: {} certificates (total: {})", list1.certificates.len(), list1.total);
-    println!("  - Page 2: {} certificates", list2.certificates.len());
+    println!("  - Page 1: {} certificates (total: {})", list1.items.len(), list1.total);
+    println!("  - Page 2: {} certificates", list2.items.len());
 }
 
 /// Test 202: Get proxy certificate by ID

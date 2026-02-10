@@ -18,9 +18,10 @@ pub use types::{
     ConfigureFilterResponse, CreateFilterRequest, FilterConfigurationItem,
     FilterConfigurationsResponse, FilterInstallationItem, FilterInstallationsResponse,
     FilterResponse, FilterStatusResponse, InstallFilterRequest, InstallFilterResponse,
-    ListFiltersQuery, ListenerFiltersResponse, RouteFiltersResponse, ScopeType,
-    UpdateFilterRequest,
+    ListenerFiltersResponse, RouteFiltersResponse, ScopeType, UpdateFilterRequest,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -102,12 +103,9 @@ async fn resolve_listener_id(
 #[utoipa::path(
     get,
     path = "/api/v1/filters",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of filters to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of filters", body = [FilterResponse]),
+        (status = 200, description = "List of filters", body = PaginatedResponse<FilterResponse>),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "Filters"
@@ -116,14 +114,16 @@ async fn resolve_listener_id(
 pub async fn list_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<ListFiltersQuery>,
-) -> Result<Json<Vec<FilterResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<FilterResponse>>, ApiError> {
     require_resource_access(&context, "filters", "read", None)?;
+
+    let (limit, offset) = params.clamp(1000);
 
     // Create internal API request
     let internal_request = InternalListFiltersRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         filter_type: None,
         include_defaults: true,
     };
@@ -136,18 +136,19 @@ pub async fn list_filters_handler(
         .resolve_teams(team_repo)
         .await?;
     let result = ops.list(internal_request, &auth).await?;
+    let total = result.count as i64;
 
     // Build responses with attachment counts (REST-specific enhancement)
     let repository = require_filter_repository(&state)?;
     let mut responses = Vec::with_capacity(result.filters.len());
     for filter_data in result.filters {
         let filter_id = filter_data.id.clone();
-        let attachment_count = repository.count_attachments(&filter_id).await.ok(); // Ignore errors, return None for count
+        let attachment_count = repository.count_attachments(&filter_id).await.ok();
         let response = filter_response_from_data_with_count(filter_data, attachment_count)?;
         responses.push(response);
     }
 
-    Ok(Json(responses))
+    Ok(Json(PaginatedResponse::new(responses, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -1181,8 +1182,8 @@ mod tests {
         }
     }
 
-    fn empty_list_query() -> ListFiltersQuery {
-        ListFiltersQuery { limit: None, offset: None }
+    fn empty_list_query() -> PaginationQuery {
+        PaginationQuery { limit: 50, offset: 0 }
     }
 
     // === Filter CRUD Tests ===
@@ -1200,7 +1201,7 @@ mod tests {
 
         assert!(result.is_ok());
         let Json(filters) = result.unwrap();
-        assert!(filters.is_empty());
+        assert!(filters.items.is_empty());
     }
 
     #[tokio::test]
@@ -1494,8 +1495,8 @@ mod tests {
 
         assert!(result.is_ok());
         let Json(filters) = result.unwrap();
-        assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0].name, "test-filter");
+        assert_eq!(filters.items.len(), 1);
+        assert_eq!(filters.items[0].name, "test-filter");
     }
 
     #[tokio::test]
@@ -1519,13 +1520,13 @@ mod tests {
         let result = list_filters_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListFiltersQuery { limit: Some(2), offset: Some(0) }),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
         let Json(filters) = result.unwrap();
-        assert_eq!(filters.len(), 2);
+        assert_eq!(filters.items.len(), 2);
     }
 
     // === Filter Status Tests ===

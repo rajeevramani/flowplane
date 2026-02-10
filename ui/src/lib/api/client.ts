@@ -22,8 +22,8 @@ import type {
 	ListenerResponse,
 	RouteResponse,
 	ClusterResponse,
-	BootstrapConfigRequest,
-	BootstrapConfigRequestWithMtls,
+	EnvoyConfigRequest,
+	EnvoyConfigRequestWithMtls,
 	ListTeamsResponse,
 	TeamResponse,
 	CreateTeamRequest,
@@ -501,35 +501,6 @@ class ApiClient {
 
 	async updateListener(name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
 		return this.put<ListenerResponse>(`/api/v1/listeners/${name}`, body);
-	}
-
-	// Bootstrap configuration methods
-	async getBootstrapConfig(request: BootstrapConfigRequest | BootstrapConfigRequestWithMtls): Promise<string> {
-		const params = new URLSearchParams();
-		if (request.format) params.append('format', request.format);
-
-		// Handle mTLS options if present
-		const mtlsRequest = request as BootstrapConfigRequestWithMtls;
-		if (mtlsRequest.mtls !== undefined) params.append('mtls', mtlsRequest.mtls.toString());
-		if (mtlsRequest.certPath) params.append('cert_path', mtlsRequest.certPath);
-		if (mtlsRequest.keyPath) params.append('key_path', mtlsRequest.keyPath);
-		if (mtlsRequest.caPath) params.append('ca_path', mtlsRequest.caPath);
-
-		const path = `/api/v1/teams/${request.team}/bootstrap${params.toString() ? `?${params.toString()}` : ''}`;
-
-		const response = await fetch(`${API_BASE}${path}`, {
-			method: 'GET',
-			headers: this.getHeaders(),
-			credentials: 'include'
-		});
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(errorText || `HTTP ${response.status}: ${response.statusText}`);
-		}
-
-		// Return the raw text (YAML or JSON)
-		return response.text();
 	}
 
 	// Team methods
@@ -1493,10 +1464,10 @@ class ApiClient {
 	}
 
 	/**
-	 * Get Envoy bootstrap configuration for a dataplane.
+	 * Get Envoy configuration for a dataplane.
 	 * Returns YAML or JSON based on the format parameter.
 	 */
-	async getDataplaneBootstrap(
+	async getDataplaneEnvoyConfig(
 		team: string,
 		name: string,
 		options: {
@@ -1522,7 +1493,7 @@ class ApiClient {
 			params.append('ca_path', options.caPath);
 		}
 
-		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}/bootstrap?${params.toString()}`;
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}/envoy-config?${params.toString()}`;
 
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',

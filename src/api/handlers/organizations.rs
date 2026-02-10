@@ -14,11 +14,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
     auth::{
         authorization::{has_admin_bypass, has_org_admin},
         models::AuthContext,
@@ -87,14 +87,6 @@ fn pool_for_state(state: &ApiState) -> Result<DbPool, ApiError> {
     Ok(cluster_repo.pool().clone())
 }
 
-/// Check if the current context has platform admin privileges.
-fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
-    if !has_admin_bypass(context) {
-        return Err(ApiError::forbidden("Admin privileges required"));
-    }
-    Ok(())
-}
-
 /// Check if the current context has platform admin or org admin privileges.
 fn require_admin_or_org_admin(context: &AuthContext, org_name: &str) -> Result<(), ApiError> {
     if has_admin_bypass(context) || has_org_admin(context, org_name) {
@@ -103,36 +95,9 @@ fn require_admin_or_org_admin(context: &AuthContext, org_name: &str) -> Result<(
     Err(ApiError::forbidden("Admin or organization admin privileges required"))
 }
 
-/// Convert domain errors to API errors.
-fn convert_error(error: Error) -> ApiError {
-    ApiError::from(error)
-}
-
 // ===== Request/Response Types =====
 
-/// Query parameters for listing organizations.
-#[derive(Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListOrganizationsQuery {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    #[serde(default)]
-    pub offset: i64,
-}
-
-fn default_limit() -> i64 {
-    50
-}
-
-/// Response for listing organizations.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListOrganizationsResponse {
-    pub organizations: Vec<OrganizationResponse>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 /// Request to add a member to an organization.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
@@ -180,7 +145,7 @@ pub async fn admin_create_organization(
 ) -> Result<(StatusCode, Json<OrganizationResponse>), ApiError> {
     require_admin(&context)?;
 
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Set owner to current user if not specified
     if payload.owner_user_id.is_none() {
@@ -202,7 +167,7 @@ pub async fn admin_create_organization(
                 }
             }
         }
-        convert_error(e)
+        ApiError::from(e)
     })?;
 
     // Auto-create default team for the new organization (follows bootstrap pattern)
@@ -229,7 +194,7 @@ pub async fn admin_create_organization(
             error = %e,
             "failed to create default team for new organization"
         );
-        convert_error(e)
+        ApiError::from(e)
     })?;
 
     tracing::info!(
@@ -246,9 +211,9 @@ pub async fn admin_create_organization(
 #[utoipa::path(
     get,
     path = "/api/v1/admin/organizations",
-    params(ListOrganizationsQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Organizations listed successfully", body = ListOrganizationsResponse),
+        (status = 200, description = "Organizations listed successfully", body = PaginatedResponse<OrganizationResponse>),
         (status = 403, description = "Admin privileges required")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -258,24 +223,22 @@ pub async fn admin_create_organization(
 pub async fn admin_list_organizations(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<ListOrganizationsQuery>,
-) -> Result<Json<ListOrganizationsResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<OrganizationResponse>>, ApiError> {
     require_admin(&context)?;
 
-    // Clamp pagination parameters to safe bounds
-    let limit = query.limit.clamp(1, 100);
-    let offset = query.offset.max(0);
+    let (limit, offset) = query.clamp(100);
 
     let repo = org_repository_for_state(&state)?;
-    let organizations = repo.list_organizations(limit, offset).await.map_err(convert_error)?;
-    let total = repo.count_organizations().await.map_err(convert_error)?;
+    let organizations = repo.list_organizations(limit, offset).await.map_err(ApiError::from)?;
+    let total = repo.count_organizations().await.map_err(ApiError::from)?;
 
-    Ok(Json(ListOrganizationsResponse {
-        organizations: organizations.into_iter().map(|o| o.into()).collect(),
+    Ok(Json(PaginatedResponse::new(
+        organizations.into_iter().map(|o| o.into()).collect(),
         total,
         limit,
         offset,
-    }))
+    )))
 }
 
 /// Get an organization by ID (admin only).
@@ -307,7 +270,7 @@ pub async fn admin_get_organization(
     let org = repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     Ok(Json(org.into()))
@@ -339,12 +302,12 @@ pub async fn admin_update_organization(
 ) -> Result<Json<OrganizationResponse>, ApiError> {
     require_admin(&context)?;
 
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let org_id = OrgId::from_string(id);
 
     let repo = org_repository_for_state(&state)?;
-    let org = repo.update_organization(&org_id, payload).await.map_err(convert_error)?;
+    let org = repo.update_organization(&org_id, payload).await.map_err(ApiError::from)?;
 
     Ok(Json(org.into()))
 }
@@ -379,7 +342,7 @@ pub async fn admin_delete_organization(
     let org_id = OrgId::from_string(id);
 
     let repo = org_repository_for_state(&state)?;
-    repo.delete_organization(&org_id).await.map_err(convert_error)?;
+    repo.delete_organization(&org_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -414,13 +377,13 @@ pub async fn admin_list_org_members(
     let org = org_repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     require_admin_or_org_admin(&context, &org.name)?;
 
     let membership_repo = org_membership_repository_for_state(&state)?;
-    let members = membership_repo.list_org_members(&org_id).await.map_err(convert_error)?;
+    let members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
 
     Ok(Json(ListOrgMembersResponse { members: members.into_iter().map(|m| m.into()).collect() }))
 }
@@ -450,7 +413,7 @@ pub async fn admin_add_org_member(
     Path(id): Path<String>,
     Json(payload): Json<AddOrgMemberRequest>,
 ) -> Result<(StatusCode, Json<crate::auth::organization::OrgMembershipResponse>), ApiError> {
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let org_id = OrgId::from_string(id);
 
@@ -459,7 +422,7 @@ pub async fn admin_add_org_member(
     let org = org_repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     require_admin_or_org_admin(&context, &org.name)?;
@@ -609,7 +572,7 @@ pub async fn admin_update_org_member_role(
     Path((id, user_id)): Path<(String, String)>,
     Json(payload): Json<UpdateOrgMemberRoleRequest>,
 ) -> Result<Json<crate::auth::organization::OrgMembershipResponse>, ApiError> {
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let org_id = OrgId::from_string(id);
     let target_user_id = UserId::from_string(user_id);
@@ -619,7 +582,7 @@ pub async fn admin_update_org_member_role(
     let org = org_repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     require_admin_or_org_admin(&context, &org.name)?;
@@ -629,7 +592,7 @@ pub async fn admin_update_org_member_role(
     let updated = membership_repo
         .update_membership_role(&target_user_id, &org_id, payload.role)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(updated.into()))
 }
@@ -667,14 +630,14 @@ pub async fn admin_remove_org_member(
     let org = org_repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     require_admin_or_org_admin(&context, &org.name)?;
 
     // Delete atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
-    membership_repo.delete_membership(&target_user_id, &org_id).await.map_err(convert_error)?;
+    membership_repo.delete_membership(&target_user_id, &org_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -717,7 +680,7 @@ pub async fn get_current_org(
     let user = user_repo
         .get_user(user_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
 
     let org_id = user.org_id;
@@ -727,15 +690,18 @@ pub async fn get_current_org(
     let org = org_repo
         .get_organization_by_id(&org_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
     // Fetch user's membership to get their role
     let membership_repo = org_membership_repository_for_state(&state)?;
-    let membership =
-        membership_repo.get_membership(user_id, &org_id).await.map_err(convert_error)?.ok_or_else(
-            || ApiError::NotFound("User is not a member of this organization".to_string()),
-        )?;
+    let membership = membership_repo
+        .get_membership(user_id, &org_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::NotFound("User is not a member of this organization".to_string())
+        })?;
 
     Ok(Json(CurrentOrgResponse { organization: org.into(), role: membership.role }))
 }
@@ -778,7 +744,7 @@ pub async fn list_org_teams(
     let org = org_repo
         .get_organization_by_name(&org_name)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
 
     // List teams by org_id
@@ -791,7 +757,7 @@ pub async fn list_org_teams(
     let pool = team_repo.pool().clone();
     let team_repo = Arc::new(crate::storage::repositories::SqlxTeamRepository::new(pool));
 
-    let teams = team_repo.list_teams_by_org(&org.id).await.map_err(convert_error)?;
+    let teams = team_repo.list_teams_by_org(&org.id).await.map_err(ApiError::from)?;
 
     Ok(Json(ListOrgTeamsResponse { teams }))
 }
@@ -826,14 +792,14 @@ pub async fn create_org_team(
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Validate request
-    payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Resolve org_name to organization
     let org_repo = org_repository_for_state(&state)?;
     let org = org_repo
         .get_organization_by_name(&org_name)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
 
     // Set org_id on the request
@@ -858,14 +824,15 @@ pub async fn create_org_team(
                 }
             }
         }
-        convert_error(e)
+        ApiError::from(e)
     })?;
 
     // Auto-create team memberships for all existing org members
     let org_membership_repo = org_membership_repository_for_state(&state)?;
     let team_membership_repo: Arc<dyn TeamMembershipRepository> =
         Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
-    let org_members = org_membership_repo.list_org_members(&org.id).await.map_err(convert_error)?;
+    let org_members =
+        org_membership_repo.list_org_members(&org.id).await.map_err(ApiError::from)?;
     for member in &org_members {
         let scopes = crate::auth::invitation_service::scopes_for_role(member.role, &team.name);
         let membership = crate::auth::user::NewUserTeamMembership {
@@ -874,7 +841,7 @@ pub async fn create_org_team(
             team: team.id.to_string(),
             scopes,
         };
-        team_membership_repo.create_membership(membership).await.map_err(convert_error)?;
+        team_membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
     }
 
     Ok((StatusCode::CREATED, Json(team)))

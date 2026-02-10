@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use crate::api::handlers::PaginatedResponse;
 
 #[derive(Subcommand)]
 pub enum ListenerCommands {
@@ -171,12 +172,12 @@ async fn list_listeners(
 
     path.push_str(&params.join("&"));
 
-    let response: Vec<ListenerResponse> = client.get_json(&path).await?;
+    let response: PaginatedResponse<ListenerResponse> = client.get_json(&path).await?;
 
     if output == "table" {
-        print_listeners_table(&response);
+        print_listeners_table(&response.items);
     } else {
-        print_output(&response, output)?;
+        print_output(&response.items, output)?;
     }
 
     Ok(())

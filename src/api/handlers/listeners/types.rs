@@ -23,12 +23,6 @@ pub struct ListenerResponse {
     pub config: ListenerConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct ListListenersQuery {
-    pub limit: Option<i32>,
-    pub offset: Option<i32>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateListenerBody {

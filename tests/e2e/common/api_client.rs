@@ -209,11 +209,14 @@ pub struct DataplaneResponse {
     pub description: Option<String>,
 }
 
-/// List dataplanes response wrapper - matches backend ListDataplanesResponse
+/// Paginated list response wrapper - matches backend PaginatedResponse<T>
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListDataplanesResponse {
-    pub dataplanes: Vec<DataplaneResponse>,
+pub struct PaginatedResponse<T> {
+    pub items: Vec<T>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
 }
 
 // ============================================================================
@@ -260,18 +263,7 @@ pub struct CertificateMetadata {
 }
 
 /// Response for listing certificates with pagination
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListCertificatesResponse {
-    /// List of certificates (without private keys)
-    pub certificates: Vec<CertificateMetadata>,
-    /// Total number of certificates for this team
-    pub total: i64,
-    /// Pagination limit used
-    pub limit: i64,
-    /// Pagination offset used
-    pub offset: i64,
-}
+pub type ListCertificatesResponse = PaginatedResponse<CertificateMetadata>;
 
 // ============================================================================
 // Organization API Response Types
@@ -296,15 +288,8 @@ pub struct OrgResponse {
     pub updated_at: Option<String>,
 }
 
-/// List organizations response
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListOrgsResponse {
-    pub organizations: Vec<OrgResponse>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+/// List organizations response — now uses PaginatedResponse<OrgResponse>
+pub type ListOrgsResponse = PaginatedResponse<OrgResponse>;
 
 /// Organization membership response
 #[derive(Debug, Clone, Deserialize)]
@@ -797,8 +782,8 @@ impl ApiClient {
             anyhow::bail!("List dataplanes failed: {} - {}", status, text);
         }
 
-        let result: ListDataplanesResponse = resp.json().await?;
-        Ok(result.dataplanes)
+        let result: PaginatedResponse<DataplaneResponse> = resp.json().await?;
+        Ok(result.items)
     }
 
     /// Delete a dataplane by team and name
@@ -843,10 +828,10 @@ impl ApiClient {
             anyhow::bail!("List teams failed: {} - {}", status, text);
         }
 
-        // Response is paginated: {"teams": [...], "total": N, ...}
+        // Response is paginated: {"items": [...], "total": N, ...}
         let body: Value = resp.json().await?;
         let teams = body
-            .get("teams")
+            .get("items")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -856,6 +841,25 @@ impl ApiClient {
             .unwrap_or_default();
 
         Ok(teams)
+    }
+
+    /// Delete a team by ID (admin only)
+    pub async fn delete_team(&self, token: &str, team_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/admin/teams/{}", self.base_url, team_id);
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Delete team failed: {} - {}", status, text);
+        }
+
+        Ok(())
     }
 
     /// Delete all dataplanes across all teams (for test cleanup)
@@ -1110,8 +1114,8 @@ impl ApiClient {
             anyhow::bail!("List clusters failed: {} - {}", status, text);
         }
 
-        let result: Vec<ClusterResponse> = resp.json().await?;
-        Ok(result)
+        let result: PaginatedResponse<ClusterResponse> = resp.json().await?;
+        Ok(result.items)
     }
 
     /// Get a filter by ID
@@ -1707,9 +1711,9 @@ impl ApiClient {
                 .await?;
 
             if list_resp.status().is_success() {
-                // Response is paginated: {"teams": [...], "total": N, ...}
+                // Response is paginated: {"items": [...], "total": N, ...}
                 let body: Value = list_resp.json().await?;
-                if let Some(teams_array) = body.get("teams").and_then(|v| v.as_array()) {
+                if let Some(teams_array) = body.get("items").and_then(|v| v.as_array()) {
                     for team_value in teams_array {
                         if let Ok(team) = serde_json::from_value::<TeamResponse>(team_value.clone())
                         {
@@ -1779,7 +1783,7 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         Some(id) => id.clone(),
         None => {
             let orgs = api.list_organizations(&admin_token).await?;
-            orgs.organizations
+            orgs.items
                 .iter()
                 .find(|o| o.name == "default")
                 .map(|o| o.id.clone())
@@ -1908,7 +1912,7 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         Some(id) => id.clone(),
         None => {
             let orgs = api.list_organizations(&admin_token).await?;
-            orgs.organizations
+            orgs.items
                 .iter()
                 .find(|o| o.name == "default")
                 .map(|o| o.id.clone())

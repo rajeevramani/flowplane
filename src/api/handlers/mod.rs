@@ -18,6 +18,7 @@ pub mod mcp_tools;
 pub mod openapi_import;
 pub mod openapi_utils;
 pub mod organizations;
+pub mod pagination;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
@@ -119,7 +120,7 @@ pub use stats::{
 };
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
-    get_mtls_status_handler, get_team_bootstrap_handler, list_teams_handler,
+    get_mtls_status_handler, list_teams_handler,
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
@@ -127,7 +128,13 @@ pub use users::{
 };
 
 // Re-export team access utilities for use across handlers
-pub use team_access::{get_effective_team_scopes, verify_team_access, TeamOwned};
+pub use team_access::{
+    default_limit, get_db_pool, get_effective_team_scopes, require_admin, verify_team_access,
+    TeamOwned, TeamPath,
+};
+
+// Re-export pagination types
+pub use pagination::{PaginatedResponse, PaginationQuery};
 
 // Re-export hierarchy handlers for route hierarchy filter attachment
 pub use hierarchy::{
@@ -148,41 +155,34 @@ pub use clusters::{
 };
 pub use filters::{
     AttachFilterRequest, CreateFilterRequest, FilterResponse, FilterTypeFormSection,
-    FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse, ListFiltersQuery,
-    ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
+    FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse, ListenerFiltersResponse,
+    RouteFiltersResponse, UpdateFilterRequest,
 };
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
-pub use mcp_tools::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use mcp_tools::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 pub use organizations::{
     AddOrgMemberRequest, CurrentOrgResponse, ListOrgMembersResponse, ListOrgTeamsResponse,
-    ListOrganizationsQuery, ListOrganizationsResponse, UpdateOrgMemberRoleRequest,
+    UpdateOrgMemberRoleRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
-    ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
+    RevokeCertificateRequest,
 };
 pub use secrets::{
-    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath, TeamSecretPath,
-    UpdateSecretRequest,
+    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamSecretPath, UpdateSecretRequest,
 };
-pub use teams::{
-    AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse,
-    MtlsStatusResponse,
-};
-pub use users::ListUsersResponse;
+pub use teams::{ListTeamsResponse, MtlsStatusResponse};
 
 // Custom WASM filter DTOs
 pub use custom_wasm_filters::{
-    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
-    ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, UpdateCustomWasmFilterRequest,
 };
 
 // Dataplane DTOs
 pub use dataplanes::{
-    BootstrapQuery as DataplaneBootstrapQuery, CreateDataplaneBody, DataplaneResponse,
-    ListDataplanesQuery, ListDataplanesResponse, UpdateDataplaneBody,
+    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, UpdateDataplaneBody,
 };
 
 // Hierarchy DTOs for route hierarchy filter attachment

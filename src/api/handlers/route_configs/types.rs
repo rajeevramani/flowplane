@@ -240,12 +240,6 @@ pub struct RouteConfigResponse {
     pub config: RouteConfigDefinition,
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct ListRouteConfigsQuery {
-    pub limit: Option<i32>,
-    pub offset: Option<i32>,
-}
-
 // === Conversion Helpers ===
 
 impl RouteConfigDefinition {

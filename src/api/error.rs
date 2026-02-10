@@ -196,6 +196,47 @@ impl From<AuthError> for ApiError {
     }
 }
 
+/// Converts [`validator::ValidationErrors`] to API-layer [`ApiError`].
+///
+/// Formats field-level validation errors into a human-readable message:
+/// `"Validation failed: field1: message1; field2: message2"`
+impl From<validator::ValidationErrors> for ApiError {
+    fn from(errors: validator::ValidationErrors) -> Self {
+        let message = errors
+            .field_errors()
+            .iter()
+            .map(|(field, field_errors)| {
+                let error_messages: Vec<String> = field_errors
+                    .iter()
+                    .map(|e| {
+                        e.message.as_ref().map_or("Invalid value".to_string(), |m| m.to_string())
+                    })
+                    .collect();
+                format!("{}: {}", field, error_messages.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        ApiError::BadRequest(format!("Validation failed: {}", message))
+    }
+}
+
+/// Converts [`McpServiceError`] to API-layer [`ApiError`].
+///
+/// Maps MCP service errors to appropriate HTTP status codes.
+impl From<crate::services::McpServiceError> for ApiError {
+    fn from(err: crate::services::McpServiceError) -> Self {
+        match err {
+            crate::services::McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
+            crate::services::McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
+            crate::services::McpServiceError::Database(e) => {
+                ApiError::Internal(format!("Database error: {}", e))
+            }
+            crate::services::McpServiceError::Internal(msg) => ApiError::Internal(msg),
+        }
+    }
+}
+
 impl ApiError {
     /// Creates a service unavailable error (503).
     ///

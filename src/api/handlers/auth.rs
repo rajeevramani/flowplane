@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::api::error::ApiError;
@@ -23,7 +23,6 @@ use crate::auth::{
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
 use crate::domain::UserId;
-use crate::errors::Error;
 use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
@@ -110,16 +109,7 @@ impl UpdateTokenBody {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListTokensQuery {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
-
-fn convert_error(err: Error) -> ApiError {
-    ApiError::from(err)
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 #[utoipa::path(
     post,
@@ -142,13 +132,13 @@ pub async fn create_token_handler(
     // Authorization: require tokens:write scope
     require_resource_access(&context, "tokens", "write", None)?;
 
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let request = payload.into_request(&context);
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.create_token(request, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.create_token(request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(secret)))
 }
@@ -156,25 +146,24 @@ pub async fn create_token_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/tokens",
-    params(ListTokensQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Tokens list", body = [PersonalAccessToken]),
+        (status = 200, description = "Tokens list", body = PaginatedResponse<PersonalAccessToken>),
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
     tag = "Authentication"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<ListTokensQuery>,
-) -> Result<Json<Vec<PersonalAccessToken>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<PersonalAccessToken>>, ApiError> {
     // Authorization: require tokens:read scope
     require_resource_access(&context, "tokens", "read", None)?;
 
-    let limit = params.limit.unwrap_or(50).clamp(1, 1000);
-    let offset = params.offset.unwrap_or(0).max(0);
+    let (limit, offset) = params.clamp(1000);
 
     // Filter tokens by current user - only show tokens created by this user
     let created_by_filter = context.user_id.as_ref().map(|user_id| format!("user:{}", user_id));
@@ -183,9 +172,10 @@ pub async fn list_tokens_handler(
     let tokens = service
         .list_tokens(limit, offset, created_by_filter.as_deref())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
-    Ok(Json(tokens))
+    let total = tokens.len() as i64;
+    Ok(Json(PaginatedResponse::new(tokens, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -210,7 +200,7 @@ pub async fn get_token_handler(
     require_resource_access(&context, "tokens", "read", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.get_token(&id).await.map_err(convert_error)?;
+    let token = service.get_token(&id).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -239,10 +229,10 @@ pub async fn update_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let request = payload.into_request();
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.update_token(&id, request, Some(&context)).await.map_err(convert_error)?;
+    let token = service.update_token(&id, request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok(Json(token))
 }
@@ -269,7 +259,7 @@ pub async fn revoke_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.revoke_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let token = service.revoke_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -295,7 +285,7 @@ pub async fn rotate_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.rotate_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.rotate_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(secret))
 }
 
@@ -368,7 +358,7 @@ pub async fn create_session_handler(
     Json(payload): Json<CreateSessionBody>,
 ) -> Result<SessionCreatedResponse, ApiError> {
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Create session service
     let service = session_service_for_state(&state)?;
@@ -377,7 +367,7 @@ pub async fn create_session_handler(
     let session_response = service
         .create_session_from_setup_token(&payload.setup_token)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Build secure session cookie using configurable Secure flag
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
@@ -461,7 +451,7 @@ pub async fn get_session_info_handler(
     let service = session_service_for_state(&state)?;
 
     // Validate session
-    let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
+    let session_info = service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Get user information - need to find the user associated with this session
     let (user_id_str, name, email, is_admin, user_org_id) =
@@ -478,7 +468,7 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 let user_id = UserId::from_string(user_id_str.to_string());
-                let user = user_repo.get_user(&user_id).await.map_err(convert_error)?.ok_or_else(
+                let user = user_repo.get_user(&user_id).await.map_err(ApiError::from)?.ok_or_else(
                     || ApiError::Internal("User not found for session token".to_string()),
                 )?;
 
@@ -500,7 +490,7 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 // Get all users and find the admin (during bootstrap, there's only one user)
-                let users = user_repo.list_users(100, 0).await.map_err(convert_error)?;
+                let users = user_repo.list_users(100, 0).await.map_err(ApiError::from)?;
                 let admin_user = users
                     .iter()
                     .find(|u| u.is_admin)
@@ -609,12 +599,12 @@ pub async fn logout_handler(
     let session_service = session_service_for_state(&state)?;
 
     // Validate the session exists and is active before revoking
-    session_service.validate_session(&session_token).await.map_err(convert_error)?;
+    session_service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Create token service and revoke the session token
     // Note: No AuthContext available for logout since we're terminating the session
     let token_service = token_service_for_state(&state)?;
-    token_service.revoke_token(token_id, None).await.map_err(convert_error)?;
+    token_service.revoke_token(token_id, None).await.map_err(ApiError::from)?;
 
     // Build cookie clearing directive (same name, empty value, immediate expiration)
     let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
@@ -717,7 +707,7 @@ pub async fn login_handler(
     }
 
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Extract client context from headers for audit logging
     let client_ip = extract_client_ip(&headers, &state.auth_config);
@@ -740,7 +730,7 @@ pub async fn login_handler(
     let (user, scopes) = login_service
         .login(&login_request, client_ip.clone(), user_agent.clone())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Create session service
     let session_service = session_service_for_state(&state)?;
@@ -749,7 +739,7 @@ pub async fn login_handler(
     let session_response = session_service
         .create_session_from_user(&user.id, &user.email, scopes.clone(), client_ip, user_agent)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Extract teams from scopes
     let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
@@ -817,7 +807,7 @@ pub async fn change_password_handler(
     use crate::auth::user_service::UserService;
 
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Ensure user is authenticated via session (not PAT)
     let user_id_str = context
@@ -853,7 +843,7 @@ pub async fn change_password_handler(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -912,18 +902,18 @@ pub async fn refresh_session_handler(
     let user = user_repo
         .get_user(&user_id)
         .await
-        .map_err(convert_error)?
+        .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::Internal("User not found".to_string()))?;
 
     // Fetch team memberships
     let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
     let team_memberships =
-        membership_repo.list_user_memberships(&user_id).await.map_err(convert_error)?;
+        membership_repo.list_user_memberships(&user_id).await.map_err(ApiError::from)?;
 
     // Fetch org memberships
     let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     let org_memberships =
-        org_membership_repo.list_user_memberships(&user_id).await.map_err(convert_error)?;
+        org_membership_repo.list_user_memberships(&user_id).await.map_err(ApiError::from)?;
 
     // Recompute scopes
     let scopes = compute_scopes_from_memberships(&user, &team_memberships, &org_memberships);
@@ -937,7 +927,7 @@ pub async fn refresh_session_handler(
         expires_at: None,
         scopes: Some(scopes.clone()),
     };
-    token_repo.update_metadata(&context.token_id, update).await.map_err(convert_error)?;
+    token_repo.update_metadata(&context.token_id, update).await.map_err(ApiError::from)?;
 
     // Extract teams from refreshed scopes
     let teams = crate::auth::session::extract_teams_from_scopes(&scopes);
@@ -1097,13 +1087,13 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListTokensQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let Json(tokens) = result.unwrap();
-        assert!(!tokens.is_empty());
+        let Json(resp) = result.unwrap();
+        assert!(!resp.items.is_empty());
     }
 
     #[tokio::test]
@@ -1113,7 +1103,7 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(minimal_auth_context()),
-            Query(ListTokensQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
 
@@ -1144,13 +1134,13 @@ mod tests {
         let result = list_tokens_handler(
             State(state),
             Extension(admin_auth_context()),
-            Query(ListTokensQuery { limit: Some(2), offset: Some(0) }),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
 
         assert!(result.is_ok());
-        let Json(tokens) = result.unwrap();
-        assert_eq!(tokens.len(), 2);
+        let Json(resp) = result.unwrap();
+        assert_eq!(resp.items.len(), 2);
     }
 
     #[tokio::test]

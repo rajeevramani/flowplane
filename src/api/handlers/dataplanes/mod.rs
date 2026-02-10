@@ -7,9 +7,11 @@
 pub mod types;
 
 pub use types::{
-    BootstrapQuery, CreateDataplaneBody, DataplaneResponse, ListDataplanesQuery,
-    ListDataplanesResponse, TeamDataplanePath, UpdateDataplaneBody,
+    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, TeamDataplanePath,
+    UpdateDataplaneBody,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -22,12 +24,14 @@ use validator::Validate;
 use crate::{
     api::{error::ApiError, routes::ApiState},
     auth::{authorization::require_resource_access, models::AuthContext},
-    errors::Error,
-    storage::repositories::{CreateDataplaneRequest, DataplaneRepository, UpdateDataplaneRequest},
+    storage::repositories::{
+        CreateDataplaneRequest, DataplaneRepository, TeamRepository, UpdateDataplaneRequest,
+    },
 };
 
 use super::team_access::{
     get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+    verify_team_access,
 };
 
 /// Create a new dataplane
@@ -54,7 +58,7 @@ pub async fn create_dataplane_handler(
     Json(payload): Json<CreateDataplaneBody>,
 ) -> Result<(StatusCode, Json<DataplaneResponse>), ApiError> {
     // Validate request
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Validate team matches
     if payload.team != team {
@@ -90,7 +94,7 @@ pub async fn create_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     // Check if name is available
-    if repo.exists_by_name(&team_id, &payload.name).await.map_err(convert_error)? {
+    if repo.exists_by_name(&team_id, &payload.name).await.map_err(ApiError::from)? {
         return Err(ApiError::Conflict(format!(
             "Dataplane with name '{}' already exists for team '{}'",
             payload.name, team
@@ -105,7 +109,7 @@ pub async fn create_dataplane_handler(
         description: payload.description,
     };
 
-    let dataplane = repo.create(request).await.map_err(convert_error)?;
+    let dataplane = repo.create(request).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(DataplaneResponse::from(dataplane))))
 }
@@ -115,22 +119,22 @@ pub async fn create_dataplane_handler(
     get,
     path = "/api/v1/teams/{team}/dataplanes",
     responses(
-        (status = 200, description = "List of dataplanes", body = ListDataplanesResponse),
+        (status = 200, description = "List of dataplanes", body = PaginatedResponse<DataplaneResponse>),
         (status = 403, description = "Forbidden - insufficient permissions")
     ),
     params(
         ("team" = String, Path, description = "Team name"),
-        ListDataplanesQuery
+        PaginationQuery
     ),
     tag = "Dataplanes"
 )]
-#[instrument(skip(state, query), fields(team = %team, user_id = ?context.user_id, limit = ?query.limit))]
+#[instrument(skip(state, query), fields(team = %team, user_id = ?context.user_id, limit = %query.limit))]
 pub async fn list_dataplanes_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Query(query): Query<ListDataplanesQuery>,
-) -> Result<Json<ListDataplanesResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<DataplaneResponse>>, ApiError> {
     // Authorization
     require_resource_access_resolved(
         &state,
@@ -141,6 +145,8 @@ pub async fn list_dataplanes_handler(
         context.org_id.as_ref(),
     )
     .await?;
+
+    let (limit, offset) = query.clamp(1000);
 
     // Resolve team name to UUID for database storage
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -159,14 +165,16 @@ pub async fn list_dataplanes_handler(
         .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
-    let dataplanes =
-        repo.list_by_team(&team_id, query.limit, query.offset).await.map_err(convert_error)?;
+    let dataplanes = repo
+        .list_by_team(&team_id, Some(limit as i32), Some(offset as i32))
+        .await
+        .map_err(ApiError::from)?;
 
-    let response = ListDataplanesResponse {
-        dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
-    };
+    let total = dataplanes.len() as i64;
+    let items: Vec<DataplaneResponse> =
+        dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(response))
+    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
 }
 
 /// List all dataplanes (admin or multi-team access)
@@ -174,20 +182,22 @@ pub async fn list_dataplanes_handler(
     get,
     path = "/api/v1/dataplanes",
     responses(
-        (status = 200, description = "List of all dataplanes", body = ListDataplanesResponse),
+        (status = 200, description = "List of all dataplanes", body = PaginatedResponse<DataplaneResponse>),
         (status = 403, description = "Forbidden - insufficient permissions")
     ),
-    params(ListDataplanesQuery),
+    params(PaginationQuery),
     tag = "Dataplanes"
 )]
-#[instrument(skip(state, query), fields(user_id = ?context.user_id, limit = ?query.limit))]
+#[instrument(skip(state, query), fields(user_id = ?context.user_id, limit = %query.limit))]
 pub async fn list_all_dataplanes_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<ListDataplanesQuery>,
-) -> Result<Json<ListDataplanesResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<DataplaneResponse>>, ApiError> {
     // Authorization: require dataplanes:read scope
     require_resource_access(&context, "dataplanes", "read", None)?;
+
+    let (limit, offset) = query.clamp(1000);
 
     // Get effective teams for the user
     let cluster_repo = state
@@ -203,14 +213,16 @@ pub async fn list_all_dataplanes_handler(
 
     let repo = DataplaneRepository::new(pool);
 
-    let dataplanes =
-        repo.list_by_teams(&teams, query.limit, query.offset).await.map_err(convert_error)?;
+    let dataplanes = repo
+        .list_by_teams(&teams, Some(limit as i32), Some(offset as i32))
+        .await
+        .map_err(ApiError::from)?;
 
-    let response = ListDataplanesResponse {
-        dataplanes: dataplanes.into_iter().map(DataplaneResponse::from).collect(),
-    };
+    let total = dataplanes.len() as i64;
+    let items: Vec<DataplaneResponse> =
+        dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(response))
+    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
 }
 
 /// Get a specific dataplane by name
@@ -265,9 +277,14 @@ pub async fn get_dataplane_handler(
     let repo = DataplaneRepository::new(cluster_repo.pool().clone());
 
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     Ok(Json(DataplaneResponse::from(dataplane)))
 }
@@ -299,7 +316,7 @@ pub async fn update_dataplane_handler(
     let (team, name) = path;
 
     // Validate request
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization
     require_resource_access_resolved(
@@ -331,9 +348,14 @@ pub async fn update_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     // Update dataplane
     let request = UpdateDataplaneRequest {
@@ -341,7 +363,7 @@ pub async fn update_dataplane_handler(
         description: Some(payload.description),
     };
 
-    let updated = repo.update(&dataplane.id, request).await.map_err(convert_error)?;
+    let updated = repo.update(&dataplane.id, request).await.map_err(ApiError::from)?;
 
     Ok(Json(DataplaneResponse::from(updated)))
 }
@@ -399,12 +421,17 @@ pub async fn delete_dataplane_handler(
 
     // Get existing dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
 
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+
     // Delete dataplane
-    repo.delete(&dataplane.id).await.map_err(convert_error)?;
+    repo.delete(&dataplane.id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -447,7 +474,7 @@ fn build_mtls_transport_socket(
 
 /// Generate Envoy configuration for a specific dataplane
 ///
-/// This endpoint generates an Envoy bootstrap configuration that enables team-scoped
+/// This endpoint generates an Envoy configuration that enables team-scoped
 /// resource discovery via xDS with dataplane-specific node ID. When Envoy starts with
 /// this config, it will:
 /// 1. Connect to the xDS server with team and dataplane metadata
@@ -466,13 +493,13 @@ fn build_mtls_transport_socket(
     params(
         ("team" = String, Path, description = "Team name"),
         ("name" = String, Path, description = "Dataplane name"),
-        BootstrapQuery
+        EnvoyConfigQuery
     ),
     responses(
-        (status = 200, description = "Envoy bootstrap configuration in YAML or JSON format"),
+        (status = 200, description = "Envoy configuration in YAML or JSON format"),
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Dataplane not found"),
-        (status = 500, description = "Internal server error during bootstrap generation")
+        (status = 500, description = "Internal server error during envoy config generation")
     ),
     tag = "Dataplanes"
 )]
@@ -481,7 +508,7 @@ pub async fn generate_envoy_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Query(query): Query<BootstrapQuery>,
+    Query(query): Query<EnvoyConfigQuery>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
     let (team, name) = path;
 
@@ -515,9 +542,14 @@ pub async fn generate_envoy_config_handler(
 
     // Get dataplane
     let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(convert_error)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
         })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
 
     let format = query.format.as_deref().unwrap_or("yaml").to_lowercase();
 
@@ -530,7 +562,7 @@ pub async fn generate_envoy_config_handler(
     let key_path = query.key_path.as_deref().unwrap_or(DEFAULT_KEY_PATH);
     let ca_path = query.ca_path.as_deref().unwrap_or(DEFAULT_CA_PATH);
 
-    // Build ADS bootstrap with node metadata for team-based filtering
+    // Build ADS config with node metadata for team-based filtering
     // Priority: query param > env var > config bind_address
     let xds_addr = query
         .xds_host
@@ -544,7 +576,7 @@ pub async fn generate_envoy_config_handler(
         xds_port = %xds_port,
         from_query = %query.xds_host.is_some(),
         from_env = %std::env::var("FLOWPLANE_XDS_ADVERTISE_ADDRESS").is_ok(),
-        "Using xDS address for bootstrap config"
+        "Using xDS address for envoy config"
     );
 
     // Use dataplane ID in node.id for explicit dataplane identification
@@ -561,6 +593,14 @@ pub async fn generate_envoy_config_handler(
 
     // Get Envoy admin config from configuration
     let envoy_admin = &state.xds_state.config.envoy_admin;
+
+    // Try to get team-specific admin port from database
+    let team_repo = team_repo_from_state(&state)?;
+    let team_data = team_repo.get_team_by_name(&team).await.map_err(ApiError::from)?;
+
+    // Use team-specific port if available, otherwise fall back to global config
+    let admin_port =
+        team_data.as_ref().and_then(|t| t.envoy_admin_port).unwrap_or(envoy_admin.port);
 
     // Build xds_cluster configuration
     let mut xds_cluster = serde_json::json!({
@@ -603,18 +643,18 @@ pub async fn generate_envoy_config_handler(
             cert_path = %cert_path,
             key_path = %key_path,
             ca_path = %ca_path,
-            "mTLS enabled in dataplane bootstrap config"
+            "mTLS enabled in dataplane envoy config"
         );
     }
 
-    // Generate Envoy bootstrap configuration
-    let bootstrap = serde_json::json!({
+    // Generate Envoy configuration
+    let envoy_config = serde_json::json!({
         "admin": {
             "access_log_path": envoy_admin.access_log_path,
             "address": {
                 "socket_address": {
                     "address": envoy_admin.bind_address,
-                    "port_value": envoy_admin.port
+                    "port_value": admin_port
                 }
             }
         },
@@ -643,9 +683,9 @@ pub async fn generate_envoy_config_handler(
         }
     });
 
-    // Return bootstrap in requested format
+    // Return envoy config in requested format
     let response = if format == "json" {
-        let body = serde_json::to_vec(&bootstrap)
+        let body = serde_json::to_vec(&envoy_config)
             .map_err(|e| ApiError::service_unavailable(e.to_string()))?;
         Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
@@ -654,7 +694,7 @@ pub async fn generate_envoy_config_handler(
                 ApiError::service_unavailable(format!("Failed to build response: {}", e))
             })?
     } else {
-        let yaml = serde_yaml::to_string(&bootstrap)
+        let yaml = serde_yaml::to_string(&envoy_config)
             .map_err(|e| ApiError::service_unavailable(e.to_string()))?;
         Response::builder()
             .header(header::CONTENT_TYPE, "application/yaml")
@@ -665,9 +705,4 @@ pub async fn generate_envoy_config_handler(
     };
 
     Ok(response)
-}
-
-/// Convert domain errors to API errors
-fn convert_error(error: crate::errors::Error) -> ApiError {
-    ApiError::from(error)
 }

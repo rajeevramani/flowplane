@@ -1,5 +1,6 @@
 //! Request and response types for MCP tools API
 
+use crate::api::handlers::pagination::default_limit;
 use crate::domain::mcp::SchemaSource;
 use crate::domain::{McpToolCategory, McpToolSourceType};
 use crate::mcp::protocol::Tool;
@@ -24,13 +25,13 @@ pub struct ListMcpToolsQuery {
     #[serde(default)]
     pub search: Option<String>,
 
-    /// Maximum number of tools to return
-    #[serde(default)]
-    pub limit: Option<i64>,
+    /// Maximum number of tools to return (default: 50)
+    #[serde(default = "default_limit")]
+    pub limit: i64,
 
-    /// Offset for pagination
+    /// Offset for pagination (default: 0)
     #[serde(default)]
-    pub offset: Option<i64>,
+    pub offset: i64,
 }
 
 /// MCP tool response DTO
@@ -155,23 +156,6 @@ impl McpToolResponse {
             updated_at: now,
         }
     }
-}
-
-/// Paginated response for listing MCP tools
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListMcpToolsResponse {
-    /// List of MCP tools
-    pub tools: Vec<McpToolResponse>,
-
-    /// Total count of tools matching the query
-    pub total: i64,
-
-    /// Limit used for pagination
-    pub limit: i64,
-
-    /// Offset used for pagination
-    pub offset: i64,
 }
 
 /// Request body for updating an MCP tool

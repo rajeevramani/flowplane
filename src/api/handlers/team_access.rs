@@ -10,6 +10,16 @@ use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_ad
 use crate::auth::models::AuthContext;
 use crate::domain::OrgId;
 use crate::storage::repositories::TeamRepository;
+use serde::Deserialize;
+
+/// Path parameters for team-scoped operations.
+///
+/// Shared struct used by secrets, custom_wasm_filters, and mcp_routes handlers
+/// to extract the team name from URL path parameters like `/teams/{team}/...`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TeamPath {
+    pub team: String,
+}
 
 /// Trait for resources that belong to a team.
 ///
@@ -45,6 +55,22 @@ pub trait TeamOwned {
         "name"
     }
 }
+
+/// Check if the current context has admin privileges.
+///
+/// Returns `Ok(())` if the user has `admin:all` scope, `Err(Forbidden)` otherwise.
+pub fn require_admin(context: &AuthContext) -> Result<(), ApiError> {
+    if !has_admin_bypass(context) {
+        return Err(ApiError::forbidden("Admin privileges required"));
+    }
+    Ok(())
+}
+
+/// Default limit for paginated list queries.
+///
+/// Re-exported from `pagination` module for backward compatibility with
+/// existing `#[serde(default = "default_limit")]` usages.
+pub use super::pagination::default_limit;
 
 /// Get effective team scopes from auth context.
 ///
@@ -170,6 +196,16 @@ pub async fn require_resource_access_resolved(
         resolved_team.as_deref(),
     )
     .map_err(|_| ApiError::Forbidden("Access denied".to_string()))
+}
+
+/// Get the database pool from ApiState.
+pub fn get_db_pool(state: &ApiState) -> Result<std::sync::Arc<crate::storage::DbPool>, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Database not available"))?;
+    Ok(std::sync::Arc::new(cluster_repo.pool().clone()))
 }
 
 /// Get team repository from ApiState.

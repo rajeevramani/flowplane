@@ -5,9 +5,10 @@
 
 pub mod types;
 
+use super::team_access::TeamPath;
 pub use types::{
     CreateCustomWasmFilterRequest, CustomFilterPath, CustomWasmFilterResponse,
-    ListCustomFiltersQuery, ListCustomWasmFiltersResponse, TeamPath, UpdateCustomWasmFilterRequest,
+    UpdateCustomWasmFilterRequest,
 };
 
 use axum::{
@@ -22,11 +23,18 @@ use tracing::{info, instrument, warn};
 
 use crate::{
     api::{
-        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+        error::ApiError,
+        handlers::{
+            pagination::{PaginatedResponse, PaginationQuery},
+            team_access::{
+                get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+                verify_team_access,
+            },
+        },
+        routes::ApiState,
     },
     auth::models::AuthContext,
     domain::CustomWasmFilterId,
-    errors::Error,
     services::CustomWasmFilterService,
     storage::UpdateCustomWasmFilterRequest as DbUpdateRequest,
 };
@@ -116,7 +124,7 @@ pub async fn create_custom_wasm_filter_handler(
     Json(payload): Json<CreateCustomWasmFilterRequest>,
 ) -> Result<(StatusCode, Json<CustomWasmFilterResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
     verify_team_access_for_filters(&state, &context, &team, "write").await?;
@@ -157,13 +165,12 @@ pub async fn create_custom_wasm_filter_handler(
     get,
     path = "/api/v1/teams/{team}/custom-filters",
     responses(
-        (status = 200, description = "List of custom filters", body = ListCustomWasmFiltersResponse),
+        (status = 200, description = "List of custom filters", body = PaginatedResponse<CustomWasmFilterResponse>),
         (status = 503, description = "Service unavailable")
     ),
     params(
         ("team" = String, Path, description = "Team name"),
-        ("limit" = Option<i64>, Query, description = "Maximum results to return"),
-        ("offset" = Option<i64>, Query, description = "Offset for pagination")
+        PaginationQuery
     ),
     tag = "Custom WASM Filters",
     security(("bearerAuth" = []))
@@ -173,8 +180,8 @@ pub async fn list_custom_wasm_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Query(query): Query<ListCustomFiltersQuery>,
-) -> Result<Json<ListCustomWasmFiltersResponse>, ApiError> {
+    Query(query): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<CustomWasmFilterResponse>>, ApiError> {
     // Verify user has read access
     verify_team_access_for_filters(&state, &context, &team, "read").await?;
 
@@ -189,7 +196,7 @@ pub async fn list_custom_wasm_filters_handler(
 
     let items = filters.iter().map(CustomWasmFilterResponse::from_data).collect();
 
-    Ok(Json(ListCustomWasmFiltersResponse { items, total }))
+    Ok(Json(PaginatedResponse::new(items, total, query.limit, query.offset)))
 }
 
 /// Get a custom WASM filter by ID
@@ -222,10 +229,10 @@ pub async fn get_custom_wasm_filter_handler(
     let filter_id = CustomWasmFilterId::from_string(id);
     let filter = service.get_custom_filter(&filter_id).await.map_err(ApiError::from)?;
 
-    // Verify filter belongs to requested team
-    if filter.team != team {
-        return Err(ApiError::NotFound("Custom filter not found".to_string()));
-    }
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let filter = verify_team_access(filter, &team_scopes).await?;
 
     Ok(Json(CustomWasmFilterResponse::from_data(&filter)))
 }
@@ -256,7 +263,7 @@ pub async fn update_custom_wasm_filter_handler(
     Json(payload): Json<UpdateCustomWasmFilterRequest>,
 ) -> Result<Json<CustomWasmFilterResponse>, ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access
     verify_team_access_for_filters(&state, &context, &team, "write").await?;
@@ -267,9 +274,10 @@ pub async fn update_custom_wasm_filter_handler(
     let filter_id = CustomWasmFilterId::from_string(id);
     let existing = service.get_custom_filter(&filter_id).await.map_err(ApiError::from)?;
 
-    if existing.team != team {
-        return Err(ApiError::NotFound("Custom filter not found".to_string()));
-    }
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let _existing = verify_team_access(existing, &team_scopes).await?;
 
     // Build database update request
     let db_request = DbUpdateRequest {
@@ -319,9 +327,10 @@ pub async fn delete_custom_wasm_filter_handler(
     let filter_id = CustomWasmFilterId::from_string(id);
     let existing = service.get_custom_filter(&filter_id).await.map_err(ApiError::from)?;
 
-    if existing.team != team {
-        return Err(ApiError::NotFound("Custom filter not found".to_string()));
-    }
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Store the filter type before deletion for schema unregistration
     // Note: The service will check for filter instances and return 409 if any exist
@@ -366,9 +375,10 @@ pub async fn download_wasm_binary_handler(
     let filter_id = CustomWasmFilterId::from_string(id.clone());
     let existing = service.get_custom_filter(&filter_id).await.map_err(ApiError::from)?;
 
-    if existing.team != team {
-        return Err(ApiError::NotFound("Custom filter not found".to_string()));
-    }
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Get the binary
     let binary = service.get_wasm_binary(&filter_id).await.map_err(ApiError::from)?;

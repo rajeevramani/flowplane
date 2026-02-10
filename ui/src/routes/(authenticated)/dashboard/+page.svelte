@@ -393,7 +393,7 @@
 							Dataplanes
 						</h4>
 						<p class="text-sm text-gray-600">
-							Manage dataplanes and download Envoy bootstrap configuration
+							Manage dataplanes and download Envoy configuration
 						</p>
 					</div>
 					<svg
@@ -447,7 +447,7 @@
 						>3</span
 					>
 					<div>
-						<strong>Download Envoy config:</strong> Get the bootstrap configuration and connect
+						<strong>Download Envoy config:</strong> Get the Envoy configuration and connect
 						your Envoy proxy instances.
 					</div>
 				</li>

@@ -63,7 +63,7 @@ async fn test_2500_default_org_from_bootstrap() {
 
     assert!(orgs.total >= 1, "Should have at least 1 org");
     let default_org =
-        orgs.organizations.iter().find(|o| o.name == "default").expect("Default org should exist");
+        orgs.items.iter().find(|o| o.name == "default").expect("Default org should exist");
     println!("ok Default org found: id={}", default_org.id);
 
     // Get current org
@@ -137,7 +137,7 @@ async fn test_2501_create_organization() {
     .expect("List organizations should succeed");
 
     assert!(orgs.total >= 2, "Should have at least 2 orgs, got {}", orgs.total);
-    let org_names: Vec<&str> = orgs.organizations.iter().map(|o| o.name.as_str()).collect();
+    let org_names: Vec<&str> = orgs.items.iter().map(|o| o.name.as_str()).collect();
     assert!(org_names.contains(&"default"), "Should contain default org");
     assert!(org_names.contains(&"test-org-alpha"), "Should contain test-org-alpha");
     println!("ok Listed {} organizations: {:?}", orgs.total, org_names);
@@ -497,13 +497,30 @@ async fn test_2505_delete_organization() {
         .await
         .expect("List organizations should succeed");
 
-    let org_names_before: Vec<&str> =
-        orgs_before.organizations.iter().map(|o| o.name.as_str()).collect();
+    let org_names_before: Vec<&str> = orgs_before.items.iter().map(|o| o.name.as_str()).collect();
     assert!(
         org_names_before.contains(&"disposable-org"),
         "Disposable org should exist before deletion"
     );
     println!("ok Org exists before delete: {:?}", org_names_before);
+
+    // Clean up auto-created default team before deleting the org (FK constraint)
+    let teams = with_timeout(TestTimeout::default_with_label("List teams"), async {
+        api.list_teams(admin_token).await
+    })
+    .await
+    .expect("List teams should succeed");
+
+    for team in &teams {
+        if team.org_id.as_deref() == Some(&disposable_org.id) {
+            with_timeout(TestTimeout::default_with_label("Delete org team"), async {
+                api.delete_team(admin_token, &team.id).await
+            })
+            .await
+            .expect("Delete org team should succeed");
+            println!("ok Deleted team '{}' (id={}) from disposable org", team.name, team.id);
+        }
+    }
 
     // Delete the org
     with_timeout(TestTimeout::default_with_label("Delete organization"), async {
@@ -522,8 +539,7 @@ async fn test_2505_delete_organization() {
         .await
         .expect("List organizations should succeed");
 
-    let org_names_after: Vec<&str> =
-        orgs_after.organizations.iter().map(|o| o.name.as_str()).collect();
+    let org_names_after: Vec<&str> = orgs_after.items.iter().map(|o| o.name.as_str()).collect();
     assert!(
         !org_names_after.contains(&"disposable-org"),
         "Disposable org should not exist after deletion, but found: {:?}",
