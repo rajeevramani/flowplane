@@ -870,6 +870,37 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
 
+        // ============================================================================
+        // DEV AGENT WORKFLOW TOOLS
+        // ============================================================================
+        m.insert(
+            "dev_preflight_check",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "Pre-creation validation requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "cp_query_service",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "Query service summary requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "cp_export_schema_openapi",
+            ToolAuthorization {
+                resource: "aggregated-schemas",
+                action: "read",
+                description: "Export schemas as OpenAPI requires aggregated-schemas:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+
         m
     });
 
@@ -1268,6 +1299,9 @@ mod tests {
             "ops_trace_request",
             "ops_topology",
             "ops_config_validate",
+            "dev_preflight_check",
+            "cp_query_service",
+            "cp_export_schema_openapi",
         ];
 
         for tool_name in &read_tools {

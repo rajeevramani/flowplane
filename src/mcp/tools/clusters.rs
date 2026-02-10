@@ -145,6 +145,95 @@ Authorization: Requires clusters:read or cp:read scope."#
     )
 }
 
+/// Returns the MCP tool definition for querying a service summary.
+///
+/// Uses db_pool directly (ReportingRepository, no xds_state needed).
+pub fn cp_query_service_tool() -> Tool {
+    Tool::new(
+        "cp_query_service",
+        r#"Get a service-level summary for a cluster: endpoints, health, route configs, and listeners.
+
+PURPOSE: Understand how a backend service is connected — which routes send traffic to it and which
+listeners expose those routes. Combines cluster info, endpoint health, routing, and listener data
+in a single call.
+
+USE CASES:
+- Verify a backend is fully wired (cluster → route_config → listener)
+- Check endpoint health before deployments
+- Understand the traffic path to a specific service
+- Pre-deployment validation ("is this service reachable?")
+
+PARAMETERS:
+- name (required): Cluster name to summarize
+
+EXAMPLE:
+{ "name": "orders-svc" }
+
+RETURNS:
+- cluster: Cluster info with endpoint counts and health (or null if not found)
+- route_configs: Route configurations referencing this cluster
+- listeners: Listeners bound to those route configs
+- message: Summary description
+
+TOKEN BUDGET: <150 tokens
+
+Authorization: Requires clusters:read or cp:read scope."#
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Cluster name to summarize"
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
+/// Execute the cp_query_service tool.
+///
+/// Returns a service-level summary using ReportingRepository (db_pool only, no xds_state).
+#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_service")]
+pub async fn execute_query_service(
+    db_pool: &crate::storage::DbPool,
+    team: &str,
+    _org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    let repo = crate::storage::repositories::ReportingRepository::new(db_pool.clone());
+    let result = repo
+        .service_summary(name, team)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to get service summary: {}", e)))?;
+
+    let output = json!({
+        "success": true,
+        "cluster": result.cluster,
+        "route_configs": result.route_configs,
+        "listeners": result.listeners,
+        "message": if result.cluster.is_some() {
+            format!(
+                "Service '{}': {} route config(s), {} listener(s)",
+                name,
+                result.route_configs.len(),
+                result.listeners.len()
+            )
+        } else {
+            format!("Cluster '{}' not found for the current team", name)
+        }
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
 /// Execute the cp_list_clusters tool.
 ///
 /// Lists clusters with pagination, returning pretty-printed JSON output.
@@ -1198,5 +1287,80 @@ mod tests {
         let get_args = json!({"name": "delete-test"});
         let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // cp_query_service tests
+    // ========================================================================
+
+    #[test]
+    fn test_cp_query_service_tool_definition() {
+        let tool = cp_query_service_tool();
+        assert_eq!(tool.name, "cp_query_service");
+        assert!(tool.description.as_ref().unwrap().contains("service-level summary"));
+
+        let schema = &tool.input_schema;
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["name"].is_object());
+
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_with_data() {
+        use crate::storage::test_helpers::seed_reporting_data;
+
+        let test_db = TestDatabase::new("mcp_query_service").await;
+        seed_reporting_data(&test_db.pool).await;
+
+        // orders-svc is seeded by seed_reporting_data for team-a
+        let result = execute_query_service(
+            &test_db.pool,
+            crate::storage::test_helpers::TEAM_A_ID,
+            None,
+            json!({"name": "orders-svc"}),
+        )
+        .await
+        .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(output["cluster"].is_object(), "should have cluster info");
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_not_found() {
+        let test_db = TestDatabase::new("mcp_query_service_nf").await;
+
+        let result =
+            execute_query_service(&test_db.pool, "test-team", None, json!({"name": "nonexistent"}))
+                .await
+                .expect("should succeed even if cluster not found");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(output["cluster"].is_null(), "cluster should be null when not found");
+        assert!(output["message"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_missing_name() {
+        let test_db = TestDatabase::new("mcp_query_service_noname").await;
+
+        let result = execute_query_service(&test_db.pool, "test-team", None, json!({})).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            McpError::InvalidParams(msg) => assert!(msg.contains("name")),
+            other => panic!("expected InvalidParams, got: {:?}", other),
+        }
     }
 }

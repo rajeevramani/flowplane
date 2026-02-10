@@ -820,7 +820,7 @@ fn build_openapi_spec(
 }
 
 /// Build a unified OpenAPI 3.1 specification from multiple schemas
-fn build_unified_openapi_spec(
+pub fn build_unified_openapi_spec(
     schemas: &[crate::storage::repositories::AggregatedSchemaData],
     options: &ExportMultipleSchemasRequest,
 ) -> OpenApiExportResponse {

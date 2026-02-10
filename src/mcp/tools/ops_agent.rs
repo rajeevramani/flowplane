@@ -7,7 +7,7 @@
 use crate::domain::OrgId;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
-use crate::storage::repositories::ReportingRepository;
+use crate::storage::repositories::{AuditLogFilters, AuditLogRepository, ReportingRepository};
 use crate::storage::DbPool;
 use serde_json::{json, Value};
 use tracing::instrument;
@@ -148,6 +148,56 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+/// Ops tool: query recent audit log entries (PII-stripped summaries).
+pub fn ops_audit_query_tool() -> Tool {
+    Tool::new(
+        "ops_audit_query",
+        r#"Query recent audit log entries for the current team.
+
+PURPOSE: Review recent configuration changes and operations for troubleshooting or compliance.
+
+SECURITY CONSTRAINTS:
+- Team and org context are forced from the authenticated session — cannot be overridden
+- Returns PII-stripped summaries only (no client_ip, user_agent, old/new configuration)
+- Requires audit:read scope — cp:read does NOT grant access
+
+PARAMETERS:
+- resource_type (optional): Filter by resource type (e.g., "clusters", "listeners", "routes")
+- action (optional): Filter by action (e.g., "create", "update", "delete")
+- limit (optional): Max results (default: 20, max: 100)
+
+EXAMPLE:
+{ "resource_type": "clusters", "action": "delete", "limit": 10 }
+
+RETURNS:
+- entries: Array of audit summaries (id, resource_type, resource_id, resource_name, action, created_at)
+- count: Number of entries returned
+- message: Summary description
+
+Authorization: Requires audit:read scope (NOT covered by cp:read)."#,
+        json!({
+            "type": "object",
+            "properties": {
+                "resource_type": {
+                    "type": "string",
+                    "description": "Filter by resource type (e.g., 'clusters', 'listeners', 'routes')"
+                },
+                "action": {
+                    "type": "string",
+                    "description": "Filter by action (e.g., 'create', 'update', 'delete')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default: 20, max: 100)",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20
+                }
+            }
         }),
     )
 }
@@ -362,6 +412,63 @@ pub async fn execute_ops_config_validate(
         } else {
             format!("Found {} issue(s): {} warning(s), {} error(s)", issues.len(), warning_count, error_count)
         }
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute ops_audit_query: query recent audit log entries (PII-stripped).
+#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_ops_audit_query")]
+pub async fn execute_ops_audit_query(
+    db_pool: &DbPool,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let resource_type = args.get("resource_type").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let action = args.get("action").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let limit =
+        args.get("limit").and_then(|v| v.as_i64()).map(|v| (v as i32).min(100)).or(Some(20));
+
+    // Force team_id and org_id from session — cannot be overridden by caller
+    let filters = AuditLogFilters {
+        resource_type,
+        action,
+        user_id: None, // No user_id filter exposed — PII protection
+        org_id: org_id.map(|o| o.to_string()),
+        team_id: Some(team.to_string()),
+        start_date: None,
+        end_date: None,
+    };
+
+    let repo = AuditLogRepository::new(db_pool.clone());
+    let entries = repo
+        .query_logs(Some(filters), limit, Some(0))
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to query audit logs: {}", e)))?;
+
+    // Convert to PII-stripped summaries
+    let summaries: Vec<Value> = entries
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "id": entry.id,
+                "resource_type": entry.resource_type,
+                "resource_id": entry.resource_id,
+                "resource_name": entry.resource_name,
+                "action": entry.action,
+                "created_at": entry.created_at.to_rfc3339()
+            })
+        })
+        .collect();
+
+    let count = summaries.len();
+    let output = json!({
+        "success": true,
+        "entries": summaries,
+        "count": count,
+        "message": format!("Found {} audit log entries", count)
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -817,5 +924,196 @@ mod tests {
             !orphan_names.contains(&"orphan-cluster"),
             "team-b must not see team-a's orphan-cluster"
         );
+    }
+
+    // ========================================================================
+    // Tool definition: ops_audit_query
+    // ========================================================================
+
+    #[test]
+    fn test_ops_audit_query_tool_definition() {
+        let tool = ops_audit_query_tool();
+        assert_eq!(tool.name, "ops_audit_query");
+        assert!(tool.description.as_ref().unwrap().contains("audit"));
+        assert!(tool.description.as_ref().unwrap().contains("audit:read"));
+
+        let schema = &tool.input_schema;
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["resource_type"].is_object());
+        assert!(schema["properties"]["action"].is_object());
+        assert!(schema["properties"]["limit"].is_object());
+
+        // No required params
+        assert!(
+            schema["required"].is_null()
+                || schema["required"].as_array().map(|a| a.is_empty()).unwrap_or(true)
+        );
+    }
+
+    // ========================================================================
+    // Execute: ops_audit_query
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_execute_ops_audit_query_empty() {
+        let db = TestDatabase::new("ops_audit_empty").await;
+
+        let result = execute_ops_audit_query(&db.pool, TEAM_A_ID, None, json!({}))
+            .await
+            .expect("should succeed on empty audit logs");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert_eq!(output["count"], 0);
+        assert!(output["entries"].as_array().unwrap().is_empty());
+    }
+
+    /// Helper: insert a basic audit log entry for testing.
+    async fn insert_audit_entry(
+        pool: &crate::storage::DbPool,
+        resource_type: &str,
+        resource_name: &str,
+        action: &str,
+        team_id: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, \
+             user_id, client_ip, user_agent, org_id, team_id, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())",
+        )
+        .bind(resource_type)
+        .bind(resource_name) // use name as id for simplicity
+        .bind(resource_name)
+        .bind(action)
+        .bind(None::<&str>) // user_id
+        .bind(None::<&str>) // client_ip
+        .bind(None::<&str>) // user_agent
+        .bind(None::<&str>) // org_id
+        .bind(team_id)
+        .execute(pool)
+        .await
+        .expect("insert audit entry");
+    }
+
+    /// Helper: insert an audit log entry with PII fields for testing PII stripping.
+    async fn insert_audit_entry_with_pii(
+        pool: &crate::storage::DbPool,
+        resource_type: &str,
+        resource_name: &str,
+        action: &str,
+        team_id: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, \
+             user_id, client_ip, user_agent, org_id, team_id, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())",
+        )
+        .bind(resource_type)
+        .bind(resource_name)
+        .bind(resource_name)
+        .bind(action)
+        .bind("user-secret") // PII: user_id
+        .bind("10.0.0.1") // PII: client_ip
+        .bind("curl/7.0") // PII: user_agent
+        .bind(None::<&str>) // org_id
+        .bind(team_id)
+        .execute(pool)
+        .await
+        .expect("insert audit entry with pii");
+    }
+
+    #[tokio::test]
+    async fn test_execute_ops_audit_query_with_data() {
+        let db = TestDatabase::new("ops_audit_data").await;
+
+        // Insert audit log entry with PII fields
+        insert_audit_entry_with_pii(&db.pool, "clusters", "my-cluster", "create", TEAM_A_ID).await;
+
+        let result = execute_ops_audit_query(&db.pool, TEAM_A_ID, None, json!({}))
+            .await
+            .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(output["count"].as_i64().unwrap() >= 1);
+
+        // Verify PII is stripped — no client_ip, user_agent, user_id, old/new config
+        let entry = &output["entries"][0];
+        assert!(entry.get("client_ip").is_none(), "must NOT contain client_ip");
+        assert!(entry.get("user_agent").is_none(), "must NOT contain user_agent");
+        assert!(entry.get("user_id").is_none(), "must NOT contain user_id");
+        assert!(entry.get("old_configuration").is_none(), "must NOT contain old_configuration");
+        assert!(entry.get("new_configuration").is_none(), "must NOT contain new_configuration");
+
+        // Should contain summary fields
+        assert_eq!(entry["resource_type"], "clusters");
+        assert_eq!(entry["action"], "create");
+        assert_eq!(entry["resource_name"], "my-cluster");
+    }
+
+    #[tokio::test]
+    async fn test_execute_ops_audit_query_team_isolation() {
+        let db = TestDatabase::new("ops_audit_iso").await;
+
+        // team-a event
+        insert_audit_entry(&db.pool, "clusters", "team-a-cluster", "create", TEAM_A_ID).await;
+
+        // team-b event
+        insert_audit_entry(&db.pool, "clusters", "team-b-cluster", "delete", TEAM_B_ID).await;
+
+        // team-a should only see its own entry
+        let result = execute_ops_audit_query(&db.pool, TEAM_A_ID, None, json!({}))
+            .await
+            .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        let entries = output["entries"].as_array().unwrap();
+        for entry in entries {
+            assert_ne!(
+                entry["resource_name"], "team-b-cluster",
+                "team-a must NOT see team-b's audit entries"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_ops_audit_query_with_filters() {
+        let db = TestDatabase::new("ops_audit_filter").await;
+
+        // Insert multiple events
+        for action in &["create", "update", "delete"] {
+            insert_audit_entry(&db.pool, "listeners", "test-listener", action, TEAM_A_ID).await;
+        }
+
+        // Filter by action
+        let result = execute_ops_audit_query(
+            &db.pool,
+            TEAM_A_ID,
+            None,
+            json!({"action": "delete", "resource_type": "listeners"}),
+        )
+        .await
+        .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        let entries = output["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["action"], "delete");
     }
 }

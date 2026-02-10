@@ -7,6 +7,7 @@ use crate::domain::OrgId;
 
 pub mod clusters;
 pub mod dataplanes;
+pub mod dev_agent;
 pub mod devops_agent;
 pub mod filter_types;
 pub mod filters;
@@ -113,9 +114,19 @@ pub use filter_types::{execute_get_filter_type, execute_list_filter_types};
 pub use devops_agent::devops_get_deployment_status_tool;
 pub use devops_agent::execute_devops_get_deployment_status;
 
+// Re-export Dev agent tools
+pub use dev_agent::{dev_preflight_check_tool, execute_dev_preflight_check};
+
 // Re-export Ops agent tools
+pub use ops_agent::{execute_ops_audit_query, ops_audit_query_tool};
 pub use ops_agent::{execute_ops_config_validate, execute_ops_topology, execute_ops_trace_request};
 pub use ops_agent::{ops_config_validate_tool, ops_topology_tool, ops_trace_request_tool};
+
+// Re-export cluster query service tool
+pub use clusters::{cp_query_service_tool, execute_query_service};
+
+// Re-export schema export tool
+pub use schemas::{cp_export_schema_openapi_tool, execute_export_schema_openapi};
 
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
@@ -196,6 +207,12 @@ pub fn get_all_tools() -> Vec<Tool> {
         ops_trace_request_tool(),
         ops_topology_tool(),
         ops_config_validate_tool(),
+        ops_audit_query_tool(),
+        // Dev agent workflow tools
+        dev_preflight_check_tool(),
+        cp_query_service_tool(),
+        // Schema export tools
+        cp_export_schema_openapi_tool(),
     ]
 }
 
@@ -241,8 +258,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 3 ops agent = 54 total
-        assert_eq!(tools.len(), 54);
+        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 4 ops agent + 3 dev agent = 58 total
+        assert_eq!(tools.len(), 58);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

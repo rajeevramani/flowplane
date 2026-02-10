@@ -258,7 +258,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (54 tools)
+        // Use get_all_tools() as single source of truth (58 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry
@@ -345,6 +345,29 @@ impl McpHandler {
                 )
                 .await
             }
+            "ops_audit_query" => {
+                tools::execute_ops_audit_query(
+                    &self.db_pool,
+                    &self.team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
+            // Dev agent tools (db_pool only)
+            "dev_preflight_check" => {
+                tools::execute_dev_preflight_check(
+                    &self.db_pool,
+                    &self.team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
+            "cp_query_service" => {
+                tools::execute_query_service(&self.db_pool, &self.team, self.org_id.as_ref(), args)
+                    .await
+            }
 
             // Operations that require xds_state (internal API layer)
             "cp_list_clusters"
@@ -394,7 +417,8 @@ impl McpHandler {
             | "cp_delete_dataplane"
             | "cp_list_filter_types"
             | "cp_get_filter_type"
-            | "devops_get_deployment_status" => {
+            | "devops_get_deployment_status"
+            | "cp_export_schema_openapi" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -825,6 +849,16 @@ impl McpHandler {
                     }
                     "cp_get_filter_type" => {
                         tools::execute_get_filter_type(
+                            xds_state,
+                            &self.team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Schema export operations
+                    "cp_export_schema_openapi" => {
+                        tools::execute_export_schema_openapi(
                             xds_state,
                             &self.team,
                             self.org_id.as_ref(),

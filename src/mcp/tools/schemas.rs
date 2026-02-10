@@ -147,6 +147,156 @@ RELATED TOOLS: cp_list_aggregated_schemas (discover schemas)"#,
     )
 }
 
+/// Tool definition for exporting aggregated schemas as OpenAPI 3.1 specification
+pub fn cp_export_schema_openapi_tool() -> Tool {
+    Tool::new(
+        "cp_export_schema_openapi",
+        r#"Export aggregated API schemas as an OpenAPI 3.1 specification.
+
+PURPOSE: Generate a unified OpenAPI document from learned API schemas, suitable for
+documentation, code generation, or API validation.
+
+PARAMETERS:
+- schema_ids (required): Array of schema IDs to include in the export
+- title (optional): Title for the OpenAPI spec (default: "Flowplane API")
+- version (optional): Version string (default: "1.0.0")
+- description (optional): Description for the API
+- include_metadata (optional): Include Flowplane extensions like x-flowplane-sample-count (default: false)
+
+EXAMPLE:
+{ "schema_ids": [1, 2, 3], "title": "Orders API", "version": "2.0.0" }
+
+RETURNS:
+- openapi: "3.1.0"
+- info: { title, version, description }
+- paths: OpenAPI path definitions with operations, parameters, request/response schemas
+- components: Shared schema components
+
+WORKFLOW:
+1. Use cp_list_aggregated_schemas to discover available schemas
+2. Select schema IDs of interest
+3. Call cp_export_schema_openapi with those IDs
+
+Authorization: Requires aggregated-schemas:read scope."#,
+        json!({
+            "type": "object",
+            "properties": {
+                "schema_ids": {
+                    "type": "array",
+                    "description": "Array of schema IDs to include in the export",
+                    "items": { "type": "integer" },
+                    "minItems": 1
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Title for the OpenAPI spec (default: 'Flowplane API')"
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Version string (default: '1.0.0')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Description for the API"
+                },
+                "include_metadata": {
+                    "type": "boolean",
+                    "description": "Include Flowplane extensions (x-flowplane-*). Default: false",
+                    "default": false
+                }
+            },
+            "required": ["schema_ids"]
+        }),
+    )
+}
+
+/// Execute cp_export_schema_openapi: export schemas as OpenAPI 3.1.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_export_schema_openapi")]
+pub async fn execute_export_schema_openapi(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let schema_ids: Vec<i64> = args
+        .get("schema_ids")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: schema_ids".to_string())
+        })?
+        .iter()
+        .filter_map(|v| v.as_i64())
+        .collect();
+
+    if schema_ids.is_empty() {
+        return Err(McpError::InvalidParams("schema_ids must contain at least one ID".to_string()));
+    }
+
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("Flowplane API").to_string();
+    let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0").to_string();
+    let description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let include_metadata = args.get("include_metadata").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Verify auth context
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    // Fetch schemas via internal API
+    let ops = AggregatedSchemaOperations::new(xds_state.clone());
+    let mut schemas = Vec::new();
+    for id in &schema_ids {
+        let schema = ops.get(*id, &auth).await?;
+        schemas.push(schema);
+    }
+
+    // Build the OpenAPI export using the existing REST handler's logic
+    let export_request = crate::api::handlers::aggregated_schemas::ExportMultipleSchemasRequest {
+        schema_ids,
+        title,
+        version,
+        description,
+        include_metadata,
+    };
+
+    let repo = xds_state
+        .aggregated_schema_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Schema repository unavailable".to_string()))?;
+
+    // Fetch full schema data for the export builder
+    let schema_data = repo.get_by_ids(&export_request.schema_ids).await.map_err(|e| {
+        McpError::InternalError(format!("Failed to fetch schemas for export: {}", e))
+    })?;
+
+    let openapi_response = crate::api::handlers::aggregated_schemas::build_unified_openapi_spec(
+        &schema_data,
+        &export_request,
+    );
+
+    let output = json!({
+        "success": true,
+        "openapi": openapi_response.openapi,
+        "info": {
+            "title": openapi_response.info.title,
+            "version": openapi_response.info.version,
+            "description": openapi_response.info.description
+        },
+        "paths": openapi_response.paths,
+        "components": openapi_response.components,
+        "schema_count": schema_data.len(),
+        "message": format!("Exported {} schema(s) as OpenAPI 3.1", schema_data.len())
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
 /// Execute list aggregated schemas operation using the internal API layer.
 #[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_aggregated_schemas")]
 pub async fn execute_list_aggregated_schemas(
@@ -342,5 +492,23 @@ mod tests {
         assert!(enum_values.contains(&json!("PUT")));
         assert!(enum_values.contains(&json!("DELETE")));
         assert!(enum_values.contains(&json!("PATCH")));
+    }
+
+    #[test]
+    fn test_cp_export_schema_openapi_tool_definition() {
+        let tool = cp_export_schema_openapi_tool();
+        assert_eq!(tool.name, "cp_export_schema_openapi");
+        assert!(tool.description.as_ref().unwrap().contains("OpenAPI"));
+        assert!(tool.description.as_ref().unwrap().contains("3.1"));
+
+        let schema = &tool.input_schema;
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["schema_ids"].is_object());
+        assert!(schema["properties"]["title"].is_object());
+        assert!(schema["properties"]["version"].is_object());
+        assert!(schema["properties"]["include_metadata"].is_object());
+
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("schema_ids")));
     }
 }
