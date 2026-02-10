@@ -39,6 +39,7 @@ EXAMPLE:
 RETURNS:
 - matches: Array of trace rows (listener → route_config → virtual_host → route → cluster)
 - endpoints: Array of backend endpoints for the matched clusters
+- unmatched_reason: When no matches found, explains why (e.g., "no route matches path")
 
 Authorization: Requires cp:read scope."#,
         json!({
@@ -46,7 +47,8 @@ Authorization: Requires cp:read scope."#,
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Request path to trace (e.g., '/api/users')"
+                    "description": "Request path to trace (must start with '/', max 2048 chars)",
+                    "maxLength": 2048
                 },
                 "port": {
                     "type": "integer",
@@ -76,15 +78,16 @@ PARAMETERS:
 - scope (optional): Filter scope — "listener", "cluster", or "route_config". Omit for full topology.
 - name (optional): Resource name filter (used with scope)
 - limit (optional): Max rows per level (default: 50)
+- include_details (optional): Include full topology rows (default: false). When false, returns summary only (<120 tokens).
 
 EXAMPLE:
-{ "scope": "listener", "name": "http-8080" }
+{ "scope": "listener", "name": "http-8080", "include_details": true }
 
 RETURNS:
-- rows: Flattened topology rows (listener → route_config → virtual_host → route)
-- orphan_clusters: Clusters with no route_configs referencing them
-- orphan_route_configs: Route configs with no listener bound
-- summary: Counts for listeners, route_configs, clusters, routes, orphans
+- summary: Counts for listeners, route_configs, clusters, routes, orphans (always included)
+- orphan_clusters: Clusters with no route_configs referencing them (always included)
+- orphan_route_configs: Route configs with no listener bound (always included)
+- rows: Flattened topology rows (only when include_details=true)
 - truncated: Whether the result was limited
 
 Authorization: Requires cp:read scope."#,
@@ -104,6 +107,11 @@ Authorization: Requires cp:read scope."#,
                     "type": "integer",
                     "description": "Max rows per level (default: 50)",
                     "default": 50
+                },
+                "include_details": {
+                    "type": "boolean",
+                    "description": "Include full topology rows (default: false — summary only for token efficiency)",
+                    "default": false
                 }
             }
         }),
@@ -161,6 +169,19 @@ pub async fn execute_ops_trace_request(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("'path' is required".to_string()))?;
 
+    // Input validation (R6): max 2048 chars, must start with '/', reject null bytes
+    if path.len() > 2048 {
+        return Err(McpError::InvalidParams(
+            "'path' exceeds maximum length of 2048 characters".to_string(),
+        ));
+    }
+    if !path.starts_with('/') {
+        return Err(McpError::InvalidParams("'path' must start with '/'".to_string()));
+    }
+    if path.contains('\0') {
+        return Err(McpError::InvalidParams("'path' must not contain null bytes".to_string()));
+    }
+
     let port = args.get("port").and_then(|v| v.as_i64());
 
     let repo = ReportingRepository::new(db_pool.clone());
@@ -169,6 +190,23 @@ pub async fn execute_ops_trace_request(
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to trace request path: {}", e)))?;
 
+    let port_desc = port.map(|p| format!(" on port {}", p)).unwrap_or_default();
+
+    let (message, unmatched_reason) = if result.matches.is_empty() {
+        let reason = format!("No route matches path '{}'{} for the current team", path, port_desc);
+        (format!("No routes match path '{}'{}", path, port_desc), Some(reason))
+    } else {
+        (
+            format!(
+                "Found {} route(s) matching path '{}'{}",
+                result.matches.len(),
+                path,
+                port_desc
+            ),
+            None,
+        )
+    };
+
     let output = json!({
         "success": true,
         "path": path,
@@ -176,11 +214,8 @@ pub async fn execute_ops_trace_request(
         "match_count": result.matches.len(),
         "matches": result.matches,
         "endpoints": result.endpoints,
-        "message": if result.matches.is_empty() {
-            format!("No routes match path '{}'{}", path, port.map(|p| format!(" on port {}", p)).unwrap_or_default())
-        } else {
-            format!("Found {} route(s) matching path '{}'{}", result.matches.len(), path, port.map(|p| format!(" on port {}", p)).unwrap_or_default())
-        }
+        "unmatched_reason": unmatched_reason,
+        "message": message
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -198,6 +233,7 @@ pub async fn execute_ops_topology(
     let scope = args.get("scope").and_then(|v| v.as_str());
     let name = args.get("name").and_then(|v| v.as_str());
     let limit = args.get("limit").and_then(|v| v.as_i64());
+    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let repo = ReportingRepository::new(db_pool.clone());
     let result = repo
@@ -205,26 +241,43 @@ pub async fn execute_ops_topology(
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to get topology: {}", e)))?;
 
-    let output = json!({
-        "success": true,
-        "scope": scope.unwrap_or("full"),
-        "name": name,
-        "rows": result.rows,
-        "orphan_clusters": result.orphan_clusters,
-        "orphan_route_configs": result.orphan_route_configs,
-        "summary": result.summary,
-        "truncated": result.truncated,
-        "message": format!(
-            "Topology: {} listeners, {} route_configs, {} clusters, {} routes ({} orphan clusters, {} orphan route_configs){}",
-            result.summary.listener_count,
-            result.summary.route_config_count,
-            result.summary.cluster_count,
-            result.summary.route_count,
-            result.summary.orphan_cluster_count,
-            result.summary.orphan_route_config_count,
-            if result.truncated { " [TRUNCATED]" } else { "" }
-        )
-    });
+    let message = format!(
+        "Topology: {} listeners, {} route_configs, {} clusters, {} routes ({} orphan clusters, {} orphan route_configs){}",
+        result.summary.listener_count,
+        result.summary.route_config_count,
+        result.summary.cluster_count,
+        result.summary.route_count,
+        result.summary.orphan_cluster_count,
+        result.summary.orphan_route_config_count,
+        if result.truncated { " [TRUNCATED]" } else { "" }
+    );
+
+    // When include_details=false (default), omit rows for token efficiency (<120 tokens).
+    // Orphans are always included since they're the most actionable part.
+    let output = if include_details {
+        json!({
+            "success": true,
+            "scope": scope.unwrap_or("full"),
+            "name": name,
+            "rows": result.rows,
+            "orphan_clusters": result.orphan_clusters,
+            "orphan_route_configs": result.orphan_route_configs,
+            "summary": result.summary,
+            "truncated": result.truncated,
+            "message": message
+        })
+    } else {
+        json!({
+            "success": true,
+            "scope": scope.unwrap_or("full"),
+            "name": name,
+            "orphan_clusters": result.orphan_clusters,
+            "orphan_route_configs": result.orphan_route_configs,
+            "summary": result.summary,
+            "truncated": result.truncated,
+            "message": message
+        })
+    };
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
@@ -362,6 +415,7 @@ mod tests {
         assert!(schema["properties"]["scope"].is_object());
         assert!(schema["properties"]["name"].is_object());
         assert!(schema["properties"]["limit"].is_object());
+        assert!(schema["properties"]["include_details"].is_object());
 
         // No required params
         assert!(
@@ -470,6 +524,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_ops_trace_request_path_validation() {
+        let db = test_db("ops_trace_validate").await;
+
+        // Must start with '/'
+        let result =
+            execute_ops_trace_request(&db.pool, TEAM_A_ID, None, json!({"path": "no-slash"})).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            McpError::InvalidParams(msg) => assert!(msg.contains("start with '/'")),
+            other => panic!("expected InvalidParams for no-slash, got: {:?}", other),
+        }
+
+        // Max 2048 chars
+        let long_path = format!("/{}", "a".repeat(2048));
+        let result =
+            execute_ops_trace_request(&db.pool, TEAM_A_ID, None, json!({"path": long_path})).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            McpError::InvalidParams(msg) => assert!(msg.contains("2048")),
+            other => panic!("expected InvalidParams for long path, got: {:?}", other),
+        }
+
+        // Reject null bytes
+        let result =
+            execute_ops_trace_request(&db.pool, TEAM_A_ID, None, json!({"path": "/api/\0bad"}))
+                .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            McpError::InvalidParams(msg) => assert!(msg.contains("null")),
+            other => panic!("expected InvalidParams for null byte, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_ops_trace_request_unmatched_reason() {
+        let db = test_db("ops_trace_unmatched").await;
+
+        let result = execute_ops_trace_request(
+            &db.pool,
+            TEAM_A_ID,
+            None,
+            json!({"path": "/nonexistent/path"}),
+        )
+        .await
+        .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["match_count"], 0);
+        assert!(
+            output["unmatched_reason"].is_string(),
+            "should have unmatched_reason when no match"
+        );
+        let reason = output["unmatched_reason"].as_str().unwrap();
+        assert!(reason.contains("No route matches"), "reason should explain the miss");
+    }
+
+    #[tokio::test]
     async fn test_execute_ops_trace_request_team_isolation() {
         let db = test_db("ops_trace_team_iso").await;
 
@@ -513,9 +628,10 @@ mod tests {
     // ========================================================================
 
     #[tokio::test]
-    async fn test_execute_ops_topology_happy_path() {
-        let db = test_db("ops_topo_happy").await;
+    async fn test_execute_ops_topology_summary_only() {
+        let db = test_db("ops_topo_summary").await;
 
+        // Default: include_details=false, returns summary only (no rows)
         let result = execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({}))
             .await
             .expect("should succeed");
@@ -526,7 +642,28 @@ mod tests {
         };
         let output: Value = serde_json::from_str(text).expect("should be valid JSON");
         assert_eq!(output["success"], true);
-        assert!(!output["rows"].as_array().unwrap().is_empty());
+        assert!(output["summary"]["listener_count"].as_i64().unwrap() > 0);
+        assert!(output.get("rows").is_none(), "summary mode should not include rows");
+        // Orphans are always included
+        assert!(output.get("orphan_clusters").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_ops_topology_with_details() {
+        let db = test_db("ops_topo_details").await;
+
+        let result =
+            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"include_details": true}))
+                .await
+                .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(!output["rows"].as_array().unwrap().is_empty(), "detail mode should include rows");
         assert!(output["summary"]["listener_count"].as_i64().unwrap() > 0);
     }
 
@@ -538,7 +675,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"scope": "listener", "name": "http-8080"}),
+            json!({"scope": "listener", "name": "http-8080", "include_details": true}),
         )
         .await
         .expect("should succeed");
@@ -560,9 +697,14 @@ mod tests {
     async fn test_execute_ops_topology_with_limit() {
         let db = test_db("ops_topo_limit").await;
 
-        let result = execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"limit": 1}))
-            .await
-            .expect("should succeed");
+        let result = execute_ops_topology(
+            &db.pool,
+            TEAM_A_ID,
+            None,
+            json!({"limit": 1, "include_details": true}),
+        )
+        .await
+        .expect("should succeed");
 
         let text = match &result.content[0] {
             ContentBlock::Text { text } => text,
@@ -577,9 +719,10 @@ mod tests {
     async fn test_execute_ops_topology_team_isolation() {
         let db = test_db("ops_topo_team_iso").await;
 
-        let result = execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({}))
-            .await
-            .expect("should succeed");
+        let result =
+            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"include_details": true}))
+                .await
+                .expect("should succeed");
 
         let text = match &result.content[0] {
             ContentBlock::Text { text } => text,
