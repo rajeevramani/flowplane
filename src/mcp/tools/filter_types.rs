@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for discovering available filter types and their schemas.
 
+use crate::domain::OrgId;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::xds::XdsState;
@@ -127,6 +128,7 @@ RELATED TOOLS: cp_list_filter_types (discovery), cp_create_filter (use this type
 pub async fn execute_list_filter_types(
     xds_state: &Arc<XdsState>,
     _team: &str,
+    _org_id: Option<&OrgId>,
     _args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // Access the filter schema registry
@@ -185,6 +187,7 @@ pub async fn execute_list_filter_types(
 pub async fn execute_get_filter_type(
     xds_state: &Arc<XdsState>,
     _team: &str,
+    _org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // Parse filter type name

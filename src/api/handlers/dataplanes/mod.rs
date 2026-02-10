@@ -26,7 +26,9 @@ use crate::{
     storage::repositories::{CreateDataplaneRequest, DataplaneRepository, UpdateDataplaneRequest},
 };
 
-use super::team_access::{get_effective_team_ids, team_repo_from_state};
+use super::team_access::{
+    get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+};
 
 /// Create a new dataplane
 #[utoipa::path(
@@ -60,10 +62,23 @@ pub async fn create_dataplane_handler(
     }
 
     // Authorization
-    require_resource_access(&context, "dataplanes", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "dataplanes",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state
@@ -117,10 +132,23 @@ pub async fn list_dataplanes_handler(
     Query(query): Query<ListDataplanesQuery>,
 ) -> Result<Json<ListDataplanesResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "dataplanes", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "dataplanes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state
@@ -171,7 +199,7 @@ pub async fn list_all_dataplanes_handler(
     let pool = cluster_repo.pool().clone();
 
     let team_repo = team_repo_from_state(&state)?;
-    let teams = get_effective_team_ids(&context, team_repo).await?;
+    let teams = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
 
     let repo = DataplaneRepository::new(pool);
 
@@ -209,10 +237,23 @@ pub async fn get_dataplane_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access(&context, "dataplanes", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "dataplanes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state
@@ -261,10 +302,23 @@ pub async fn update_dataplane_handler(
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
     // Authorization
-    require_resource_access(&context, "dataplanes", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "dataplanes",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state
@@ -316,10 +370,23 @@ pub async fn delete_dataplane_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access(&context, "dataplanes", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "dataplanes",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state
@@ -419,10 +486,23 @@ pub async fn generate_envoy_config_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "generate-envoy-config",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(&state, &team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get repository
     let cluster_repo = state

@@ -38,6 +38,8 @@ use super::{
         get_secret_handler,
     },
     handlers::{
+        // Invitation handlers
+        accept_invitation_handler,
         add_team_membership,
         admin_add_org_member,
         admin_create_organization,
@@ -69,6 +71,7 @@ use super::{
         configure_filter_handler,
         create_cluster_handler,
         create_filter_handler,
+        create_invitation_handler,
         create_learning_session_handler,
         create_listener_handler,
         create_org_team,
@@ -127,6 +130,7 @@ use super::{
         list_filter_installations_handler,
         list_filter_types_handler,
         list_filters_handler,
+        list_invitations_handler,
         list_learning_sessions_handler,
         list_listener_filters_handler,
         list_listeners_handler,
@@ -149,10 +153,12 @@ use super::{
         login_handler,
         logout_handler,
         refresh_mcp_schema_handler,
+        refresh_session_handler,
         reload_filter_schemas_handler,
         remove_filter_configuration_handler,
         remove_team_membership,
         revoke_certificate_handler,
+        revoke_invitation_handler,
         revoke_token_handler,
         rotate_token_handler,
         set_app_status_handler,
@@ -166,8 +172,68 @@ use super::{
         update_team_membership_scopes,
         update_token_handler,
         update_user,
+        validate_invitation_handler,
     },
 };
+
+/// Rate limiters for authentication endpoints.
+#[derive(Clone)]
+pub struct AuthRateLimiters {
+    /// 20/hour per IP — invitation creation
+    pub invite_create: Arc<super::rate_limit::RateLimiter>,
+    /// 10/min per IP — invitation token validation
+    pub invite_validate: Arc<super::rate_limit::RateLimiter>,
+    /// 5/min per IP — invitation acceptance (registration)
+    pub invite_accept: Arc<super::rate_limit::RateLimiter>,
+    /// 10/min per IP — login attempts
+    pub login: Arc<super::rate_limit::RateLimiter>,
+}
+
+impl AuthRateLimiters {
+    pub fn from_env() -> Self {
+        let invite_create_per_hour: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_CREATE_PER_HOUR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20);
+
+        let invite_validate_per_min: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_VALIDATE_PER_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10);
+
+        let invite_accept_per_min: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_ACCEPT_PER_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5);
+
+        let login_per_min: u32 = std::env::var("FLOWPLANE_RATE_LIMIT_LOGIN_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+
+        Self {
+            invite_create: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_create_per_hour,
+                std::time::Duration::from_secs(3600),
+            )),
+            invite_validate: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_validate_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+            invite_accept: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_accept_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+            login: Arc::new(super::rate_limit::RateLimiter::new(
+                login_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -178,6 +244,10 @@ pub struct ApiState {
     pub mcp_session_manager: crate::mcp::SharedSessionManager,
     /// Rate limiter for certificate generation (prevents Vault PKI exhaustion)
     pub certificate_rate_limiter: Arc<super::rate_limit::RateLimiter>,
+    /// Authentication configuration (cookie_secure, invite settings, proxy config)
+    pub auth_config: Arc<crate::config::AuthConfig>,
+    /// Rate limiters for auth endpoints (login, invitation create/validate/accept)
+    pub auth_rate_limiters: Arc<AuthRateLimiters>,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -274,6 +344,20 @@ pub fn build_router_with_registry(
     // Create rate limiter for certificate generation (prevents Vault PKI exhaustion)
     let certificate_rate_limiter = Arc::new(super::rate_limit::RateLimiter::from_env());
 
+    // Load auth config from environment
+    let auth_config = Arc::new(crate::config::AuthConfig::from_env());
+
+    // Startup safety checks for cookie_secure
+    if !auth_config.cookie_secure {
+        tracing::warn!("Cookie Secure flag is DISABLED — only safe for local HTTP development");
+        if auth_config.base_url.starts_with("https://") {
+            panic!("FLOWPLANE_COOKIE_SECURE=false with HTTPS base_url is a dangerous misconfiguration — refusing to start");
+        }
+    }
+
+    // Create auth rate limiters from environment
+    let auth_rate_limiters = Arc::new(AuthRateLimiters::from_env());
+
     let api_state = ApiState {
         xds_state: state.clone(),
         filter_schema_registry,
@@ -281,12 +365,44 @@ pub fn build_router_with_registry(
         mcp_connection_manager,
         mcp_session_manager,
         certificate_rate_limiter,
+        auth_config,
+        auth_rate_limiters,
     };
 
     let cluster_repo = match &state.cluster_repository {
         Some(repo) => repo.clone(),
         None => return docs::docs_router(),
     };
+
+    // Spawn background task to expire stale invitations hourly
+    {
+        let pool = cluster_repo.pool().clone();
+        let invitation_repo = crate::storage::repositories::SqlxInvitationRepository::new(pool);
+        tokio::spawn(async move {
+            use crate::storage::repositories::InvitationRepository;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        match invitation_repo.expire_stale_invitations().await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    tracing::info!(expired = count, "expired stale invitations");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to expire stale invitations");
+                            }
+                        }
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("invitation expiry task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     let auth_layer = {
         let pool = cluster_repo.pool().clone();
@@ -310,6 +426,8 @@ pub fn build_router_with_registry(
     let secured_api = Router::new()
         // Password change endpoint (authenticated users only)
         .route("/api/v1/auth/change-password", post(change_password_handler))
+        // Session refresh endpoint (recompute scopes from current memberships)
+        .route("/api/v1/auth/sessions/refresh", post(refresh_session_handler))
         // Token management endpoints
         .route("/api/v1/tokens", get(list_tokens_handler))
         .route("/api/v1/tokens", post(create_token_handler))
@@ -495,6 +613,10 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", put(admin_update_org_member_role))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", delete(admin_remove_org_member))
+        // Invitation management (org admin)
+        .route("/api/v1/orgs/{org_name}/invitations", get(list_invitations_handler))
+        .route("/api/v1/orgs/{org_name}/invitations", post(create_invitation_handler))
+        .route("/api/v1/orgs/{org_name}/invitations/{id}", delete(revoke_invitation_handler))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
         // Admin scopes endpoint (includes hidden scopes like admin:all)
@@ -556,7 +678,10 @@ pub fn build_router_with_registry(
         .route("/api/v1/auth/sessions/logout", post(logout_handler))
         // Scopes endpoint (public - needed for token creation UI)
         .route("/api/v1/scopes", get(list_scopes_handler))
-        .with_state(api_state);
+        // Invitation public endpoints (registration flow)
+        .route("/api/v1/invitations/validate", get(validate_invitation_handler))
+        .route("/api/v1/invitations/accept", post(accept_invitation_handler))
+        .with_state(api_state.clone());
 
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();

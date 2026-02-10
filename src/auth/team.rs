@@ -114,7 +114,10 @@ pub struct CreateTeamRequest {
     pub description: Option<String>,
     /// Optional owner user ID
     pub owner_user_id: Option<UserId>,
-    /// Organization this team belongs to (required for org-scoped uniqueness)
+    /// Organization this team belongs to (required for org-scoped uniqueness).
+    /// When using the `/orgs/{org_name}/teams` endpoint, this is set automatically
+    /// from the URL path and can be omitted from the request body.
+    #[serde(default)]
     pub org_id: OrgId,
     /// Optional team-specific settings
     pub settings: Option<serde_json::Value>,

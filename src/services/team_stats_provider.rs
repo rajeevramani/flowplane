@@ -309,7 +309,19 @@ mod tests {
             unimplemented!()
         }
 
-        async fn resolve_team_ids(&self, _team_names: &[String]) -> Result<Vec<String>> {
+        async fn resolve_team_ids(
+            &self,
+            _org_id: Option<&crate::domain::OrgId>,
+            _team_names: &[String],
+        ) -> Result<Vec<String>> {
+            unimplemented!()
+        }
+
+        async fn resolve_team_names(
+            &self,
+            _org_id: Option<&crate::domain::OrgId>,
+            _team_ids: &[String],
+        ) -> Result<Vec<String>> {
             unimplemented!()
         }
 

@@ -32,7 +32,10 @@ use tracing::{info, instrument};
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        handlers::team_access::{
+            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+            verify_team_access,
+        },
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
@@ -128,7 +131,10 @@ pub async fn list_filters_handler(
     // Delegate to internal API layer for team-scoped listing
     let ops = FilterOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.list(internal_request, &auth).await?;
 
     // Build responses with attachment counts (REST-specific enhancement)
@@ -171,11 +177,23 @@ pub async fn create_filter_handler(
     validate_create_filter_request(&payload, state.filter_schema_registry.as_ref()).await?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "filters", "write", Some(&payload.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "write",
+        Some(&payload.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve team name to UUID for database storage
-    let team_id =
-        crate::api::handlers::team_access::resolve_team_name(&state, &payload.team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &payload.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let service = FilterService::new(state.xds_state.clone());
 
@@ -227,7 +245,10 @@ pub async fn get_filter_handler(
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let filter = ops.get(&id, &auth).await?;
 
     let response = filter_response_from_data(filter)?;
@@ -273,7 +294,10 @@ pub async fn update_filter_handler(
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.update(&id, internal_request, &auth).await?;
 
     let response = filter_response_from_data(result.data)?;
@@ -307,7 +331,10 @@ pub async fn delete_filter_handler(
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     ops.delete(&id, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -638,7 +665,7 @@ pub async fn install_filter_handler(
     require_resource_access(&context, "filters", "write", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -710,7 +737,7 @@ pub async fn uninstall_filter_handler(
     require_resource_access(&context, "filters", "write", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -757,7 +784,7 @@ pub async fn list_filter_installations_handler(
     require_resource_access(&context, "filters", "read", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -810,7 +837,7 @@ pub async fn configure_filter_handler(
     require_resource_access(&context, "filters", "write", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -917,7 +944,7 @@ pub async fn remove_filter_configuration_handler(
     require_resource_access(&context, "filters", "write", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -1001,7 +1028,7 @@ pub async fn list_filter_configurations_handler(
     require_resource_access(&context, "filters", "read", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access
@@ -1050,7 +1077,7 @@ pub async fn get_filter_status_handler(
     require_resource_access(&context, "filters", "read", None)?;
 
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let repository = require_filter_repository(&state)?;
 
     // Get the filter and verify access

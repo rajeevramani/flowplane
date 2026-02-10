@@ -102,7 +102,7 @@ async fn test_mcp_list_virtual_hosts_all() {
 
     // Test: List all virtual hosts as admin (empty team means admin)
     let args = json!({});
-    let result = execute_list_virtual_hosts(&state, "", args).await;
+    let result = execute_list_virtual_hosts(&state, "", None, args).await;
 
     assert!(result.is_ok(), "Failed to list virtual hosts: {:?}", result);
     let tool_result = result.unwrap();
@@ -134,7 +134,7 @@ async fn test_mcp_list_virtual_hosts_by_route_config() {
     let args = json!({
         "route_config": "routes-1"
     });
-    let result = execute_list_virtual_hosts(&state, "", args).await;
+    let result = execute_list_virtual_hosts(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -174,7 +174,7 @@ async fn test_mcp_list_virtual_hosts_with_pagination() {
         "limit": 2,
         "offset": 0
     });
-    let result = execute_list_virtual_hosts(&state, "", args).await;
+    let result = execute_list_virtual_hosts(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -208,7 +208,7 @@ async fn test_mcp_get_virtual_host_success() {
         "route_config": "routes",
         "name": "api"
     });
-    let result = execute_get_virtual_host(&state, "", args).await;
+    let result = execute_get_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -239,7 +239,7 @@ async fn test_mcp_get_virtual_host_not_found() {
         "route_config": "routes",
         "name": "nonexistent"
     });
-    let result = execute_get_virtual_host(&state, "", args).await;
+    let result = execute_get_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_err());
 }
@@ -252,7 +252,7 @@ async fn test_mcp_get_virtual_host_missing_params() {
     let args = json!({
         "name": "api"
     });
-    let result = execute_get_virtual_host(&state, "", args).await;
+    let result = execute_get_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_err());
 
@@ -260,7 +260,7 @@ async fn test_mcp_get_virtual_host_missing_params() {
     let args = json!({
         "route_config": "routes"
     });
-    let result = execute_get_virtual_host(&state, "", args).await;
+    let result = execute_get_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_err());
 }
@@ -283,7 +283,7 @@ async fn test_mcp_create_virtual_host_success() {
         "domains": ["api.example.com", "*.api.example.com"],
         "rule_order": 10
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -311,7 +311,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
         "name": "api",
         "domains": ["api.example.com"]
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: Missing name
@@ -319,7 +319,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
         "route_config": "routes",
         "domains": ["api.example.com"]
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: Missing domains
@@ -327,7 +327,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
         "route_config": "routes",
         "name": "api"
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 }
 
@@ -344,7 +344,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
         "name": "api",
         "domains": "not-an-array"
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: Empty domains array
@@ -353,7 +353,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
         "name": "api",
         "domains": []
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: domains contains non-string
@@ -362,7 +362,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
         "name": "api",
         "domains": [123, 456]
     });
-    let result = execute_create_virtual_host(&state, "", args).await;
+    let result = execute_create_virtual_host(&state, "", None, args).await;
     assert!(result.is_err());
 }
 
@@ -385,7 +385,7 @@ async fn test_mcp_update_virtual_host_success() {
         "domains": ["new.example.com", "*.new.example.com"],
         "rule_order": 20
     });
-    let result = execute_update_virtual_host(&state, "", args).await;
+    let result = execute_update_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -417,7 +417,7 @@ async fn test_mcp_update_virtual_host_partial_update() {
         "name": "api",
         "rule_order": 30
     });
-    let result = execute_update_virtual_host(&state, "", args).await;
+    let result = execute_update_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -446,7 +446,7 @@ async fn test_mcp_update_virtual_host_no_fields_provided() {
         "route_config": "routes",
         "name": "api"
     });
-    let result = execute_update_virtual_host(&state, "", args).await;
+    let result = execute_update_virtual_host(&state, "", None, args).await;
 
     // Should fail because at least one field is required
     assert!(result.is_err());
@@ -469,7 +469,7 @@ async fn test_mcp_delete_virtual_host_success() {
         "route_config": "routes",
         "name": "api"
     });
-    let result = execute_delete_virtual_host(&state, "", args).await;
+    let result = execute_delete_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -501,7 +501,7 @@ async fn test_mcp_delete_virtual_host_not_found() {
         "route_config": "routes",
         "name": "nonexistent"
     });
-    let result = execute_delete_virtual_host(&state, "", args).await;
+    let result = execute_delete_virtual_host(&state, "", None, args).await;
 
     assert!(result.is_err());
 }
@@ -527,7 +527,7 @@ async fn test_mcp_virtual_host_cross_team_access() {
         "route_config": "team-a-routes",
         "name": "secret"
     });
-    let result = execute_get_virtual_host(&state, "team-b", args).await;
+    let result = execute_get_virtual_host(&state, "team-b", None, args).await;
 
     // Should fail with NotFound (hiding existence)
     assert!(result.is_err());
@@ -547,7 +547,7 @@ async fn test_mcp_virtual_host_create_wrong_team() {
         "name": "forbidden",
         "domains": ["forbidden.example.com"]
     });
-    let result = execute_create_virtual_host(&state, "team-b", args).await;
+    let result = execute_create_virtual_host(&state, "team-b", None, args).await;
 
     // Should fail because team-b cannot access team-a's route config
     assert!(result.is_err());
@@ -593,7 +593,7 @@ async fn test_mcp_get_route_success() {
         "virtual_host": "default",
         "name": "api-route"
     });
-    let result = execute_get_route(&state, "", args).await;
+    let result = execute_get_route(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -625,7 +625,7 @@ async fn test_mcp_get_route_not_found() {
         "virtual_host": "default",
         "name": "nonexistent"
     });
-    let result = execute_get_route(&state, "", args).await;
+    let result = execute_get_route(&state, "", None, args).await;
 
     assert!(result.is_err());
 }
@@ -648,7 +648,7 @@ async fn test_mcp_create_route_success() {
         "rule_order": 20,
         "action": sample_route_action()
     });
-    let result = execute_create_route(&state, "", args).await;
+    let result = execute_create_route(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -677,7 +677,7 @@ async fn test_mcp_create_route_missing_params() {
         "match_type": "prefix",
         "action": sample_route_action()
     });
-    let result = execute_create_route(&state, "", args).await;
+    let result = execute_create_route(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: Missing virtual_host
@@ -688,7 +688,7 @@ async fn test_mcp_create_route_missing_params() {
         "match_type": "prefix",
         "action": sample_route_action()
     });
-    let result = execute_create_route(&state, "", args).await;
+    let result = execute_create_route(&state, "", None, args).await;
     assert!(result.is_err());
 
     // Test: Missing name
@@ -699,7 +699,7 @@ async fn test_mcp_create_route_missing_params() {
         "match_type": "prefix",
         "action": sample_route_action()
     });
-    let result = execute_create_route(&state, "", args).await;
+    let result = execute_create_route(&state, "", None, args).await;
     assert!(result.is_err());
 }
 
@@ -733,7 +733,7 @@ async fn test_mcp_update_route_success() {
         "match_type": "exact",
         "rule_order": 30
     });
-    let result = execute_update_route(&state, "", args).await;
+    let result = execute_update_route(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -778,7 +778,7 @@ async fn test_mcp_update_route_partial() {
         "name": "partial-update",
         "rule_order": 50
     });
-    let result = execute_update_route(&state, "", args).await;
+    let result = execute_update_route(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -821,7 +821,7 @@ async fn test_mcp_delete_route_success() {
         "virtual_host": "default",
         "name": "delete-me"
     });
-    let result = execute_delete_route(&state, "", args).await;
+    let result = execute_delete_route(&state, "", None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -868,7 +868,7 @@ async fn test_mcp_route_cross_team_access() {
         "virtual_host": "default",
         "name": "secret"
     });
-    let result = execute_get_route(&state, "team-b", args).await;
+    let result = execute_get_route(&state, "team-b", None, args).await;
 
     // Should fail with NotFound (hiding existence)
     assert!(result.is_err());

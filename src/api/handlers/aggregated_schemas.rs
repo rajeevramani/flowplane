@@ -14,7 +14,10 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        handlers::team_access::{
+            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+            verify_team_access,
+        },
         routes::ApiState,
     },
     auth::authorization::{extract_team_scopes, require_resource_access},
@@ -253,7 +256,15 @@ pub async fn list_aggregated_schemas_handler(
     // Determine team: use query parameter if provided, otherwise fall back to first team scope
     let team = if let Some(ref requested_team) = query.team {
         // Verify user has access to the requested team
-        require_resource_access(&context, "aggregated-schemas", "read", Some(requested_team))?;
+        require_resource_access_resolved(
+            &state,
+            &context,
+            "aggregated-schemas",
+            "read",
+            Some(requested_team),
+            context.org_id.as_ref(),
+        )
+        .await?;
         requested_team.clone()
     } else {
         // Fall back to first team scope from auth context
@@ -274,7 +285,7 @@ pub async fn list_aggregated_schemas_handler(
     use crate::storage::repositories::TeamRepository as _;
     let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
     let team_ids = team_repo
-        .resolve_team_ids(&[team])
+        .resolve_team_ids(context.org_id.as_ref(), &[team])
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
     let team = team_ids
@@ -363,7 +374,7 @@ pub async fn get_aggregated_schema_handler(
 
     // Verify team access based on user's scope type
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -429,7 +440,7 @@ pub async fn compare_aggregated_schemas_handler(
 
     // Verify team access based on user's scope type
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -532,7 +543,7 @@ pub async fn export_aggregated_schema_handler(
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -612,7 +623,7 @@ pub async fn export_multiple_schemas_handler(
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");

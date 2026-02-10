@@ -1887,3 +1887,53 @@ export interface CurrentOrgResponse {
 export interface ListOrgTeamsResponse {
 	teams: TeamResponse[];
 }
+
+// ============================================================================
+// Invitation Types (Invite-Only Registration)
+// ============================================================================
+
+export type InvitableRole = 'admin' | 'member' | 'viewer';
+
+export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+export interface InviteTokenInfo {
+	orgName: string;
+	orgDisplayName: string;
+	email: string;
+	role: InvitableRole;
+	expiresAt: string;
+}
+
+export interface AcceptInvitationRequest {
+	token: string;
+	name: string;
+	password: string;
+}
+
+export interface InvitationResponse {
+	id: string;
+	email: string;
+	role: InvitableRole;
+	status: InvitationStatus;
+	invitedBy: string | null;
+	expiresAt: string;
+	createdAt: string;
+}
+
+export interface CreateInvitationRequest {
+	email: string;
+	role: InvitableRole;
+}
+
+export interface CreateInvitationResponse {
+	id: string;
+	email: string;
+	role: InvitableRole;
+	expiresAt: string;
+	inviteUrl: string;
+}
+
+export interface PaginatedInvitations {
+	invitations: InvitationResponse[];
+	total: number;
+}

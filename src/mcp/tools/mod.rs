@@ -3,6 +3,8 @@
 //! Provides Control Plane (CP) tools for querying Flowplane configuration via MCP protocol.
 //! Each tool allows AI assistants to inspect and query the control plane state.
 
+use crate::domain::OrgId;
+
 pub mod clusters;
 pub mod dataplanes;
 pub mod devops_agent;
@@ -208,16 +210,17 @@ pub async fn execute_tool(
     tool_name: &str,
     db_pool: &DbPool,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     match tool_name {
         // Note: Cluster, Listener, and Filter tools are handled in handler.rs
         // using the internal API layer with XdsState.
         // Direct db_pool tools query tables directly for efficiency.
-        "cp_list_routes" => execute_list_routes(db_pool, team, args).await,
+        "cp_list_routes" => execute_list_routes(db_pool, team, org_id, args).await,
         // Query-first tools (direct db_pool access for efficiency)
-        "cp_query_port" => execute_query_port(db_pool, team, args).await,
-        "cp_query_path" => execute_query_path(db_pool, team, args).await,
+        "cp_query_port" => execute_query_port(db_pool, team, org_id, args).await,
+        "cp_query_path" => execute_query_path(db_pool, team, org_id, args).await,
         _ => Err(McpError::ToolNotFound(format!("Unknown tool: {}", tool_name))),
     }
 }
@@ -297,7 +300,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_tools_mod").await;
         let pool = _db.pool.clone();
 
-        let result = execute_tool("unknown_tool", &pool, "test-team", serde_json::json!({})).await;
+        let result =
+            execute_tool("unknown_tool", &pool, "test-team", None, serde_json::json!({})).await;
 
         assert!(result.is_err());
         if let Err(McpError::ToolNotFound(msg)) = result {

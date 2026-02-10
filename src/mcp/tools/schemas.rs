@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for discovering and inspecting API schemas learned through traffic analysis.
 
+use crate::domain::OrgId;
 use crate::internal_api::{AggregatedSchemaOperations, InternalAuthContext, ListSchemasRequest};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -151,6 +152,7 @@ RELATED TOOLS: cp_list_aggregated_schemas (discover schemas)"#,
 pub async fn execute_list_aggregated_schemas(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
@@ -166,7 +168,7 @@ pub async fn execute_list_aggregated_schemas(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -217,6 +219,7 @@ pub async fn execute_list_aggregated_schemas(
 pub async fn execute_get_aggregated_schema(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let id = args
@@ -230,7 +233,7 @@ pub async fn execute_get_aggregated_schema(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

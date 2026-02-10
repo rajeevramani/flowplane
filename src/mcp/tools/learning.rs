@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for managing API learning sessions.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     CreateLearningSessionInternalRequest, InternalAuthContext, LearningSessionOperations,
     ListLearningSessionsRequest,
@@ -258,6 +259,7 @@ Authorization: Requires cp:write scope.
 pub async fn execute_list_learning_sessions(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let status = args.get("status").and_then(|v| v.as_str()).map(String::from);
@@ -270,7 +272,7 @@ pub async fn execute_list_learning_sessions(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -313,6 +315,7 @@ pub async fn execute_list_learning_sessions(
 pub async fn execute_get_learning_session(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let id = args["id"]
@@ -325,7 +328,7 @@ pub async fn execute_get_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -363,6 +366,7 @@ pub async fn execute_get_learning_session(
 pub async fn execute_create_learning_session(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -404,7 +408,7 @@ pub async fn execute_create_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -441,6 +445,7 @@ pub async fn execute_create_learning_session(
 pub async fn execute_delete_learning_session(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse session ID
@@ -456,7 +461,7 @@ pub async fn execute_delete_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

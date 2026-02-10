@@ -396,6 +396,29 @@ pub struct AuthConfig {
     /// Default user role for new users
     #[validate(length(min = 1, message = "Default role cannot be empty"))]
     pub default_role: String,
+
+    /// Set Secure flag on session cookies (default: true).
+    /// Set to false only for local HTTP development.
+    /// Env: FLOWPLANE_COOKIE_SECURE
+    pub cookie_secure: bool,
+
+    /// Invitation expiry in hours (default: 48).
+    /// Env: FLOWPLANE_INVITE_EXPIRY_HOURS
+    pub invite_expiry_hours: i64,
+
+    /// Base URL for generating invite links (default: http://localhost:8080).
+    /// Env: FLOWPLANE_BASE_URL
+    #[validate(length(min = 1, message = "Base URL cannot be empty"))]
+    pub base_url: String,
+
+    /// Trusted proxy header for client IP extraction (default: X-Forwarded-For).
+    /// Env: FLOWPLANE_TRUSTED_PROXY_HEADER
+    pub trusted_proxy_header: String,
+
+    /// Trusted proxy depth — how many hops back to trust (default: 1).
+    /// 0 = peer IP only (no proxy), 1 = trust last XFF entry (single LB).
+    /// Env: FLOWPLANE_TRUSTED_PROXY_DEPTH
+    pub trusted_proxy_depth: usize,
 }
 
 impl Default for AuthConfig {
@@ -408,6 +431,11 @@ impl Default for AuthConfig {
             jwt_audience: "flowplane-api".to_string(),
             enable_rbac: true,
             default_role: "user".to_string(),
+            cookie_secure: true,
+            invite_expiry_hours: 48,
+            base_url: "http://localhost:8080".to_string(),
+            trusted_proxy_header: "X-Forwarded-For".to_string(),
+            trusted_proxy_depth: 1,
         }
     }
 }
@@ -416,6 +444,28 @@ impl AuthConfig {
     /// Get token expiry as Duration
     pub fn token_expiry(&self) -> Duration {
         Duration::from_secs(self.token_expiry_seconds)
+    }
+
+    /// Build AuthConfig from environment variables, with defaults
+    pub fn from_env() -> Self {
+        Self {
+            cookie_secure: std::env::var("FLOWPLANE_COOKIE_SECURE")
+                .map(|s| s.to_lowercase() != "false" && s != "0")
+                .unwrap_or(true),
+            invite_expiry_hours: std::env::var("FLOWPLANE_INVITE_EXPIRY_HOURS")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(48),
+            base_url: std::env::var("FLOWPLANE_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            trusted_proxy_header: std::env::var("FLOWPLANE_TRUSTED_PROXY_HEADER")
+                .unwrap_or_else(|_| "X-Forwarded-For".to_string()),
+            trusted_proxy_depth: std::env::var("FLOWPLANE_TRUSTED_PROXY_DEPTH")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1),
+            ..Default::default()
+        }
     }
 }
 

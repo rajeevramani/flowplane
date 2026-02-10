@@ -114,6 +114,8 @@ impl TestApiStateBuilder {
                 mcp_connection_manager,
                 mcp_session_manager,
                 certificate_rate_limiter,
+                auth_config: Arc::new(crate::config::AuthConfig::default()),
+                auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
             },
         )
     }

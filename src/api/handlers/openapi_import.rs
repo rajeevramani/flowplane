@@ -28,11 +28,13 @@ use std::collections::HashMap;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state},
+        handlers::team_access::{
+            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+        },
         routes::ApiState,
     },
     auth::{
-        authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+        authorization::{extract_team_scopes, has_admin_bypass},
         models::AuthContext,
     },
     domain::{RouteConfigId, RouteMetadataSourceType},
@@ -188,7 +190,15 @@ pub async fn import_openapi_handler(
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
     // Authorization: require openapi-import:write scope for the target team
-    require_resource_access(&context, "openapi-import", "write", Some(&params.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "openapi-import",
+        "write",
+        Some(&params.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team-scoped users validation (skip for admins)
     if !has_admin_bypass(&context) {
@@ -274,8 +284,12 @@ pub async fn import_openapi_handler(
     let db_pool = cluster_repo.pool().clone();
 
     // Resolve team name to UUID for FK-safe insert
-    let team_id =
-        crate::api::handlers::team_access::resolve_team_name(&state, &params.team).await?;
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &params.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Create import metadata record
     let import_repo = ImportMetadataRepository::new(db_pool.clone());
@@ -305,8 +319,7 @@ pub async fn import_openapi_handler(
 
     // Materialize routes
     let routes_count = if let Some(route_request) = plan.route_request {
-        materialize_route(&state.xds_state, &db_pool, &import_id, &team_id, route_request)
-            .await?;
+        materialize_route(&state.xds_state, &db_pool, &import_id, &team_id, route_request).await?;
         1
     } else if let Some(virtual_host) = plan.default_virtual_host {
         // For existing listener mode, merge virtual host into the listener's route config
@@ -325,14 +338,8 @@ pub async fn import_openapi_handler(
 
     // Materialize listener (if needed)
     let listener_created = if let Some(listener_request) = plan.listener_request {
-        materialize_listener(
-            &state.xds_state,
-            &db_pool,
-            &import_id,
-            &team_id,
-            listener_request,
-        )
-        .await?;
+        materialize_listener(&state.xds_state, &db_pool, &import_id, &team_id, listener_request)
+            .await?;
         Some(listener_name)
     } else {
         None
@@ -412,7 +419,15 @@ pub async fn list_imports_handler(
         team.ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
 
     // Authorization: require openapi-import:read scope for the target team
-    require_resource_access(&context, "openapi-import", "read", Some(team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "openapi-import",
+        "read",
+        Some(team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team-scoped users validation
     let team_scopes = extract_team_scopes(&context);
@@ -465,12 +480,20 @@ pub async fn get_import_handler(
         .ok_or_else(|| ApiError::NotFound(format!("Import with ID '{}' not found", id)))?;
 
     // Authorization: require openapi-import:read scope for the import's team
-    require_resource_access(&context, "openapi-import", "read", Some(&import_data.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "openapi-import",
+        "read",
+        Some(&import_data.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team-scoped users validation (skip for admins)
     if !has_admin_bypass(&context) {
         let team_repo = team_repo_from_state(&state)?;
-        let team_ids = get_effective_team_ids(&context, team_repo).await?;
+        let team_ids = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
         if !team_ids.is_empty() && !team_ids.contains(&import_data.team) {
             return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
         }
@@ -544,12 +567,20 @@ pub async fn delete_import_handler(
         .ok_or_else(|| ApiError::NotFound(format!("Import with ID '{}' not found", id)))?;
 
     // Authorization: require openapi-import:delete scope for the import's team
-    require_resource_access(&context, "openapi-import", "delete", Some(&import_data.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "openapi-import",
+        "delete",
+        Some(&import_data.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team-scoped users validation (skip for admins)
     if !has_admin_bypass(&context) {
         let team_repo = team_repo_from_state(&state)?;
-        let team_ids = get_effective_team_ids(&context, team_repo).await?;
+        let team_ids = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
         if !team_ids.is_empty() && !team_ids.contains(&import_data.team) {
             return Err(ApiError::NotFound(format!("Import with ID '{}' not found", id)));
         }

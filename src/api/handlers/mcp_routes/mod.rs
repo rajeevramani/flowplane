@@ -5,8 +5,8 @@
 mod types;
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::require_resource_access_resolved;
 use crate::api::routes::ApiState;
-use crate::auth::authorization::require_resource_access;
 use crate::auth::models::AuthContext;
 use crate::services::mcp_service::{EnableMcpRequest, McpService, McpServiceError};
 use axum::{
@@ -81,7 +81,15 @@ pub async fn get_mcp_status_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<McpStatusResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -118,7 +126,15 @@ pub async fn enable_mcp_handler(
     Json(body): Json<EnableMcpRequestBody>,
 ) -> Result<(StatusCode, Json<crate::api::handlers::mcp_tools::McpToolResponse>), ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -160,7 +176,15 @@ pub async fn disable_mcp_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<StatusCode, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -194,7 +218,15 @@ pub async fn refresh_mcp_schema_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<RefreshSchemaResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -228,7 +260,15 @@ pub async fn bulk_enable_mcp_handler(
     Json(body): Json<BulkMcpEnableRequest>,
 ) -> Result<Json<BulkMcpEnableResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -295,7 +335,15 @@ pub async fn bulk_disable_mcp_handler(
     Json(body): Json<BulkMcpDisableRequest>,
 ) -> Result<Json<BulkMcpDisableResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);

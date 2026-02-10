@@ -1170,7 +1170,7 @@ async fn resolve_teams_for_xds(
     }
     if let Some(team_repo) = &state.team_repository {
         team_repo
-            .resolve_team_ids(&teams)
+            .resolve_team_ids(None, &teams)
             .await
             .map_err(|e| tonic::Status::internal(format!("Failed to resolve team IDs: {}", e)))
     } else {

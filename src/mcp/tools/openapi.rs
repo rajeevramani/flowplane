@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for viewing OpenAPI import records.
 
+use crate::domain::OrgId;
 use crate::internal_api::{InternalAuthContext, ListOpenApiImportsRequest, OpenApiOperations};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -127,6 +128,7 @@ RELATED TOOLS: cp_list_openapi_imports (discover imports)"#,
 pub async fn execute_list_openapi_imports(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
@@ -152,7 +154,7 @@ pub async fn execute_list_openapi_imports(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -188,6 +190,7 @@ pub async fn execute_list_openapi_imports(
 pub async fn execute_get_openapi_import(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let id = args["id"]
@@ -200,7 +203,7 @@ pub async fn execute_get_openapi_import(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

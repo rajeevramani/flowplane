@@ -1,6 +1,6 @@
 //! Login service for email/password authentication.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use tracing::{info, instrument, warn};
 
@@ -12,6 +12,14 @@ use crate::storage::repositories::{
     AuditEvent, AuditLogRepository, OrgMembershipRepository, SqlxOrgMembershipRepository,
     SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };
+
+/// Pre-computed dummy hash for timing-safe user enumeration prevention.
+/// When a non-existent email is used, we still run Argon2 verification against
+/// this hash so the response time matches real verification (~200ms).
+static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
+    hashing::hash_password("dummy_startup_value")
+        .unwrap_or_else(|_| "$argon2id$v=19$m=19456,t=2,p=1$dW5rbm93bg$dW5rbm93bg".to_string())
+});
 
 /// Service for handling email/password authentication.
 #[derive(Clone)]
@@ -72,6 +80,11 @@ impl LoginService {
             match self.user_repository.get_user_with_password(&email).await? {
                 Some(result) => result,
                 None => {
+                    // Prevent timing-based user enumeration: perform dummy hash
+                    // verification so response time matches real verification
+                    if let Err(e) = hashing::verify_password(&request.password, &DUMMY_HASH) {
+                        warn!(error = %e, "dummy hash verification failed unexpectedly");
+                    }
                     warn!(email = %email, "login attempt for non-existent user");
                     metrics::record_authentication("invalid_credentials").await;
                     return Err(Error::auth(
@@ -136,7 +149,7 @@ impl LoginService {
                 .await?;
 
             return Err(Error::auth(
-                format!("Account is {}", status_str),
+                "Invalid email or password",
                 AuthErrorType::InvalidCredentials,
             ));
         }

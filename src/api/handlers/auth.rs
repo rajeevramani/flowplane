@@ -27,24 +27,7 @@ use crate::errors::Error;
 use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
-/// Extract client IP from headers, preferring X-Forwarded-For
-fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
-    // Try X-Forwarded-For header first (for proxied requests)
-    if let Some(forwarded) = headers.get("x-forwarded-for") {
-        if let Ok(value) = forwarded.to_str() {
-            // X-Forwarded-For can contain multiple IPs; the first is the original client
-            return value.split(',').next().map(|s| s.trim().to_string());
-        }
-    }
-    // Note: We don't have access to ConnectInfo here, so we just return None
-    // if X-Forwarded-For is not present
-    None
-}
-
-/// Extract User-Agent header
-fn extract_user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
-}
+use crate::api::util::{extract_client_ip, extract_user_agent};
 
 fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
     let cluster_repo = state
@@ -396,14 +379,12 @@ pub async fn create_session_handler(
         .await
         .map_err(convert_error)?;
 
-    // Build secure session cookie
-    // Note: .secure(false) allows cookie to work over HTTP in development
-    // In production, this should be set to true and use HTTPS
+    // Build secure session cookie using configurable Secure flag
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(false) // Allow HTTP in development
-        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
+        .secure(state.auth_config.cookie_secure)
+        .same_site(SameSite::Lax)
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
@@ -639,7 +620,7 @@ pub async fn logout_handler(
     let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(state.auth_config.cookie_secure)
         .same_site(SameSite::Strict)
         .expires(time::OffsetDateTime::UNIX_EPOCH)
         .into();
@@ -727,11 +708,19 @@ pub async fn login_handler(
     use crate::auth::login_service::LoginService;
     use crate::auth::LoginRequest;
 
+    // Rate limit: 10/min per IP
+    let rate_limit_ip =
+        extract_client_ip(&headers, &state.auth_config).unwrap_or_else(|| "unknown".to_string());
+    if let Err(retry_after) = state.auth_rate_limiters.login.check_rate_limit(&rate_limit_ip).await
+    {
+        return Err(ApiError::rate_limited("Too many login attempts", retry_after));
+    }
+
     // Validate request
     payload.validate().map_err(|err| convert_error(Error::from(err)))?;
 
     // Extract client context from headers for audit logging
-    let client_ip = extract_client_ip(&headers);
+    let client_ip = extract_client_ip(&headers, &state.auth_config);
     let user_agent = extract_user_agent(&headers);
 
     // Get database pool
@@ -765,14 +754,12 @@ pub async fn login_handler(
     // Extract teams from scopes
     let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
 
-    // Build secure session cookie
-    // Note: .secure(false) allows cookie to work over HTTP in development
-    // In production, this should be set to true and use HTTPS
+    // Build secure session cookie using configurable Secure flag
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(false) // Allow HTTP in development
-        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
+        .secure(state.auth_config.cookie_secure)
+        .same_site(SameSite::Lax)
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
@@ -869,6 +856,93 @@ pub async fn change_password_handler(
         .map_err(convert_error)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// Session Refresh Endpoint
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshSessionResponse {
+    pub scopes: Vec<String>,
+    pub teams: Vec<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions/refresh",
+    responses(
+        (status = 200, description = "Session scopes refreshed", body = RefreshSessionResponse),
+        (status = 401, description = "Not authenticated or no user session"),
+        (status = 503, description = "Service unavailable")
+    ),
+    security(("session" = [])),
+    tag = "Authentication"
+)]
+#[instrument(skip(state), fields(user_id = ?context.user_id))]
+pub async fn refresh_session_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+) -> Result<Json<RefreshSessionResponse>, ApiError> {
+    use crate::auth::login_service::compute_scopes_from_memberships;
+    use crate::auth::models::UpdatePersonalAccessToken;
+    use crate::storage::repositories::{
+        OrgMembershipRepository, SqlxOrgMembershipRepository, SqlxTeamMembershipRepository,
+        TeamMembershipRepository, TokenRepository,
+    };
+
+    // Require a user session (not a bare PAT)
+    let user_id_str = context
+        .user_id
+        .as_ref()
+        .ok_or_else(|| ApiError::unauthorized("Session refresh requires user authentication"))?;
+
+    let user_id = UserId::from_string(user_id_str.to_string());
+
+    // Get database pool
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+
+    // Fetch user
+    let user_repo = SqlxUserRepository::new(pool.clone());
+    let user = user_repo
+        .get_user(&user_id)
+        .await
+        .map_err(convert_error)?
+        .ok_or_else(|| ApiError::Internal("User not found".to_string()))?;
+
+    // Fetch team memberships
+    let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
+    let team_memberships =
+        membership_repo.list_user_memberships(&user_id).await.map_err(convert_error)?;
+
+    // Fetch org memberships
+    let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+    let org_memberships =
+        org_membership_repo.list_user_memberships(&user_id).await.map_err(convert_error)?;
+
+    // Recompute scopes
+    let scopes = compute_scopes_from_memberships(&user, &team_memberships, &org_memberships);
+
+    // Update session token scopes in the database
+    let token_repo = crate::storage::repository::SqlxTokenRepository::new(pool);
+    let update = UpdatePersonalAccessToken {
+        name: None,
+        description: None,
+        status: None,
+        expires_at: None,
+        scopes: Some(scopes.clone()),
+    };
+    token_repo.update_metadata(&context.token_id, update).await.map_err(convert_error)?;
+
+    // Extract teams from refreshed scopes
+    let teams = crate::auth::session::extract_teams_from_scopes(&scopes);
+
+    Ok(Json(RefreshSessionResponse { scopes, teams }))
 }
 
 // === Tests ===
@@ -1273,48 +1347,7 @@ mod tests {
 
     // === Helper Function Tests ===
 
-    #[test]
-    fn test_extract_client_ip_from_x_forwarded_for() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "192.168.1.1, 10.0.0.1".parse().unwrap());
-
-        let ip = extract_client_ip(&headers);
-        assert_eq!(ip, Some("192.168.1.1".to_string()));
-    }
-
-    #[test]
-    fn test_extract_client_ip_single_ip() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "192.168.1.1".parse().unwrap());
-
-        let ip = extract_client_ip(&headers);
-        assert_eq!(ip, Some("192.168.1.1".to_string()));
-    }
-
-    #[test]
-    fn test_extract_client_ip_no_header() {
-        let headers = axum::http::HeaderMap::new();
-
-        let ip = extract_client_ip(&headers);
-        assert_eq!(ip, None);
-    }
-
-    #[test]
-    fn test_extract_user_agent() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::USER_AGENT, "Mozilla/5.0 (Test)".parse().unwrap());
-
-        let ua = extract_user_agent(&headers);
-        assert_eq!(ua, Some("Mozilla/5.0 (Test)".to_string()));
-    }
-
-    #[test]
-    fn test_extract_user_agent_no_header() {
-        let headers = axum::http::HeaderMap::new();
-
-        let ua = extract_user_agent(&headers);
-        assert_eq!(ua, None);
-    }
+    // extract_client_ip and extract_user_agent tests are in src/api/util.rs
 
     // === CreateTokenBody Tests ===
 

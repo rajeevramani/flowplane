@@ -227,7 +227,7 @@ impl XdsState {
             .team_repository
             .as_ref()
             .ok_or_else(|| crate::errors::Error::internal("Team repository unavailable"))?;
-        let ids = team_repo.resolve_team_ids(&[team_name.to_string()]).await?;
+        let ids = team_repo.resolve_team_ids(None, &[team_name.to_string()]).await?;
         ids.into_iter().next().ok_or_else(|| crate::errors::Error::not_found("Team", team_name))
     }
 

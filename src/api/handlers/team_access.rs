@@ -8,6 +8,7 @@ use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
 use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_admin_bypass};
 use crate::auth::models::AuthContext;
+use crate::domain::OrgId;
 use crate::storage::repositories::TeamRepository;
 
 /// Trait for resources that belong to a team.
@@ -74,13 +75,14 @@ pub fn get_effective_team_scopes(context: &AuthContext) -> Vec<String> {
 pub async fn get_effective_team_ids(
     context: &AuthContext,
     team_repo: &dyn TeamRepository,
+    org_id: Option<&OrgId>,
 ) -> Result<Vec<String>, ApiError> {
     let team_names = get_effective_team_scopes(context);
     if team_names.is_empty() {
         return Ok(Vec::new());
     }
     team_repo
-        .resolve_team_ids(&team_names)
+        .resolve_team_ids(org_id, &team_names)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to resolve team IDs: {}", e)))
 }
@@ -90,19 +92,84 @@ pub async fn get_effective_team_ids(
 /// After the FK migration, the `team` column stores UUIDs.
 /// This converts a user-provided team name to its UUID.
 /// If the input is already a UUID, it is returned as-is (idempotent).
-pub async fn resolve_team_name(state: &ApiState, team_name: &str) -> Result<String, ApiError> {
-    // If it already looks like a UUID, pass through (idempotent)
+pub async fn resolve_team_name(
+    state: &ApiState,
+    team_name: &str,
+    org_id: Option<&OrgId>,
+) -> Result<String, ApiError> {
+    // If it already looks like a UUID, verify org ownership before passing through
     if uuid::Uuid::parse_str(team_name).is_ok() {
+        if let Some(oid) = org_id {
+            // Defense-in-depth: verify the UUID belongs to the caller's org
+            let team_repo = team_repo_from_state(state)?;
+            team_repo
+                .resolve_team_names(Some(oid), &[team_name.to_string()])
+                .await
+                .map_err(|_| ApiError::NotFound(format!("Team '{}' not found", team_name)))?;
+        }
         return Ok(team_name.to_string());
     }
     let team_repo = team_repo_from_state(state)?;
     let ids = team_repo
-        .resolve_team_ids(&[team_name.to_string()])
+        .resolve_team_ids(org_id, &[team_name.to_string()])
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to resolve team: {}", e)))?;
     ids.into_iter()
         .next()
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))
+}
+
+/// Resolve a team identifier to its name for authorization checks.
+///
+/// If the input is already a name (not a UUID), returns it as-is.
+/// If the input is a UUID, looks up the team and returns its name.
+/// This ensures `require_resource_access` always receives team names
+/// (matching the `team:<name>:resource:action` scope pattern).
+pub async fn resolve_team_id_to_name(
+    state: &ApiState,
+    team: &str,
+    org_id: Option<&OrgId>,
+) -> Result<String, ApiError> {
+    // If it doesn't look like a UUID, assume it's already a name
+    if uuid::Uuid::parse_str(team).is_err() {
+        return Ok(team.to_string());
+    }
+    let team_repo = team_repo_from_state(state)?;
+    let names = team_repo
+        .resolve_team_names(org_id, &[team.to_string()])
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID to name: {}", e)))?;
+    names
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team with ID '{}' not found", team)))
+}
+
+/// Require resource access with automatic UUID-to-name resolution.
+///
+/// This is the async counterpart of `require_resource_access` that handles
+/// the case where the `team` parameter might be a UUID instead of a name.
+/// After the FK migration, external callers or bookmarked URLs may send
+/// UUIDs, but scopes use team names. This function resolves the mismatch.
+pub async fn require_resource_access_resolved(
+    state: &ApiState,
+    context: &crate::auth::models::AuthContext,
+    resource: &str,
+    action: &str,
+    team: Option<&str>,
+    org_id: Option<&OrgId>,
+) -> Result<(), ApiError> {
+    let resolved_team = match team {
+        Some(t) => Some(resolve_team_id_to_name(state, t, org_id).await?),
+        None => None,
+    };
+    crate::auth::authorization::require_resource_access(
+        context,
+        resource,
+        action,
+        resolved_team.as_deref(),
+    )
+    .map_err(|_| ApiError::Forbidden("Access denied".to_string()))
 }
 
 /// Get team repository from ApiState.

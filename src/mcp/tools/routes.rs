@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for managing routes.
 
+use crate::domain::OrgId;
 use crate::internal_api::routes::transform_virtual_hosts_for_internal;
 use crate::internal_api::{
     CreateRouteConfigRequest, InternalAuthContext, RouteConfigOperations, UpdateRouteConfigRequest,
@@ -138,6 +139,7 @@ Authorization: Requires routes:read or cp:read scope."#,
 pub async fn execute_list_routes(
     db_pool: &DbPool,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let limit = args["limit"].as_i64().unwrap_or(100).min(1000) as i32;
@@ -255,6 +257,7 @@ pub async fn execute_list_routes(
 pub async fn execute_query_path(
     db_pool: &DbPool,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let query_path = args
@@ -661,6 +664,7 @@ Authorization: Requires cp:write scope."#,
 pub async fn execute_create_route_config(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -696,7 +700,7 @@ pub async fn execute_create_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -729,6 +733,7 @@ pub async fn execute_create_route_config(
 pub async fn execute_update_route_config(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse route config name
@@ -762,7 +767,7 @@ pub async fn execute_update_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -791,6 +796,7 @@ pub async fn execute_update_route_config(
 pub async fn execute_delete_route_config(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse route config name
@@ -811,7 +817,7 @@ pub async fn execute_delete_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -1120,6 +1126,7 @@ Authorization: Requires cp:write scope."#,
 pub async fn execute_get_route(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{InternalAuthContext, RouteOperations};
@@ -1150,7 +1157,7 @@ pub async fn execute_get_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -1186,6 +1193,7 @@ pub async fn execute_get_route(
 pub async fn execute_create_route(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{CreateRouteRequest, InternalAuthContext, RouteOperations};
@@ -1230,7 +1238,7 @@ pub async fn execute_create_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -1269,6 +1277,7 @@ pub async fn execute_create_route(
 pub async fn execute_update_route(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{InternalAuthContext, RouteOperations, UpdateRouteRequest};
@@ -1304,7 +1313,7 @@ pub async fn execute_update_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -1335,6 +1344,7 @@ pub async fn execute_update_route(
 pub async fn execute_delete_route(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{InternalAuthContext, RouteOperations};
@@ -1365,7 +1375,7 @@ pub async fn execute_delete_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

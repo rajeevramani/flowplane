@@ -124,7 +124,14 @@ import type {
 	AdminListOrgsResponse,
 	CurrentOrgResponse,
 	ListOrgTeamsResponse,
-	OrgRole
+	OrgRole,
+	// Invitation types
+	InviteTokenInfo,
+	AcceptInvitationRequest,
+	LoginResponse as InvitationLoginResponse,
+	PaginatedInvitations,
+	CreateInvitationRequest,
+	CreateInvitationResponse
 } from './types';
 import { currentOrg } from '$lib/stores/org';
 
@@ -1608,6 +1615,100 @@ class ApiClient {
 		return this.post<TeamResponse>(
 			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams`,
 			data
+		);
+	}
+
+	// ============================================================================
+	// Invitation API (Invite-Only Registration)
+	// ============================================================================
+
+	async validateInviteToken(token: string): Promise<InviteTokenInfo> {
+		const params = new URLSearchParams({ token });
+		const response = await fetch(
+			`${API_BASE}/api/v1/invitations/validate?${params.toString()}`,
+			{
+				method: 'GET',
+				headers: { 'Content-Type': 'application/json' },
+				credentials: 'include'
+			}
+		);
+
+		if (!response.ok) {
+			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+			try {
+				const errorData = await response.json();
+				errorMessage = errorData.message || errorMessage;
+			} catch {
+				// Use status text
+			}
+			throw new Error(errorMessage);
+		}
+
+		return response.json();
+	}
+
+	async acceptInvitation(req: AcceptInvitationRequest): Promise<InvitationLoginResponse> {
+		const response = await fetch(`${API_BASE}/api/v1/invitations/accept`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(req),
+			credentials: 'include'
+		});
+
+		if (!response.ok) {
+			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+			try {
+				const errorData = await response.json();
+				errorMessage = errorData.message || errorMessage;
+			} catch {
+				// Use status text
+			}
+			throw new Error(errorMessage);
+		}
+
+		const data: InvitationLoginResponse = await response.json();
+
+		// Replicate CSRF token storage from login()
+		if (data.csrfToken) {
+			this.csrfToken = data.csrfToken;
+			try {
+				sessionStorage.setItem('csrf_token', data.csrfToken);
+			} catch {
+				// Safari private browsing may throw on sessionStorage write
+			}
+		}
+
+		return data;
+	}
+
+	async listOrgInvitations(
+		orgName: string,
+		limit?: number,
+		offset?: number
+	): Promise<PaginatedInvitations> {
+		const params = new URLSearchParams();
+		if (limit !== undefined) params.append('limit', limit.toString());
+		if (offset !== undefined) params.append('offset', offset.toString());
+
+		const query = params.toString();
+		return this.get<PaginatedInvitations>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations${query ? `?${query}` : ''}`
+		);
+	}
+
+	async createOrgInvitation(
+		orgName: string,
+		req: CreateInvitationRequest
+	): Promise<CreateInvitationResponse> {
+		return this.post<CreateInvitationResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations`,
+			req
+		);
+	}
+
+	async revokeOrgInvitation(orgName: string, invId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations/${encodeURIComponent(invId)}`
 		);
 	}
 }

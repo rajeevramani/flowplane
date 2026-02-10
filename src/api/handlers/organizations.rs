@@ -25,13 +25,15 @@ use crate::{
         organization::{
             CreateOrganizationRequest, OrgRole, OrganizationResponse, UpdateOrganizationRequest,
         },
+        team::CreateTeamRequest,
     },
     domain::{OrgId, UserId},
     errors::Error,
     storage::{
         repositories::{
             OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
-            SqlxOrganizationRepository, TeamRepository, UserRepository,
+            SqlxOrganizationRepository, SqlxTeamRepository, TeamMembershipRepository,
+            TeamRepository, UserRepository,
         },
         DbPool,
     },
@@ -202,6 +204,40 @@ pub async fn admin_create_organization(
         }
         convert_error(e)
     })?;
+
+    // Auto-create default team for the new organization (follows bootstrap pattern)
+    let pool = pool_for_state(&state)?;
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool));
+
+    let default_team_name = format!("{}-default", org_name);
+    let create_team_request = CreateTeamRequest {
+        name: default_team_name.clone(),
+        display_name: format!("{} Default Team", org.display_name),
+        description: Some(format!(
+            "Default team created automatically for organization '{}'",
+            org_name
+        )),
+        owner_user_id: context.user_id.clone(),
+        org_id: org.id.clone(),
+        settings: None,
+    };
+
+    team_repo.create_team(create_team_request).await.map_err(|e| {
+        tracing::error!(
+            org_id = %org.id,
+            team_name = %default_team_name,
+            error = %e,
+            "failed to create default team for new organization"
+        );
+        convert_error(e)
+    })?;
+
+    tracing::info!(
+        org_id = %org.id,
+        org_name = %org_name,
+        default_team = %default_team_name,
+        "created default team for new organization"
+    );
 
     Ok((StatusCode::CREATED, Json(org.into())))
 }
@@ -811,7 +847,7 @@ pub async fn create_org_team(
         .cloned()
         .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))?;
     let pool = team_repo.pool().clone();
-    let team_repo = Arc::new(crate::storage::repositories::SqlxTeamRepository::new(pool));
+    let team_repo = Arc::new(crate::storage::repositories::SqlxTeamRepository::new(pool.clone()));
 
     let team = team_repo.create_team(payload).await.map_err(|e| {
         // Catch unique constraint violation
@@ -824,6 +860,22 @@ pub async fn create_org_team(
         }
         convert_error(e)
     })?;
+
+    // Auto-create team memberships for all existing org members
+    let org_membership_repo = org_membership_repository_for_state(&state)?;
+    let team_membership_repo: Arc<dyn TeamMembershipRepository> =
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+    let org_members = org_membership_repo.list_org_members(&org.id).await.map_err(convert_error)?;
+    for member in &org_members {
+        let scopes = crate::auth::invitation_service::scopes_for_role(member.role, &team.name);
+        let membership = crate::auth::user::NewUserTeamMembership {
+            id: format!("utm_{}", uuid::Uuid::new_v4()),
+            user_id: member.user_id.clone(),
+            team: team.id.to_string(),
+            scopes,
+        };
+        team_membership_repo.create_membership(membership).await.map_err(convert_error)?;
+    }
 
     Ok((StatusCode::CREATED, Json(team)))
 }

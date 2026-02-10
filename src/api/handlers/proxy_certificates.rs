@@ -14,8 +14,10 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::{authorization::require_resource_access, models::AuthContext},
+    api::{
+        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+    },
+    auth::models::AuthContext,
     domain::ProxyCertificateId,
     errors::Error,
     storage::repositories::{
@@ -196,7 +198,15 @@ pub async fn generate_certificate_handler(
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     // Authorization: user must have access to the team
-    require_resource_access(&context, "proxy-certificates", "create", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "proxy-certificates",
+        "create",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Rate limiting per team to prevent Vault PKI resource exhaustion
     // Configured via FLOWPLANE_RATE_LIMIT_CERTS_PER_HOUR (default: 100)
@@ -349,7 +359,15 @@ pub async fn list_certificates_handler(
     Query(query): Query<ListCertificatesQuery>,
 ) -> Result<Json<ListCertificatesResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "proxy-certificates", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "proxy-certificates",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Get team
     let team_repo = get_team_repository(&state)?;
@@ -400,7 +418,15 @@ pub async fn get_certificate_handler(
     Path((team, id)): Path<(String, String)>,
 ) -> Result<Json<CertificateMetadata>, ApiError> {
     // Authorization
-    require_resource_access(&context, "proxy-certificates", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "proxy-certificates",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Verify team exists
     let team_repo = get_team_repository(&state)?;
@@ -464,7 +490,15 @@ pub async fn revoke_certificate_handler(
     payload.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     // Authorization
-    require_resource_access(&context, "proxy-certificates", "delete", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "proxy-certificates",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Verify team exists
     let team_repo = get_team_repository(&state)?;

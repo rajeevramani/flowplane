@@ -89,7 +89,7 @@ async fn resolve_route_config_with_access(
 
     // Extract team IDs for access verification
     let team_repo = team_repo_from_state(state)?;
-    let team_scopes = get_effective_team_ids(context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(context, team_repo, context.org_id.as_ref()).await?;
 
     verify_route_config_access(route_config, &team_scopes).await
 }

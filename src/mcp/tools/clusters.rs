@@ -6,6 +6,7 @@
 //! The tools use the internal API layer (`ClusterOperations`) for unified
 //! validation and team-based access control.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     ClusterOperations, CreateClusterRequest as InternalCreateRequest, InternalAuthContext,
     ListClustersRequest, UpdateClusterRequest as InternalUpdateRequest,
@@ -151,6 +152,7 @@ Authorization: Requires clusters:read or cp:read scope."#
 pub async fn execute_list_clusters(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
@@ -164,7 +166,7 @@ pub async fn execute_list_clusters(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -226,6 +228,7 @@ pub async fn execute_list_clusters(
 pub async fn execute_get_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args
@@ -241,7 +244,7 @@ pub async fn execute_get_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -611,6 +614,7 @@ Authorization: Requires cp:write scope.
 pub async fn execute_create_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -676,7 +680,7 @@ pub async fn execute_create_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -704,6 +708,7 @@ pub async fn execute_create_cluster(
 pub async fn execute_update_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse cluster name
@@ -720,7 +725,7 @@ pub async fn execute_update_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -788,6 +793,7 @@ pub async fn execute_update_cluster(
 pub async fn execute_delete_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse cluster name
@@ -804,7 +810,7 @@ pub async fn execute_delete_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -827,6 +833,7 @@ pub async fn execute_delete_cluster(
 pub async fn execute_get_cluster_health(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args
@@ -842,7 +849,7 @@ pub async fn execute_get_cluster_health(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -1061,7 +1068,7 @@ mod tests {
         let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
-        let result = execute_list_clusters(&xds_state, "test-team", args).await;
+        let result = execute_list_clusters(&xds_state, "test-team", None, args).await;
         assert!(result.is_ok());
 
         let tool_result = result.unwrap();
@@ -1090,12 +1097,12 @@ mod tests {
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
 
-        let result = execute_create_cluster(&xds_state, "test-team", create_args).await;
+        let result = execute_create_cluster(&xds_state, "test-team", None, create_args).await;
         assert!(result.is_ok());
 
         // Get the cluster
         let get_args = json!({"name": "mcp-created-cluster"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         assert!(result.is_ok());
 
         if let ContentBlock::Text { text } = &result.unwrap().content[0] {
@@ -1110,7 +1117,7 @@ mod tests {
         let (_db, xds_state) = setup_test_xds().await;
         let args = json!({"name": "non-existent-cluster"});
 
-        let result = execute_get_cluster(&xds_state, "test-team", args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, args).await;
         assert!(result.is_err());
 
         if let Err(McpError::ResourceNotFound(msg)) = result {
@@ -1125,7 +1132,7 @@ mod tests {
         let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
-        let result = execute_get_cluster(&xds_state, "test-team", args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, args).await;
         assert!(result.is_err());
 
         if let Err(McpError::InvalidParams(msg)) = result {
@@ -1146,19 +1153,21 @@ mod tests {
             "serviceName": "original",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
-        execute_create_cluster(&xds_state, "test-team", create_args).await.expect("create cluster");
+        execute_create_cluster(&xds_state, "test-team", None, create_args)
+            .await
+            .expect("create cluster");
 
         // Update it
         let update_args = json!({
             "name": "update-test",
             "serviceName": "updated"
         });
-        let result = execute_update_cluster(&xds_state, "test-team", update_args).await;
+        let result = execute_update_cluster(&xds_state, "test-team", None, update_args).await;
         assert!(result.is_ok());
 
         // Verify the update
         let get_args = json!({"name": "update-test"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         if let ContentBlock::Text { text } = &result.unwrap().content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
             assert_eq!(output["service_name"], "updated");
@@ -1176,16 +1185,18 @@ mod tests {
             "serviceName": "service",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
-        execute_create_cluster(&xds_state, "test-team", create_args).await.expect("create cluster");
+        execute_create_cluster(&xds_state, "test-team", None, create_args)
+            .await
+            .expect("create cluster");
 
         // Delete it
         let delete_args = json!({"name": "delete-test"});
-        let result = execute_delete_cluster(&xds_state, "test-team", delete_args).await;
+        let result = execute_delete_cluster(&xds_state, "test-team", None, delete_args).await;
         assert!(result.is_ok());
 
         // Verify it's gone
         let get_args = json!({"name": "delete-test"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         assert!(result.is_err());
     }
 }

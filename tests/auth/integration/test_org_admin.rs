@@ -551,9 +551,10 @@ fn org_admin_with_team_scopes_retains_both() {
     assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
     assert!(check_resource_access(&ctx, "routes", "write", Some("engineering")));
 
-    // Does NOT have access to other teams
-    assert!(!check_resource_access(&ctx, "clusters", "read", Some("platform")));
-    assert!(!check_resource_access(&ctx, "routes", "write", Some("platform")));
+    // Org admins have implicit access to all teams in their org.
+    // Since users belong to one org, org:acme:admin grants access to any team.
+    assert!(check_resource_access(&ctx, "clusters", "read", Some("platform")));
+    assert!(check_resource_access(&ctx, "routes", "write", Some("platform")));
 
     // Does NOT have org admin for other orgs
     assert!(!has_org_admin(&ctx, "globex"));
@@ -583,7 +584,7 @@ fn no_org_user_accessing_no_org_team_allowed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn org_scope_does_not_grant_resource_access() {
+fn org_scope_does_not_grant_team_specific_resource_access() {
     use flowplane::auth::authorization::check_resource_access;
 
     // User has only org:acme:admin, no team scopes
@@ -593,10 +594,13 @@ fn org_scope_does_not_grant_resource_access() {
         vec!["org:acme:admin".into()],
     );
 
-    // Org admin scope does NOT grant resource access (that requires team scopes)
-    assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-    assert!(!check_resource_access(&ctx, "routes", "write", Some("platform")));
-    assert!(!check_resource_access(&ctx, "clusters", "read", None));
+    // Org admin scope grants implicit access to all teams in their org.
+    // Users belong to exactly one org, so org:X:admin covers all X's teams.
+    assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+    assert!(check_resource_access(&ctx, "routes", "write", Some("platform")));
+
+    // Org admin also gets access when team=None (handlers do fine-grained filtering)
+    assert!(check_resource_access(&ctx, "clusters", "read", None));
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ pub mod dataplanes;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
+pub mod invitations;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod mcp_routes;
@@ -38,7 +39,8 @@ pub use audit_log::list_audit_logs;
 pub use auth::{
     change_password_handler, create_session_handler, create_token_handler,
     get_session_info_handler, get_token_handler, list_tokens_handler, login_handler,
-    logout_handler, revoke_token_handler, rotate_token_handler, update_token_handler,
+    logout_handler, refresh_session_handler, revoke_token_handler, rotate_token_handler,
+    update_token_handler,
 };
 pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
@@ -65,6 +67,10 @@ pub use filters::{
     uninstall_filter_handler, update_filter_handler,
 };
 pub use health::health_handler;
+pub use invitations::{
+    accept_invitation_handler, create_invitation_handler, list_invitations_handler,
+    revoke_invitation_handler, validate_invitation_handler,
+};
 pub use learning_sessions::{
     create_learning_session_handler, delete_learning_session_handler, get_learning_session_handler,
     list_learning_sessions_handler,

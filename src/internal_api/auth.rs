@@ -3,7 +3,10 @@
 //! This module provides unified authentication context for internal API operations.
 //! It abstracts the differences between REST AuthContext and MCP team strings.
 
-use crate::api::handlers::team_access::{get_effective_team_scopes, TeamOwned};
+use crate::api::handlers::team_access::{
+    get_effective_team_scopes, get_effective_team_scopes_with_org, TeamOwned,
+};
+use crate::auth::authorization::has_admin_bypass;
 use crate::auth::models::AuthContext;
 use crate::domain::OrgId;
 use crate::internal_api::error::InternalError;
@@ -32,7 +35,7 @@ impl InternalAuthContext {
     /// Create an internal auth context from a REST AuthContext
     pub fn from_rest(context: &AuthContext) -> Self {
         let allowed_teams = get_effective_team_scopes(context);
-        let is_admin = allowed_teams.is_empty();
+        let is_admin = has_admin_bypass(context);
 
         // For REST, we get team from the first allowed team or from the request
         let team = if is_admin { None } else { allowed_teams.first().cloned() };
@@ -46,13 +49,36 @@ impl InternalAuthContext {
         }
     }
 
-    /// Create an internal auth context from MCP team string
-    pub fn from_mcp(team: &str) -> Self {
+    /// Create an internal auth context from a REST AuthContext with org-aware team expansion.
+    ///
+    /// Unlike `from_rest`, this expands org admin scopes to include ALL teams in their
+    /// organization. This ensures org admins can list/access resources across all org teams,
+    /// not just teams they're explicitly members of.
+    pub async fn from_rest_with_org(context: &AuthContext, team_repo: &dyn TeamRepository) -> Self {
+        let allowed_teams = get_effective_team_scopes_with_org(context, team_repo).await;
+        let is_admin = has_admin_bypass(context);
+
+        let team = if is_admin { None } else { allowed_teams.first().cloned() };
+
+        Self {
+            team,
+            is_admin,
+            allowed_teams,
+            org_id: context.org_id.clone(),
+            org_name: context.org_name.clone(),
+        }
+    }
+
+    /// Create an internal auth context from MCP team string with optional org context.
+    ///
+    /// When `org_id` is provided (HTTP MCP path), team resolution and resource access
+    /// are org-scoped. When `None` (CLI path), behaves as before.
+    pub fn from_mcp(team: &str, org_id: Option<OrgId>, org_name: Option<String>) -> Self {
         let is_admin = team.is_empty();
         let allowed_teams = if is_admin { Vec::new() } else { vec![team.to_string()] };
         let team = if is_admin { None } else { Some(team.to_string()) };
 
-        Self { team, is_admin, allowed_teams, org_id: None, org_name: None }
+        Self { team, is_admin, allowed_teams, org_id, org_name }
     }
 
     /// Create an admin context (for testing or system operations)
@@ -87,8 +113,10 @@ impl InternalAuthContext {
             if self.allowed_teams.iter().all(|t| uuid::Uuid::parse_str(t).is_ok()) {
                 return Ok(self);
             }
-            self.allowed_teams =
-                team_repo.resolve_team_ids(&self.allowed_teams).await.map_err(|e| {
+            self.allowed_teams = team_repo
+                .resolve_team_ids(self.org_id.as_ref(), &self.allowed_teams)
+                .await
+                .map_err(|e| {
                     InternalError::internal(format!("Failed to resolve team IDs: {}", e))
                 })?;
             self.team = self.allowed_teams.first().cloned();
@@ -216,16 +244,26 @@ mod tests {
 
     #[test]
     fn test_from_mcp_empty_team() {
-        let ctx = InternalAuthContext::from_mcp("");
+        let ctx = InternalAuthContext::from_mcp("", None, None);
         assert!(ctx.is_admin);
         assert!(ctx.team.is_none());
     }
 
     #[test]
     fn test_from_mcp_with_team() {
-        let ctx = InternalAuthContext::from_mcp("team-b");
+        let ctx = InternalAuthContext::from_mcp("team-b", None, None);
         assert!(!ctx.is_admin);
         assert_eq!(ctx.team, Some("team-b".to_string()));
+    }
+
+    #[test]
+    fn test_from_mcp_with_org_context() {
+        let org_id = OrgId::new();
+        let ctx =
+            InternalAuthContext::from_mcp("team-c", Some(org_id.clone()), Some("acme".into()));
+        assert!(!ctx.is_admin);
+        assert_eq!(ctx.org_id, Some(org_id));
+        assert_eq!(ctx.org_name, Some("acme".into()));
     }
 
     #[test]
@@ -277,6 +315,32 @@ mod tests {
         // Non-admin users cannot create global resources
         let ctx = InternalAuthContext::for_team("team-a");
         assert!(!ctx.can_create_for_team(None));
+    }
+
+    #[test]
+    fn test_from_rest_non_admin_with_empty_teams_is_not_admin() {
+        // An org member with no team scopes should NOT be treated as admin
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-member"),
+            "org-member".into(),
+            vec!["org:acme:member".into()],
+        );
+
+        let internal = InternalAuthContext::from_rest(&ctx);
+        assert!(!internal.is_admin, "org member with no team scopes must not be admin");
+        assert!(internal.allowed_teams.is_empty());
+    }
+
+    #[test]
+    fn test_from_rest_admin_is_admin() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("admin"),
+            "admin".into(),
+            vec!["admin:all".into()],
+        );
+
+        let internal = InternalAuthContext::from_rest(&ctx);
+        assert!(internal.is_admin, "admin:all user must be admin");
     }
 
     #[tokio::test]

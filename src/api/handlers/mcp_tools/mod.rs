@@ -16,10 +16,13 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_ids, team_repo_from_state, verify_team_access},
+        handlers::team_access::{
+            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+            verify_team_access,
+        },
         routes::ApiState,
     },
-    auth::{authorization::require_resource_access, models::AuthContext},
+    auth::models::AuthContext,
     storage::UpdateMcpToolRequest,
 };
 
@@ -46,7 +49,15 @@ pub async fn list_mcp_tools_handler(
     Query(query): Query<ListMcpToolsQuery>,
 ) -> Result<Json<ListMcpToolsResponse>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // === Phase 1: Get CP (built-in) tools ===
     let cp_tools: Vec<McpToolResponse> = crate::mcp::tools::get_all_tools()
@@ -130,7 +141,15 @@ pub async fn get_mcp_tool_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Check if it's a built-in CP tool first
     if let Some(cp_tool) = crate::mcp::tools::get_all_tools().into_iter().find(|t| t.name == name) {
@@ -150,7 +169,7 @@ pub async fn get_mcp_tool_handler(
 
     // Verify team access using the unified team access verification
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let tool = verify_team_access(tool, &team_scopes).await?;
 
     Ok(Json(McpToolResponse::from(tool)))
@@ -180,7 +199,15 @@ pub async fn update_mcp_tool_handler(
     Json(payload): Json<UpdateMcpToolBody>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:write scope
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Check if it's a built-in CP tool - these cannot be modified
     if crate::mcp::tools::get_all_tools().iter().any(|t| t.name == name) {
@@ -204,7 +231,7 @@ pub async fn update_mcp_tool_handler(
 
     // Verify team access using the unified team access verification
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Build update request - pass all provided fields
@@ -285,7 +312,15 @@ pub async fn check_learned_schema_handler(
     Path((team, route_id)): Path<(String, String)>,
 ) -> Result<Json<CheckLearnedSchemaResponse>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let mcp_service = McpService::new(db_pool);
@@ -336,7 +371,15 @@ pub async fn apply_learned_schema_handler(
     Json(payload): Json<ApplyLearnedSchemaRequest>,
 ) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
     // Authorization: require mcp:write scope
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let db_pool = get_db_pool(&state)?;
     let mcp_service = McpService::new(db_pool);

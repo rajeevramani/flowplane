@@ -13,9 +13,11 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+    },
     auth::{
-        authorization::{has_admin_bypass, require_resource_access},
+        authorization::{extract_org_scopes, has_admin_bypass},
         models::AuthContext,
         team::{CreateTeamRequest, Team, UpdateTeamRequest},
     },
@@ -148,7 +150,15 @@ pub async fn get_team_bootstrap_handler(
     // 2. generate-envoy-config:read scope (global access to any team)
     // 3. team:{team}:generate-envoy-config:read scope (team-specific access)
     // 4. team:{team}:*:* scope (team wildcard - access to all resources for the team)
-    require_resource_access(&context, "generate-envoy-config", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "generate-envoy-config",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let format = q.format.as_deref().unwrap_or("yaml").to_lowercase();
 
@@ -329,22 +339,40 @@ pub async fn list_teams_handler(
     let pool = cluster_repo.pool().clone();
 
     let teams = if has_admin_bypass(&context) {
-        // Admin users see all teams from the teams table
+        // Platform admin: sees all teams (cross-org visibility is intentional)
         let team_repo = SqlxTeamRepository::new(pool);
-        let all_teams = team_repo
-            .list_teams(1000, 0) // Large limit to get all teams
+        let all_teams =
+            team_repo.list_teams(1000, 0).await.map_err(|err| ApiError::from(Error::from(err)))?;
+        all_teams.into_iter().map(|t| t.name).collect()
+    } else if !extract_org_scopes(&context).is_empty() && context.org_id.is_some() {
+        // Org admin/member with org context: sees all teams in their org
+        let team_repo = SqlxTeamRepository::new(pool);
+        let org_id = context.org_id.as_ref().unwrap();
+        let org_teams = team_repo
+            .list_teams_by_org(org_id)
             .await
             .map_err(|err| ApiError::from(Error::from(err)))?;
-        all_teams.into_iter().map(|t| t.name).collect()
+        org_teams.into_iter().map(|t| t.name).collect()
     } else {
         // Non-admin users see only their teams from memberships
-        let membership_repo = SqlxTeamMembershipRepository::new(pool);
+        let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
         if let Some(user_id) = &context.user_id {
             let memberships = membership_repo
                 .list_user_memberships(user_id)
                 .await
                 .map_err(|err| ApiError::from(Error::from(err)))?;
-            memberships.into_iter().map(|m| m.team).collect()
+            // After FK migration, m.team stores UUIDs. Resolve back to names
+            // so the frontend gets human-readable names that match scope patterns.
+            let team_ids: Vec<String> = memberships.into_iter().map(|m| m.team).collect();
+            if team_ids.is_empty() {
+                Vec::new()
+            } else {
+                let team_repo = SqlxTeamRepository::new(pool);
+                team_repo
+                    .resolve_team_names(context.org_id.as_ref(), &team_ids)
+                    .await
+                    .map_err(|err| ApiError::from(Error::from(err)))?
+            }
         } else {
             // If no user_id (shouldn't happen for authenticated users), return empty
             Vec::new()

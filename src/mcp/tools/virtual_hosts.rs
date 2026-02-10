@@ -2,6 +2,7 @@
 //!
 //! Control Plane tools for managing virtual hosts within route configurations.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     InternalAuthContext, ListVirtualHostsRequest, UpdateVirtualHostRequest, VirtualHostOperations,
 };
@@ -306,6 +307,7 @@ Authorization: Requires cp:write scope."#,
 pub async fn execute_list_virtual_hosts(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let route_config = args.get("route_config").and_then(|v| v.as_str());
@@ -326,7 +328,7 @@ pub async fn execute_list_virtual_hosts(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -376,6 +378,7 @@ pub async fn execute_list_virtual_hosts(
 pub async fn execute_get_virtual_host(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -400,7 +403,7 @@ pub async fn execute_get_virtual_host(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -434,6 +437,7 @@ pub async fn execute_get_virtual_host(
 pub async fn execute_create_virtual_host(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -484,7 +488,7 @@ pub async fn execute_create_virtual_host(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -519,6 +523,7 @@ pub async fn execute_create_virtual_host(
 pub async fn execute_update_virtual_host(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -581,7 +586,7 @@ pub async fn execute_update_virtual_host(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -611,6 +616,7 @@ pub async fn execute_update_virtual_host(
 pub async fn execute_delete_virtual_host(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -636,7 +642,7 @@ pub async fn execute_delete_virtual_host(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

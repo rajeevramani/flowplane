@@ -21,8 +21,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use tracing::{info, instrument, warn};
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
+    api::{
+        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+    },
     auth::models::AuthContext,
     domain::CustomWasmFilterId,
     errors::Error,
@@ -62,9 +63,21 @@ async fn unregister_custom_schema(state: &ApiState, filter_type: &str) {
 }
 
 /// Verify the user has access to the specified team for custom-wasm-filters resource
-fn verify_team_access(context: &AuthContext, team: &str, action: &str) -> Result<(), ApiError> {
-    require_resource_access(context, "custom-wasm-filters", action, Some(team))
-        .map_err(ApiError::from)
+async fn verify_team_access_for_filters(
+    state: &ApiState,
+    context: &AuthContext,
+    team: &str,
+    action: &str,
+) -> Result<(), ApiError> {
+    require_resource_access_resolved(
+        state,
+        context,
+        "custom-wasm-filters",
+        action,
+        Some(team),
+        context.org_id.as_ref(),
+    )
+    .await
 }
 
 /// Get the custom WASM filter service
@@ -106,7 +119,7 @@ pub async fn create_custom_wasm_filter_handler(
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
     // Verify user has write access to the specified team
-    verify_team_access(&context, &team, "write")?;
+    verify_team_access_for_filters(&state, &context, &team, "write").await?;
 
     // Decode base64 WASM binary
     let wasm_binary = BASE64.decode(&payload.wasm_binary_base64).map_err(|e| {
@@ -163,7 +176,7 @@ pub async fn list_custom_wasm_filters_handler(
     Query(query): Query<ListCustomFiltersQuery>,
 ) -> Result<Json<ListCustomWasmFiltersResponse>, ApiError> {
     // Verify user has read access
-    verify_team_access(&context, &team, "read")?;
+    verify_team_access_for_filters(&state, &context, &team, "read").await?;
 
     let service = get_service(&state)?;
 
@@ -202,7 +215,7 @@ pub async fn get_custom_wasm_filter_handler(
     Path(CustomFilterPath { team, id }): Path<CustomFilterPath>,
 ) -> Result<Json<CustomWasmFilterResponse>, ApiError> {
     // Verify user has read access
-    verify_team_access(&context, &team, "read")?;
+    verify_team_access_for_filters(&state, &context, &team, "read").await?;
 
     let service = get_service(&state)?;
 
@@ -246,7 +259,7 @@ pub async fn update_custom_wasm_filter_handler(
     payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
 
     // Verify user has write access
-    verify_team_access(&context, &team, "write")?;
+    verify_team_access_for_filters(&state, &context, &team, "write").await?;
 
     let service = get_service(&state)?;
 
@@ -298,7 +311,7 @@ pub async fn delete_custom_wasm_filter_handler(
     Path(CustomFilterPath { team, id }): Path<CustomFilterPath>,
 ) -> Result<StatusCode, ApiError> {
     // Verify user has write access
-    verify_team_access(&context, &team, "write")?;
+    verify_team_access_for_filters(&state, &context, &team, "write").await?;
 
     let service = get_service(&state)?;
 
@@ -345,7 +358,7 @@ pub async fn download_wasm_binary_handler(
     Path(CustomFilterPath { team, id }): Path<CustomFilterPath>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Verify user has read access
-    verify_team_access(&context, &team, "read")?;
+    verify_team_access_for_filters(&state, &context, &team, "read").await?;
 
     let service = get_service(&state)?;
 

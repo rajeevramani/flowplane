@@ -23,7 +23,11 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        routes::ApiState,
+    },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::auth::InternalAuthContext,
@@ -62,7 +66,15 @@ pub async fn create_route_config_handler(
     validate_route_config_payload(&payload)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "routes", "write", Some(&payload.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "write",
+        Some(&payload.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Validate and convert to XDS config
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
@@ -80,7 +92,10 @@ pub async fn create_route_config_handler(
     // Delegate to internal API layer (includes XDS refresh and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
@@ -128,7 +143,10 @@ pub async fn list_route_configs_handler(
     // Delegate to internal API layer
     let ops = RouteConfigOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.list(internal_request, &auth).await?;
 
     let mut routes = Vec::with_capacity(result.routes.len());
@@ -162,7 +180,10 @@ pub async fn get_route_config_handler(
     // Delegate to internal API layer (includes team access verification)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let route_config = ops.get(&name, &auth).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
@@ -213,7 +234,10 @@ pub async fn update_route_config_handler(
     // Delegate to internal API layer (includes team access, XDS refresh, and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
@@ -252,7 +276,10 @@ pub async fn delete_route_config_handler(
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -307,6 +334,8 @@ mod tests {
             mcp_connection_manager,
             mcp_session_manager,
             certificate_rate_limiter,
+            auth_config: Arc::new(crate::config::AuthConfig::default()),
+            auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
         };
 
         // Seed a cluster for route references

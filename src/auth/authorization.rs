@@ -116,6 +116,31 @@ pub fn check_resource_access(
         if context.has_scope(&team_wildcard_action) {
             return true;
         }
+
+        // Org admins have implicit access to all teams in their org.
+        // Defense-in-depth: resolve_team_name (team_access.rs) already validates
+        // the team belongs to the caller's org via org-scoped SQL. This check
+        // verifies the org admin scope matches the user's actual org_name,
+        // preventing a corrupted scope from granting cross-org access.
+        let org_scopes = extract_org_scopes(context);
+        for (org_name, role) in &org_scopes {
+            if role == "admin" {
+                if let Some(user_org) = &context.org_name {
+                    if org_name == user_org {
+                        return true;
+                    }
+                    tracing::warn!(
+                        scope_org = %org_name,
+                        user_org = %user_org,
+                        "org admin scope doesn't match user's org, denying implicit team access"
+                    );
+                } else {
+                    // No org context on AuthContext (e.g. API token without org binding).
+                    // Still grant access for backwards compatibility.
+                    return true;
+                }
+            }
+        }
     } else {
         // If no team specified, check if user has ANY team-scoped permission for this resource/action
         // This allows team-scoped users to call handlers that will filter by their teams
@@ -134,6 +159,13 @@ pub fn check_resource_access(
                 let _ = team_name; // Unused but indicates wildcard access exists
                 return true;
             }
+        }
+
+        // Check if user has any org-level membership (org admin/member get access;
+        // handlers do fine-grained team filtering via get_effective_team_scopes_with_org)
+        let org_scopes = extract_org_scopes(context);
+        if !org_scopes.is_empty() {
+            return true;
         }
     }
 
@@ -1043,6 +1075,123 @@ mod tests {
         assert!(has_org_membership(&ctx, "acme"));
         assert!(has_org_membership(&ctx, "globex"));
         assert!(!has_org_membership(&ctx, "unknown"));
+    }
+
+    // === Org scope access in check_resource_access (team=None) ===
+
+    #[test]
+    fn org_member_passes_check_resource_access_without_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-member"),
+            "org-member".into(),
+            vec!["org:acme:member".into()],
+        );
+
+        // User with org:acme:member should pass when team=None
+        // (handlers will do fine-grained team filtering)
+        assert!(check_resource_access(&ctx, "routes", "read", None));
+        assert!(check_resource_access(&ctx, "clusters", "read", None));
+        assert!(check_resource_access(&ctx, "listeners", "write", None));
+    }
+
+    #[test]
+    fn org_admin_passes_check_resource_access_without_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into()],
+        );
+
+        // User with org:acme:admin should pass when team=None
+        assert!(check_resource_access(&ctx, "routes", "read", None));
+        assert!(check_resource_access(&ctx, "clusters", "write", None));
+    }
+
+    #[test]
+    fn org_admin_passes_check_resource_access_with_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into(), "team:acme-default:*:*".into()],
+        );
+
+        // Org admin should pass for any team (implicit access to all org teams)
+        assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
+        assert!(check_resource_access(&ctx, "clusters", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "listeners", "read", Some("frontend")));
+    }
+
+    #[test]
+    fn org_member_fails_check_resource_access_with_wrong_team() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-member"),
+            "org-member".into(),
+            vec!["org:acme:member".into(), "team:acme-default:routes:read".into()],
+        );
+
+        // Org member should NOT get implicit team access (only admins do)
+        assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
+        // But should have access to their own team
+        assert!(check_resource_access(&ctx, "routes", "read", Some("acme-default")));
+    }
+
+    // === Defense-in-depth: org admin scope must match user's org_name ===
+
+    #[test]
+    fn org_admin_with_matching_org_passes() {
+        let org_id = crate::domain::OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into()],
+        )
+        .with_org(org_id, "acme".into());
+
+        // Scope org matches context org_name → granted
+        assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
+        assert!(check_resource_access(&ctx, "clusters", "write", Some("platform")));
+    }
+
+    #[test]
+    fn org_admin_with_mismatched_org_denied() {
+        let org_id = crate::domain::OrgId::new();
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into()],
+        )
+        .with_org(org_id, "globex".into());
+
+        // Scope says "acme" but user's org is "globex" → denied (scope corruption defense)
+        assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "clusters", "write", Some("platform")));
+    }
+
+    #[test]
+    fn org_admin_without_org_context_still_passes() {
+        // Backwards compat: AuthContext without org_name (e.g. API token)
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin-no-ctx"),
+            "org-admin".into(),
+            vec!["org:acme:admin".into()],
+        );
+
+        // No org_name on context → allow (backward compatible)
+        assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
+    }
+
+    #[test]
+    fn no_scopes_fails_check_resource_access() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("empty"),
+            "no-scopes".into(),
+            vec![],
+        );
+
+        // User with NO scopes should fail
+        assert!(!check_resource_access(&ctx, "routes", "read", None));
+        assert!(!check_resource_access(&ctx, "routes", "read", Some("platform")));
+        assert!(!check_resource_access(&ctx, "clusters", "write", None));
     }
 
     // === Regression tests for admin-with-team-memberships bug ===

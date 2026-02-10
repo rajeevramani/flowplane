@@ -7,6 +7,8 @@ pub mod auth_service;
 pub mod authorization;
 pub mod cleanup_service;
 pub mod hashing;
+pub mod invitation;
+pub mod invitation_service;
 pub mod jwt;
 pub mod login_service;
 pub mod middleware;

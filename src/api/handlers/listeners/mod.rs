@@ -22,7 +22,11 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, handlers::team_access::team_repo_from_state, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        routes::ApiState,
+    },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::auth::InternalAuthContext,
@@ -62,7 +66,15 @@ pub async fn create_listener_handler(
     validate_create_listener_body(&payload)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "listeners", "write", Some(&payload.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "write",
+        Some(&payload.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Build ListenerConfig from REST body
     let config = listener_config_from_create(&payload)?;
@@ -81,7 +93,10 @@ pub async fn create_listener_handler(
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -119,7 +134,10 @@ pub async fn list_listeners_handler(
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.list(internal_request, &auth).await?;
 
     let mut listeners = Vec::with_capacity(result.listeners.len());
@@ -153,7 +171,10 @@ pub async fn get_listener_handler(
     // Delegate to internal API layer (includes team access verification)
     let ops = ListenerOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let listener = ops.get(&name, &auth).await?;
 
     let response = listener_response_from_data(listener)?;
@@ -201,7 +222,10 @@ pub async fn update_listener_handler(
     // Delegate to internal API layer (includes team access verification and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -231,7 +255,10 @@ pub async fn delete_listener_handler(
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
     let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest(&context).resolve_teams(team_repo).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -299,6 +326,8 @@ mod tests {
             mcp_connection_manager,
             mcp_session_manager,
             certificate_rate_limiter,
+            auth_config: Arc::new(crate::config::AuthConfig::default()),
+            auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
         };
         (test_db, state, api_state)
     }

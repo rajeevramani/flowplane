@@ -5,6 +5,7 @@
 //! The tools use the internal API layer (`ListenerOperations`) for unified
 //! validation and team-based access control.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     CreateListenerRequest as InternalCreateRequest, InternalAuthContext, ListListenersRequest,
     ListenerOperations, UpdateListenerRequest as InternalUpdateRequest,
@@ -434,6 +435,7 @@ Authorization: Requires listeners:read or cp:read scope."#
 pub async fn execute_list_listeners(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
@@ -447,7 +449,7 @@ pub async fn execute_list_listeners(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -511,6 +513,7 @@ pub async fn execute_list_listeners(
 pub async fn execute_get_listener(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args
@@ -526,7 +529,7 @@ pub async fn execute_get_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -563,6 +566,7 @@ pub async fn execute_get_listener(
 pub async fn execute_create_listener(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -640,7 +644,7 @@ pub async fn execute_create_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -677,6 +681,7 @@ pub async fn execute_create_listener(
 pub async fn execute_update_listener(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse listener name
@@ -693,7 +698,7 @@ pub async fn execute_update_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -749,6 +754,7 @@ pub async fn execute_update_listener(
 pub async fn execute_delete_listener(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse listener name
@@ -765,7 +771,7 @@ pub async fn execute_delete_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
@@ -789,6 +795,7 @@ pub async fn execute_delete_listener(
 pub async fn execute_query_port(
     db_pool: &DbPool,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let port =
@@ -855,6 +862,7 @@ pub async fn execute_query_port(
 pub async fn execute_get_listener_status(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args
@@ -870,7 +878,7 @@ pub async fn execute_get_listener_status(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team)
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;

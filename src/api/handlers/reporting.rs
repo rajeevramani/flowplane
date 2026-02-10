@@ -134,7 +134,7 @@ pub async fn list_route_flows_handler(
 
     // Extract team IDs from auth context for filtering
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo).await?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
 
     // Fetch route flows from repository
     let (rows, total) = reporting_repo

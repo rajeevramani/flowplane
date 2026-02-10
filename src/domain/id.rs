@@ -208,6 +208,11 @@ domain_id!(
     OrgId
 );
 
+domain_id!(
+    /// Unique identifier for an invitation
+    InvitationId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

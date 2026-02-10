@@ -11,12 +11,16 @@
 		OrgRole,
 		UserResponse
 	} from '$lib/api/types';
+	import { isOrgAdmin } from '$lib/stores/org';
+	import OrgInvitationsSection from '$lib/components/OrgInvitationsSection.svelte';
 
 	let orgId = $derived($page.params.id ?? '');
 
 	let org = $state<OrganizationResponse | null>(null);
 	let members = $state<OrgMembershipResponse[]>([]);
 	let users = $state<UserResponse[]>([]);
+	let userScopes = $state<string[]>([]);
+	let isPlatformAdmin = $state(false);
 	let isLoading = $state(true);
 	let isLoadingMembers = $state(true);
 	let isLoadingUsers = $state(true);
@@ -46,7 +50,9 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			userScopes = sessionInfo.scopes;
+			isPlatformAdmin = sessionInfo.isAdmin;
+			if (!sessionInfo.isAdmin && !isOrgAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}
@@ -304,7 +310,7 @@
 		</div>
 	</nav>
 
-	<main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+	<main class="w-full px-4 sm:px-6 lg:px-8 py-8">
 		<!-- Error Messages -->
 		{#if error}
 			<div class="mb-6 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
@@ -626,6 +632,11 @@
 					{/if}
 				</div>
 			</div>
+
+			<!-- Invitations Section -->
+			{#if org}
+				<OrgInvitationsSection orgName={org.name} {orgId} {userScopes} />
+			{/if}
 		{/if}
 	</main>
 </div>
