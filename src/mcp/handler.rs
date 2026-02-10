@@ -16,6 +16,44 @@ use crate::mcp::tools;
 use crate::storage::DbPool;
 use crate::xds::XdsState;
 
+/// Server instructions provided to LLM clients during initialization.
+///
+/// This shapes how every AI agent interacts with Flowplane — explaining terminology,
+/// resource creation order, smart defaults, and diagnostic workflows.
+const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
+
+## Terminology
+- Backend = Cluster (upstream service with endpoints)
+- Entry Point = Listener (address:port where traffic enters)
+- Routing Rules = Route Configuration (path matching + forwarding)
+- Policy = Filter (rate limiting, CORS, auth, headers)
+
+## Resource Creation Order (ALWAYS follow)
+1. Backends (clusters) — must exist before routes reference them
+2. Routing Rules (route configs with virtual hosts and routes)
+3. Policies (filters) — create then attach
+4. Entry Points (listeners) — bind to routing rules
+
+## Before Creating Resources
+- cp_query_port: check if port is available
+- cp_query_path: check if path is already routed
+- dev_preflight_check: comprehensive pre-creation validation
+
+## Smart Defaults
+- Listen address: 0.0.0.0 | Protocol: HTTP | LB: ROUND_ROBIN
+- Virtual host domains: ["*"] | Match type: prefix
+
+## Diagnostic Workflow
+1. ops_topology: understand the full gateway layout
+2. ops_trace_request: trace a specific request path
+3. ops_config_validate: find configuration problems
+4. ops_audit_query: review recent changes
+
+## Error Recovery
+- ALREADY_EXISTS: use update tool or choose different name
+- NOT_FOUND: create the prerequisite first
+- CONFLICT: check existing resource, suggest resolution"#;
+
 /// Validate MCP protocol version (2025-11-25 only)
 ///
 /// We only support the 2025-11-25 protocol version. Older versions are rejected
@@ -195,7 +233,7 @@ impl McpHandler {
                 icons: None,
                 website_url: None,
             },
-            instructions: None,
+            instructions: Some(SERVER_INSTRUCTIONS.to_string()),
         };
 
         match serde_json::to_value(result) {
@@ -220,69 +258,17 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        let tools = vec![
-            // Read operations
-            tools::cp_list_clusters_tool(),
-            tools::cp_get_cluster_tool(),
-            tools::cp_list_listeners_tool(),
-            tools::cp_get_listener_tool(),
-            tools::cp_query_port_tool(),
-            tools::cp_list_routes_tool(),
-            tools::cp_get_route_tool(),
-            tools::cp_query_path_tool(),
-            tools::cp_list_filters_tool(),
-            tools::cp_get_filter_tool(),
-            tools::cp_list_virtual_hosts_tool(),
-            tools::cp_get_virtual_host_tool(),
-            // Write operations (requires xds_state)
-            // Cluster CRUD
-            tools::cp_create_cluster_tool(),
-            tools::cp_update_cluster_tool(),
-            tools::cp_delete_cluster_tool(),
-            // Listener CRUD
-            tools::cp_create_listener_tool(),
-            tools::cp_update_listener_tool(),
-            tools::cp_delete_listener_tool(),
-            // Route config CRUD
-            tools::cp_create_route_config_tool(),
-            tools::cp_update_route_config_tool(),
-            tools::cp_delete_route_config_tool(),
-            // Individual route CRUD
-            tools::cp_create_route_tool(),
-            tools::cp_update_route_tool(),
-            tools::cp_delete_route_tool(),
-            // Virtual host CRUD
-            tools::cp_create_virtual_host_tool(),
-            tools::cp_update_virtual_host_tool(),
-            tools::cp_delete_virtual_host_tool(),
-            // Filter CRUD
-            tools::cp_create_filter_tool(),
-            tools::cp_update_filter_tool(),
-            tools::cp_delete_filter_tool(),
-            // Filter attachment tools
-            tools::cp_attach_filter_tool(),
-            tools::cp_detach_filter_tool(),
-            tools::cp_list_filter_attachments_tool(),
-            // Learning session tools
-            tools::cp_list_learning_sessions_tool(),
-            tools::cp_get_learning_session_tool(),
-            tools::cp_create_learning_session_tool(),
-            tools::cp_delete_learning_session_tool(),
-            // OpenAPI import tools
-            tools::cp_list_openapi_imports_tool(),
-            tools::cp_get_openapi_import_tool(),
-            // Dataplane CRUD tools
-            tools::cp_list_dataplanes_tool(),
-            tools::cp_get_dataplane_tool(),
-            tools::cp_create_dataplane_tool(),
-            tools::cp_update_dataplane_tool(),
-            tools::cp_delete_dataplane_tool(),
-            // Filter type tools
-            tools::cp_list_filter_types_tool(),
-            tools::cp_get_filter_type_tool(),
-            // DevOps agent workflow tools
-            tools::devops_get_deployment_status_tool(),
-        ];
+        // Use get_all_tools() as single source of truth (51 tools)
+        let mut tools = tools::get_all_tools();
+
+        // Enrich tool descriptions with risk level hints from the registry
+        for tool in &mut tools {
+            if let Some(auth) = get_tool_authorization(&tool.name) {
+                if let Some(ref mut desc) = tool.description {
+                    *desc = format!("[Risk: {}] {}", auth.risk_level, desc);
+                }
+            }
+        }
 
         let result = ToolsListResult { tools, next_cursor: None };
 
@@ -336,6 +322,11 @@ impl McpHandler {
                 tools::execute_query_path(&self.db_pool, &self.team, self.org_id.as_ref(), args)
                     .await
             }
+            // Ops tools that only need db_pool (diagnostic/reporting queries)
+            // This dispatch category is for ops tools that run read-only queries
+            // directly against the database without needing xds_state.
+            // New ops tools (ops_trace_request, ops_topology, etc.) will be added here.
+
             // Operations that require xds_state (internal API layer)
             "cp_list_clusters"
             | "cp_get_cluster"
@@ -1348,5 +1339,96 @@ mod tests {
         assert_eq!(error.code, error_codes::INVALID_REQUEST);
         assert!(error.message.contains("Unsupported protocol version"));
         assert!(!handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_returns_instructions() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+        assert!(response.error.is_none());
+
+        let result = response.result.unwrap();
+        let instructions = result.get("instructions").and_then(|v| v.as_str());
+        assert!(instructions.is_some(), "instructions must be set in InitializeResult");
+
+        let text = instructions.unwrap();
+        assert!(text.contains("Flowplane API Gateway Control Plane"));
+        assert!(text.contains("Resource Creation Order"));
+        assert!(text.contains("Diagnostic Workflow"));
+        assert!(text.contains("ops_topology"));
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_synced_with_get_all_tools() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::json!({}),
+        };
+
+        let response = handler.handle_request(request).await;
+        assert!(response.error.is_none());
+
+        let result = response.result.unwrap();
+        let tools_array = result.get("tools").and_then(|v| v.as_array()).unwrap();
+
+        // handle_tools_list must return exactly get_all_tools() count
+        let all_tools = tools::get_all_tools();
+        assert_eq!(
+            tools_array.len(),
+            all_tools.len(),
+            "handle_tools_list() ({}) must be in sync with get_all_tools() ({})",
+            tools_array.len(),
+            all_tools.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_has_risk_level_hints() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::json!({}),
+        };
+
+        let response = handler.handle_request(request).await;
+        assert!(response.error.is_none());
+
+        let result = response.result.unwrap();
+        let tools_array = result.get("tools").and_then(|v| v.as_array()).unwrap();
+
+        // Check that tool descriptions include risk level hints
+        for tool in tools_array {
+            let name = tool.get("name").and_then(|v| v.as_str()).unwrap();
+            if let Some(desc) = tool.get("description").and_then(|v| v.as_str()) {
+                assert!(
+                    desc.starts_with("[Risk: "),
+                    "Tool '{}' description should start with [Risk: ...] hint, got: {}",
+                    name,
+                    &desc[..std::cmp::min(50, desc.len())]
+                );
+            }
+        }
     }
 }
