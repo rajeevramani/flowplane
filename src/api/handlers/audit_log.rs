@@ -17,6 +17,21 @@ use crate::{
     storage::repositories::{AuditLogEntry, AuditLogFilters, AuditLogRepository},
 };
 
+/// Resolve the effective org_id filter for audit log queries.
+///
+/// Org-scoped admins (admin:all + org_id) are always restricted to their own org's
+/// audit logs. Platform admins (admin:all, no org_id) can query any org or none.
+fn resolve_org_id_filter(
+    auth_context: &AuthContext,
+    query_org_id: Option<String>,
+) -> Option<String> {
+    if let Some(ref org_id) = auth_context.org_id {
+        Some(org_id.as_str().to_string())
+    } else {
+        query_org_id
+    }
+}
+
 /// Query parameters for listing audit logs
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -119,12 +134,14 @@ pub async fn list_audit_logs(
         None
     };
 
+    let org_id_filter = resolve_org_id_filter(&auth_context, query.org_id);
+
     // Build filters
     let filters = AuditLogFilters {
         resource_type: query.resource_type,
         action: query.action,
         user_id: query.user_id,
-        org_id: query.org_id,
+        org_id: org_id_filter,
         team_id: query.team_id,
         start_date,
         end_date,
@@ -146,4 +163,56 @@ pub async fn list_audit_logs(
     let offset = query.offset.unwrap_or(0);
 
     Ok(Json(ListAuditLogsResponse { entries, total, limit, offset }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{OrgId, TokenId};
+
+    fn platform_admin_context() -> AuthContext {
+        AuthContext::new(
+            TokenId::from_str_unchecked("platform-admin"),
+            "platform-admin".into(),
+            vec!["admin:all".into()],
+        )
+    }
+
+    fn org_admin_context(org_id: &str) -> AuthContext {
+        AuthContext::new(
+            TokenId::from_str_unchecked("org-admin"),
+            "org-admin".into(),
+            vec!["admin:all".into()],
+        )
+        .with_org(OrgId::from_str_unchecked(org_id), "acme".into())
+    }
+
+    #[test]
+    fn test_org_admin_forced_to_own_org() {
+        let ctx = org_admin_context("org-123");
+        // Even if query asks for a different org, the filter must use the context's org
+        let result = resolve_org_id_filter(&ctx, Some("org-other".into()));
+        assert_eq!(result, Some("org-123".to_string()));
+    }
+
+    #[test]
+    fn test_org_admin_no_query_org_still_scoped() {
+        let ctx = org_admin_context("org-456");
+        let result = resolve_org_id_filter(&ctx, None);
+        assert_eq!(result, Some("org-456".to_string()));
+    }
+
+    #[test]
+    fn test_platform_admin_uses_query_org() {
+        let ctx = platform_admin_context();
+        let result = resolve_org_id_filter(&ctx, Some("org-789".into()));
+        assert_eq!(result, Some("org-789".to_string()));
+    }
+
+    #[test]
+    fn test_platform_admin_no_query_org_sees_all() {
+        let ctx = platform_admin_context();
+        let result = resolve_org_id_filter(&ctx, None);
+        assert_eq!(result, None);
+    }
 }

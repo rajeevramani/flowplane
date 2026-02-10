@@ -71,8 +71,12 @@ impl InternalAuthContext {
 
     /// Create an internal auth context from MCP team string with optional org context.
     ///
-    /// When `org_id` is provided (HTTP MCP path), team resolution and resource access
-    /// are org-scoped. When `None` (CLI path), behaves as before.
+    /// Two invocation paths:
+    /// - **HTTP MCP** (user-facing): `org_id` is extracted from the authenticated user's
+    ///   JWT/session context and passed through `McpHandler::with_xds_state`. Team resolution
+    ///   and resource access are org-scoped.
+    /// - **CLI MCP** (internal): `org_id` is `None` because CLI users have direct machine
+    ///   access with `admin:all` scopes. No org isolation needed for local admin.
     pub fn from_mcp(team: &str, org_id: Option<OrgId>, org_name: Option<String>) -> Self {
         let is_admin = team.is_empty();
         let allowed_teams = if is_admin { Vec::new() } else { vec![team.to_string()] };

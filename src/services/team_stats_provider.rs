@@ -135,17 +135,24 @@ where
             .ok_or_else(|| FlowplaneError::not_found("Cluster", cluster_name))
     }
 
-    /// Get stats for all teams (admin only)
+    /// Get stats for all teams (admin only) or org-scoped teams.
     ///
-    /// This is for the admin dashboard that shows all teams' stats.
-    pub async fn get_all_teams_overview(&self) -> Result<Vec<(String, StatsOverview)>> {
+    /// When `org_id` is `Some`, only teams belonging to that org are included.
+    /// When `None`, all teams are returned (platform admin view).
+    pub async fn get_all_teams_overview(
+        &self,
+        org_id: Option<&crate::domain::OrgId>,
+    ) -> Result<Vec<(String, StatsOverview)>> {
         // Check if feature is enabled
         if !self.is_enabled().await? {
             return Err(FlowplaneError::internal("Stats dashboard feature is not enabled"));
         }
 
-        // List all teams (using large limit to get all)
-        let teams = self.team_repo.list_teams(1000, 0).await?;
+        // List teams scoped by org when provided, otherwise all
+        let teams = match org_id {
+            Some(id) => self.team_repo.list_teams_by_org(id).await?,
+            None => self.team_repo.list_teams(1000, 0).await?,
+        };
         let mut overviews = Vec::new();
 
         for team in teams {
@@ -245,13 +252,17 @@ mod tests {
         }
 
         fn add_team(&self, name: &str, admin_port: Option<u16>) {
+            self.add_team_with_org(name, admin_port, "test-org");
+        }
+
+        fn add_team_with_org(&self, name: &str, admin_port: Option<u16>, org: &str) {
             let team = Team {
                 id: TeamId::new(),
                 name: name.to_string(),
                 display_name: name.to_string(),
                 description: None,
                 owner_user_id: None,
-                org_id: OrgId::from_str_unchecked("test-org"),
+                org_id: OrgId::from_str_unchecked(org),
                 settings: None,
                 status: TeamStatus::Active,
                 envoy_admin_port: admin_port,
@@ -305,8 +316,8 @@ mod tests {
             unimplemented!()
         }
 
-        async fn list_teams_by_org(&self, _org_id: &crate::domain::OrgId) -> Result<Vec<Team>> {
-            unimplemented!()
+        async fn list_teams_by_org(&self, org_id: &crate::domain::OrgId) -> Result<Vec<Team>> {
+            Ok(self.teams.lock().unwrap().iter().filter(|t| t.org_id == *org_id).cloned().collect())
         }
 
         async fn resolve_team_ids(
@@ -551,5 +562,43 @@ mod tests {
 
         provider.invalidate_cache("test-team");
         assert!(cache.get("test-team").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_all_teams_overview_org_scoped() {
+        let data_source = Arc::new(MockStatsDataSource::new());
+        let cache = Arc::new(StatsCache::with_defaults());
+        let team_repo = Arc::new(MockTeamRepo::new());
+        // Two teams in org-a, one team in org-b
+        team_repo.add_team_with_org("team-alpha", Some(9901), "org-a");
+        team_repo.add_team_with_org("team-beta", Some(9902), "org-a");
+        team_repo.add_team_with_org("team-gamma", Some(9903), "org-b");
+        let app_repo = Arc::new(MockAppRepo::new(true));
+
+        // Pre-populate cache for all teams
+        cache.set("team-alpha", create_test_snapshot("team-alpha"));
+        cache.set("team-beta", create_test_snapshot("team-beta"));
+        cache.set("team-gamma", create_test_snapshot("team-gamma"));
+
+        let provider = TeamStatsProvider::new(
+            data_source,
+            cache,
+            team_repo,
+            app_repo,
+            StatsProviderConfig::default(),
+        );
+
+        // Org-scoped: only org-a teams
+        let org_a = OrgId::from_str_unchecked("org-a");
+        let overviews = provider.get_all_teams_overview(Some(&org_a)).await.unwrap();
+        assert_eq!(overviews.len(), 2);
+        let names: Vec<&str> = overviews.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"team-alpha"));
+        assert!(names.contains(&"team-beta"));
+        assert!(!names.contains(&"team-gamma"));
+
+        // Platform admin (no org): all teams
+        let all_overviews = provider.get_all_teams_overview(None).await.unwrap();
+        assert_eq!(all_overviews.len(), 3);
     }
 }

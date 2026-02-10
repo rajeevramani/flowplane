@@ -51,9 +51,14 @@
 				});
 			}
 
-			// Load available teams
-			const teamsResponse = await apiClient.listTeams();
-			availableTeams = teamsResponse.teams;
+			// Load available teams - use org-scoped endpoint when user has org context (defense-in-depth)
+			if (sessionInfo.orgName) {
+				const orgTeamsResponse = await apiClient.listOrgTeams(sessionInfo.orgName);
+				availableTeams = orgTeamsResponse.teams.map((t) => t.name);
+			} else {
+				const teamsResponse = await apiClient.listTeams();
+				availableTeams = teamsResponse.teams;
+			}
 
 			// Initialize selected team from store/sessionStorage or first team
 			initializeSelectedTeam(availableTeams);

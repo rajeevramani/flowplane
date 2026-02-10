@@ -49,6 +49,8 @@ impl McpHandler {
     /// * `db_pool` - Database connection pool
     /// * `team` - Team context for multi-tenancy
     /// * `scopes` - Authorization scopes from the authenticated token
+    // org_id is None: CLI MCP has direct machine access with admin:all scopes.
+    // Org isolation is only enforced on the HTTP MCP path via `with_xds_state`.
     pub fn new(db_pool: Arc<DbPool>, team: String, scopes: Vec<String>) -> Self {
         Self { db_pool, xds_state: None, team, scopes, org_id: None, initialized: false }
     }
