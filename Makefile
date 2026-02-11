@@ -20,7 +20,8 @@
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
         build build-backend build-ui info prune \
-        vault-setup dev-db test test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check
+        vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
+        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check
 
 .DEFAULT_GOAL := help
 
@@ -96,6 +97,9 @@ help: ## Show this help message
 	@echo "$(GREEN)Development:$(RESET)"
 	@echo "  $(CYAN)make dev-db$(RESET)          - Start PostgreSQL for local dev"
 	@echo "  $(CYAN)make test$(RESET)            - Run cargo tests"
+	@echo "  $(CYAN)make test-ui$(RESET)         - Run UI component tests (Vitest)"
+	@echo "  $(CYAN)make test-ui-watch$(RESET)   - Run UI tests in watch mode"
+	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright)"
 	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
 	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
 	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
@@ -249,6 +253,23 @@ test: ## Run cargo tests (requires Docker/Podman for testcontainers)
 	@echo "$(CYAN)Running tests...$(RESET)"
 	cargo test --features postgres_tests
 
+test-ui: ## Run UI component tests (Vitest)
+	@echo "$(CYAN)Running UI component tests...$(RESET)"
+	cd ui && npx vitest run
+
+test-ui-watch: ## Run UI component tests in watch mode
+	@echo "$(CYAN)Running UI tests in watch mode...$(RESET)"
+	cd ui && npx vitest
+
+test-ui-e2e: ## Run UI E2E tests (Playwright, requires running backend)
+	@echo "$(CYAN)Running UI E2E tests...$(RESET)"
+	cd ui && npx playwright test
+	@echo ""
+	@echo "$(GREEN)HTML report: make test-ui-report$(RESET)"
+
+test-ui-report: ## Open Playwright HTML test report
+	cd ui && npx playwright show-report
+
 test-e2e: ## Run E2E smoke tests and clean up containers
 	@echo "$(CYAN)Running E2E smoke tests...$(RESET)"
 	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1; \
@@ -289,7 +310,7 @@ clippy: ## Run cargo clippy
 	@echo "$(CYAN)Running cargo clippy...$(RESET)"
 	cargo clippy --all-targets --all-features -- -D warnings
 
-check: fmt clippy test ## Run fmt + clippy + test
+check: fmt clippy test test-ui ## Run fmt + clippy + test + UI tests
 	@echo "$(GREEN)All checks passed!$(RESET)"
 
 vault-setup: ## Run Vault PKI setup script

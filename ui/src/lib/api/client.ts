@@ -1,6 +1,8 @@
 // API client with CSRF token handling
 import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
+import { z } from 'zod';
+import { SecretResponseSchema, AdminListOrgsResponseSchema, paginatedSchema } from './schemas';
 import type {
 	LoginRequest,
 	LoginResponse,
@@ -131,11 +133,21 @@ import type {
 	LoginResponse as InvitationLoginResponse,
 	PaginatedInvitations,
 	CreateInvitationRequest,
-	CreateInvitationResponse
+	CreateInvitationResponse,
+	PaginatedResponse
 } from './types';
 import { currentOrg } from '$lib/stores/org';
 
 const API_BASE = env.PUBLIC_API_BASE || 'http://localhost:8080';
+
+function parseResponse<T>(data: unknown, schema: z.ZodType<T>): T {
+	const result = schema.safeParse(data);
+	if (!result.success) {
+		console.warn('API response validation failed:', result.error.issues);
+		return data as T;
+	}
+	return result.data;
+}
 
 class ApiClient {
 	private csrfToken: string | null = null;
@@ -344,7 +356,8 @@ class ApiClient {
 		if (offset) params.append('offset', offset.toString());
 		if (params.toString()) path += `?${params.toString()}`;
 
-		return this.get<PersonalAccessToken[]>(path);
+		const response = await this.get<PaginatedResponse<PersonalAccessToken>>(path);
+		return response.items;
 	}
 
 	async getToken(id: string): Promise<PersonalAccessToken> {
@@ -430,7 +443,8 @@ class ApiClient {
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
-		return this.get<ListenerResponse[]>(path);
+		const response = await this.get<PaginatedResponse<ListenerResponse>>(path);
+		return response.items;
 	}
 
 	async getListener(name: string): Promise<ListenerResponse> {
@@ -449,7 +463,8 @@ class ApiClient {
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
-		return this.get<RouteResponse[]>(path);
+		const response = await this.get<PaginatedResponse<RouteResponse>>(path);
+		return response.items;
 	}
 
 	async getRouteConfig(name: string): Promise<RouteResponse> {
@@ -472,7 +487,8 @@ class ApiClient {
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
-		return this.get<ClusterResponse[]>(path);
+		const response = await this.get<PaginatedResponse<ClusterResponse>>(path);
+		return response.items;
 	}
 
 	async getCluster(name: string): Promise<ClusterResponse> {
@@ -620,7 +636,8 @@ class ApiClient {
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
-		return this.get<FilterResponse[]>(path);
+		const response = await this.get<PaginatedResponse<FilterResponse>>(path);
+		return response.items;
 	}
 
 	async getFilter(id: string): Promise<FilterResponse> {
@@ -874,7 +891,9 @@ class ApiClient {
 		if (query?.secret_type) params.append('secret_type', query.secret_type);
 
 		const path = `/api/v1/teams/${encodeURIComponent(team)}/secrets${params.toString() ? `?${params.toString()}` : ''}`;
-		return this.get<SecretResponse[]>(path);
+		const response = await this.get<PaginatedResponse<SecretResponse>>(path);
+		const validated = parseResponse(response, paginatedSchema(SecretResponseSchema));
+		return validated.items;
 	}
 
 	/**
@@ -1418,8 +1437,8 @@ class ApiClient {
 		if (query?.offset) params.append('offset', query.offset.toString());
 
 		const path = `/api/v1/teams/${encodeURIComponent(team)}/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
-		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
-		return response.dataplanes;
+		const response = await this.get<PaginatedResponse<DataplaneResponse>>(path);
+		return response.items;
 	}
 
 	/**
@@ -1431,8 +1450,8 @@ class ApiClient {
 		if (query?.offset) params.append('offset', query.offset.toString());
 
 		const path = `/api/v1/dataplanes${params.toString() ? `?${params.toString()}` : ''}`;
-		const response = await this.get<{ dataplanes: DataplaneResponse[] }>(path);
-		return response.dataplanes;
+		const response = await this.get<PaginatedResponse<DataplaneResponse>>(path);
+		return response.items;
 	}
 
 	/**
@@ -1523,7 +1542,10 @@ class ApiClient {
 		if (offset !== undefined) params.append('offset', offset.toString());
 
 		const query = params.toString();
-		return this.get<AdminListOrgsResponse>(`/api/v1/admin/organizations${query ? `?${query}` : ''}`);
+		return parseResponse(
+			await this.get<AdminListOrgsResponse>(`/api/v1/admin/organizations${query ? `?${query}` : ''}`),
+			AdminListOrgsResponseSchema
+		);
 	}
 
 	async getOrganization(id: string): Promise<OrganizationResponse> {

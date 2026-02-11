@@ -87,6 +87,10 @@ node_modules/
 # SvelteKit build outputs
 ui/.svelte-kit/
 ui/build/
+
+# Playwright test artifacts
+ui/playwright-report/
+ui/test-results/
 ui/.netlify/
 ui/.vercel/
 # Environment variables
@@ -131,3 +135,4 @@ terraform.rc
 
 # Remove later
 deploy
+agents
