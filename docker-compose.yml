@@ -50,6 +50,7 @@ services:
       FLOWPLANE_API_PORT: 8080
       FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
       FLOWPLANE_XDS_PORT: 50051
+      FLOWPLANE_COOKIE_SECURE: "false"
 
       # UI and MCP
       FLOWPLANE_UI_ORIGIN: "http://localhost:8080,http://localhost:6274"
