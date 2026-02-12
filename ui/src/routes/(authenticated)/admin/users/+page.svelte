@@ -39,7 +39,7 @@
 		try {
 			const offset = (currentPage - 1) * pageSize;
 			const response = await apiClient.listUsers(pageSize, offset);
-			users = response.users;
+			users = response.items;
 			total = response.total;
 		} catch (err: any) {
 			error = err.message || 'Failed to load users';

@@ -18,6 +18,7 @@ export interface LoginResponse {
 	expiresAt: string;
 	userId: string;
 	userEmail: string;
+	isPlatformAdmin: boolean;
 	teams: string[];
 	scopes: string[];
 	orgId?: string;
@@ -54,6 +55,7 @@ export interface SessionInfoResponse {
 	name: string;
 	email: string;
 	isAdmin: boolean;
+	isPlatformAdmin: boolean;
 	teams: string[];
 	scopes: string[];
 	expiresAt: string | null;
@@ -101,7 +103,7 @@ export interface UpdateTeamRequest {
 }
 
 export interface AdminListTeamsResponse {
-	teams: TeamResponse[];
+	items: TeamResponse[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -316,7 +318,7 @@ export interface UpdateTeamMembershipRequest {
 }
 
 export interface ListUsersResponse {
-	users: UserResponse[];
+	items: UserResponse[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -348,7 +350,7 @@ export interface ListAuditLogsQuery {
 }
 
 export interface ListAuditLogsResponse {
-	entries: AuditLogEntry[];
+	items: AuditLogEntry[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -1882,8 +1884,10 @@ export interface AddOrgMemberRequest {
 }
 
 export interface AdminListOrgsResponse {
-	organizations: OrganizationResponse[];
+	items: OrganizationResponse[];
 	total: number;
+	limit: number;
+	offset: number;
 }
 
 export interface CurrentOrgResponse {
@@ -1943,4 +1947,42 @@ export interface CreateInvitationResponse {
 export interface PaginatedInvitations {
 	invitations: InvitationResponse[];
 	total: number;
+}
+
+// ============================================================================
+// Admin Resource Summary Types (Platform Governance)
+// ============================================================================
+
+export interface TeamSummary {
+	teamName: string;
+	teamDisplayName: string;
+	clusters: number;
+	listeners: number;
+	routeConfigs: number;
+	filters: number;
+	dataplanes: number;
+	secrets: number;
+	imports: number;
+}
+
+export interface OrgSummary {
+	orgId: string | null;
+	orgName: string | null;
+	teams: TeamSummary[];
+}
+
+export interface SummaryTotals {
+	teams: number;
+	clusters: number;
+	listeners: number;
+	routeConfigs: number;
+	filters: number;
+	dataplanes: number;
+	secrets: number;
+	imports: number;
+}
+
+export interface AdminResourceSummary {
+	totals: SummaryTotals;
+	orgs: OrgSummary[];
 }

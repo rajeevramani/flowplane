@@ -65,7 +65,7 @@
 			}
 
 			const response = await apiClient.listAuditLogs(query);
-			entries = response.entries;
+			entries = response.items;
 			total = response.total;
 		} catch (err: any) {
 			error = err.message || 'Failed to load audit logs';

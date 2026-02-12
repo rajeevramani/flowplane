@@ -51,7 +51,7 @@
 		isLoadingUsers = true;
 		try {
 			const response = await apiClient.listUsers(100, 0);
-			users = response.users;
+			users = response.items;
 		} catch (err: unknown) {
 			error = 'Failed to load users: ' + (err instanceof Error ? err.message : 'Unknown error');
 		} finally {

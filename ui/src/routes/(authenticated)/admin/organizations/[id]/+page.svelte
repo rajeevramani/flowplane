@@ -96,7 +96,7 @@
 		isLoadingUsers = true;
 		try {
 			const response = await apiClient.listUsers(100, 0);
-			users = response.users;
+			users = response.items;
 		} catch {
 			// Non-fatal
 		} finally {

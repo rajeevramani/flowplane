@@ -37,7 +37,7 @@
 		try {
 			const offset = (currentPage - 1) * pageSize;
 			const response = await apiClient.listOrganizations(pageSize, offset);
-			organizations = response.organizations;
+			organizations = response.items;
 			total = response.total;
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Failed to load organizations';

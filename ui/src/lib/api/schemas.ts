@@ -39,17 +39,13 @@ export const OrganizationResponseSchema = z.object({
 	displayName: z.string(),
 	description: z.string().optional(),
 	ownerUserId: z.string().optional(),
-	settings: z.record(z.string(), z.unknown()).optional(),
 	status: z.enum(['active', 'suspended', 'archived']),
 	createdAt: z.string(),
 	updatedAt: z.string()
 });
 
 // AdminListOrgsResponse schema
-export const AdminListOrgsResponseSchema = z.object({
-	organizations: z.array(OrganizationResponseSchema),
-	total: z.number()
-});
+export const AdminListOrgsResponseSchema = paginatedSchema(OrganizationResponseSchema);
 
 // SessionInfoResponse schema
 export const SessionInfoResponseSchema = z.object({
@@ -58,6 +54,7 @@ export const SessionInfoResponseSchema = z.object({
 	name: z.string(),
 	email: z.string(),
 	isAdmin: z.boolean(),
+	isPlatformAdmin: z.boolean(),
 	teams: z.array(z.string()),
 	scopes: z.array(z.string()),
 	expiresAt: z.string().nullable(),
@@ -65,6 +62,41 @@ export const SessionInfoResponseSchema = z.object({
 	orgId: z.string().optional(),
 	orgName: z.string().optional(),
 	orgRole: z.string().optional()
+});
+
+// Admin Resource Summary schemas
+const TeamSummarySchema = z.object({
+	teamName: z.string(),
+	teamDisplayName: z.string(),
+	clusters: z.number(),
+	listeners: z.number(),
+	routeConfigs: z.number(),
+	filters: z.number(),
+	dataplanes: z.number(),
+	secrets: z.number(),
+	imports: z.number()
+});
+
+const OrgSummarySchema = z.object({
+	orgId: z.string().nullable(),
+	orgName: z.string().nullable(),
+	teams: z.array(TeamSummarySchema)
+});
+
+const SummaryTotalsSchema = z.object({
+	teams: z.number(),
+	clusters: z.number(),
+	listeners: z.number(),
+	routeConfigs: z.number(),
+	filters: z.number(),
+	dataplanes: z.number(),
+	secrets: z.number(),
+	imports: z.number()
+});
+
+export const AdminResourceSummarySchema = z.object({
+	totals: SummaryTotalsSchema,
+	orgs: z.array(OrgSummarySchema)
 });
 
 // TeamResponse schema

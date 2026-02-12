@@ -64,7 +64,7 @@
 		isLoadingUsers = true;
 		try {
 			const response = await apiClient.listUsers(100, 0);
-			users = response.users;
+			users = response.items;
 		} catch (err: any) {
 			// Non-fatal error, just log
 			console.error('Failed to load users:', err);

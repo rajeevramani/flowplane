@@ -21,6 +21,7 @@ const mockSessionInfo: SessionInfoResponse = {
 	name: 'Admin User',
 	email: 'admin@test.com',
 	isAdmin: true,
+	isPlatformAdmin: false,
 	teams: ['test-team'],
 	scopes: ['admin:all'],
 	expiresAt: null,
@@ -28,7 +29,7 @@ const mockSessionInfo: SessionInfoResponse = {
 };
 
 const mockOrgsResponse: AdminListOrgsResponse = {
-	organizations: [
+	items: [
 		{
 			id: 'org-1',
 			name: 'acme-corp',
@@ -47,7 +48,9 @@ const mockOrgsResponse: AdminListOrgsResponse = {
 			updatedAt: '2026-02-05T14:00:00Z'
 		}
 	],
-	total: 2
+	total: 2,
+	limit: 20,
+	offset: 0
 };
 
 describe('Organizations Page', () => {
@@ -80,8 +83,10 @@ describe('Organizations Page', () => {
 	it('shows empty state when no organizations', async () => {
 		vi.mocked(apiClient.getSessionInfo).mockResolvedValue(mockSessionInfo);
 		vi.mocked(apiClient.listOrganizations).mockResolvedValue({
-			organizations: [],
-			total: 0
+			items: [],
+			total: 0,
+			limit: 20,
+			offset: 0
 		});
 
 		render(OrganizationsPage);

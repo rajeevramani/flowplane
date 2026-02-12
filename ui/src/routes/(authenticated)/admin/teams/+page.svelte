@@ -38,7 +38,7 @@
 		try {
 			const offset = (currentPage - 1) * pageSize;
 			const response = await apiClient.adminListTeams(pageSize, offset);
-			teams = response.teams;
+			teams = response.items;
 			total = response.total;
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Failed to load teams';
