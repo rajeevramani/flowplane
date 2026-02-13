@@ -1,8 +1,9 @@
 //! Admin organization management API handlers.
 //!
 //! This module provides HTTP handlers for organization lifecycle management and
-//! organization membership operations. Organization CRUD requires platform admin
-//! (`admin:all` scope). Membership endpoints accept platform admin or org admin.
+//! organization membership operations. Organization creation and listing require
+//! platform admin (`admin:all` scope). Get, update, and delete accept platform
+//! admin or org admin. Membership endpoints accept platform admin or org admin.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -241,7 +242,7 @@ pub async fn admin_list_organizations(
     )))
 }
 
-/// Get an organization by ID (admin only).
+/// Get an organization by ID (admin or org admin).
 #[utoipa::path(
     get,
     path = "/api/v1/admin/organizations/{id}",
@@ -250,7 +251,7 @@ pub async fn admin_list_organizations(
     ),
     responses(
         (status = 200, description = "Organization found", body = OrganizationResponse),
-        (status = 403, description = "Admin privileges required"),
+        (status = 403, description = "Admin or org admin privileges required"),
         (status = 404, description = "Organization not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -262,10 +263,9 @@ pub async fn admin_get_organization(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<OrganizationResponse>, ApiError> {
-    require_admin(&context)?;
-
     let org_id = OrgId::from_string(id);
 
+    // Resolve org first to get name for auth check
     let repo = org_repository_for_state(&state)?;
     let org = repo
         .get_organization_by_id(&org_id)
@@ -273,10 +273,12 @@ pub async fn admin_get_organization(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
+    require_admin_or_org_admin(&context, &org.name)?;
+
     Ok(Json(org.into()))
 }
 
-/// Update an organization (admin only).
+/// Update an organization (admin or org admin).
 #[utoipa::path(
     put,
     path = "/api/v1/admin/organizations/{id}",
@@ -287,7 +289,7 @@ pub async fn admin_get_organization(
     responses(
         (status = 200, description = "Organization updated successfully", body = OrganizationResponse),
         (status = 400, description = "Validation error"),
-        (status = 403, description = "Admin privileges required"),
+        (status = 403, description = "Admin or org admin privileges required"),
         (status = 404, description = "Organization not found")
     ),
     security(("bearer_auth" = ["admin:all"])),
@@ -300,19 +302,26 @@ pub async fn admin_update_organization(
     Path(id): Path<String>,
     Json(payload): Json<UpdateOrganizationRequest>,
 ) -> Result<Json<OrganizationResponse>, ApiError> {
-    require_admin(&context)?;
-
     payload.validate().map_err(ApiError::from)?;
 
     let org_id = OrgId::from_string(id);
 
+    // Resolve org first to get name for auth check
     let repo = org_repository_for_state(&state)?;
+    let existing_org = repo
+        .get_organization_by_id(&org_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+
+    require_admin_or_org_admin(&context, &existing_org.name)?;
+
     let org = repo.update_organization(&org_id, payload).await.map_err(ApiError::from)?;
 
     Ok(Json(org.into()))
 }
 
-/// Delete an organization (admin only).
+/// Delete an organization (admin or org admin).
 ///
 /// This operation will fail if there are teams or users referencing this
 /// organization due to foreign key constraints.
@@ -324,7 +333,7 @@ pub async fn admin_update_organization(
     ),
     responses(
         (status = 204, description = "Organization deleted successfully"),
-        (status = 403, description = "Admin privileges required"),
+        (status = 403, description = "Admin or org admin privileges required"),
         (status = 404, description = "Organization not found"),
         (status = 409, description = "Organization has resources - cannot delete")
     ),
@@ -337,11 +346,18 @@ pub async fn admin_delete_organization(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_admin(&context)?;
-
     let org_id = OrgId::from_string(id);
 
+    // Resolve org first to get name for auth check
     let repo = org_repository_for_state(&state)?;
+    let org = repo
+        .get_organization_by_id(&org_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+
+    require_admin_or_org_admin(&context, &org.name)?;
+
     repo.delete_organization(&org_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -956,5 +972,45 @@ mod tests {
     fn test_require_org_admin_rejects_member() {
         let ctx = org_member_context("acme");
         assert!(crate::auth::authorization::require_org_admin(&ctx, "acme").is_err());
+    }
+
+    // Tests verifying org admin access to org CRUD endpoints
+    // (admin_get_organization, admin_update_organization, admin_delete_organization
+    //  now use require_admin_or_org_admin instead of require_admin)
+
+    #[test]
+    fn org_admin_can_access_own_org_crud() {
+        let ctx = org_admin_context("acme-corp");
+        // Org admin should pass the auth check for their own org
+        assert!(require_admin_or_org_admin(&ctx, "acme-corp").is_ok());
+    }
+
+    #[test]
+    fn org_admin_cannot_access_other_org_crud() {
+        let ctx = org_admin_context("acme-corp");
+        // Org admin must NOT pass for a different org
+        assert!(require_admin_or_org_admin(&ctx, "globex-corp").is_err());
+    }
+
+    #[test]
+    fn platform_admin_can_access_any_org_crud() {
+        let ctx = admin_context();
+        // Platform admin can access any org
+        assert!(require_admin_or_org_admin(&ctx, "acme-corp").is_ok());
+        assert!(require_admin_or_org_admin(&ctx, "globex-corp").is_ok());
+    }
+
+    #[test]
+    fn org_member_cannot_access_org_crud() {
+        let ctx = org_member_context("acme-corp");
+        // Regular org member should be rejected
+        assert!(require_admin_or_org_admin(&ctx, "acme-corp").is_err());
+    }
+
+    #[test]
+    fn unauthenticated_user_cannot_access_org_crud() {
+        let ctx = regular_context();
+        // User with no org scopes should be rejected
+        assert!(require_admin_or_org_admin(&ctx, "acme-corp").is_err());
     }
 }

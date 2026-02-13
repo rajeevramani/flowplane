@@ -48,7 +48,7 @@
 		// Use regular endpoint for non-admins (only teams they're members of)
 		if (isAdmin) {
 			const teamsResponse = await apiClient.adminListTeams();
-			userTeams = teamsResponse.teams.map((t) => t.name);
+			userTeams = teamsResponse.items.map((t: import('$lib/api/types').TeamResponse) => t.name);
 		} else {
 			const teamsResponse = await apiClient.listTeams();
 			userTeams = teamsResponse.teams || [];

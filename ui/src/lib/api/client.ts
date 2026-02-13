@@ -2,7 +2,7 @@
 import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
-import { SecretResponseSchema, AdminListOrgsResponseSchema, paginatedSchema } from './schemas';
+import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
 import type {
 	LoginRequest,
 	LoginResponse,
@@ -134,7 +134,9 @@ import type {
 	PaginatedInvitations,
 	CreateInvitationRequest,
 	CreateInvitationResponse,
-	PaginatedResponse
+	PaginatedResponse,
+	// Admin Summary types
+	AdminResourceSummary
 } from './types';
 import { currentOrg } from '$lib/stores/org';
 
@@ -875,6 +877,15 @@ class ApiClient {
 			`/api/v1/admin/apps/${encodeURIComponent(appId)}`,
 			request
 		);
+	}
+
+	// ============================================================================
+	// Admin Resource Summary API
+	// ============================================================================
+
+	async getAdminResourceSummary(): Promise<AdminResourceSummary> {
+		const data = await this.get<AdminResourceSummary>('/api/v1/admin/resources/summary');
+		return parseResponse(data, AdminResourceSummarySchema);
 	}
 
 	// ============================================================================

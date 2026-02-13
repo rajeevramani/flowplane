@@ -82,7 +82,7 @@
 
 		try {
 			const teamsResponse = await apiClient.adminListTeams(100, 0);
-			const team = teamsResponse.teams.find((t) => t.name === currentTeam);
+			const team = teamsResponse.items.find((t: import('$lib/api/types').TeamResponse) => t.name === currentTeam);
 			teamDetails = team || null;
 		} catch (err) {
 			teamDetails = null;

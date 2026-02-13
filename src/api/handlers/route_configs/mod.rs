@@ -101,7 +101,7 @@ pub async fn create_route_config_handler(
 
     let response = RouteConfigResponse {
         name: result.data.name,
-        team: result.data.team.unwrap_or_default(),
+        team: result.data.team_name.or(result.data.team).unwrap_or_default(),
         path_prefix: result.data.path_prefix,
         cluster_targets: result.data.cluster_name,
         import_id: result.data.import_id,
@@ -243,7 +243,7 @@ pub async fn update_route_config_handler(
 
     let response = RouteConfigResponse {
         name: result.data.name,
-        team: result.data.team.unwrap_or_default(),
+        team: result.data.team_name.or(result.data.team).unwrap_or_default(),
         path_prefix: result.data.path_prefix,
         cluster_targets: result.data.cluster_name,
         import_id: result.data.import_id,

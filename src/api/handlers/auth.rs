@@ -403,6 +403,8 @@ pub struct SessionInfoResponse {
     pub name: String,
     pub email: String,
     pub is_admin: bool,
+    /// Whether this user is the platform administrator (is_admin + platform org)
+    pub is_platform_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -516,12 +518,15 @@ pub async fn get_session_info_handler(
     let (_, org_name) = crate::auth::session::extract_org_from_scopes(&session_info.token.scopes);
     let org_id = Some(user_org_id);
 
+    let is_platform_admin = is_admin && org_name.as_deref() == Some("platform");
+
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
         user_id: user_id_str,
         name,
         email,
         is_admin,
+        is_platform_admin,
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
@@ -637,6 +642,8 @@ pub struct LoginResponseBody {
     pub expires_at: DateTime<Utc>,
     pub user_id: String,
     pub user_email: String,
+    /// Whether this user is the platform administrator (is_admin + platform org)
+    pub is_platform_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     /// Organization ID (if user belongs to an org)
@@ -759,12 +766,15 @@ pub async fn login_handler(
     let (_, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
     let org_id = Some(user.org_id.to_string());
 
+    let is_platform_admin = user.is_admin && org_name.as_deref() == Some("platform");
+
     let response_body = LoginResponseBody {
         session_id: session_response.session_id,
         csrf_token: session_response.csrf_token.clone(),
         expires_at: session_response.expires_at,
         user_id: user.id.to_string(),
         user_email: user.email,
+        is_platform_admin,
         teams,
         scopes,
         org_id,

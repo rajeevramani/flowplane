@@ -133,7 +133,7 @@ impl SecretResponse {
             description: data.description.clone(),
             version: data.version,
             source: data.source.clone(),
-            team: data.team.clone(),
+            team: data.team_name.clone().unwrap_or_else(|| data.team.clone()),
             created_at: data.created_at,
             updated_at: data.updated_at,
             expires_at: data.expires_at,

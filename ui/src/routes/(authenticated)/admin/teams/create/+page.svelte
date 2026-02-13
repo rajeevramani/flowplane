@@ -63,7 +63,7 @@
 		isLoadingOrgs = true;
 		try {
 			const response = await apiClient.listOrganizations(100, 0);
-			organizations = response.organizations;
+			organizations = response.items;
 		} catch {
 			// Non-fatal - org selector won't show
 		} finally {

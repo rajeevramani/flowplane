@@ -24,6 +24,7 @@ struct RouteConfigRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub route_order: Option<i64>,
     pub headers: Option<String>,
@@ -58,7 +59,10 @@ pub struct RouteConfigData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub route_order: Option<i64>,
     pub headers: Option<String>,
@@ -77,6 +81,7 @@ impl From<RouteConfigRow> for RouteConfigData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             route_order: row.route_order,
             headers: row.headers,
@@ -226,7 +231,8 @@ impl RouteConfigRepository {
     #[instrument(skip(self), fields(route_config_id = %id), name = "db_get_route_config_by_id")]
     pub async fn get_by_id(&self, id: &RouteConfigId) -> Result<RouteConfigData> {
         let row = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs WHERE id = $1"
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -251,7 +257,8 @@ impl RouteConfigRepository {
     #[instrument(skip(self), fields(route_config_name = %name), name = "db_get_route_config_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<RouteConfigData> {
         let row = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.name = $1 ORDER BY r.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -302,7 +309,8 @@ impl RouteConfigRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id ORDER BY r.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -370,13 +378,13 @@ impl RouteConfigRepository {
             .join(", ");
 
         // Always include NULL team route configs (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE r.team IN ({}) OR r.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs \
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY r.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
@@ -418,10 +426,10 @@ impl RouteConfigRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs \
-             WHERE team IS NULL \
-             ORDER BY created_at DESC \
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
+             WHERE r.team IS NULL \
+             ORDER BY r.created_at DESC \
              LIMIT $1 OFFSET $2",
         )
         .bind(limit)
@@ -454,10 +462,10 @@ impl RouteConfigRepository {
     #[instrument(skip(self), name = "db_list_route_configs_by_import")]
     pub async fn list_by_import(&self, import_id: &str) -> Result<Vec<RouteConfigData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs \
-             WHERE import_id = $1 \
-             ORDER BY route_order ASC, created_at ASC"
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
+             WHERE r.import_id = $1 \
+             ORDER BY r.route_order ASC, r.created_at ASC"
         )
         .bind(import_id)
         .fetch_all(&self.pool)
@@ -578,8 +586,8 @@ impl RouteConfigRepository {
     #[instrument(skip(self), fields(cluster_name = %cluster_name), name = "db_find_route_configs_by_cluster")]
     pub async fn find_by_cluster(&self, cluster_name: &str) -> Result<Vec<RouteConfigData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs WHERE cluster_name = $1"
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.cluster_name = $1"
         )
         .bind(cluster_name)
         .fetch_all(&self.pool)

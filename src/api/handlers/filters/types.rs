@@ -141,7 +141,7 @@ impl FilterResponse {
             config,
             version: data.version,
             source: data.source,
-            team: data.team,
+            team: data.team_name.unwrap_or(data.team),
             created_at: data.created_at.to_rfc3339(),
             updated_at: data.updated_at.to_rfc3339(),
             allowed_attachment_points,

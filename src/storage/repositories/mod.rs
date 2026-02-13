@@ -3,6 +3,7 @@
 //! This module provides repository implementations split into focused, manageable files.
 //! Each repository handles CRUD operations for a specific resource type.
 
+pub mod admin_summary;
 pub mod aggregated_schema;
 pub mod audit_log;
 pub mod cluster;
@@ -36,6 +37,7 @@ pub mod virtual_host;
 pub mod virtual_host_filter;
 
 // Re-export all repository types and their associated request/response types
+pub use admin_summary::{AdminSummaryRepository, TeamResourceCounts};
 pub use aggregated_schema::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
 };

@@ -71,7 +71,11 @@
 			<div class="px-6 py-3 flex items-center justify-between">
 				<!-- Left side: Team selector -->
 				<div class="flex items-center gap-4">
-					{#if availableTeams.length > 0}
+					{#if sessionInfo.isPlatformAdmin && availableTeams.length === 0}
+						<span class="inline-flex items-center px-3 py-1 rounded-md text-sm font-medium bg-amber-50 text-amber-800 border border-amber-200">
+							Platform Governance
+						</span>
+					{:else if availableTeams.length > 0}
 						<div class="flex items-center gap-2">
 							<label for="teamSelect" class="text-sm font-medium text-gray-600">Team:</label>
 							<select

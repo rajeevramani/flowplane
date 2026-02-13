@@ -21,7 +21,7 @@
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
         build build-backend build-ui info prune \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
-        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check
+        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps
 
 .DEFAULT_GOAL := help
 
@@ -261,11 +261,17 @@ test-ui-watch: ## Run UI component tests in watch mode
 	@echo "$(CYAN)Running UI tests in watch mode...$(RESET)"
 	cd ui && npx vitest
 
-test-ui-e2e: ## Run UI E2E tests (Playwright, requires running backend)
+test-ui-e2e: _ensure-e2e-deps ## Run UI E2E tests (self-contained)
 	@echo "$(CYAN)Running UI E2E tests...$(RESET)"
-	cd ui && npx playwright test
-	@echo ""
-	@echo "$(GREEN)HTML report: make test-ui-report$(RESET)"
+	cd ui && npx playwright test; \
+	TEST_EXIT=$$?; \
+	echo ""; \
+	echo "$(GREEN)HTML report: make test-ui-report$(RESET)"; \
+	echo "$(CYAN)Stopping PostgreSQL...$(RESET)"; \
+	$(DOCKER) stop flowplane-postgres >/dev/null 2>&1 || true; \
+	$(DOCKER) rm flowplane-postgres >/dev/null 2>&1 || true; \
+	echo "$(GREEN)Cleanup complete.$(RESET)"; \
+	exit $$TEST_EXIT
 
 test-ui-report: ## Open Playwright HTML test report
 	cd ui && npx playwright show-report
@@ -354,6 +360,21 @@ prune: down ## Aggressive cleanup (images + volumes + cache)
 # =============================================================================
 # Internal Targets
 # =============================================================================
+
+_ensure-e2e-deps:
+	@if ! $(DOCKER) exec flowplane-postgres pg_isready -U flowplane >/dev/null 2>&1; then \
+		echo "$(CYAN)Starting PostgreSQL...$(RESET)"; \
+		$(MAKE) dev-db; \
+		sleep 3; \
+	fi
+	@if [ ! -f target/debug/flowplane ]; then \
+		echo "$(CYAN)Building backend...$(RESET)"; \
+		cargo build; \
+	fi
+	@if [ ! -d ui/build ]; then \
+		echo "$(CYAN)Building UI...$(RESET)"; \
+		cd ui && npm run build; \
+	fi
 
 _ensure-network:
 	@$(DOCKER) network inspect flowplane-network >/dev/null 2>&1 || \

@@ -105,6 +105,8 @@
 	}
 
 	function getCount(id: string): number | undefined {
+		// Platform admin has no team-scoped resource counts
+		if (sessionInfo.isPlatformAdmin) return undefined;
 		if (!resourceCounts) return undefined;
 		switch (id) {
 			case 'route-configs':
@@ -211,7 +213,7 @@
 							HTTP Filters
 						</div>
 						<div class="flex items-center gap-2">
-							{#if resourceCounts?.filters !== undefined && resourceCounts.filters > 0}
+							{#if !sessionInfo.isPlatformAdmin && resourceCounts?.filters !== undefined && resourceCounts.filters > 0}
 								<span
 									class="px-2 py-0.5 text-xs rounded-full
 									{isFiltersActive() ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-300'}"

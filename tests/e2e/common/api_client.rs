@@ -1343,6 +1343,49 @@ impl ApiClient {
         Ok(result)
     }
 
+    /// Create organization idempotently - returns existing org on 409 Conflict
+    pub async fn create_organization_idempotent(
+        &self,
+        token: &str,
+        name: &str,
+        display_name: &str,
+        description: Option<&str>,
+    ) -> anyhow::Result<OrgResponse> {
+        let url = format!("{}/api/v1/admin/organizations", self.base_url);
+        let mut body = json!({
+            "name": name,
+            "displayName": display_name,
+        });
+        if let Some(desc) = description {
+            body["description"] = json!(desc);
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let result: OrgResponse = resp.json().await?;
+            return Ok(result);
+        }
+
+        // If conflict (409), list orgs and find by name
+        if status == StatusCode::CONFLICT {
+            let orgs = self.list_organizations(token).await?;
+            if let Some(org) = orgs.items.into_iter().find(|o| o.name == name) {
+                return Ok(org);
+            }
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Create organization failed: {} - {}", status, text);
+    }
+
     /// List organizations (admin only)
     pub async fn list_organizations(&self, token: &str) -> anyhow::Result<ListOrgsResponse> {
         let url = format!("{}/api/v1/admin/organizations", self.base_url);
@@ -1763,8 +1806,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         assert!(bootstrap.setup_token.starts_with("fp_setup_"));
     }
 
-    // Login with standard credentials (full response to capture org info)
-    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+    // Login with standard credentials
+    let (session, _login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
         api.login_full(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await?;
@@ -1778,18 +1821,23 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
 
-    // Resolve org_id: use login response, fallback to listing orgs for default
-    let org_id = match &login_resp.org_id {
-        Some(id) => id.clone(),
-        None => {
-            let orgs = api.list_organizations(&admin_token).await?;
-            orgs.items
-                .iter()
-                .find(|o| o.name == "default")
-                .map(|o| o.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No default organization found"))?
-        }
-    };
+    // Create a tenant org for test resources (platform org is governance-only)
+    let tenant_org = with_timeout(
+        TestTimeout::default_with_label("Create tenant org"),
+        async {
+            api.create_organization_idempotent(
+                &admin_token,
+                "e2e-tenant",
+                "E2E Tenant Org",
+                Some("Tenant org for E2E dev context tests"),
+            )
+            .await
+        },
+    )
+    .await?;
+
+    let org_id = tenant_org.id;
+    let org_name = tenant_org.name;
 
     // Create Team A with unique name for this test
     let team_a = with_timeout(TestTimeout::default_with_label("Create Team A"), async {
@@ -1857,7 +1905,7 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
         team_b_dev_token: None,
         team_b_dataplane_id: dataplane_b.id,
         org_id: Some(org_id),
-        org_name: login_resp.org_name,
+        org_name: Some(org_name),
     })
 }
 
@@ -1892,8 +1940,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         assert!(bootstrap.setup_token.starts_with("fp_setup_"));
     }
 
-    // Login with standard credentials (full response to capture org info)
-    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+    // Login with standard credentials
+    let (session, _login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
         api.login_full(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await?;
@@ -1907,18 +1955,23 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
 
-    // Resolve org_id: use login response, fallback to listing orgs for default
-    let org_id = match &login_resp.org_id {
-        Some(id) => id.clone(),
-        None => {
-            let orgs = api.list_organizations(&admin_token).await?;
-            orgs.items
-                .iter()
-                .find(|o| o.name == "default")
-                .map(|o| o.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No default organization found"))?
-        }
-    };
+    // Create a tenant org for Envoy test resources (platform org is governance-only)
+    let tenant_org = with_timeout(
+        TestTimeout::default_with_label("Create envoy tenant org"),
+        async {
+            api.create_organization_idempotent(
+                &admin_token,
+                "e2e-envoy",
+                "E2E Envoy Org",
+                Some("Tenant org for E2E Envoy routing tests"),
+            )
+            .await
+        },
+    )
+    .await?;
+
+    let org_id = tenant_org.id;
+    let org_name = tenant_org.name;
 
     // Create shared team (idempotent)
     let team = with_timeout(TestTimeout::default_with_label("Create shared team"), async {
@@ -1962,7 +2015,7 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         team_b_dev_token: None,
         team_b_dataplane_id: dataplane.id,
         org_id: Some(org_id),
-        org_name: login_resp.org_name,
+        org_name: Some(org_name),
     })
 }
 

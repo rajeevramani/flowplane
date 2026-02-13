@@ -72,6 +72,8 @@ use crate::xds::{
         crate::api::handlers::teams::admin_delete_team,
         // mTLS status endpoint
         crate::api::handlers::teams::get_mtls_status_handler,
+        // Admin resource summary
+        crate::api::handlers::admin_summary::admin_resource_summary_handler,
         // User management endpoints
         crate::api::handlers::users::create_user,
         crate::api::handlers::users::list_users,
@@ -174,6 +176,11 @@ use crate::xds::{
             crate::api::handlers::auth::LoginBody,
             crate::api::handlers::auth::LoginResponseBody,
             crate::api::handlers::auth::ChangePasswordBody,
+            // Admin resource summary schemas
+            crate::api::handlers::admin_summary::AdminResourceSummary,
+            crate::api::handlers::admin_summary::SummaryTotals,
+            crate::api::handlers::admin_summary::OrgSummary,
+            crate::api::handlers::admin_summary::TeamSummary,
             // Route config schemas
             crate::api::handlers::route_configs::RouteConfigDefinition,
             crate::api::handlers::route_configs::VirtualHostDefinition,

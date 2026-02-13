@@ -91,7 +91,7 @@ async fn test_101_login() {
 
     // Verify org context
     assert!(login_resp.org_id.is_some(), "Login should include org_id");
-    assert_eq!(login_resp.org_name.as_deref(), Some("default"), "Default org should be 'default'");
+    assert_eq!(login_resp.org_name.as_deref(), Some("platform"), "Platform org should be 'platform'");
 
     println!(
         "✓ Login successful, csrf_token: {}..., org={:?}",

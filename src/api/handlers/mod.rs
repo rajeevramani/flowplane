@@ -1,5 +1,6 @@
 //! HTTP request handlers organized by resource type
 
+pub mod admin_summary;
 pub mod aggregated_schemas;
 pub mod audit_log;
 pub mod auth;
@@ -31,6 +32,9 @@ pub mod teams;
 pub mod users;
 
 // Re-export handler functions for backward compatibility
+pub use admin_summary::{
+    admin_resource_summary_handler, AdminResourceSummary, OrgSummary, SummaryTotals, TeamSummary,
+};
 pub use aggregated_schemas::{
     compare_aggregated_schemas_handler, export_aggregated_schema_handler,
     export_multiple_schemas_handler, get_aggregated_schema_handler,

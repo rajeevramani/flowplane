@@ -18,6 +18,8 @@ struct ImportMetadataRow {
     pub spec_version: Option<String>,
     pub spec_checksum: Option<String>,
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub source_content: Option<String>,
     pub listener_name: Option<String>,
     pub imported_at: chrono::DateTime<chrono::Utc>,
@@ -31,7 +33,10 @@ pub struct ImportMetadataData {
     pub spec_name: String,
     pub spec_version: Option<String>,
     pub spec_checksum: Option<String>,
+    /// Team UUID (used for access control)
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub source_content: Option<String>,
     pub listener_name: Option<String>,
     pub imported_at: chrono::DateTime<chrono::Utc>,
@@ -46,6 +51,7 @@ impl From<ImportMetadataRow> for ImportMetadataData {
             spec_version: row.spec_version,
             spec_checksum: row.spec_checksum,
             team: row.team,
+            team_name: row.team_name,
             source_content: row.source_content,
             listener_name: row.listener_name,
             imported_at: row.imported_at,
@@ -109,8 +115,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_get_import_metadata")]
     pub async fn get_by_id(&self, id: &str) -> Result<Option<ImportMetadataData>> {
         let row = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
-             FROM import_metadata WHERE id = $1",
+            "SELECT im.id, im.spec_name, im.spec_version, im.spec_checksum, im.team, t.name as team_name, im.source_content, im.listener_name, im.imported_at, im.updated_at
+             FROM import_metadata im LEFT JOIN teams t ON im.team = t.id WHERE im.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -128,8 +134,8 @@ impl ImportMetadataRepository {
         spec_name: &str,
     ) -> Result<Option<ImportMetadataData>> {
         let row = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
-             FROM import_metadata WHERE team = $1 AND spec_name = $2",
+            "SELECT im.id, im.spec_name, im.spec_version, im.spec_checksum, im.team, t.name as team_name, im.source_content, im.listener_name, im.imported_at, im.updated_at
+             FROM import_metadata im LEFT JOIN teams t ON im.team = t.id WHERE im.team = $1 AND im.spec_name = $2",
         )
         .bind(team)
         .bind(spec_name)
@@ -144,8 +150,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_list_import_metadata")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<ImportMetadataData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
-             FROM import_metadata WHERE team = $1 ORDER BY imported_at DESC",
+            "SELECT im.id, im.spec_name, im.spec_version, im.spec_checksum, im.team, t.name as team_name, im.source_content, im.listener_name, im.imported_at, im.updated_at
+             FROM import_metadata im LEFT JOIN teams t ON im.team = t.id WHERE im.team = $1 OR t.name = $1 ORDER BY im.imported_at DESC",
         )
         .bind(team)
         .fetch_all(&self.pool)
@@ -159,8 +165,8 @@ impl ImportMetadataRepository {
     #[instrument(skip(self), name = "db_list_all_import_metadata")]
     pub async fn list_all(&self) -> Result<Vec<ImportMetadataData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, ImportMetadataRow>(
-            "SELECT id, spec_name, spec_version, spec_checksum, team, source_content, listener_name, imported_at, updated_at
-             FROM import_metadata ORDER BY imported_at DESC",
+            "SELECT im.id, im.spec_name, im.spec_version, im.spec_checksum, im.team, t.name as team_name, im.source_content, im.listener_name, im.imported_at, im.updated_at
+             FROM import_metadata im LEFT JOIN teams t ON im.team = t.id ORDER BY im.imported_at DESC",
         )
         .fetch_all(&self.pool)
         .await

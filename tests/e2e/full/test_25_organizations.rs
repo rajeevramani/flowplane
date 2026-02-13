@@ -4,7 +4,7 @@
 //! - Organization creation, listing, updating
 //! - Organization membership management
 //! - Org-scoped team creation and listing
-//! - Bootstrap default org verification
+//! - Bootstrap platform org verification
 //! - Organization deletion
 //! - Cross-org isolation
 
@@ -16,7 +16,7 @@ use crate::common::{
     timeout::{with_timeout, TestTimeout},
 };
 
-/// Test that bootstrap creates a default organization and login returns org context
+/// Test that bootstrap creates a platform organization and login returns org context
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2500_default_org_from_bootstrap() {
@@ -44,7 +44,7 @@ async fn test_2500_default_org_from_bootstrap() {
     .expect("Login should succeed");
 
     assert!(login_resp.org_id.is_some(), "Login should include org_id");
-    assert_eq!(login_resp.org_name.as_deref(), Some("default"));
+    assert_eq!(login_resp.org_name.as_deref(), Some("platform"));
     println!("ok Login includes org context: org={:?}", login_resp.org_name);
 
     // Create admin token for API calls
@@ -54,7 +54,7 @@ async fn test_2500_default_org_from_bootstrap() {
     .await
     .expect("Token creation should succeed");
 
-    // List organizations - should see default org
+    // List organizations - should see platform org
     let orgs = with_timeout(TestTimeout::default_with_label("List organizations"), async {
         api.list_organizations(&token_resp.token).await
     })
@@ -63,8 +63,8 @@ async fn test_2500_default_org_from_bootstrap() {
 
     assert!(orgs.total >= 1, "Should have at least 1 org");
     let default_org =
-        orgs.items.iter().find(|o| o.name == "default").expect("Default org should exist");
-    println!("ok Default org found: id={}", default_org.id);
+        orgs.items.iter().find(|o| o.name == "platform").expect("Platform org should exist");
+    println!("ok Platform org found: id={}", default_org.id);
 
     // Get current org
     let current = with_timeout(TestTimeout::default_with_label("Get current org"), async {
@@ -73,7 +73,7 @@ async fn test_2500_default_org_from_bootstrap() {
     .await
     .expect("Get current org should succeed");
 
-    assert_eq!(current.organization.name, "default");
+    assert_eq!(current.organization.name, "platform");
     assert_eq!(current.role, "owner");
     println!("ok Current org: {} (role={})", current.organization.name, current.role);
 }
@@ -129,7 +129,7 @@ async fn test_2501_create_organization() {
     assert!(!new_org.id.is_empty(), "Org should have a valid ID");
     println!("ok Organization created: {} (id={})", new_org.name, new_org.id);
 
-    // List organizations - should see both default and test-org-alpha
+    // List organizations - should see both platform and test-org-alpha
     let orgs = with_timeout(TestTimeout::default_with_label("List organizations"), async {
         api.list_organizations(admin_token).await
     })
@@ -138,7 +138,7 @@ async fn test_2501_create_organization() {
 
     assert!(orgs.total >= 2, "Should have at least 2 orgs, got {}", orgs.total);
     let org_names: Vec<&str> = orgs.items.iter().map(|o| o.name.as_str()).collect();
-    assert!(org_names.contains(&"default"), "Should contain default org");
+    assert!(org_names.contains(&"platform"), "Should contain platform org");
     assert!(org_names.contains(&"test-org-alpha"), "Should contain test-org-alpha");
     println!("ok Listed {} organizations: {:?}", orgs.total, org_names);
 }
@@ -388,15 +388,11 @@ async fn test_2504_org_scoped_teams() {
     .await
     .expect("Bootstrap should succeed");
 
-    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
+    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login(TEST_EMAIL, TEST_PASSWORD).await
     })
     .await
     .expect("Login should succeed");
-
-    let default_org_name = login_resp.org_name.as_deref().unwrap_or("default");
-    let default_org_id = login_resp.org_id.as_deref().expect("Login should return org_id");
-    println!("ok Logged in, default org: {} (id={})", default_org_name, default_org_id);
 
     let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
         api.create_token(&session, "org-teams-token", vec!["admin:all".to_string()]).await
@@ -406,9 +402,25 @@ async fn test_2504_org_scoped_teams() {
 
     let admin_token = &token_resp.token;
 
-    // Create a team within the default org
+    // Create a tenant org (platform org is governance-only, no teams allowed)
+    let tenant_org =
+        with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
+            api.create_organization(
+                admin_token,
+                "test-org-2504",
+                "Test Org 2504",
+                Some("Tenant org for org-scoped team tests"),
+            )
+            .await
+        })
+        .await
+        .expect("Create tenant org should succeed");
+
+    println!("ok Created tenant org: {} (id={})", tenant_org.name, tenant_org.id);
+
+    // Create a team within the tenant org
     let team = with_timeout(TestTimeout::default_with_label("Create team"), async {
-        api.create_team(admin_token, "org-scoped-team", Some("Org Scoped Team"), default_org_id)
+        api.create_team(admin_token, "org-scoped-team", Some("Org Scoped Team"), &tenant_org.id)
             .await
     })
     .await
@@ -416,9 +428,9 @@ async fn test_2504_org_scoped_teams() {
 
     println!("ok Created team: {} (id={})", team.name, team.id);
 
-    // List org teams
+    // List org teams for the tenant org
     let org_teams = with_timeout(TestTimeout::default_with_label("List org teams"), async {
-        api.list_org_teams(admin_token, default_org_name).await
+        api.list_org_teams(admin_token, &tenant_org.name).await
     })
     .await
     .expect("List org teams should succeed");
@@ -426,18 +438,19 @@ async fn test_2504_org_scoped_teams() {
     let found_team = org_teams.teams.iter().find(|t| t.name == "org-scoped-team");
     assert!(
         found_team.is_some(),
-        "Team should appear in org teams list. Teams: {:?}",
+        "Team should appear in tenant org teams list. Teams: {:?}",
         org_teams.teams.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
     println!("ok Org teams list contains team, total teams: {}", org_teams.teams.len());
 
-    // Verify team has org_id
-    if let Some(team_org_id) = &found_team.unwrap().org_id {
-        if let Some(login_org_id) = &login_resp.org_id {
-            assert_eq!(team_org_id, login_org_id, "Team org_id should match default org id");
-            println!("ok Team org_id matches default org: {}", team_org_id);
-        }
-    }
+    // Verify team's org_id matches the tenant org
+    let found = found_team.unwrap();
+    assert_eq!(
+        found.org_id.as_deref(),
+        Some(tenant_org.id.as_str()),
+        "Team org_id should match tenant org id"
+    );
+    println!("ok Team org_id matches tenant org: {}", tenant_org.id);
 }
 
 /// Test deleting an organization

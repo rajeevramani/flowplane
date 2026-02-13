@@ -95,6 +95,7 @@ struct RouteWithRelatedDataRow {
     pub route_config_id: String,
     pub route_config_name: String,
     pub route_config_team: Option<String>,
+    pub route_config_team_name: Option<String>,
     pub configuration: String, // JSON for extraction
     // MCP tool fields (optional, from LEFT JOIN)
     pub mcp_enabled: i32, // INTEGER for boolean flag
@@ -123,6 +124,7 @@ pub struct RouteWithRelatedData {
     pub route_config_id: crate::domain::RouteConfigId,
     pub route_config_name: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub configuration: String,
     // MCP tool fields
     pub mcp_enabled: bool,
@@ -157,6 +159,7 @@ impl TryFrom<RouteWithRelatedDataRow> for RouteWithRelatedData {
             route_config_id: crate::domain::RouteConfigId::from_string(row.route_config_id),
             route_config_name: row.route_config_name,
             team: row.route_config_team,
+            team_name: row.route_config_team_name,
             configuration: row.configuration,
             mcp_enabled: row.mcp_enabled != 0,
             mcp_tool_name: row.mcp_tool_name,
@@ -621,6 +624,7 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
@@ -628,6 +632,7 @@ impl RouteRepository {
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE rc.team = $1
         "#;
@@ -845,6 +850,7 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
@@ -852,6 +858,7 @@ impl RouteRepository {
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE 1=1
             "#
@@ -991,6 +998,7 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
                 COALESCE(mt.enabled, 0) as mcp_enabled,
                 mt.name as mcp_tool_name,
@@ -998,6 +1006,7 @@ impl RouteRepository {
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE rc.team IN ({})
             "#,

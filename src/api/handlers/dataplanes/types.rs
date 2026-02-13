@@ -129,7 +129,7 @@ impl From<crate::storage::repositories::DataplaneData> for DataplaneResponse {
     fn from(data: crate::storage::repositories::DataplaneData) -> Self {
         Self {
             id: data.id.to_string(),
-            team: data.team,
+            team: data.team_name.unwrap_or(data.team),
             name: data.name,
             gateway_host: data.gateway_host,
             description: data.description,

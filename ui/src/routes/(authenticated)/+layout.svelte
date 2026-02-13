@@ -7,6 +7,7 @@
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
 	import { checkStatsEnabled } from '$lib/stores/stats';
 	import { currentOrg } from '$lib/stores/org';
+	import { getAdminSummary } from '$lib/stores/adminSummary';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -78,6 +79,17 @@
 	});
 
 	async function loadResourceCounts() {
+		// Platform admin: load admin summary instead of team-filtered counts
+		if (sessionInfo?.isPlatformAdmin) {
+			try {
+				await getAdminSummary();
+			} catch {
+				// Admin summary failed — counts stay at zero
+			}
+			resourceCounts = { routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0, secrets: 0, dataplanes: 0 };
+			return;
+		}
+
 		// Helper to safely call an API and return empty array on failure
 		async function safeCall<T>(call: () => Promise<T[]>): Promise<T[]> {
 			try {

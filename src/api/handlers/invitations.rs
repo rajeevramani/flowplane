@@ -389,12 +389,15 @@ pub async fn accept_invitation_handler(
     let (_, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
     let org_id = Some(user.org_id.to_string());
 
+    let is_platform_admin = user.is_admin && org_name.as_deref() == Some("platform");
+
     let response_body = crate::api::handlers::auth::LoginResponseBody {
         session_id: session_response.session_id,
         csrf_token: session_response.csrf_token.clone(),
         expires_at: session_response.expires_at,
         user_id: user.id.to_string(),
         user_email: user.email,
+        is_platform_admin,
         teams,
         scopes,
         org_id,

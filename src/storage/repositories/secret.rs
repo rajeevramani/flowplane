@@ -26,6 +26,8 @@ struct SecretRow {
     pub version: i64,
     pub source: String,
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -49,7 +51,10 @@ pub struct SecretData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -206,8 +211,8 @@ impl SecretRepository {
     #[instrument(skip(self), fields(secret_id = %id), name = "db_get_secret_by_id")]
     pub async fn get_by_id(&self, id: &SecretId) -> Result<SecretData> {
         let row = sqlx::query_as::<sqlx::Postgres, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets WHERE id = $1"
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id WHERE s.id = $1"
         )
         .bind(id.as_str())
         .fetch_optional(&self.pool)
@@ -232,8 +237,8 @@ impl SecretRepository {
     #[instrument(skip(self), fields(secret_name = %name, team = %team), name = "db_get_secret_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<SecretData> {
         let row = sqlx::query_as::<sqlx::Postgres, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets WHERE team = $1 AND name = $2"
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id WHERE s.team = $1 AND s.name = $2"
         )
         .bind(team)
         .bind(name)
@@ -263,8 +268,8 @@ impl SecretRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id ORDER BY s.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -317,10 +322,10 @@ impl SecretRepository {
             .join(", ");
 
         let query_str = format!(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets \
-             WHERE team IN ({}) \
-             ORDER BY created_at DESC \
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id \
+             WHERE s.team IN ({}) \
+             ORDER BY s.created_at DESC \
              LIMIT ${} OFFSET ${}",
             placeholders,
             teams.len() + 1,
@@ -364,10 +369,10 @@ impl SecretRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets \
-             WHERE team IS NULL \
-             ORDER BY created_at DESC \
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id \
+             WHERE s.team IS NULL \
+             ORDER BY s.created_at DESC \
              LIMIT $1 OFFSET $2",
         )
         .bind(limit)
@@ -516,6 +521,7 @@ impl SecretRepository {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             created_at: row.created_at,
             updated_at: row.updated_at,
             expires_at: row.expires_at,

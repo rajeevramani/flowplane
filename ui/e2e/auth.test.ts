@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test';
 
+const E2E_ADMIN = {
+	email: 'admin@e2e.flowplane.local',
+	password: 'E2E_SecurePassword!23',
+};
+
 // Auth tests need their own fresh context (no pre-existing session)
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -18,8 +23,8 @@ test.describe('Authentication', () => {
 
 	test('login with valid credentials redirects to dashboard', async ({ page }) => {
 		await page.goto('/login');
-		await page.fill('input[name="email"]', 'admin@example.com');
-		await page.fill('input[name="password"]', 'SecurePassword!23');
+		await page.fill('input[name="email"]', E2E_ADMIN.email);
+		await page.fill('input[name="password"]', E2E_ADMIN.password);
 
 		// Wait for the login API response before checking navigation
 		const [response] = await Promise.all([

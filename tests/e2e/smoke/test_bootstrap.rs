@@ -54,7 +54,7 @@ async fn smoke_test_auth_flow() {
 
     assert!(!session.csrf_token.is_empty(), "CSRF token should be present");
 
-    // Verify org context from login (bootstrap creates default org)
+    // Verify org context from login (bootstrap creates platform org)
     assert!(login_resp.org_id.is_some(), "Login should include org_id after bootstrap");
     assert!(login_resp.org_name.is_some(), "Login should include org_name after bootstrap");
     println!("✓ Login complete");

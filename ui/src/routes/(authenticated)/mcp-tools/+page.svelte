@@ -71,7 +71,7 @@
 
 		try {
 			const response = await apiClient.listMcpTools(currentTeam);
-			tools = response.tools;
+			tools = response.items;
 
 			// Load learned schema availability for tools with routeIds
 			await loadLearnedSchemaAvailability();

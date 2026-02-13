@@ -34,8 +34,8 @@ pub(super) fn route_config_response_from_data(
         )))
     })?;
 
-    // Use team from database, or empty string if None (should not happen with explicit team requirement)
-    let team = data.team.clone().unwrap_or_default();
+    // Prefer resolved team name over UUID, fall back to UUID if name not resolved
+    let team = data.team_name.or(data.team).unwrap_or_default();
     let config = RouteConfigDefinition::from_xds_config(&xds_config, team.clone());
 
     Ok(RouteConfigResponse {

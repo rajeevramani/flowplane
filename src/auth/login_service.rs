@@ -256,8 +256,8 @@ mod tests {
         let memberships = vec![UserTeamMembership {
             id: "m1".to_string(),
             user_id: user.id.clone(),
-            team: "platform-admin".to_string(),
-            scopes: vec!["team:platform-admin:*:*".to_string()],
+            team: "test-team".to_string(),
+            scopes: vec!["team:test-team:*:*".to_string()],
             created_at: Utc::now(),
         }];
 
@@ -265,7 +265,7 @@ mod tests {
 
         // Admin users should get both admin:all and team-scoped permissions
         assert!(scopes.contains(&"admin:all".to_string()));
-        assert!(scopes.contains(&"team:platform-admin:*:*".to_string()));
+        assert!(scopes.contains(&"team:test-team:*:*".to_string()));
         assert_eq!(scopes.len(), 2);
     }
 
@@ -452,8 +452,8 @@ mod tests {
         let memberships = vec![UserTeamMembership {
             id: "m1".to_string(),
             user_id: user.id.clone(),
-            team: "platform-admin".to_string(),
-            scopes: vec!["team:platform-admin:*:*".to_string()],
+            team: "test-team".to_string(),
+            scopes: vec!["team:test-team:*:*".to_string()],
             created_at: Utc::now(),
         }];
 
@@ -461,10 +461,10 @@ mod tests {
 
         // Verify scopes include both admin:all and team scopes
         assert!(scopes.contains(&"admin:all".to_string()));
-        assert!(scopes.contains(&"team:platform-admin:*:*".to_string()));
+        assert!(scopes.contains(&"team:test-team:*:*".to_string()));
 
         // Verify extract_teams_from_scopes can extract team names
         let teams = extract_teams_from_scopes(&scopes);
-        assert_eq!(teams, vec!["platform-admin"]);
+        assert_eq!(teams, vec!["test-team"]);
     }
 }

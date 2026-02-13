@@ -5,7 +5,8 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const authFile = join(__dirname, 'test-results', '.auth', 'user.json');
+const adminAuthFile = join(__dirname, 'test-results', '.auth', 'admin.json');
+const orgadminAuthFile = join(__dirname, 'test-results', '.auth', 'orgadmin.json');
 
 export default defineConfig({
 	testDir: './e2e',
@@ -24,12 +25,46 @@ export default defineConfig({
 			testMatch: /auth\.setup\.ts/
 		},
 		{
-			name: 'chromium',
+			name: 'setup-orgadmin',
+			testMatch: /orgadmin\.setup\.ts/,
+			dependencies: ['setup']
+		},
+		{
+			name: 'admin',
 			use: {
 				...devices['Desktop Chrome'],
-				storageState: authFile
+				storageState: adminAuthFile
 			},
-			dependencies: ['setup']
+			dependencies: ['setup'],
+			testMatch: /^(?!.*orgadmin).*\.test\.ts$/
+		},
+		{
+			name: 'orgadmin',
+			use: {
+				...devices['Desktop Chrome'],
+				storageState: orgadminAuthFile
+			},
+			dependencies: ['setup-orgadmin'],
+			testMatch: /orgadmin.*\.test\.ts$/
 		}
-	]
+	],
+	webServer: {
+		command: './target/debug/flowplane',
+		cwd: join(__dirname, '..'),
+		url: 'http://localhost:8080/api/v1/bootstrap/status',
+		timeout: 30_000,
+		reuseExistingServer: !process.env.CI,
+		env: {
+			FLOWPLANE_DATABASE_URL: 'postgresql://flowplane:flowplane@localhost:5432/flowplane',
+			FLOWPLANE_DATABASE_AUTO_MIGRATE: 'true',
+			FLOWPLANE_COOKIE_SECURE: 'false',
+			FLOWPLANE_SKIP_SETUP_TOKEN: 'true',
+			FLOWPLANE_API_PORT: '8080',
+			FLOWPLANE_API_BIND_ADDRESS: '127.0.0.1',
+			FLOWPLANE_UI_ORIGIN: 'http://localhost:8080',
+			RUST_LOG: 'warn,flowplane=info',
+		},
+		stdout: 'pipe',
+		stderr: 'pipe',
+	}
 });

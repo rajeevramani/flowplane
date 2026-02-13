@@ -1655,7 +1655,7 @@ export interface McpTool {
 
 /** Response for listing MCP tools */
 export interface ListMcpToolsResponse {
-	tools: McpTool[];
+	items: McpTool[];
 	total: number;
 	limit: number;
 	offset: number;

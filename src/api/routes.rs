@@ -52,6 +52,7 @@ use super::{
         admin_list_organizations,
         admin_list_teams,
         admin_remove_org_member,
+        admin_resource_summary_handler,
         admin_update_org_member_role,
         admin_update_organization,
         admin_update_team,
@@ -615,6 +616,8 @@ pub fn build_router_with_registry(
         .route("/api/v1/orgs/{org_name}/invitations", get(list_invitations_handler))
         .route("/api/v1/orgs/{org_name}/invitations", post(create_invitation_handler))
         .route("/api/v1/orgs/{org_name}/invitations/{id}", delete(revoke_invitation_handler))
+        // Admin resource summary (platform admin dashboard)
+        .route("/api/v1/admin/resources/summary", get(admin_resource_summary_handler))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
         // Admin scopes endpoint (includes hidden scopes like admin:all)

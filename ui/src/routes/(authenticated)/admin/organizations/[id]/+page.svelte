@@ -57,7 +57,11 @@
 				return;
 			}
 
-			await Promise.all([loadOrg(), loadMembers(), loadUsers()]);
+			const promises: Promise<void>[] = [loadOrg(), loadMembers()];
+			if (isPlatformAdmin) {
+				promises.push(loadUsers());
+			}
+			await Promise.all(promises);
 		} catch {
 			goto('/login');
 		}
@@ -475,12 +479,14 @@
 			<div class="mt-8">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-lg font-semibold text-gray-900">Members</h2>
-					<button
-						onclick={() => (showAddMember = true)}
-						class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
-					>
-						Add Member
-					</button>
+					{#if isPlatformAdmin}
+						<button
+							onclick={() => (showAddMember = true)}
+							class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+						>
+							Add Member
+						</button>
+					{/if}
 				</div>
 
 				{#if memberError}
@@ -489,8 +495,8 @@
 					</div>
 				{/if}
 
-				<!-- Add Member Form -->
-				{#if showAddMember}
+				<!-- Add Member Form (platform admins only) -->
+				{#if isPlatformAdmin && showAddMember}
 					<div class="bg-white rounded-lg shadow-md p-6 mb-4">
 						<h3 class="text-sm font-medium text-gray-900 mb-4">Add New Member</h3>
 						<div class="grid grid-cols-1 md:grid-cols-3 gap-4">

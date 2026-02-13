@@ -1309,6 +1309,7 @@ mod tests {
             version: 1,
             source: "native_api".to_string(),
             team: None,
+            team_name: None,
             import_id: None,
             dataplane_id: None,
             created_at: Utc::now(),

@@ -25,6 +25,7 @@ struct ListenerRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -47,7 +48,8 @@ struct ListenerRow {
 /// - `configuration`: JSON-encoded xDS configuration
 /// - `version`: Version number for optimistic locking
 /// - `source`: API source that created this resource ("native", "gateway", "platform")
-/// - `team`: Optional team identifier for multi-tenancy
+/// - `team`: Optional team UUID (used for access control)
+/// - `team_name`: Optional team display name (resolved via JOIN, used for API responses)
 /// - `created_at`: Timestamp of creation
 /// - `updated_at`: Timestamp of last modification
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +62,10 @@ pub struct ListenerData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -79,6 +84,7 @@ impl From<ListenerRow> for ListenerData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             dataplane_id: row.dataplane_id,
             created_at: row.created_at,
@@ -269,7 +275,8 @@ impl ListenerRepository {
     #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
         let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE id = $1"
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id WHERE l.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -293,7 +300,8 @@ impl ListenerRepository {
     #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
         let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id WHERE l.name = $1 ORDER BY l.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -321,7 +329,8 @@ impl ListenerRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id ORDER BY l.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -417,13 +426,13 @@ impl ListenerRepository {
             .join(", ");
 
         // Always include NULL team listeners (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE l.team IN ({}) OR l.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at \
-             FROM listeners \
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY l.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
@@ -465,10 +474,10 @@ impl ListenerRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at \
-             FROM listeners \
-             WHERE team IS NULL \
-             ORDER BY created_at DESC \
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id \
+             WHERE l.team IS NULL \
+             ORDER BY l.created_at DESC \
              LIMIT $1 OFFSET $2",
         )
         .bind(limit)

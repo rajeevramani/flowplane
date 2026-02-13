@@ -701,6 +701,7 @@ mod tests {
             id: FilterId::new(),
             name: name.to_string(),
             team: "test-team".to_string(),
+            team_name: None,
             filter_type: filter_type.to_string(),
             description: None,
             configuration: config_json,
