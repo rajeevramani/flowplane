@@ -256,11 +256,8 @@ impl FilterRepository {
 
     /// Lists filters filtered by teams.
     ///
-    /// # Security Note
-    ///
-    /// Empty teams array returns ALL resources. This is intentional for admin:all
-    /// scope but could be a security issue if authorization logic has bugs.
-    /// A warning is logged when this occurs for auditing purposes.
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_filters_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -268,14 +265,8 @@ impl FilterRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<FilterData>> {
-        // SECURITY: Empty teams array returns ALL resources (admin scope).
-        // Log warning for audit trail - this should only happen for admin:all scope.
         if teams.is_empty() {
-            tracing::warn!(
-                resource = "filters",
-                "list_by_teams called with empty teams array - returning all resources (admin scope)"
-            );
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);

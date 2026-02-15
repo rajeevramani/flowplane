@@ -34,7 +34,10 @@ use crate::mcp::error::McpError;
 use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
 use crate::mcp::session::SessionId;
-use crate::mcp::transport_common::{check_method_authorization, extract_mcp_headers, extract_team};
+use crate::mcp::transport_common::{
+    check_method_authorization, extract_mcp_headers, extract_team, get_db_pool,
+    validate_team_org_membership,
+};
 use crate::mcp::SharedConnectionManager;
 
 use super::McpScope;
@@ -363,6 +366,16 @@ async fn get_handler(
             return Err(error_response(error_codes::INVALID_REQUEST, e));
         }
     };
+
+    // Validate team belongs to caller's org (prevents cross-org team access via query param)
+    if let Some(ref org_id) = context.org_id {
+        if let Ok(db_pool) = get_db_pool(&state) {
+            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
+                error!(error = %e, team = %team, "Team org membership validation failed");
+                return Err(error_response(error_codes::INVALID_REQUEST, e));
+            }
+        }
+    }
 
     // Validate session ownership
     if let Err(e) = session_manager.validate_session_ownership(&session_id, &team) {

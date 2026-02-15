@@ -24,7 +24,7 @@ const allPages: PageDef[] = [
 	{ path: '/dataplanes', name: 'Dataplanes', type: 'list' },
 	{ path: '/imports', name: 'Imports', type: 'list' },
 	{ path: '/tokens', name: 'Access Tokens', type: 'list' },
-	{ path: '/custom-filters', name: 'Custom Filters', type: 'list' },
+	{ path: '/custom-filters', name: 'Custom Filters', type: 'cards' },
 	{ path: '/learning', name: 'Learning Sessions', type: 'list' },
 	{ path: '/learning/schemas', name: 'Discovered Schemas', type: 'list' },
 
@@ -56,8 +56,8 @@ const allPages: PageDef[] = [
 	{ path: '/admin/teams/create', name: 'Admin: Create Team', type: 'create' },
 
 	// Form pages (non-resource-creation forms)
-	{ path: '/profile/password', name: 'Change Password', type: 'form' },
-	{ path: '/generate-envoy-config', name: 'Generate Envoy Config', type: 'form' }
+	{ path: '/profile/password', name: 'Change Password', type: 'form' }
+	// Note: /generate-envoy-config has a 301 redirect to /dataplanes (already tested above)
 ];
 
 test.describe('Smoke Tests - All Pages', () => {

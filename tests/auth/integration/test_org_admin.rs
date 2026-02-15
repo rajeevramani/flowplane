@@ -30,8 +30,11 @@ fn parse_org_scope_member() {
 
 #[test]
 fn parse_org_scope_invalid_role_rejected() {
-    // Only "admin" and "member" are valid org roles in scopes
-    assert_eq!(parse_org_from_scope("org:acme:viewer"), None);
+    // Only "admin", "member", and "viewer" are valid org roles in scopes
+    assert_eq!(
+        parse_org_from_scope("org:acme:viewer"),
+        Some(("acme".to_string(), "viewer".to_string()))
+    );
     assert_eq!(parse_org_from_scope("org:acme:owner"), None);
     assert_eq!(parse_org_from_scope("org:acme:*"), None);
 }
@@ -448,14 +451,17 @@ fn verify_org_boundary_comprehensive() {
     // Case 5: Both have no org -- allowed
     assert!(verify_org_boundary(&ctx_no_org, &None).is_ok());
 
-    // Case 6: Admin bypasses all checks
+    // Case 6: Admin without org context — no org_id means org boundary applies
+    // Admin:all is governance-only; org boundary checks still apply for tenant resources
     let admin_ctx = AuthContext::new(
         TokenId::from_str_unchecked("admin"),
         "admin".into(),
         vec!["admin:all".into()],
     );
-    assert!(verify_org_boundary(&admin_ctx, &Some(org_a)).is_ok());
-    assert!(verify_org_boundary(&admin_ctx, &Some(org_b)).is_ok());
+    // Admin has no org_id, so accessing org-owned teams is denied (case 3: no user org, team has org)
+    assert!(verify_org_boundary(&admin_ctx, &Some(org_a)).is_err());
+    assert!(verify_org_boundary(&admin_ctx, &Some(org_b)).is_err());
+    // But global resources (no org) are still accessible
     assert!(verify_org_boundary(&admin_ctx, &None).is_ok());
 }
 
@@ -489,14 +495,19 @@ fn check_resource_access_org_team_matrix() {
     assert!(!check_resource_access(&global_user, "clusters", "read", None));
     assert!(!check_resource_access(&global_user, "clusters", "read", Some("engineering")));
 
-    // Scenario 4: Admin bypasses everything
+    // Scenario 4: admin:all alone does NOT grant tenant resource access (governance only)
     let admin = AuthContext::new(
         TokenId::from_str_unchecked("admin"),
         "admin".into(),
         vec!["admin:all".into()],
     );
-    assert!(check_resource_access(&admin, "clusters", "read", None));
-    assert!(check_resource_access(&admin, "routes", "delete", Some("any-team")));
+    assert!(!check_resource_access(&admin, "clusters", "read", None));
+    assert!(!check_resource_access(&admin, "routes", "delete", Some("any-team")));
+
+    // Scenario 5: admin:all DOES grant governance resource access
+    assert!(check_resource_access(&admin, "admin-orgs", "read", None));
+    assert!(check_resource_access(&admin, "admin-users", "write", None));
+    assert!(check_resource_access(&admin, "admin-audit", "read", None));
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +543,7 @@ fn token_with_cross_org_scopes_are_flagged() {
 #[test]
 fn org_admin_with_team_scopes_retains_both() {
     use flowplane::auth::authorization::check_resource_access;
+    use flowplane::domain::OrgId;
 
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("org-admin-with-teams"),
@@ -541,7 +553,8 @@ fn org_admin_with_team_scopes_retains_both() {
             "team:engineering:clusters:read".into(),
             "team:engineering:routes:write".into(),
         ],
-    );
+    )
+    .with_org(OrgId::from_str_unchecked("acme-id"), "acme".into());
 
     // Has org admin for acme
     assert!(has_org_admin(&ctx, "acme"));
@@ -586,13 +599,15 @@ fn no_org_user_accessing_no_org_team_allowed() {
 #[test]
 fn org_scope_does_not_grant_team_specific_resource_access() {
     use flowplane::auth::authorization::check_resource_access;
+    use flowplane::domain::OrgId;
 
     // User has only org:acme:admin, no team scopes
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("org-only-user"),
         "org-only".into(),
         vec!["org:acme:admin".into()],
-    );
+    )
+    .with_org(OrgId::from_str_unchecked("acme-id"), "acme".into());
 
     // Org admin scope grants implicit access to all teams in their org.
     // Users belong to exactly one org, so org:X:admin covers all X's teams.

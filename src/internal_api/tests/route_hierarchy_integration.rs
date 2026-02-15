@@ -99,7 +99,7 @@ fn sample_route_action() -> serde_json::Value {
 async fn test_virtual_host_create_via_operations() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -126,7 +126,7 @@ async fn test_virtual_host_create_via_operations() {
 async fn test_virtual_host_list_by_route_config() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config with multiple virtual hosts
     let route_config = create_test_route_config(&state, "multi-vh", Some("team-a")).await;
@@ -168,7 +168,7 @@ async fn test_virtual_host_list_by_route_config() {
 async fn test_virtual_host_get_by_route_config_and_name() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -194,7 +194,7 @@ async fn test_virtual_host_get_by_route_config_and_name() {
 async fn test_virtual_host_update_domains_and_rule_order() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -224,7 +224,7 @@ async fn test_virtual_host_update_domains_and_rule_order() {
 async fn test_virtual_host_delete() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -253,7 +253,7 @@ async fn test_virtual_host_delete() {
 async fn test_route_create_via_operations() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config and virtual host
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -284,7 +284,7 @@ async fn test_route_create_via_operations() {
 async fn test_route_list_by_route_config() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config with two virtual hosts
     let route_config = create_test_route_config(&state, "multi-route", Some("team-a")).await;
@@ -324,7 +324,7 @@ async fn test_route_list_by_route_config() {
 async fn test_route_list_by_virtual_host() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "filter-vh", Some("team-a")).await;
@@ -365,7 +365,7 @@ async fn test_route_list_by_virtual_host() {
 async fn test_route_get_by_hierarchy() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -395,7 +395,7 @@ async fn test_route_get_by_hierarchy() {
 async fn test_route_update_path_match_type_action() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -434,7 +434,7 @@ async fn test_route_update_path_match_type_action() {
 async fn test_route_delete() {
     let (_db, state) = setup_state_with_migrations().await;
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup
     let route_config = create_test_route_config(&state, "test-routes", Some("team-a")).await;
@@ -476,15 +476,15 @@ async fn test_virtual_host_cross_team_access_returns_not_found() {
     // Setup: Create route config for team-a
     let route_config = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
 
-    // Create virtual host as admin
-    let admin_auth = InternalAuthContext::admin();
+    // Create virtual host as team-a member
+    let team_a_auth = InternalAuthContext::for_team("team-a");
     let create_req = CreateVirtualHostRequest {
         route_config: route_config.name.clone(),
         name: "secret-vh".to_string(),
         domains: vec!["secret.example.com".to_string()],
         rule_order: None,
     };
-    ops.create(create_req, &admin_auth).await.expect("Failed to create virtual host");
+    ops.create(create_req, &team_a_auth).await.expect("Failed to create virtual host");
 
     // Test: Try to access from team-b
     let team_b_auth = InternalAuthContext::for_team("team-b");
@@ -511,8 +511,8 @@ async fn test_route_cross_team_access_returns_not_found() {
     let route_config = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
     create_test_virtual_host(&state, &route_config.id, "default", vec!["*"], 0).await;
 
-    // Create route as admin
-    let admin_auth = InternalAuthContext::admin();
+    // Create route as team-a member
+    let team_a_auth = InternalAuthContext::for_team("team-a");
     let create_req = CreateRouteRequest {
         route_config: route_config.name.clone(),
         virtual_host: "default".to_string(),
@@ -522,7 +522,7 @@ async fn test_route_cross_team_access_returns_not_found() {
         rule_order: Some(10),
         action: sample_route_action(),
     };
-    route_ops.create(create_req, &admin_auth).await.expect("Failed to create route");
+    route_ops.create(create_req, &team_a_auth).await.expect("Failed to create route");
 
     // Test: Try to access from team-b
     let team_b_auth = InternalAuthContext::for_team("team-b");
@@ -544,25 +544,32 @@ async fn test_route_cross_team_access_returns_not_found() {
 async fn test_virtual_host_team_scoped_list_only_sees_own_resources() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let admin_auth = InternalAuthContext::admin();
 
     // Setup: Create route configs for different teams
     let rc_a = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
     let rc_b = create_test_route_config(&state, "team-b-routes", Some("team-b")).await;
 
-    // Create virtual hosts for each team
-    for (route_config, vh_name) in [(&rc_a, "vh-a"), (&rc_b, "vh-b")] {
-        let req = CreateVirtualHostRequest {
-            route_config: route_config.name.clone(),
-            name: vh_name.to_string(),
-            domains: vec!["*.example.com".to_string()],
-            rule_order: None,
-        };
-        ops.create(req, &admin_auth).await.expect("Failed to create virtual host");
-    }
+    // Create virtual hosts for each team using team-scoped auth
+    let team_a_auth = InternalAuthContext::for_team("team-a");
+    let team_b_auth = InternalAuthContext::for_team("team-b");
+
+    let req_a = CreateVirtualHostRequest {
+        route_config: rc_a.name.clone(),
+        name: "vh-a".to_string(),
+        domains: vec!["*.example.com".to_string()],
+        rule_order: None,
+    };
+    ops.create(req_a, &team_a_auth).await.expect("Failed to create virtual host");
+
+    let req_b = CreateVirtualHostRequest {
+        route_config: rc_b.name.clone(),
+        name: "vh-b".to_string(),
+        domains: vec!["*.example.com".to_string()],
+        rule_order: None,
+    };
+    ops.create(req_b, &team_b_auth).await.expect("Failed to create virtual host");
 
     // Test: List as team-a should only see team-a virtual hosts
-    let team_a_auth = InternalAuthContext::for_team("team-a");
     let list_req = ListVirtualHostsRequest::default();
     let result = ops.list(list_req, &team_a_auth).await.expect("Failed to list virtual hosts");
 
@@ -575,29 +582,39 @@ async fn test_virtual_host_team_scoped_list_only_sees_own_resources() {
 // TODO: Re-enable when test infrastructure supports proper team creation
 #[tokio::test]
 #[ignore]
-async fn test_admin_can_access_all_resources() {
+async fn test_multi_team_user_can_access_all_team_resources() {
     let (_db, state) = setup_state_with_migrations().await;
     let ops = VirtualHostOperations::new(state.clone());
-    let admin_auth = InternalAuthContext::admin();
 
     // Setup: Create route configs for different teams
     let rc_a = create_test_route_config(&state, "team-a-routes", Some("team-a")).await;
     let rc_b = create_test_route_config(&state, "team-b-routes", Some("team-b")).await;
 
-    // Create virtual hosts for each team
-    for (route_config, vh_name) in [(&rc_a, "vh-a"), (&rc_b, "vh-b")] {
-        let req = CreateVirtualHostRequest {
-            route_config: route_config.name.clone(),
-            name: vh_name.to_string(),
-            domains: vec!["*.example.com".to_string()],
-            rule_order: None,
-        };
-        ops.create(req, &admin_auth).await.expect("Failed to create virtual host");
-    }
+    // Create virtual hosts using team-scoped auth for each team
+    let team_a_auth = InternalAuthContext::for_team("team-a");
+    let team_b_auth = InternalAuthContext::for_team("team-b");
 
-    // Test: Admin should see all virtual hosts
+    let req_a = CreateVirtualHostRequest {
+        route_config: rc_a.name.clone(),
+        name: "vh-a".to_string(),
+        domains: vec!["*.example.com".to_string()],
+        rule_order: None,
+    };
+    ops.create(req_a, &team_a_auth).await.expect("Failed to create virtual host");
+
+    let req_b = CreateVirtualHostRequest {
+        route_config: rc_b.name.clone(),
+        name: "vh-b".to_string(),
+        domains: vec!["*.example.com".to_string()],
+        rule_order: None,
+    };
+    ops.create(req_b, &team_b_auth).await.expect("Failed to create virtual host");
+
+    // Test: Multi-team user should see all virtual hosts from their teams
+    let multi_team_auth =
+        InternalAuthContext::for_teams(vec!["team-a".to_string(), "team-b".to_string()]);
     let list_req = ListVirtualHostsRequest::default();
-    let result = ops.list(list_req, &admin_auth).await.expect("Failed to list virtual hosts");
+    let result = ops.list(list_req, &multi_team_auth).await.expect("Failed to list virtual hosts");
 
     assert_eq!(result.count, 2);
 }
@@ -610,7 +627,7 @@ async fn test_admin_can_access_all_resources() {
 async fn test_deleting_route_config_cascades_to_virtual_hosts() {
     let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config with virtual hosts
     let route_config = create_test_route_config(&state, "cascade-test", Some("team-a")).await;
@@ -648,7 +665,7 @@ async fn test_deleting_virtual_host_cascades_to_routes() {
     let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
     let route_ops = RouteOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config, virtual host, and routes
     let route_config = create_test_route_config(&state, "cascade-test", Some("team-a")).await;
@@ -711,7 +728,7 @@ async fn test_deleting_virtual_host_cascades_to_routes() {
 async fn test_virtual_host_filter_attachments_cleaned_up_on_delete() {
     let (_db, state) = setup_state_with_migrations().await;
     let vh_ops = VirtualHostOperations::new(state.clone());
-    let auth = InternalAuthContext::admin();
+    let auth = InternalAuthContext::for_team("team-a");
 
     // Setup: Create route config and virtual host
     let route_config = create_test_route_config(&state, "filter-test", Some("team-a")).await;

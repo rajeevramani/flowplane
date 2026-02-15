@@ -1565,11 +1565,11 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_verify_access_admin_empty_scopes() {
+        async fn test_verify_access_empty_scopes_denied() {
             let schema = sample_schema("any-team", 1);
-            let team_scopes: Vec<String> = vec![]; // Admin bypass
+            let team_scopes: Vec<String> = vec![]; // Empty scopes = no access (admin bypass removed)
             let result = verify_team_access(schema, &team_scopes).await;
-            assert!(result.is_ok());
+            assert!(result.is_err(), "empty scopes should not bypass team access");
         }
     }
 }

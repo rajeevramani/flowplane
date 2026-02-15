@@ -192,6 +192,27 @@ Authorization: Requires clusters:read or cp:read scope."#
     )
 }
 
+/// Validate that a team belongs to the caller's org. Returns McpError on failure.
+async fn validate_team_in_org(
+    db_pool: &crate::storage::DbPool,
+    team: &str,
+    org_id: &OrgId,
+) -> Result<(), McpError> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
+            .bind(team)
+            .bind(org_id.as_str())
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+
+    let count = row.map(|r| r.0).unwrap_or(0);
+    if count == 0 {
+        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
+    }
+    Ok(())
+}
+
 /// Execute the cp_query_service tool.
 ///
 /// Returns a service-level summary using ReportingRepository (db_pool only, no xds_state).
@@ -199,9 +220,14 @@ Authorization: Requires clusters:read or cp:read scope."#
 pub async fn execute_query_service(
     db_pool: &crate::storage::DbPool,
     team: &str,
-    _org_id: Option<&OrgId>,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
+
     let name = args
         .get("name")
         .and_then(|v| v.as_str())

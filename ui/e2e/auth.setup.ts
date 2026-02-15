@@ -17,9 +17,12 @@ const E2E_ADMIN = {
 setup('authenticate', async ({ request, page }) => {
 	// Bootstrap the system if needed (idempotent — works on fresh or existing DB)
 	const statusResp = await request.get('/api/v1/bootstrap/status');
-	const status = await statusResp.json();
+	const statusText = await statusResp.text();
+	console.log(`[auth-setup] bootstrap status response: ${statusResp.status()} ${statusText}`);
+	const status = JSON.parse(statusText);
 
 	if (status.needsInitialization) {
+		console.log('[auth-setup] System needs initialization, calling bootstrap...');
 		const bootstrapResp = await request.post('/api/v1/bootstrap/initialize', {
 			data: {
 				email: E2E_ADMIN.email,
@@ -27,9 +30,13 @@ setup('authenticate', async ({ request, page }) => {
 				name: E2E_ADMIN.name,
 			},
 		});
+		const bootstrapText = await bootstrapResp.text();
+		console.log(`[auth-setup] bootstrap response: ${bootstrapResp.status()} ${bootstrapText}`);
 		if (bootstrapResp.status() !== 201) {
-			throw new Error(`Bootstrap failed: ${bootstrapResp.status()} ${await bootstrapResp.text()}`);
+			throw new Error(`Bootstrap failed: ${bootstrapResp.status()} ${bootstrapText}`);
 		}
+	} else {
+		console.log('[auth-setup] System already initialized, skipping bootstrap');
 	}
 
 	// Seed test data via API (idempotent — safe to run multiple times)

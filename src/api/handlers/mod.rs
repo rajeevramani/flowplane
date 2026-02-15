@@ -96,10 +96,11 @@ pub use mcp_tools::{
 };
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use organizations::{
-    admin_add_org_member, admin_create_organization, admin_delete_organization,
+    add_team_member, admin_add_org_member, admin_create_organization, admin_delete_organization,
     admin_get_organization, admin_list_org_members, admin_list_organizations,
     admin_remove_org_member, admin_update_org_member_role, admin_update_organization,
-    create_org_team, get_current_org, list_org_teams,
+    create_org_team, delete_org_team, get_current_org, list_org_teams, list_team_members,
+    remove_team_member, update_org_team, update_team_member_scopes,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -167,8 +168,9 @@ pub use learning_sessions::{
 };
 pub use mcp_tools::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 pub use organizations::{
-    AddOrgMemberRequest, CurrentOrgResponse, ListOrgMembersResponse, ListOrgTeamsResponse,
-    UpdateOrgMemberRoleRequest,
+    AddOrgMemberRequest, AddTeamMemberRequest, CurrentOrgResponse, ListOrgMembersResponse,
+    ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse, UpdateOrgMemberRoleRequest,
+    UpdateTeamMemberScopesRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

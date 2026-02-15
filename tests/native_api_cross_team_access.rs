@@ -686,12 +686,11 @@ async fn team_a_cannot_delete_team_b_listener() {
 // === Admin Resource Accessibility Tests ===
 
 #[tokio::test]
-async fn admin_users_can_access_all_team_resources() {
+async fn admin_all_alone_cannot_access_tenant_resources() {
     let app = setup_native_api_app().await;
 
-    // Team A and Team B create clusters
+    // Team A creates a cluster
     let team_a_token = app.issue_token("team-a-user", &["team:team-a:clusters:write"]).await;
-    let team_b_token = app.issue_token("team-b-user", &["team:team-b:clusters:write"]).await;
 
     send_request(
         &app,
@@ -708,35 +707,44 @@ async fn admin_users_can_access_all_team_resources() {
     )
     .await;
 
+    // admin:all alone (governance-only) should be forbidden for tenant resources
+    let admin_token = app.issue_token("admin", &["admin:all"]).await;
+
+    let list_response =
+        send_request(&app, Method::GET, "/api/v1/clusters", Some(&admin_token.token), None).await;
+    assert_eq!(
+        list_response.status(),
+        StatusCode::FORBIDDEN,
+        "admin:all alone should be forbidden for tenant resource listing"
+    );
+}
+
+#[tokio::test]
+async fn admin_all_cannot_get_specific_team_resource() {
+    let app = setup_native_api_app().await;
+
+    // Team A creates a cluster
+    let team_a_token = app.issue_token("team-a-user", &["team:team-a:clusters:write"]).await;
+
     send_request(
         &app,
         Method::POST,
         "/api/v1/clusters",
-        Some(&team_b_token.token),
+        Some(&team_a_token.token),
         Some(json!({
-            "team": "team-b",
-            "name": "team-b-cluster",
-            "serviceName": "team-b-service",
-            "endpoints": [{"host": "team-b.local", "port": 8080}],
+            "team": "team-a",
+            "name": "team-a-cluster",
+            "serviceName": "team-a-service",
+            "endpoints": [{"host": "team-a.local", "port": 8080}],
             "connectTimeoutSeconds": 5
         })),
     )
     .await;
 
-    // Admin should see both clusters
+    // admin:all alone cannot get specific team resources
     let admin_token = app.issue_token("admin", &["admin:all"]).await;
 
-    let list_response =
-        send_request(&app, Method::GET, "/api/v1/clusters", Some(&admin_token.token), None).await;
-    assert_eq!(list_response.status(), StatusCode::OK);
-
-    let body: Value = read_json(list_response).await;
-    let clusters = body["items"].as_array().expect("items array");
-    assert!(clusters.iter().any(|c| c["name"] == "team-a-cluster"));
-    assert!(clusters.iter().any(|c| c["name"] == "team-b-cluster"));
-
-    // Admin should be able to get specific team clusters
-    let get_team_a = send_request(
+    let get_response = send_request(
         &app,
         Method::GET,
         "/api/v1/clusters/team-a-cluster",
@@ -744,15 +752,9 @@ async fn admin_users_can_access_all_team_resources() {
         None,
     )
     .await;
-    assert_eq!(get_team_a.status(), StatusCode::OK);
-
-    let get_team_b = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/clusters/team-b-cluster",
-        Some(&admin_token.token),
-        None,
-    )
-    .await;
-    assert_eq!(get_team_b.status(), StatusCode::OK);
+    assert_eq!(
+        get_response.status(),
+        StatusCode::FORBIDDEN,
+        "admin:all alone should be forbidden for tenant resource access"
+    );
 }

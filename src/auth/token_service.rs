@@ -123,9 +123,16 @@ impl TokenService {
             status: TokenStatus::Active,
             expires_at: None,
             created_by: Some("system".into()),
-            scopes: vec![
-                "admin:all".into(), // Grant full admin access
-            ],
+            scopes: {
+                // admin:all for governance bypass + explicit governance scopes
+                let mut s = vec!["admin:all".into()];
+                s.extend(
+                    crate::auth::login_service::admin_governance_scopes()
+                        .into_iter()
+                        .map(|scope| scope.to_string()),
+                );
+                s
+            },
             is_setup_token: false,
             max_usage_count: None,
             usage_count: 0,

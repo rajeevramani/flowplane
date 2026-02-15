@@ -709,15 +709,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_verify_access_admin_empty_scopes() {
-            // Admin users have empty team_scopes and can access everything
+        async fn test_verify_access_empty_scopes_denied() {
+            // Empty scopes = no access (admin bypass removed)
             let session = sample_session("any-team");
             let team_scopes: Vec<String> = vec![];
 
             let result = verify_team_access(session.clone(), &team_scopes).await;
 
-            assert!(result.is_ok());
-            assert_eq!(result.unwrap().team, "any-team");
+            assert!(result.is_err(), "empty scopes should not bypass team access");
         }
 
         #[tokio::test]

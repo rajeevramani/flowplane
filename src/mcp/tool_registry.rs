@@ -941,7 +941,7 @@ pub fn get_tool_authorization(tool_name: &str) -> Option<&'static ToolAuthorizat
 /// Check if a scope grants the required authorization
 ///
 /// Implements hierarchical scope matching:
-/// 1. `admin:all` grants everything
+/// 1. `admin:all` grants governance-only access (audit, admin-summary)
 /// 2. `cp:read` grants all `{resource}:read` for CP resources
 /// 3. `cp:write` grants all `{resource}:write` and `{resource}:delete` for CP resources
 /// 4. Exact match `{resource}:{action}` grants specific access
@@ -964,11 +964,26 @@ pub fn check_scope_grants_authorization<'a>(
     // Note: "audit" is intentionally excluded — requires explicit audit:read
     const CP_RESOURCES: &[&str] = &["clusters", "listeners", "routes", "filters"];
 
+    // Resources that platform admin (admin:all) can access via MCP tools.
+    // Everything else requires org-scoped or team-scoped tokens.
+    const GOVERNANCE_RESOURCES: &[&str] = &["audit", "admin-summary"];
+
     for scope in scopes {
-        // admin:all bypasses everything
+        // admin:all — governance-only access (audit, admin-summary).
+        // Platform admin can only use audit/governance tools, NOT tenant resource tools.
+        // We use `continue` (not `return false`) so that if the user also has org/team
+        // scopes on the same token, those scopes still get checked.
         if scope == "admin:all" {
-            return true;
+            if GOVERNANCE_RESOURCES.contains(&auth.resource) {
+                return true;
+            }
+            continue;
         }
+
+        // TODO(Phase 10): org:X:member should respect team scopes, not bypass.
+        // Currently org:X:member tokens rely on cp:read/cp:write/mcp:execute scopes
+        // granted at login. Phase 10 should enforce that org:X:member only accesses
+        // tools for teams they belong to, not all teams in the org.
 
         // Exact match
         let required_scope = format!("{}:{}", auth.resource, auth.action);
@@ -1080,16 +1095,86 @@ mod tests {
     }
 
     #[test]
-    fn test_check_scope_grants_authorization_admin_all() {
-        let auth = ToolAuthorization {
+    fn test_check_scope_grants_authorization_admin_all_governance_only() {
+        // admin:all grants access to governance resources (audit, admin-summary)
+        let audit_auth = ToolAuthorization {
+            resource: "audit",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(check_scope_grants_authorization(["admin:all"].iter().copied(), &audit_auth));
+
+        let admin_summary_auth = ToolAuthorization {
+            resource: "admin-summary",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(check_scope_grants_authorization(
+            ["admin:all"].iter().copied(),
+            &admin_summary_auth
+        ));
+    }
+
+    #[test]
+    fn test_check_scope_grants_authorization_admin_all_denies_tenant_resources() {
+        // admin:all does NOT grant access to tenant resource tools
+        let cluster_auth = ToolAuthorization {
             resource: "clusters",
             action: "write",
             description: "",
             risk_level: RiskLevel::Medium,
         };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &cluster_auth));
 
-        // admin:all grants everything
-        assert!(check_scope_grants_authorization(["admin:all"].iter().copied(), &auth));
+        let routes_auth = ToolAuthorization {
+            resource: "routes",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &routes_auth));
+
+        let listeners_auth = ToolAuthorization {
+            resource: "listeners",
+            action: "delete",
+            description: "",
+            risk_level: RiskLevel::High,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &listeners_auth));
+
+        let filters_auth = ToolAuthorization {
+            resource: "filters",
+            action: "write",
+            description: "",
+            risk_level: RiskLevel::Medium,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &filters_auth));
+
+        let secrets_auth = ToolAuthorization {
+            resource: "secrets",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &secrets_auth));
+
+        let dataplanes_auth = ToolAuthorization {
+            resource: "dataplanes",
+            action: "write",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &dataplanes_auth));
+
+        let api_auth = ToolAuthorization {
+            resource: "api",
+            action: "execute",
+            description: "",
+            risk_level: RiskLevel::Medium,
+        };
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &api_auth));
     }
 
     #[test]
@@ -1379,6 +1464,51 @@ mod tests {
         // Multiple CP scopes should not grant audit:read
         assert!(!check_scope_grants_authorization(
             ["cp:read", "cp:write", "clusters:read", "listeners:read"].iter().copied(),
+            &audit_auth
+        ));
+    }
+
+    #[test]
+    fn test_admin_all_does_not_block_other_scopes() {
+        // admin:all should not short-circuit when user also has org/team scopes.
+        // A dual-role token (admin:all + cp:read) should still grant resource access
+        // through the cp:read scope.
+        let cluster_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+
+        // admin:all alone → denied for resources
+        assert!(!check_scope_grants_authorization(["admin:all"].iter().copied(), &cluster_auth));
+
+        // admin:all + cp:read → granted through cp:read (admin:all continues, doesn't return false)
+        assert!(check_scope_grants_authorization(
+            ["admin:all", "cp:read"].iter().copied(),
+            &cluster_auth
+        ));
+
+        // admin:all + exact scope → granted through exact match
+        assert!(check_scope_grants_authorization(
+            ["admin:all", "clusters:write"].iter().copied(),
+            &ToolAuthorization {
+                resource: "clusters",
+                action: "write",
+                description: "",
+                risk_level: RiskLevel::Medium,
+            }
+        ));
+
+        // admin:all still grants governance regardless of other scopes
+        let audit_auth = ToolAuthorization {
+            resource: "audit",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(check_scope_grants_authorization(
+            ["admin:all", "cp:read"].iter().copied(),
             &audit_auth
         ));
     }

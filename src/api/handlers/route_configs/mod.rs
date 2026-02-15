@@ -297,8 +297,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::api::test_utils::{
-        admin_auth_context, minimal_auth_context, readonly_resource_auth_context,
-        resource_auth_context,
+        minimal_auth_context, readonly_resource_auth_context, team_auth_context,
     };
     use crate::config::SimpleXdsConfig;
     use crate::storage::{test_helpers::TestDatabase, CreateClusterRequest};
@@ -316,8 +315,6 @@ mod tests {
         PathMatchDefinition, RouteActionDefinition, RouteConfigDefinition, RouteMatchDefinition,
         RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
     };
-
-    // Use test_utils::admin_auth_context() for admin permissions
 
     async fn setup_state() -> (TestDatabase, ApiState) {
         let test_db = TestDatabase::new("route_configs_handler").await;
@@ -407,7 +404,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -431,7 +428,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -440,7 +437,7 @@ mod tests {
 
         let response = list_route_configs_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
@@ -456,7 +453,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -465,7 +462,7 @@ mod tests {
 
         let response = get_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
         )
         .await
@@ -481,7 +478,7 @@ mod tests {
         let mut payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -532,7 +529,7 @@ mod tests {
 
         let response = update_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
             Json(payload.clone()),
         )
@@ -568,7 +565,7 @@ mod tests {
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -577,7 +574,7 @@ mod tests {
 
         let status = delete_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
         )
         .await
@@ -608,7 +605,7 @@ mod tests {
 
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -639,7 +636,7 @@ mod tests {
 
         let result = create_route_config_handler(
             State(state),
-            Extension(resource_auth_context("routes")),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -727,7 +724,7 @@ mod tests {
         // Create first with admin
         let _ = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -756,7 +753,7 @@ mod tests {
         // Create first with admin
         let _ = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -784,7 +781,7 @@ mod tests {
 
         let result = get_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-route".into()),
         )
         .await;
@@ -804,7 +801,7 @@ mod tests {
 
         let result = update_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-route".into()),
             Json(payload),
         )
@@ -822,7 +819,7 @@ mod tests {
 
         let result = delete_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-route".into()),
         )
         .await;
@@ -841,7 +838,7 @@ mod tests {
         // Create first route config
         let _ = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -850,7 +847,7 @@ mod tests {
         // Try to create duplicate - should fail
         let result = create_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -871,7 +868,7 @@ mod tests {
 
         let result = create_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -891,7 +888,7 @@ mod tests {
 
         let result = create_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -911,7 +908,7 @@ mod tests {
 
         let result = create_route_config_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -934,7 +931,7 @@ mod tests {
             payload.name = format!("route-{}", i);
             let _ = create_route_config_handler(
                 State(state.clone()),
-                Extension(admin_auth_context()),
+                Extension(team_auth_context("test-team")),
                 Json(payload),
             )
             .await
@@ -944,7 +941,7 @@ mod tests {
         // List with limit
         let result = list_route_configs_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -964,7 +961,7 @@ mod tests {
             payload.name = format!("route-{}", i);
             let _ = create_route_config_handler(
                 State(state.clone()),
-                Extension(admin_auth_context()),
+                Extension(team_auth_context("test-team")),
                 Json(payload),
             )
             .await
@@ -974,7 +971,7 @@ mod tests {
         // List with offset
         let result = list_route_configs_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;

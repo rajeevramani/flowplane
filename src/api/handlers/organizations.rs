@@ -346,17 +346,17 @@ pub async fn admin_delete_organization(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // Platform admin only — org admins cannot delete their own org
+    require_admin(&context)?;
+
     let org_id = OrgId::from_string(id);
 
-    // Resolve org first to get name for auth check
     let repo = org_repository_for_state(&state)?;
-    let org = repo
-        .get_organization_by_id(&org_id)
+    // Verify org exists (returns 404 if not)
+    repo.get_organization_by_id(&org_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
-
-    require_admin_or_org_admin(&context, &org.name)?;
 
     repo.delete_organization(&org_id).await.map_err(ApiError::from)?;
 
@@ -863,6 +863,408 @@ pub async fn create_org_team(
     Ok((StatusCode::CREATED, Json(team)))
 }
 
+// ===== Org-Scoped Team Update/Delete (Org Admin) =====
+
+/// Path params for org-scoped team endpoints.
+#[derive(Debug, Deserialize)]
+pub struct OrgTeamPath {
+    pub org_name: String,
+    pub team_name: String,
+}
+
+/// Update a team within an organization (org admin only).
+#[utoipa::path(
+    put,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+    ),
+    request_body = crate::auth::team::UpdateTeamRequest,
+    responses(
+        (status = 200, description = "Team updated successfully", body = crate::auth::team::Team),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization or team not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %path.org_name, team_name = %path.team_name, user_id = ?context.user_id))]
+pub async fn update_org_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamPath>,
+    Json(payload): Json<crate::auth::team::UpdateTeamRequest>,
+) -> Result<Json<crate::auth::team::Team>, ApiError> {
+    // Verify caller is org admin
+    crate::auth::authorization::require_org_admin(&context, &path.org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    payload.validate().map_err(ApiError::from)?;
+
+    // Resolve org
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&path.org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", path.org_name)))?;
+
+    // Resolve team within org (prevents cross-org access)
+    let pool = pool_for_state(&state)?;
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool));
+    let team = team_repo
+        .get_team_by_org_and_name(&org.id, &path.team_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", path.team_name)))?;
+
+    // Update the team
+    let updated = team_repo.update_team(&team.id, payload).await.map_err(ApiError::from)?;
+
+    Ok(Json(updated))
+}
+
+/// Delete a team within an organization (org admin only).
+///
+/// This will fail if the team has resources (listeners, routes, clusters, etc.)
+/// due to foreign key constraints.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+    ),
+    responses(
+        (status = 204, description = "Team deleted successfully"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization or team not found"),
+        (status = 409, description = "Team has resources - cannot delete")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %path.org_name, team_name = %path.team_name, user_id = ?context.user_id))]
+pub async fn delete_org_team(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamPath>,
+) -> Result<StatusCode, ApiError> {
+    // Verify caller is org admin
+    crate::auth::authorization::require_org_admin(&context, &path.org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    // Resolve org
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&path.org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", path.org_name)))?;
+
+    // Resolve team within org
+    let pool = pool_for_state(&state)?;
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool));
+    let team = team_repo
+        .get_team_by_org_and_name(&org.id, &path.team_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", path.team_name)))?;
+
+    team_repo.delete_team(&team.id).await.map_err(ApiError::from)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ===== Org-Scoped Team Membership Endpoints (Org Admin) =====
+
+/// Path params for team member endpoints.
+#[derive(Debug, Deserialize)]
+pub struct OrgTeamMemberPath {
+    pub org_name: String,
+    pub team_name: String,
+    pub user_id: String,
+}
+
+/// Request to add a member to a team.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTeamMemberRequest {
+    pub user_id: UserId,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Request to update a team member's scopes.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTeamMemberScopesRequest {
+    pub scopes: Vec<String>,
+}
+
+/// Team member response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMemberResponse {
+    pub id: String,
+    pub user_id: String,
+    pub team: String,
+    pub scopes: Vec<String>,
+    pub created_at: String,
+}
+
+impl From<crate::auth::user::UserTeamMembership> for TeamMemberResponse {
+    fn from(m: crate::auth::user::UserTeamMembership) -> Self {
+        Self {
+            id: m.id,
+            user_id: m.user_id.to_string(),
+            team: m.team,
+            scopes: m.scopes,
+            created_at: m.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Response for listing team members.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTeamMembersResponse {
+    pub members: Vec<TeamMemberResponse>,
+}
+
+/// Helper: resolve org + team from path, verify org admin.
+async fn resolve_org_team(
+    state: &ApiState,
+    context: &AuthContext,
+    org_name: &str,
+    team_name: &str,
+) -> Result<(crate::auth::organization::OrganizationResponse, crate::auth::team::Team), ApiError> {
+    crate::auth::authorization::require_org_admin(context, org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    let org_repo = org_repository_for_state(state)?;
+    let org = org_repo
+        .get_organization_by_name(org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    let pool = pool_for_state(state)?;
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool));
+    let team = team_repo
+        .get_team_by_org_and_name(&org.id, team_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))?;
+
+    Ok((org.into(), team))
+}
+
+/// List members of a team (org admin only).
+#[utoipa::path(
+    get,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}/members",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+    ),
+    responses(
+        (status = 200, description = "Team members listed", body = ListTeamMembersResponse),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization or team not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %path.org_name, team_name = %path.team_name, user_id = ?context.user_id))]
+pub async fn list_team_members(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamPath>,
+) -> Result<Json<ListTeamMembersResponse>, ApiError> {
+    let (_org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
+
+    let pool = pool_for_state(&state)?;
+    let membership_repo: Arc<dyn TeamMembershipRepository> =
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+
+    let members =
+        membership_repo.list_team_members(team.id.as_ref()).await.map_err(ApiError::from)?;
+
+    Ok(Json(ListTeamMembersResponse {
+        members: members.into_iter().map(TeamMemberResponse::from).collect(),
+    }))
+}
+
+/// Add a member to a team (org admin only).
+///
+/// The user must already be a member of the organization. If no scopes are
+/// specified, default scopes are assigned based on the user's org role.
+#[utoipa::path(
+    post,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}/members",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+    ),
+    request_body = AddTeamMemberRequest,
+    responses(
+        (status = 201, description = "Member added to team", body = TeamMemberResponse),
+        (status = 400, description = "User is not a member of this organization"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization or team not found"),
+        (status = 409, description = "User is already a member of this team")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %path.org_name, team_name = %path.team_name, user_id = ?context.user_id))]
+pub async fn add_team_member(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamPath>,
+    Json(payload): Json<AddTeamMemberRequest>,
+) -> Result<(StatusCode, Json<TeamMemberResponse>), ApiError> {
+    let (org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
+
+    // Verify user belongs to the org
+    let org_membership_repo = org_membership_repository_for_state(&state)?;
+    let org_membership = org_membership_repo
+        .get_membership(&payload.user_id, &org.id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::BadRequest("User is not a member of this organization".to_string())
+        })?;
+
+    let pool = pool_for_state(&state)?;
+    let membership_repo: Arc<dyn TeamMembershipRepository> =
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+
+    // Check if user is already a member of this team
+    let existing = membership_repo
+        .get_user_team_membership(&payload.user_id, team.id.as_ref())
+        .await
+        .map_err(ApiError::from)?;
+    if existing.is_some() {
+        return Err(ApiError::Conflict("User is already a member of this team".to_string()));
+    }
+
+    // Use provided scopes or derive defaults from org role
+    let scopes = if payload.scopes.is_empty() {
+        crate::auth::invitation_service::scopes_for_role(org_membership.role, &team.name)
+    } else {
+        payload.scopes
+    };
+
+    let membership = crate::auth::user::NewUserTeamMembership {
+        id: format!("utm_{}", uuid::Uuid::new_v4()),
+        user_id: payload.user_id,
+        team: team.id.to_string(),
+        scopes,
+    };
+
+    let created = membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
+
+    Ok((StatusCode::CREATED, Json(TeamMemberResponse::from(created))))
+}
+
+/// Update a team member's scopes (org admin only).
+#[utoipa::path(
+    put,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+        ("user_id" = String, Path, description = "User ID"),
+    ),
+    request_body = UpdateTeamMemberScopesRequest,
+    responses(
+        (status = 200, description = "Member scopes updated", body = TeamMemberResponse),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Membership not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %path.org_name, team_name = %path.team_name, target_user_id = %path.user_id, user_id = ?context.user_id))]
+pub async fn update_team_member_scopes(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamMemberPath>,
+    Json(payload): Json<UpdateTeamMemberScopesRequest>,
+) -> Result<Json<TeamMemberResponse>, ApiError> {
+    let (_org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
+
+    let target_user_id = UserId::from_str_unchecked(&path.user_id);
+
+    let pool = pool_for_state(&state)?;
+    let membership_repo: Arc<dyn TeamMembershipRepository> =
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+
+    // Find the membership
+    let membership = membership_repo
+        .get_user_team_membership(&target_user_id, team.id.as_ref())
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Team membership not found".to_string()))?;
+
+    let updated = membership_repo
+        .update_membership_scopes(&membership.id, payload.scopes)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(TeamMemberResponse::from(updated)))
+}
+
+/// Remove a member from a team (org admin only).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("team_name" = String, Path, description = "Team name"),
+        ("user_id" = String, Path, description = "User ID"),
+    ),
+    responses(
+        (status = 204, description = "Member removed from team"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Membership not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %path.org_name, team_name = %path.team_name, target_user_id = %path.user_id, user_id = ?context.user_id))]
+pub async fn remove_team_member(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<OrgTeamMemberPath>,
+) -> Result<StatusCode, ApiError> {
+    let (_org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
+
+    let target_user_id = UserId::from_str_unchecked(&path.user_id);
+
+    let pool = pool_for_state(&state)?;
+    let membership_repo: Arc<dyn TeamMembershipRepository> =
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+
+    // Verify membership exists before deleting
+    membership_repo
+        .get_user_team_membership(&target_user_id, team.id.as_ref())
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Team membership not found".to_string()))?;
+
+    membership_repo
+        .delete_user_team_membership(&target_user_id, team.id.as_ref())
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1414,66 @@ mod tests {
         let ctx = regular_context();
         // User with no org scopes should be rejected
         assert!(require_admin_or_org_admin(&ctx, "acme-corp").is_err());
+    }
+
+    // Tests for org delete restriction (platform admin only)
+
+    #[test]
+    fn org_delete_requires_platform_admin() {
+        // admin_delete_organization uses require_admin (not require_admin_or_org_admin)
+        let ctx = admin_context();
+        assert!(require_admin(&ctx).is_ok(), "Platform admin should be able to delete orgs");
+    }
+
+    #[test]
+    fn org_admin_cannot_delete_own_org() {
+        // Org admin should NOT be able to delete their own org
+        let ctx = org_admin_context("acme-corp");
+        assert!(require_admin(&ctx).is_err(), "Org admin should NOT be able to delete orgs");
+    }
+
+    #[test]
+    fn org_member_cannot_delete_org() {
+        let ctx = org_member_context("acme-corp");
+        assert!(require_admin(&ctx).is_err(), "Org member should NOT be able to delete orgs");
+    }
+
+    // Tests for org-scoped team management (require_org_admin)
+
+    #[test]
+    fn org_admin_can_manage_own_teams() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_ok(),
+            "Org admin should manage teams in their org"
+        );
+    }
+
+    #[test]
+    fn org_admin_cannot_manage_other_org_teams() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin(&ctx, "globex-corp").is_err(),
+            "Org admin should NOT manage teams in other orgs"
+        );
+    }
+
+    #[test]
+    fn platform_admin_can_manage_any_org_teams() {
+        // admin:all bypasses org admin check (has_org_admin bypasses for admin:all)
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_ok(),
+            "Platform admin should manage teams in any org"
+        );
+    }
+
+    #[test]
+    fn org_member_cannot_manage_teams() {
+        let ctx = org_member_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_err(),
+            "Org member should NOT manage teams"
+        );
     }
 }

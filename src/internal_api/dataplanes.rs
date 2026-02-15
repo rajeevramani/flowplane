@@ -300,7 +300,7 @@ mod tests {
     async fn test_create_dataplane_admin() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateDataplaneInternalRequest {
             team: "test-team".to_string(),
@@ -358,7 +358,7 @@ mod tests {
     async fn test_create_dataplane_empty_name() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateDataplaneInternalRequest {
             team: TEST_TEAM_ID.to_string(),
@@ -376,7 +376,7 @@ mod tests {
     async fn test_create_dataplane_already_exists() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create first dataplane
         let req = CreateDataplaneInternalRequest {
@@ -397,7 +397,7 @@ mod tests {
     async fn test_get_dataplane() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a dataplane
         let create_req = CreateDataplaneInternalRequest {
@@ -420,7 +420,7 @@ mod tests {
     async fn test_get_dataplane_not_found() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get(TEST_TEAM_ID, "nonexistent", &auth).await;
         assert!(result.is_err());
@@ -432,15 +432,15 @@ mod tests {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
 
-        // Create dataplane as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create dataplane as team-a user
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateDataplaneInternalRequest {
             team: TEAM_A_ID.to_string(),
             name: "secret-dp".to_string(),
             gateway_host: None,
             description: None,
         };
-        ops.create(req, &admin_auth).await.expect("create dataplane");
+        ops.create(req, &team_a_auth).await.expect("create dataplane");
 
         // Try to access from team-b
         let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
@@ -455,7 +455,8 @@ mod tests {
     async fn test_list_dataplanes_team_filtering() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let multi_team_auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create dataplanes for different teams
         for (team, count) in [(TEAM_A_ID, 2), (TEAM_B_ID, 1)] {
@@ -466,7 +467,7 @@ mod tests {
                     gateway_host: None,
                     description: None,
                 };
-                ops.create(req, &admin_auth).await.expect("create dataplane");
+                ops.create(req, &multi_team_auth).await.expect("create dataplane");
             }
         }
 
@@ -486,7 +487,7 @@ mod tests {
     async fn test_update_dataplane() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a dataplane
         let create_req = CreateDataplaneInternalRequest {
@@ -514,7 +515,7 @@ mod tests {
     async fn test_delete_dataplane() {
         let (_db, state) = setup_state().await;
         let ops = DataplaneOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a dataplane
         let create_req = CreateDataplaneInternalRequest {

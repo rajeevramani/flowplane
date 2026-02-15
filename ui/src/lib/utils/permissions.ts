@@ -1,8 +1,16 @@
 import type { SessionInfoResponse } from '$lib/api/types';
 
 /**
+ * Check if user is a platform governance admin (can manage orgs, users, audit).
+ * Does NOT grant resource access — governance only.
+ */
+export function isGovernanceAdmin(user: SessionInfoResponse): boolean {
+	return user.scopes?.includes('admin:all') ?? false;
+}
+
+/**
  * Check if a user has a specific scope.
- * Admins automatically have all scopes.
+ * Checks actual scopes — no admin bypass.
  * Supports:
  * - Exact match: "aggregated-schemas:read"
  * - Team-scoped: "team:engineering:aggregated-schemas:read" matches "aggregated-schemas:read"
@@ -10,8 +18,6 @@ import type { SessionInfoResponse } from '$lib/api/types';
  * - Team wildcard: "team:engineering:*:*" matches any resource for that team
  */
 export function hasScope(user: SessionInfoResponse, requiredScope: string): boolean {
-	if (user.isAdmin) return true;
-
 	// Parse the required scope (format: "resource:action")
 	const [requiredResource, requiredAction] = requiredScope.split(':');
 

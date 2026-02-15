@@ -276,8 +276,7 @@ mod tests {
 
     use crate::{
         api::test_utils::{
-            admin_auth_context, minimal_auth_context, readonly_resource_auth_context,
-            resource_auth_context,
+            minimal_auth_context, readonly_resource_auth_context, team_auth_context,
         },
         config::SimpleXdsConfig,
         storage::test_helpers::{TestDatabase, TEST_TEAM_ID},
@@ -296,8 +295,6 @@ mod tests {
         UpdateListenerBody,
     };
     use validation::convert_filter_type;
-
-    // Use test_utils::admin_auth_context() for admin permissions
 
     async fn build_state() -> (TestDatabase, Arc<XdsState>, ApiState) {
         let test_db = TestDatabase::new("listener_handler").await;
@@ -422,7 +419,7 @@ mod tests {
 
         let (status, Json(resp)) = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -469,7 +466,7 @@ mod tests {
 
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(initial),
         )
         .await
@@ -498,7 +495,7 @@ mod tests {
 
         let Json(updated) = update_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("edge-listener".to_string()),
             Json(update_payload),
         )
@@ -576,7 +573,7 @@ mod tests {
 
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -584,7 +581,7 @@ mod tests {
 
         let result = list_listeners_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
@@ -602,7 +599,7 @@ mod tests {
 
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -610,7 +607,7 @@ mod tests {
 
         let result = get_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("edge-listener".to_string()),
         )
         .await;
@@ -628,7 +625,7 @@ mod tests {
 
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -636,7 +633,7 @@ mod tests {
 
         let status = delete_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("edge-listener".to_string()),
         )
         .await
@@ -647,7 +644,7 @@ mod tests {
         // Verify it's gone
         let result = get_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("edge-listener".to_string()),
         )
         .await;
@@ -663,7 +660,7 @@ mod tests {
 
         let result = create_listener_handler(
             State(api_state),
-            Extension(resource_auth_context("listeners")),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -751,7 +748,7 @@ mod tests {
         // Create first with admin
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -781,7 +778,7 @@ mod tests {
         // Create first with admin
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -809,7 +806,7 @@ mod tests {
 
         let result = get_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-listener".to_string()),
         )
         .await;
@@ -827,7 +824,7 @@ mod tests {
 
         let result = update_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-listener".to_string()),
             Json(update),
         )
@@ -845,7 +842,7 @@ mod tests {
 
         let result = delete_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-listener".to_string()),
         )
         .await;
@@ -864,7 +861,7 @@ mod tests {
         // Create first listener
         let _ = create_listener_handler(
             State(api_state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -873,7 +870,7 @@ mod tests {
         // Try to create duplicate - should fail
         let result = create_listener_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await;
@@ -895,7 +892,7 @@ mod tests {
             payload.port = 10000 + i as u16;
             let _ = create_listener_handler(
                 State(api_state.clone()),
-                Extension(admin_auth_context()),
+                Extension(team_auth_context("test-team")),
                 Json(payload),
             )
             .await
@@ -905,7 +902,7 @@ mod tests {
         // List with limit
         let result = list_listeners_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -926,7 +923,7 @@ mod tests {
             payload.port = 10000 + i as u16;
             let _ = create_listener_handler(
                 State(api_state.clone()),
-                Extension(admin_auth_context()),
+                Extension(team_auth_context("test-team")),
                 Json(payload),
             )
             .await
@@ -936,7 +933,7 @@ mod tests {
         // List with offset
         let result = list_listeners_handler(
             State(api_state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;

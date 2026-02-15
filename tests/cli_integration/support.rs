@@ -87,11 +87,10 @@ impl TestServer {
             .expect("create token")
     }
 
-    /// Issue a test token with admin:all + specified scopes.
-    /// Use this for tests that need global resource scope access (the security fix
-    /// restricts global resource scopes to platform admins only).
+    /// Issue a test token with admin:all + org:test-org:admin + specified scopes.
+    /// admin:all is governance-only; org scope grants handler-level tenant access.
     pub async fn issue_admin_token(&self, name: &str, scopes: &[&str]) -> TokenSecretResponse {
-        let mut all_scopes = vec!["admin:all".to_string()];
+        let mut all_scopes = vec!["admin:all".to_string(), "org:test-org:admin".to_string()];
         all_scopes.extend(scopes.iter().map(|s| s.to_string()));
         self.token_service
             .create_token(

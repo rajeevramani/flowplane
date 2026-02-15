@@ -74,21 +74,17 @@ pub use super::pagination::default_limit;
 
 /// Get effective team scopes from auth context.
 ///
-/// This is the single source of truth for extracting team scopes with admin bypass.
-/// Admin users (with admin:all scope) get an empty vec, allowing access to all resources.
+/// Returns the team names the user has explicit access to via team-scoped permissions.
+/// Admin users (with admin:all scope) get only their explicit team memberships —
+/// admin:all is governance-only and does NOT grant implicit access to all teams.
 ///
 /// # Arguments
 /// * `context` - The authentication context from the request
 ///
 /// # Returns
-/// * Empty `Vec` for admin users (bypass all team checks)
-/// * Team scopes for regular users
+/// * Team names from team-scoped permissions (may be empty if user has no team memberships)
 pub fn get_effective_team_scopes(context: &AuthContext) -> Vec<String> {
-    if has_admin_bypass(context) {
-        Vec::new()
-    } else {
-        extract_team_scopes(context)
-    }
+    extract_team_scopes(context)
 }
 
 /// Get effective team IDs (UUIDs) from auth context.
@@ -97,13 +93,16 @@ pub fn get_effective_team_scopes(context: &AuthContext) -> Vec<String> {
 /// This is required after the FK migration where resource tables store team UUIDs
 /// instead of team names.
 ///
-/// Admin users still get an empty vec (bypass all team checks).
+/// Expands org admin scopes to include all teams in the user's organization,
+/// ensuring org admins can access resources across all org teams.
+///
+/// Returns empty vec if user has no team memberships (including admin-only users).
 pub async fn get_effective_team_ids(
     context: &AuthContext,
     team_repo: &dyn TeamRepository,
     org_id: Option<&OrgId>,
 ) -> Result<Vec<String>, ApiError> {
-    let team_names = get_effective_team_scopes(context);
+    let team_names = get_effective_team_scopes_with_org(context, team_repo).await;
     if team_names.is_empty() {
         return Ok(Vec::new());
     }
@@ -225,16 +224,12 @@ pub fn team_repo_from_state(
 /// to include ALL teams in their organization. This allows org admins to manage
 /// resources across all teams within their org without explicit team memberships.
 ///
-/// Falls back to `get_effective_team_scopes()` for non-org-admin users and platform admins.
+/// Admin users (with admin:all) get only their explicit team memberships —
+/// admin:all is governance-only and does NOT grant implicit access to all teams.
 pub async fn get_effective_team_scopes_with_org(
     context: &AuthContext,
     team_repo: &dyn TeamRepository,
 ) -> Vec<String> {
-    // Platform admin bypasses all checks
-    if has_admin_bypass(context) {
-        return Vec::new();
-    }
-
     let mut teams: std::collections::HashSet<String> =
         extract_team_scopes(context).into_iter().collect();
 
@@ -265,15 +260,16 @@ pub async fn get_effective_team_scopes_with_org(
 ///
 /// # Behavior
 /// - Returns `Ok(resource)` if:
-///   - `team_scopes` is empty (admin bypass)
 ///   - Resource has no team (global resource)
 ///   - Resource's team is in `team_scopes`
-/// - Returns `Err(NotFound)` if resource's team is not in `team_scopes`
+/// - Returns `Err(NotFound)` if:
+///   - Resource has a team but `team_scopes` is empty (no team access)
+///   - Resource's team is not in `team_scopes`
 /// - Records cross-team access attempts for security monitoring
 ///
 /// # Arguments
 /// * `resource` - The resource to verify access for
-/// * `team_scopes` - The user's team scopes (empty for admin bypass)
+/// * `team_scopes` - The user's team scopes (empty = no team access)
 ///
 /// # Returns
 /// * `Ok(resource)` if access is allowed
@@ -282,11 +278,6 @@ pub async fn verify_team_access<T: TeamOwned>(
     resource: T,
     team_scopes: &[String],
 ) -> Result<T, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(resource);
-    }
-
     // Get the resource's team
     match resource.team() {
         // Global resource (team = NULL) - accessible to all
@@ -322,12 +313,13 @@ pub async fn verify_team_access<T: TeamOwned>(
 /// Verify that a team belongs to the same org as the user for cross-org isolation.
 ///
 /// This prevents users from one org from adding memberships to teams in another org.
-/// Platform admins bypass this check.
+/// Platform admins (is_admin=true) bypass this check for governance operations
+/// like managing org memberships across organizations.
 ///
 /// # Arguments
 /// * `team_org_id` - The org_id of the target team (None for global teams)
 /// * `user_org_id` - The org_id of the current user (None for unscoped users)
-/// * `is_admin` - Whether the user is a platform admin
+/// * `is_admin` - Whether the user is a platform admin (governance bypass)
 ///
 /// # Returns
 /// * `Ok(())` if access is allowed
@@ -460,11 +452,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_admin_bypass_allows_access() {
+    async fn test_empty_scopes_denies_team_resource() {
         let resource =
             TestResource { name: "test-cluster".to_string(), team: Some("other-team".to_string()) };
 
-        // Empty team_scopes = admin bypass
+        // Empty team_scopes = no team access, team-owned resources denied
+        let result = verify_team_access(resource, &[]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_empty_scopes_allows_global_resource() {
+        let resource = TestResource { name: "global-resource".to_string(), team: None };
+
+        // Empty team_scopes can still access global resources
         let result = verify_team_access(resource, &[]).await;
         assert!(result.is_ok());
     }

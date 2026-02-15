@@ -11,7 +11,7 @@
 		OrgRole,
 		UserResponse
 	} from '$lib/api/types';
-	import { isOrgAdmin } from '$lib/stores/org';
+	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
 	import OrgInvitationsSection from '$lib/components/OrgInvitationsSection.svelte';
 
 	let orgId = $derived($page.params.id ?? '');
@@ -51,8 +51,8 @@
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
 			userScopes = sessionInfo.scopes;
-			isPlatformAdmin = sessionInfo.isAdmin;
-			if (!sessionInfo.isAdmin && !isOrgAdmin(sessionInfo.scopes)) {
+			isPlatformAdmin = isSystemAdmin(sessionInfo.scopes);
+			if (!isSystemAdmin(sessionInfo.scopes) && !isOrgAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

@@ -367,7 +367,7 @@ mod tests {
     async fn test_create_learning_session_admin() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateLearningSessionInternalRequest {
             team: Some(TEST_TEAM_ID.to_string()),
@@ -431,7 +431,7 @@ mod tests {
     async fn test_create_learning_session_invalid_sample_count() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateLearningSessionInternalRequest {
             team: Some(TEST_TEAM_ID.to_string()),
@@ -451,7 +451,7 @@ mod tests {
     async fn test_get_learning_session_not_found() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -463,8 +463,8 @@ mod tests {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
 
-        // Create session as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create session as team-a user
+        let admin_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateLearningSessionInternalRequest {
             team: Some(TEAM_A_ID.to_string()),
             route_pattern: "^/api/.*".to_string(),
@@ -488,7 +488,8 @@ mod tests {
     async fn test_list_learning_sessions_team_filtering() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let admin_auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create sessions for different teams
         for (team, count) in [(TEAM_A_ID, 2), (TEAM_B_ID, 1)] {
@@ -521,7 +522,7 @@ mod tests {
     async fn test_delete_learning_session() {
         let (_db, state) = setup_state().await;
         let ops = LearningSessionOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a session
         let create_req = CreateLearningSessionInternalRequest {

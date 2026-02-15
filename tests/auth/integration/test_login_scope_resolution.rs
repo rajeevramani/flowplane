@@ -53,8 +53,18 @@ async fn login_admin_user_receives_admin_all_scope() {
     assert_eq!(login_response.status(), StatusCode::OK);
     let login_body: LoginResponseBody = read_json(login_response).await;
 
-    // Admin should receive admin:all scope
-    assert_eq!(login_body.scopes, vec!["admin:all"]);
+    // Admin should receive admin:all + all governance scopes
+    assert!(login_body.scopes.contains(&"admin:all".to_string()), "should have admin:all");
+    assert!(
+        login_body.scopes.contains(&"admin:orgs:read".to_string()),
+        "should have governance scopes"
+    );
+    assert!(login_body.scopes.contains(&"admin:audit:read".to_string()), "should have audit scope");
+    assert!(
+        login_body.scopes.len() >= 16,
+        "should have admin:all + 15 governance scopes, got {}",
+        login_body.scopes.len()
+    );
     assert_eq!(login_body.user_id, admin_user.id.to_string());
     assert_eq!(login_body.user_email, "admin@example.com");
     assert!(login_body.teams.is_empty(), "Admin with admin:all should have no team-scoped access");

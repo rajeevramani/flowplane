@@ -139,9 +139,41 @@ pub async fn create_test_state() -> (TestDatabase, ApiState) {
 
 // === Auth Context Helpers ===
 
-/// Create an admin auth context for testing
+/// Create an admin auth context for testing (governance-only).
+///
+/// Includes `admin:all` plus all governance scopes. Does NOT include
+/// resource scopes — admin:all is governance-only and cannot access
+/// tenant resources (clusters, routes, listeners, etc.).
 pub fn admin_auth_context() -> AuthContext {
-    AuthContext::new(TokenId::new(), "test-admin-token".to_string(), vec!["admin:all".to_string()])
+    AuthContext::new(
+        TokenId::new(),
+        "test-admin-token".to_string(),
+        vec![
+            "admin:all".to_string(),
+            "admin:orgs:read".to_string(),
+            "admin:orgs:write".to_string(),
+            "admin:users:read".to_string(),
+            "admin:users:write".to_string(),
+            "admin:teams:read".to_string(),
+            "admin:teams:write".to_string(),
+            "admin:audit:read".to_string(),
+            "admin:summary:read".to_string(),
+        ],
+    )
+}
+
+/// Create an org admin auth context for testing.
+///
+/// Org admins have `org:{name}:admin` scope and can access all teams
+/// within their organization via implicit team access.
+pub fn org_admin_auth_context(org_name: &str) -> AuthContext {
+    let org_id = OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID);
+    AuthContext::new(
+        TokenId::new(),
+        format!("{}-org-admin-token", org_name),
+        vec![format!("org:{}:admin", org_name)],
+    )
+    .with_org(org_id, org_name.to_string())
 }
 
 /// Create a team member auth context for testing with common scopes

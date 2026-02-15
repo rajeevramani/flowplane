@@ -90,15 +90,25 @@ pub enum ResponseMode {
 /// # Returns
 /// Team name on success, descriptive error message on failure
 pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<String, String> {
+    // Platform admin with only admin:all (no org/team scopes) cannot specify teams.
+    // Governance/audit tools operate without team context.
+    // Tool-level auth (check_scope_grants_authorization) also blocks resource tools
+    // for admin:all, but this provides defense-in-depth.
+    if context.has_scope("admin:all") {
+        let has_org_or_team_scopes =
+            context.scopes().any(|s| s.starts_with("org:") || s.starts_with("team:"));
+        if !has_org_or_team_scopes {
+            return Err("Platform admin cannot specify team for MCP operations. \
+                 Governance/audit tools do not require team context. \
+                 Use org-scoped token for resource operations."
+                .to_string());
+        }
+    }
+
     // Priority 1: Query parameter
     if let Some(team) = team_query {
         debug!(team = %team, "Team extracted from query parameter");
         return Ok(team.to_string());
-    }
-
-    // Check if user has admin:all scope - they MUST provide team via query param
-    if context.has_scope("admin:all") {
-        return Err("Admin users must specify team via query parameter".to_string());
     }
 
     // Priority 2: Extract team from scopes (pattern: team:{name}:*)
@@ -114,11 +124,46 @@ pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<S
     Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
+/// Validate that a team belongs to the caller's org.
+///
+/// When team is provided via query parameter (not from token scopes), there's a risk
+/// the caller specifies a team from a different org. This function queries the DB to
+/// verify the team belongs to the org_id from the caller's auth context.
+///
+/// # Arguments
+/// * `team` - Team name to validate
+/// * `org_id` - Organization ID from the caller's auth context
+/// * `db_pool` - Database connection pool
+///
+/// # Returns
+/// `Ok(())` if team belongs to org, `Err(message)` if not
+pub async fn validate_team_org_membership(
+    team: &str,
+    org_id: &crate::domain::OrgId,
+    db_pool: &DbPool,
+) -> Result<(), String> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
+            .bind(team)
+            .bind(org_id.as_str())
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| format!("Failed to validate team membership: {}", e))?;
+
+    let count = row.map(|r| r.0).unwrap_or(0);
+    if count == 0 {
+        return Err(format!("Team '{}' not found in your organization", team));
+    }
+
+    Ok(())
+}
+
 /// Check if auth context has required scope for the given MCP method
 ///
 /// Uses configurable scope prefixes to support both CP and API endpoints.
 /// Special methods (`initialize`, `initialized`, `ping`) require no scope.
-/// Admin users with `admin:all` scope bypass all checks.
+/// Platform admin (`admin:all`) is restricted to `tools/list` and `tools/call` only
+/// (governance/audit access). Tool-level auth further restricts which tools can be called.
 ///
 /// # Arguments
 /// * `method` - MCP method name (e.g., "tools/list", "tools/call")
@@ -144,9 +189,18 @@ pub fn check_method_authorization(
         _ => {}
     }
 
-    // Admin bypass
+    // Platform admin: limited MCP method access for governance/audit only.
+    // admin:all grants tools/list (discover audit tools) and tools/call (invoke audit tools).
+    // Tool-level auth (check_scope_grants_authorization) further restricts to governance tools.
     if context.has_scope("admin:all") {
-        return Ok(());
+        return match method {
+            "tools/list" | "tools/call" => Ok(()),
+            _ => Err(format!(
+                "Platform admin does not have access to MCP method '{}'. \
+                 Use org-scoped token for resource operations.",
+                method
+            )),
+        };
     }
 
     // Method-specific authorization
@@ -358,19 +412,39 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_team_admin_requires_query() {
+    fn test_extract_team_admin_only_blocked() {
+        // admin:all without org/team scopes cannot specify teams at all
         let context = test_context(vec!["admin:all"]);
         let result = extract_team(None, &context);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Admin users must specify team"));
+        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
     }
 
     #[test]
-    fn test_extract_team_admin_with_query() {
+    fn test_extract_team_admin_only_with_query_still_blocked() {
+        // admin:all without org/team scopes blocked even with query param (defense-in-depth)
         let context = test_context(vec!["admin:all"]);
         let result = extract_team(Some("target-team"), &context);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
+    }
+
+    #[test]
+    fn test_extract_team_admin_with_org_scopes_uses_query() {
+        // admin:all WITH org scopes can specify teams (e.g., dual-role token)
+        let context = test_context(vec!["admin:all", "org:acme:admin", "team:acme-eng:cp:read"]);
+        let result = extract_team(Some("acme-eng"), &context);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "target-team");
+        assert_eq!(result.unwrap(), "acme-eng");
+    }
+
+    #[test]
+    fn test_extract_team_admin_with_org_scopes_extracts_from_scope() {
+        // admin:all WITH team scopes falls through to scope extraction
+        let context = test_context(vec!["admin:all", "team:acme-eng:cp:read"]);
+        let result = extract_team(None, &context);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "acme-eng");
     }
 
     #[test]
@@ -437,11 +511,27 @@ mod tests {
     }
 
     #[test]
-    fn test_cp_authorization_admin_bypass() {
+    fn test_cp_authorization_admin_governance_only() {
         let context = test_context(vec!["admin:all"]);
+        // admin:all grants tools/list and tools/call (for audit tool access)
         assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
         assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_ok());
+
+        // admin:all does NOT grant resources/read, resources/list, prompts, logging
+        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_err());
+        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_err());
+        assert!(check_method_authorization("prompts/list", &context, &CP_SCOPES).is_err());
+        assert!(check_method_authorization("prompts/get", &context, &CP_SCOPES).is_err());
+        assert!(check_method_authorization("logging/setLevel", &context, &CP_SCOPES).is_err());
+    }
+
+    #[test]
+    fn test_cp_authorization_admin_still_allows_special_methods() {
+        let context = test_context(vec!["admin:all"]);
+        // Special methods always allowed (no auth needed)
+        assert!(check_method_authorization("initialize", &context, &CP_SCOPES).is_ok());
+        assert!(check_method_authorization("initialized", &context, &CP_SCOPES).is_ok());
+        assert!(check_method_authorization("ping", &context, &CP_SCOPES).is_ok());
     }
 
     // -------------------------------------------------------------------------

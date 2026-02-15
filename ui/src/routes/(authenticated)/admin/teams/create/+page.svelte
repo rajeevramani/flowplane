@@ -28,7 +28,7 @@
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

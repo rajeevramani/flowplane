@@ -374,11 +374,8 @@ impl CustomWasmFilterRepository {
 
     /// List custom WASM filters for multiple teams.
     ///
-    /// # Security Note
-    ///
-    /// Empty teams array returns ALL resources (admin scope). This is consistent
-    /// with all other repository `list_by_teams` methods. The handler layer is
-    /// responsible for ensuring only admin users receive an empty teams array.
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self, teams), name = "db_list_custom_wasm_filters_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -386,14 +383,8 @@ impl CustomWasmFilterRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<CustomWasmFilterData>> {
-        // SECURITY: Empty teams array returns ALL resources (admin scope).
-        // Log warning for audit trail - this should only happen for admin:all scope.
         if teams.is_empty() {
-            tracing::warn!(
-                resource = "custom_wasm_filters",
-                "list_by_teams called with empty teams array - returning all resources (admin scope)"
-            );
-            return self.list_all_paginated(limit, offset).await;
+            return Ok(vec![]);
         }
 
         // Build placeholders for IN clause
@@ -615,32 +606,6 @@ impl CustomWasmFilterRepository {
         tracing::info!(filter_id = %id, "Deleted custom WASM filter");
 
         Ok(())
-    }
-
-    /// List all custom WASM filters with pagination (for admin bypass in list_by_teams)
-    #[instrument(skip(self), name = "db_list_all_custom_wasm_filters_paginated")]
-    async fn list_all_paginated(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<CustomWasmFilterData>> {
-        let rows = sqlx::query_as::<sqlx::Postgres, CustomWasmFilterListRow>(
-            "SELECT id, name, display_name, description, wasm_sha256, wasm_size_bytes, config_schema, per_route_config_schema, ui_hints, attachment_points, runtime, failure_policy, version, team, created_by, created_at, updated_at \
-             FROM custom_wasm_filters ORDER BY team, name LIMIT $1 OFFSET $2"
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to list all custom WASM filters (admin bypass)");
-            FlowplaneError::Database {
-                source: e,
-                context: "Failed to list all custom WASM filters (admin bypass)".to_string(),
-            }
-        })?;
-
-        rows.into_iter().map(CustomWasmFilterData::try_from).collect()
     }
 
     /// List all custom WASM filters (for startup initialization)

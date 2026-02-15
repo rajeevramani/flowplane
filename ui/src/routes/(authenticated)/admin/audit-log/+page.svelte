@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { AuditLogEntry, ListAuditLogsQuery } from '$lib/api/types';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let entries = $state<AuditLogEntry[]>([]);
 	let total = $state(0);
@@ -28,7 +29,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

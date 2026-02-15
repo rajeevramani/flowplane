@@ -280,7 +280,7 @@ mod tests {
     async fn test_create_cluster_admin() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateClusterRequest {
             name: "new-test-cluster".to_string(),
@@ -337,7 +337,7 @@ mod tests {
     async fn test_get_cluster_not_found() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -349,15 +349,15 @@ mod tests {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state.clone());
 
-        // Create cluster as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create cluster as team-a user
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateClusterRequest {
             name: "team-a-cluster".to_string(),
             service_name: "service".to_string(),
             team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
         };
-        ops.create(req, &admin_auth).await.expect("create cluster");
+        ops.create(req, &team_a_auth).await.expect("create cluster");
 
         // Try to access from team-b
         let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
@@ -372,7 +372,8 @@ mod tests {
     async fn test_list_clusters_team_filtering() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let multi_team_auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create clusters for different teams (use unique names to avoid seed data conflicts)
         for (name, team) in
@@ -384,7 +385,7 @@ mod tests {
                 team: Some(team.to_string()),
                 config: sample_config(),
             };
-            ops.create(req, &admin_auth).await.expect("create cluster");
+            ops.create(req, &multi_team_auth).await.expect("create cluster");
         }
 
         // List as team-a
@@ -408,7 +409,7 @@ mod tests {
     async fn test_update_cluster() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a cluster
         let create_req = CreateClusterRequest {
@@ -435,7 +436,7 @@ mod tests {
     async fn test_delete_cluster() {
         let (_db, state) = setup_state().await;
         let ops = ClusterOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a cluster
         let create_req = CreateClusterRequest {

@@ -1783,6 +1783,10 @@ pub const TEST_NAME: &str = "Smoke Test User";
 /// This function is idempotent - safe to call multiple times with shared infrastructure.
 ///
 /// Each test gets unique team names based on the test_name to ensure isolation.
+///
+/// The admin token created here has both `admin:all` (governance) and
+/// `org:e2e-tenant:admin` (tenant resource access) scopes, matching the
+/// security model where platform admin is governance-only.
 pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Result<TestContext> {
     use super::shared_infra::unique_team_name;
 
@@ -1812,32 +1816,44 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     })
     .await?;
 
-    // Create admin token (may already exist, but tokens are user-scoped so this is fine)
+    // Create governance-only token for org creation (admin:all is governance-only)
+    let gov_token =
+        with_timeout(TestTimeout::default_with_label("Create governance token"), async {
+            api.create_token(&session, "e2e-gov-token", vec!["admin:all".to_string()]).await
+        })
+        .await?;
+    assert!(gov_token.token.starts_with("fp_pat_"));
+
+    // Create a tenant org for test resources (platform org is governance-only)
+    let tenant_org = with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
+        api.create_organization_idempotent(
+            &gov_token.token,
+            "e2e-tenant",
+            "E2E Tenant Org",
+            Some("Tenant org for E2E dev context tests"),
+        )
+        .await
+    })
+    .await?;
+
+    let org_id = tenant_org.id;
+    let org_name = tenant_org.name;
+
+    // Create admin token with governance + org-admin scopes.
+    // admin:all grants governance (org/user/team management).
+    // org:e2e-tenant:admin grants tenant resource access (clusters, routes, etc).
     let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "e2e-admin-token", vec!["admin:all".to_string()]).await
+        api.create_token(
+            &session,
+            "e2e-admin-token",
+            vec!["admin:all".to_string(), format!("org:{}:admin", org_name)],
+        )
+        .await
     })
     .await?;
 
     assert!(token_resp.token.starts_with("fp_pat_"));
     let admin_token = token_resp.token;
-
-    // Create a tenant org for test resources (platform org is governance-only)
-    let tenant_org = with_timeout(
-        TestTimeout::default_with_label("Create tenant org"),
-        async {
-            api.create_organization_idempotent(
-                &admin_token,
-                "e2e-tenant",
-                "E2E Tenant Org",
-                Some("Tenant org for E2E dev context tests"),
-            )
-            .await
-        },
-    )
-    .await?;
-
-    let org_id = tenant_org.id;
-    let org_name = tenant_org.name;
 
     // Create Team A with unique name for this test
     let team_a = with_timeout(TestTimeout::default_with_label("Create Team A"), async {
@@ -1918,6 +1934,9 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
 /// - Test creates clusters, routes, or listeners
 /// - Test verifies traffic routing through Envoy
 /// - Test needs Envoy to receive xDS updates
+///
+/// The admin token created here has both `admin:all` (governance) and
+/// `org:e2e-envoy:admin` (tenant resource access) scopes.
 pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::Result<TestContext> {
     use super::shared_infra::E2E_SHARED_TEAM;
 
@@ -1946,32 +1965,43 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
     })
     .await?;
 
-    // Create admin token (may already exist, but tokens are user-scoped so this is fine)
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "e2e-admin-token", vec!["admin:all".to_string()]).await
-    })
-    .await?;
-
-    assert!(token_resp.token.starts_with("fp_pat_"));
-    let admin_token = token_resp.token;
+    // Create governance-only token for org creation
+    let gov_token =
+        with_timeout(TestTimeout::default_with_label("Create governance token"), async {
+            api.create_token(&session, "e2e-gov-token", vec!["admin:all".to_string()]).await
+        })
+        .await?;
+    assert!(gov_token.token.starts_with("fp_pat_"));
 
     // Create a tenant org for Envoy test resources (platform org is governance-only)
-    let tenant_org = with_timeout(
-        TestTimeout::default_with_label("Create envoy tenant org"),
-        async {
+    let tenant_org =
+        with_timeout(TestTimeout::default_with_label("Create envoy tenant org"), async {
             api.create_organization_idempotent(
-                &admin_token,
+                &gov_token.token,
                 "e2e-envoy",
                 "E2E Envoy Org",
                 Some("Tenant org for E2E Envoy routing tests"),
             )
             .await
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     let org_id = tenant_org.id;
     let org_name = tenant_org.name;
+
+    // Create admin token with governance + org-admin scopes for resource operations
+    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
+        api.create_token(
+            &session,
+            "e2e-admin-token",
+            vec!["admin:all".to_string(), format!("org:{}:admin", org_name)],
+        )
+        .await
+    })
+    .await?;
+
+    assert!(token_resp.token.starts_with("fp_pat_"));
+    let admin_token = token_resp.token;
 
     // Create shared team (idempotent)
     let team = with_timeout(TestTimeout::default_with_label("Create shared team"), async {

@@ -104,11 +104,17 @@
 					{/if}
 
 					<!-- Role badge -->
-					{#if sessionInfo.isAdmin}
+					{#if isSystemAdmin(sessionInfo.scopes)}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
 						>
 							Admin
+						</span>
+					{:else if isOrgAdmin(sessionInfo.scopes)}
+						<span
+							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+						>
+							Org Admin
 						</span>
 					{:else}
 						<span

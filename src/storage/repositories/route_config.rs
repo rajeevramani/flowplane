@@ -329,25 +329,8 @@ impl RouteConfigRepository {
 
     /// Lists route configs filtered by team names for multi-tenancy support.
     ///
-    /// Critical for team-based access control. Returns route configs for specified
-    /// teams and optionally includes team-agnostic route configs (where team is NULL).
-    ///
-    /// # Arguments
-    ///
-    /// * `teams` - Team identifiers to filter by. Empty list returns all route configs.
-    /// * `include_default` - If true, also include route configs with team=NULL (default resources)
-    /// * `limit` - Maximum results (default: 100, max: 1000)
-    /// * `offset` - Pagination offset
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Database`] if query execution fails
-    ///
-    /// # Security Note
-    ///
-    /// Empty teams array returns ALL resources. This is intentional for admin:all
-    /// scope but could be a security issue if authorization logic has bugs.
-    /// A warning is logged when this occurs for auditing purposes.
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_route_configs_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -356,14 +339,8 @@ impl RouteConfigRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<RouteConfigData>> {
-        // SECURITY: Empty teams array returns ALL resources (admin scope).
-        // Log warning for audit trail - this should only happen for admin:all scope.
         if teams.is_empty() {
-            tracing::warn!(
-                resource = "route_configs",
-                "list_by_teams called with empty teams array - returning all resources (admin scope)"
-            );
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -627,9 +604,10 @@ impl RouteConfigRepository {
         Ok(count)
     }
 
-    /// Count all route configs for multiple teams (supports admin bypass).
+    /// Count all route configs for multiple teams.
     ///
-    /// If `teams` is empty, counts ALL route configs across all teams (admin bypass).
+    /// Empty teams = no resource access (returns 0). The caller (handler layer)
+    /// is responsible for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams.len()), name = "db_count_route_configs_by_teams")]
     pub async fn count_by_teams(&self, teams: &[String]) -> Result<i64> {
         // Single team: use existing optimized method
@@ -637,19 +615,8 @@ impl RouteConfigRepository {
             return self.count_by_team(&teams[0]).await;
         }
 
-        // Admin bypass: empty teams = count all route configs
         if teams.is_empty() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM route_configs")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "Failed to count all route configs (admin bypass)");
-                    FlowplaneError::Database {
-                        source: e,
-                        context: "Failed to count all route configs".to_string(),
-                    }
-                })?;
-            return Ok(count);
+            return Ok(0);
         }
 
         // Build IN clause for team filtering

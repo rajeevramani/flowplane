@@ -162,7 +162,7 @@ async fn test_mcp_attach_filter_to_listener_success() {
         "listener": "main-listener",
         "order": 10
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Failed to attach filter: {:?}", result);
     let tool_result = result.unwrap();
@@ -196,7 +196,7 @@ async fn test_mcp_attach_filter_to_listener_no_order() {
         "filter": "test-filter",
         "listener": "main-listener"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -225,7 +225,7 @@ async fn test_mcp_attach_filter_listener_not_found() {
         "filter": "test-filter",
         "listener": "nonexistent-listener"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -242,7 +242,7 @@ async fn test_mcp_attach_filter_filter_not_found() {
         "filter": "nonexistent-filter",
         "listener": "main-listener"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -266,7 +266,7 @@ async fn test_mcp_attach_filter_to_route_config_success() {
         "route_config": "api-routes",
         "order": 5
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Failed to attach: {:?}", result);
     let tool_result = result.unwrap();
@@ -302,7 +302,7 @@ async fn test_mcp_attach_filter_to_route_config_with_settings() {
             "window_seconds": 60
         }
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -321,7 +321,7 @@ async fn test_mcp_attach_filter_route_config_not_found() {
         "filter": "test-filter",
         "route_config": "nonexistent-config"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -338,7 +338,7 @@ async fn test_mcp_attach_filter_missing_filter() {
     let args = json!({
         "listener": "main-listener"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -354,7 +354,7 @@ async fn test_mcp_attach_filter_no_target() {
     let args = json!({
         "filter": "test-filter"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -374,7 +374,7 @@ async fn test_mcp_attach_filter_both_targets() {
         "listener": "main-listener",
         "route_config": "api-routes"
     });
-    let result = execute_attach_filter(&state, "", None, args).await;
+    let result = execute_attach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -408,7 +408,7 @@ async fn test_mcp_detach_filter_from_listener_success() {
         "filter": "test-filter",
         "listener": "main-listener"
     });
-    let result = execute_detach_filter(&state, "", None, args).await;
+    let result = execute_detach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Failed to detach: {:?}", result);
     let tool_result = result.unwrap();
@@ -438,7 +438,7 @@ async fn test_mcp_detach_filter_not_attached() {
         "filter": "test-filter",
         "listener": "main-listener"
     });
-    let result = execute_detach_filter(&state, "", None, args).await;
+    let result = execute_detach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     // Should fail since filter is not attached
     assert!(result.is_err());
@@ -472,7 +472,7 @@ async fn test_mcp_detach_filter_from_route_config_success() {
         "filter": "test-filter",
         "route_config": "api-routes"
     });
-    let result = execute_detach_filter(&state, "", None, args).await;
+    let result = execute_detach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Failed to detach: {:?}", result);
     let tool_result = result.unwrap();
@@ -500,7 +500,7 @@ async fn test_mcp_detach_filter_missing_filter() {
     let args = json!({
         "listener": "main-listener"
     });
-    let result = execute_detach_filter(&state, "", None, args).await;
+    let result = execute_detach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -516,7 +516,7 @@ async fn test_mcp_detach_filter_no_target() {
     let args = json!({
         "filter": "test-filter"
     });
-    let result = execute_detach_filter(&state, "", None, args).await;
+    let result = execute_detach_filter(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -536,7 +536,7 @@ async fn test_mcp_list_filter_attachments_no_attachments() {
     let args = json!({
         "filter": "lonely-filter"
     });
-    let result = execute_list_filter_attachments(&state, "", None, args).await;
+    let result = execute_list_filter_attachments(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Failed to list attachments: {:?}", result);
     let tool_result = result.unwrap();
@@ -576,7 +576,7 @@ async fn test_mcp_list_filter_attachments_with_listener() {
     let args = json!({
         "filter": "attached-filter"
     });
-    let result = execute_list_filter_attachments(&state, "", None, args).await;
+    let result = execute_list_filter_attachments(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result.as_ref().err());
     let tool_result = result.unwrap();
@@ -618,7 +618,7 @@ async fn test_mcp_list_filter_attachments_with_route_config() {
     let args = json!({
         "filter": "scoped-filter"
     });
-    let result = execute_list_filter_attachments(&state, "", None, args).await;
+    let result = execute_list_filter_attachments(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_ok());
     let tool_result = result.unwrap();
@@ -644,7 +644,7 @@ async fn test_mcp_list_filter_attachments_filter_not_found() {
     let args = json!({
         "filter": "nonexistent-filter"
     });
-    let result = execute_list_filter_attachments(&state, "", None, args).await;
+    let result = execute_list_filter_attachments(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }
@@ -655,7 +655,7 @@ async fn test_mcp_list_filter_attachments_missing_filter() {
 
     // Test: Missing filter parameter
     let args = json!({});
-    let result = execute_list_filter_attachments(&state, "", None, args).await;
+    let result = execute_list_filter_attachments(&state, TEST_TEAM_ID, None, args).await;
 
     assert!(result.is_err());
 }

@@ -367,7 +367,7 @@ mod tests {
     async fn test_create_virtual_host_admin() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config first
         let _route_config =
@@ -436,7 +436,7 @@ mod tests {
     async fn test_get_virtual_host() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config and virtual host
         let _route_config =
@@ -464,7 +464,7 @@ mod tests {
     async fn test_get_virtual_host_not_found() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let _route_config = create_test_route_config(&state, "test-routes", None).await;
 
@@ -482,8 +482,8 @@ mod tests {
         let _route_config =
             create_test_route_config(&state, "team-a-routes", Some(TEAM_A_ID)).await;
 
-        // Create virtual host as admin
-        let admin_auth = InternalAuthContext::admin();
+        // Create virtual host as team-a user
+        let admin_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let create_req = CreateVirtualHostRequest {
             route_config: "team-a-routes".to_string(),
             name: "secret".to_string(),
@@ -505,7 +505,7 @@ mod tests {
     async fn test_list_virtual_hosts_by_route_config() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config
         let _route_config =
@@ -539,7 +539,7 @@ mod tests {
     async fn test_update_virtual_host() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config and virtual host
         let _route_config =
@@ -570,7 +570,7 @@ mod tests {
     async fn test_delete_virtual_host() {
         let (_db, state) = setup_state().await;
         let ops = VirtualHostOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config and virtual host
         let _route_config =

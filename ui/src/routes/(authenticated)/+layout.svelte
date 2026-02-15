@@ -105,11 +105,9 @@
 			safeCall(() => apiClient.listListeners()),
 			safeCall(() => apiClient.listFilters()),
 			safeCall(() =>
-				sessionInfo?.isAdmin
-					? apiClient.listAllImports()
-					: currentTeam
-						? apiClient.listImports(currentTeam)
-						: Promise.resolve([])
+				currentTeam
+					? apiClient.listImports(currentTeam)
+					: Promise.resolve([])
 			),
 			safeCall(() =>
 				currentTeam

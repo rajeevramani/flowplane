@@ -91,7 +91,11 @@ async fn test_101_login() {
 
     // Verify org context
     assert!(login_resp.org_id.is_some(), "Login should include org_id");
-    assert_eq!(login_resp.org_name.as_deref(), Some("platform"), "Platform org should be 'platform'");
+    assert_eq!(
+        login_resp.org_name.as_deref(),
+        Some("platform"),
+        "Platform org should be 'platform'"
+    );
 
     println!(
         "✓ Login successful, csrf_token: {}..., org={:?}",
@@ -266,13 +270,17 @@ async fn test_400_team_isolation() {
     let ctx =
         setup_dev_context(&api, "test_400_team_isolation").await.expect("Setup should succeed");
 
-    // Create a team-scoped token for Team A
+    // Create a team-scoped token for Team A.
+    // Includes org membership so the token can access resources in the tenant org,
+    // plus team-level scopes for Team A clusters only.
+    let org_name = ctx.org_name.as_deref().expect("org_name should be set");
     let team_a_token =
         with_timeout(TestTimeout::default_with_label("Create Team A token"), async {
             api.create_token(
                 &ctx.admin_session,
                 "team-a-token",
                 vec![
+                    format!("org:{}:member", org_name),
                     format!("team:{}:clusters:write", ctx.team_a_name),
                     format!("team:{}:clusters:read", ctx.team_a_name),
                 ],

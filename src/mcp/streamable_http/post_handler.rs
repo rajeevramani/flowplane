@@ -25,7 +25,8 @@ use crate::mcp::security::{generate_secure_session_id, validate_session_id_forma
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
     check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
-    extract_team, get_db_pool, validate_protocol_version, ResponseMode,
+    extract_team, get_db_pool, validate_protocol_version, validate_team_org_membership,
+    ResponseMode,
 };
 
 use super::McpScope;
@@ -230,6 +231,17 @@ async fn post_handler(
                 .into_response();
         }
     };
+
+    // Validate team belongs to caller's org (prevents cross-org team access via query param)
+    if let Some(ref org_id) = context.org_id {
+        if let Ok(db_pool) = get_db_pool(&state) {
+            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
+                error!(error = %e, team = %team, "Team org membership validation failed");
+                return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
+                    .into_response();
+            }
+        }
+    }
 
     // For new sessions, create the session in the manager
     if is_new_session {

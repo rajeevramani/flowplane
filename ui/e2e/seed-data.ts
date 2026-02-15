@@ -42,45 +42,85 @@ interface SeedContext {
  *
  * Idempotent: handles 409 Conflict and 500 duplicate-key gracefully.
  *
- * Strategy:
- * - Create tenant org "e2e-test-org" (auto-creates "e2e-test-org-default" team)
- * - Create all Envoy resources under the tenant org's default team
- * - "platform" org is governance-only — no teams, no resources
+ * Strategy (aligned with governance-only security model):
+ *   Phase 1 — Platform admin (governance ops only):
+ *     Create tenant org, org-admin user, org membership, org team
+ *   Phase 2 — Org admin (resource ops):
+ *     Login as org-admin, create all Envoy resources
+ *   Phase 3 — Restore platform admin session
+ *
+ * "platform" org is governance-only — no teams, no resources.
+ * admin:all scope does NOT grant resource access (post security audit).
  */
 export async function seedTestData(
 	request: APIRequestContext,
 	credentials: { email: string; password: string }
 ): Promise<void> {
-	// 1. Login via API to get session cookie + CSRF token
-	const loginResp = await request.post('/api/v1/auth/login', {
+	// ── Phase 1: Platform admin — governance operations ──────────────
+
+	const adminLogin = await request.post('/api/v1/auth/login', {
 		data: { email: credentials.email, password: credentials.password }
 	});
-	if (loginResp.status() !== 200) {
-		console.warn(`[seed] API login failed: ${loginResp.status()}`);
+	if (adminLogin.status() !== 200) {
+		console.warn(`[seed] Platform admin login failed: ${adminLogin.status()}`);
 		return;
 	}
-	const loginData = await loginResp.json();
-	const csrfToken = loginData.csrfToken;
+	const adminData = await adminLogin.json();
+	const adminCtx: SeedContext = { request, csrfToken: adminData.csrfToken };
 
-	const ctx: SeedContext = { request, csrfToken };
+	// Governance: create tenant org (auto-creates default team)
+	await createOrg(adminCtx);
+	await fetchOrgId(adminCtx);
 
-	// 2. Create tenant org (auto-creates "e2e-test-org-default" team)
-	await createOrg(ctx);
+	// Governance: create org-admin user + membership + extra team
+	await createOrgAdminUser(adminCtx);
+	await createOrgTeam(adminCtx);
 
-	// 3. Create resources in dependency order under the tenant org's default team
-	await createDataplane(ctx);
-	await createCluster(ctx);
-	await createFilter(ctx);
-	await createRouteConfig(ctx);
-	await createListener(ctx);
-	await createSecret(ctx);
+	// ── Phase 2: Org admin — resource creation ──────────────────────
+	// admin:all is governance-only; resource creation requires org:X:admin scope.
+	// Login as the org-admin to get org-scoped session.
 
-	// 4. Set up org-admin user and org-scoped resources
-	await fetchOrgId(ctx);
-	await createOrgTeam(ctx);
-	await createOrgAdminUser(ctx);
-	await createOrgCluster(ctx);
-	await createOrgRouteConfig(ctx);
+	const orgAdminLogin = await request.post('/api/v1/auth/login', {
+		data: { email: ORG_ADMIN.email, password: ORG_ADMIN.password }
+	});
+	if (orgAdminLogin.status() !== 200) {
+		console.warn(`[seed] Org-admin login failed: ${orgAdminLogin.status()}`);
+		console.warn('[seed] Skipping resource creation — org-admin user may not exist');
+		// Restore admin session before returning
+		await request.post('/api/v1/auth/login', {
+			data: { email: credentials.email, password: credentials.password }
+		});
+		return;
+	}
+	const orgAdminData = await orgAdminLogin.json();
+	const orgCtx: SeedContext = {
+		request,
+		csrfToken: orgAdminData.csrfToken,
+		orgId: adminCtx.orgId
+	};
+
+	// Create resources under the default team (e2e-test-org-default)
+	await createDataplane(orgCtx);
+	await createCluster(orgCtx);
+	await createFilter(orgCtx);
+	await createRouteConfig(orgCtx);
+	await createListener(orgCtx);
+	await createSecret(orgCtx);
+
+	// Create resources under the org team (e2e-org-team)
+	await createOrgCluster(orgCtx);
+	await createOrgRouteConfig(orgCtx);
+
+	// ── Phase 3: Restore platform admin session ─────────────────────
+	// auth.setup.ts continues with a browser login as admin after this.
+	// Restore the admin session so shared cookies are consistent.
+
+	const restoreLogin = await request.post('/api/v1/auth/login', {
+		data: { email: credentials.email, password: credentials.password }
+	});
+	if (restoreLogin.status() === 200) {
+		console.log('[seed] Restored platform admin session');
+	}
 
 	console.log('[seed] Test data seeding complete');
 }
@@ -284,7 +324,7 @@ async function createSecret(ctx: SeedContext): Promise<void> {
 	}
 }
 
-// --- Org-admin setup helpers ---
+// --- Org-admin setup helpers (run as platform admin — governance ops) ---
 
 async function fetchOrgId(ctx: SeedContext): Promise<void> {
 	if (ctx.orgId) return;
@@ -362,6 +402,8 @@ async function createOrgAdminUser(ctx: SeedContext): Promise<void> {
 		console.log(`[seed] org membership (admin) added for "${ORG_ADMIN.email}"`);
 	}
 }
+
+// --- Org-scoped resource helpers (run as org-admin) ---
 
 async function createOrgCluster(ctx: SeedContext): Promise<void> {
 	const result = await post(ctx, '/api/v1/clusters', {

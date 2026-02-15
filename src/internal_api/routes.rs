@@ -594,7 +594,7 @@ mod tests {
     async fn test_create_route_config_admin() {
         let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateRouteConfigRequest {
             name: "test-routes".to_string(),
@@ -631,7 +631,7 @@ mod tests {
     async fn test_get_route_config_not_found() {
         let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -642,7 +642,7 @@ mod tests {
     async fn test_delete_default_route_blocked() {
         let (_db, state) = setup_state().await;
         let ops = RouteConfigOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Note: The default route is "default-gateway-routes" (with an "s")
         let result = ops.delete("default-gateway-routes", &auth).await;
@@ -1171,7 +1171,7 @@ impl RouteOperations {
 mod route_operations_tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::TestDatabase;
+    use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
 
     async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
         let test_db = TestDatabase::new("internal_api_route_ops").await;
@@ -1244,7 +1244,7 @@ mod route_operations_tests {
     async fn test_create_route_success_admin() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with virtual host
         create_test_route_config(
@@ -1279,7 +1279,7 @@ mod route_operations_tests {
     async fn test_get_route_by_hierarchy() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with virtual host
         create_test_route_config(
@@ -1314,7 +1314,7 @@ mod route_operations_tests {
     async fn test_get_route_not_found() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", "default", "route", &auth).await;
         assert!(result.is_err());
@@ -1325,7 +1325,7 @@ mod route_operations_tests {
     async fn test_update_route_success() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with virtual host
         create_test_route_config(
@@ -1368,7 +1368,7 @@ mod route_operations_tests {
     async fn test_delete_route_success() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with virtual host
         create_test_route_config(
@@ -1433,7 +1433,7 @@ mod route_operations_tests {
     async fn test_list_routes_by_route_config() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with two virtual hosts
         create_test_route_config(
@@ -1478,7 +1478,7 @@ mod route_operations_tests {
     async fn test_list_routes_by_virtual_host() {
         let (_db, state) = setup_state_with_migrations().await;
         let ops = RouteOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create route config with two virtual hosts
         create_test_route_config(

@@ -502,14 +502,16 @@ async fn verify_org_boundary_blocks_cross_org_resource_access() {
     let result = verify_org_boundary(&ctx, &Some(org_b));
     assert!(result.is_err(), "Cross-org access must be denied");
 
-    // Admin bypasses org boundary
+    // Admin without org context cannot bypass org boundary (governance-only)
     let admin_ctx = AuthContext::new(
         TokenId::from_str_unchecked("admin"),
         "admin".into(),
         vec!["admin:all".into()],
     );
     assert!(
-        verify_org_boundary(&admin_ctx, &Some(OrgId::new())).is_ok(),
-        "Admin should bypass org boundary"
+        verify_org_boundary(&admin_ctx, &Some(OrgId::new())).is_err(),
+        "Admin without org context should not bypass org boundary"
     );
+    // But admin can access global resources (no org)
+    assert!(verify_org_boundary(&admin_ctx, &None).is_ok(), "Admin can access global resources");
 }

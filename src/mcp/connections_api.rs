@@ -90,6 +90,15 @@ pub async fn list_connections_handler(
     // Extract team
     let team = extract_team(&query, &context).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
+    // Validate team belongs to caller's org (prevents cross-org team access via query param)
+    if let Some(ref org_id) = context.org_id {
+        if let Ok(db_pool) = crate::mcp::transport_common::get_db_pool(&state) {
+            crate::mcp::transport_common::validate_team_org_membership(&team, org_id, &db_pool)
+                .await
+                .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+        }
+    }
+
     debug!(team = %team, "Listing MCP connections and sessions");
 
     // Get SSE connections

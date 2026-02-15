@@ -40,6 +40,7 @@ use super::{
     handlers::{
         // Invitation handlers
         accept_invitation_handler,
+        add_team_member,
         add_team_membership,
         admin_add_org_member,
         admin_create_organization,
@@ -84,6 +85,7 @@ use super::{
         delete_filter_handler,
         delete_learning_session_handler,
         delete_listener_handler,
+        delete_org_team,
         delete_route_config_handler,
         delete_user,
         detach_filter_from_listener_handler,
@@ -144,6 +146,7 @@ use super::{
         list_route_views_handler,
         list_scopes_handler,
         list_secrets_handler,
+        list_team_members,
         list_teams_handler,
         list_tokens_handler,
         list_user_teams,
@@ -156,6 +159,7 @@ use super::{
         refresh_session_handler,
         reload_filter_schemas_handler,
         remove_filter_configuration_handler,
+        remove_team_member,
         remove_team_membership,
         revoke_certificate_handler,
         revoke_invitation_handler,
@@ -167,8 +171,10 @@ use super::{
         update_filter_handler,
         update_listener_handler,
         update_mcp_tool_handler,
+        update_org_team,
         update_route_config_handler,
         update_secret_handler,
+        update_team_member_scopes,
         update_team_membership_scopes,
         update_token_handler,
         update_user,
@@ -602,6 +608,12 @@ pub fn build_router_with_registry(
         .route("/api/v1/orgs/current", get(get_current_org))
         .route("/api/v1/orgs/{org_name}/teams", get(list_org_teams))
         .route("/api/v1/orgs/{org_name}/teams", post(create_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}", put(update_org_team).delete(delete_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}/members", get(list_team_members).post(add_team_member))
+        .route(
+            "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
+            put(update_team_member_scopes).delete(remove_team_member),
+        )
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))

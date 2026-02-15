@@ -496,12 +496,10 @@ async fn org_resource_isolation_via_team_scoping() {
     let cross_names: Vec<&str> = cross_results.iter().map(|c| c.name.as_str()).collect();
     assert!(!cross_names.contains(&"beta-cluster"), "Alpha user should NOT see beta-cluster");
 
-    // Platform admin (empty team scopes) sees ALL resources
-    let admin_results =
-        cluster_repo.list_by_teams(&[], false, None, None).await.expect("admin list clusters");
-    let admin_names: Vec<&str> = admin_results.iter().map(|c| c.name.as_str()).collect();
-    assert!(admin_names.contains(&"alpha-cluster"));
-    assert!(admin_names.contains(&"beta-cluster"));
+    // Empty team scopes returns no results (security hardening)
+    let empty_results =
+        cluster_repo.list_by_teams(&[], false, None, None).await.expect("empty teams list");
+    assert_eq!(empty_results.len(), 0);
 }
 
 // ---------------------------------------------------------------------------

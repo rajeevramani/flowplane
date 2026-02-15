@@ -161,7 +161,8 @@ mod tests {
     async fn test_list_openapi_imports_admin() {
         let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create test imports
         let cluster_repo = state.cluster_repository.as_ref().unwrap();
@@ -242,7 +243,7 @@ mod tests {
     async fn test_list_openapi_imports_pagination() {
         let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         // Create multiple imports
         let cluster_repo = state.cluster_repository.as_ref().unwrap();
@@ -281,7 +282,7 @@ mod tests {
     async fn test_get_openapi_import() {
         let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create an import
         let cluster_repo = state.cluster_repository.as_ref().unwrap();
@@ -311,7 +312,7 @@ mod tests {
     async fn test_get_openapi_import_not_found() {
         let (_db, state) = setup_state().await;
         let ops = OpenApiOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());

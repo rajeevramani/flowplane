@@ -85,15 +85,20 @@ Authorization: Requires cp:read scope."#,
 pub async fn execute_dev_preflight_check(
     db_pool: &DbPool,
     team: &str,
-    _org_id: Option<&OrgId>,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
+
     let mut checks: Vec<Value> = Vec::new();
     let mut ready = true;
 
-    // Check port availability
+    // Check port availability (scoped to caller's org)
     if let Some(port) = args.get("listen_port").and_then(|v| v.as_i64()) {
-        let port_check = check_port_available(db_pool, port).await?;
+        let port_check = check_port_available(db_pool, port, org_id).await?;
         if !port_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
         }
@@ -109,27 +114,27 @@ pub async fn execute_dev_preflight_check(
         checks.push(path_check);
     }
 
-    // Check cluster name collision
+    // Check cluster name collision (scoped to caller's team)
     if let Some(name) = args.get("cluster_name").and_then(|v| v.as_str()) {
-        let name_check = check_name_exists(db_pool, "clusters", "name", name).await?;
+        let name_check = check_name_exists(db_pool, "clusters", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
         }
         checks.push(name_check);
     }
 
-    // Check route config name collision
+    // Check route config name collision (scoped to caller's team)
     if let Some(name) = args.get("route_config_name").and_then(|v| v.as_str()) {
-        let name_check = check_name_exists(db_pool, "route_configs", "name", name).await?;
+        let name_check = check_name_exists(db_pool, "route_configs", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
         }
         checks.push(name_check);
     }
 
-    // Check listener name collision
+    // Check listener name collision (scoped to caller's team)
     if let Some(name) = args.get("listener_name").and_then(|v| v.as_str()) {
-        let name_check = check_name_exists(db_pool, "listeners", "name", name).await?;
+        let name_check = check_name_exists(db_pool, "listeners", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
         }
@@ -168,13 +173,52 @@ pub async fn execute_dev_preflight_check(
 // HELPER FUNCTIONS
 // =============================================================================
 
-/// Check if a port is available across ALL teams (security: don't reveal which team owns it).
-async fn check_port_available(db_pool: &DbPool, port: i64) -> Result<Value, McpError> {
-    let row: Option<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM listeners WHERE port = $1")
+/// Validate that a team belongs to the caller's org. Returns McpError on failure.
+async fn validate_team_in_org(
+    db_pool: &DbPool,
+    team: &str,
+    org_id: &OrgId,
+) -> Result<(), McpError> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
+            .bind(team)
+            .bind(org_id.as_str())
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+
+    let count = row.map(|r| r.0).unwrap_or(0);
+    if count == 0 {
+        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
+    }
+    Ok(())
+}
+
+/// Check if a port is available within the caller's org (security: don't reveal which team owns it).
+async fn check_port_available(
+    db_pool: &DbPool,
+    port: i64,
+    org_id: Option<&OrgId>,
+) -> Result<Value, McpError> {
+    // Scope port check to teams within the caller's org.
+    // Without org_id, fall back to checking only within the caller's team set.
+    let row: Option<(i64,)> = if let Some(oid) = org_id {
+        sqlx::query_as(
+            "SELECT COUNT(*) FROM listeners WHERE port = $1 \
+             AND team IN (SELECT name FROM teams WHERE org_id = $2)",
+        )
         .bind(port)
+        .bind(oid.as_str())
         .fetch_optional(db_pool)
         .await
-        .map_err(|e| McpError::InternalError(format!("Failed to check port: {}", e)))?;
+        .map_err(|e| McpError::InternalError(format!("Failed to check port: {}", e)))?
+    } else {
+        sqlx::query_as("SELECT COUNT(*) FROM listeners WHERE port = $1")
+            .bind(port)
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| McpError::InternalError(format!("Failed to check port: {}", e)))?
+    };
 
     let count = row.map(|r| r.0).unwrap_or(0);
     let available = count == 0;
@@ -221,17 +265,23 @@ async fn check_path_conflict(db_pool: &DbPool, team: &str, path: &str) -> Result
     }))
 }
 
-/// Check if a resource name already exists in a table.
+/// Check if a resource name already exists in a table (scoped to caller's team).
 async fn check_name_exists(
     db_pool: &DbPool,
     table: &str,
     column: &str,
     name: &str,
+    team: &str,
 ) -> Result<Value, McpError> {
     // Use parameterized query — table/column are compile-time constants (not user input)
-    let query = format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, column);
+    // Scope to the caller's team to prevent cross-org name leakage
+    let query = format!(
+        "SELECT COUNT(*) FROM {} WHERE {} = $1 AND (team = $2 OR team IS NULL)",
+        table, column
+    );
     let row: Option<(i64,)> = sqlx::query_as(&query)
         .bind(name)
+        .bind(team)
         .fetch_optional(db_pool)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to check name: {}", e)))?;

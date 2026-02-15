@@ -403,18 +403,17 @@ async fn test_2504_org_scoped_teams() {
     let admin_token = &token_resp.token;
 
     // Create a tenant org (platform org is governance-only, no teams allowed)
-    let tenant_org =
-        with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
-            api.create_organization(
-                admin_token,
-                "test-org-2504",
-                "Test Org 2504",
-                Some("Tenant org for org-scoped team tests"),
-            )
-            .await
-        })
+    let tenant_org = with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
+        api.create_organization(
+            admin_token,
+            "test-org-2504",
+            "Test Org 2504",
+            Some("Tenant org for org-scoped team tests"),
+        )
         .await
-        .expect("Create tenant org should succeed");
+    })
+    .await
+    .expect("Create tenant org should succeed");
 
     println!("ok Created tenant org: {} (id={})", tenant_org.name, tenant_org.id);
 

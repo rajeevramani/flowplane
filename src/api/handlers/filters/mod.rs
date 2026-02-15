@@ -1119,17 +1119,15 @@ mod tests {
     use axum::Extension;
 
     use crate::api::test_utils::{
-        admin_auth_context, create_test_state, minimal_auth_context,
-        readonly_resource_auth_context, team_auth_context,
+        create_test_state, minimal_auth_context, readonly_resource_auth_context, team_auth_context,
     };
     use crate::domain::filter::{FilterConfig, HeaderMutationEntry, HeaderMutationFilterConfig};
     use crate::domain::OrgId;
 
     // Use test_utils helpers:
-    // - admin_auth_context() -> admin_auth_context()
-    // - team_auth_context(team) -> team_auth_context(team)
-    // - readonly_resource_auth_context("filters") -> readonly_resource_auth_context("filters")
-    // - minimal_auth_context() -> minimal_auth_context()
+    // - team_auth_context(team) -> full team-scoped CRUD access for tenant resources
+    // - readonly_resource_auth_context("filters") -> read-only access (no write)
+    // - minimal_auth_context() -> no resource scopes (access denied)
 
     async fn setup_state_with_team(
         team_name: &str,
@@ -1194,7 +1192,7 @@ mod tests {
 
         let result = list_filters_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(empty_list_query()),
         )
         .await;
@@ -1222,12 +1220,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_filter_with_admin_auth_context() {
+    async fn test_create_filter_with_team_context() {
         let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
-        let result =
-            create_filter_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+        let result = create_filter_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await;
 
         assert!(result.is_ok());
         let (status, Json(response)) = result.unwrap();
@@ -1237,7 +1239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_filter_with_team_auth_context() {
+    async fn test_create_filter_with_team_scoped_auth() {
         let (_db, state) = setup_state_with_team("test-team").await;
         let body = sample_create_filter_request("test-team");
 
@@ -1276,8 +1278,12 @@ mod tests {
         let (_db, state) = create_test_state().await; // No team created
         let body = sample_create_filter_request("non-existent-team");
 
-        let result =
-            create_filter_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+        let result = create_filter_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await;
 
         // Should fail because team doesn't exist
         assert!(result.is_err());
@@ -1291,7 +1297,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1300,7 +1306,7 @@ mod tests {
         // Get the filter
         let result = get_filter_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path(created.id.clone()),
         )
         .await;
@@ -1317,7 +1323,7 @@ mod tests {
 
         let result = get_filter_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-filter-id".to_string()),
         )
         .await;
@@ -1336,7 +1342,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1351,7 +1357,7 @@ mod tests {
 
         let result = update_filter_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path(created.id.clone()),
             Json(update_body),
         )
@@ -1370,7 +1376,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1401,7 +1407,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1410,7 +1416,7 @@ mod tests {
         // Delete the filter
         let result = delete_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path(created.id.clone()),
         )
         .await;
@@ -1419,9 +1425,12 @@ mod tests {
         assert_eq!(result.unwrap(), StatusCode::NO_CONTENT);
 
         // Verify it's gone
-        let get_result =
-            get_filter_handler(State(state), Extension(admin_auth_context()), Path(created.id))
-                .await;
+        let get_result = get_filter_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Path(created.id),
+        )
+        .await;
 
         assert!(get_result.is_err());
     }
@@ -1434,7 +1443,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1460,7 +1469,7 @@ mod tests {
 
         let result = delete_filter_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-filter-id".to_string()),
         )
         .await;
@@ -1479,7 +1488,7 @@ mod tests {
         // Create filter
         let _ = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1488,7 +1497,7 @@ mod tests {
         // List filters
         let result = list_filters_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(empty_list_query()),
         )
         .await;
@@ -1509,7 +1518,7 @@ mod tests {
             body.name = format!("test-filter-{}", i);
             let _ = create_filter_handler(
                 State(state.clone()),
-                Extension(admin_auth_context()),
+                Extension(team_auth_context("test-team")),
                 Json(body),
             )
             .await
@@ -1519,7 +1528,7 @@ mod tests {
         // List with limit
         let result = list_filters_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -1539,7 +1548,7 @@ mod tests {
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -1548,7 +1557,7 @@ mod tests {
         // Get status
         let result = get_filter_status_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path(created.id.clone()),
         )
         .await;
@@ -1567,7 +1576,7 @@ mod tests {
 
         let result = get_filter_status_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("non-existent-filter-id".to_string()),
         )
         .await;

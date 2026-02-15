@@ -117,13 +117,9 @@ async fn cluster_repository_filters_by_team() {
     assert!(names.contains(&"global-cluster"));
     assert!(!names.contains(&"team-a-cluster"));
 
-    // Test: Empty teams list (admin:all) should see all clusters
-    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
-    let names: Vec<&str> = admin_results.iter().map(|c| c.name.as_str()).collect();
-    assert!(names.contains(&"team-a-cluster"));
-    assert!(names.contains(&"team-b-cluster"));
-    assert!(names.contains(&"global-cluster"));
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo
@@ -247,9 +243,9 @@ async fn route_repository_filters_by_team() {
     assert!(names.contains(&"global-routes"));
     assert!(!names.contains(&"team-a-routes"));
 
-    // Test: Empty teams list (admin:all) should see all routes
-    let admin_results = route_repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = route_repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = route_repo
@@ -335,9 +331,9 @@ async fn listener_repository_filters_by_team() {
     assert!(names.contains(&"global-listener"));
     assert!(!names.contains(&"team-a-listener"));
 
-    // Test: Empty teams list (admin:all) should see all listeners
-    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo

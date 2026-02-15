@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { collectPageErrors, assertNoPageErrors, waitForPageLoad } from './helpers';
-import { SEED_ORG } from './seed-data';
+import { SEED, SEED_ORG } from './seed-data';
 
 // Page type determines what UI elements we assert beyond "no JS errors"
 type PageType = 'list' | 'create' | 'dashboard' | 'form' | 'cards';
@@ -25,7 +25,7 @@ const orgAdminPages: PageDef[] = [
 	{ path: '/dataplanes', name: 'Dataplanes', type: 'list' },
 	{ path: '/imports', name: 'Imports', type: 'list' },
 	{ path: '/tokens', name: 'Access Tokens', type: 'list' },
-	{ path: '/custom-filters', name: 'Custom Filters', type: 'list' },
+	{ path: '/custom-filters', name: 'Custom Filters', type: 'cards' },
 	{ path: '/learning', name: 'Learning Sessions', type: 'list' },
 	{ path: '/learning/schemas', name: 'Discovered Schemas', type: 'list' },
 	// Card-based pages (render grid of cards/stat cards, may include table below)
@@ -44,8 +44,8 @@ const orgAdminPages: PageDef[] = [
 	{ path: '/custom-filters/upload', name: 'Upload Custom Filter', type: 'create' },
 
 	// Form pages
-	{ path: '/profile/password', name: 'Change Password', type: 'form' },
-	{ path: '/generate-envoy-config', name: 'Generate Envoy Config', type: 'form' }
+	{ path: '/profile/password', name: 'Change Password', type: 'form' }
+	// Note: /generate-envoy-config has a 301 redirect to /dataplanes (already tested above)
 ];
 
 test.describe('Org Admin - Smoke Tests', () => {
@@ -162,8 +162,8 @@ test.describe('Org Admin - Sidebar', () => {
 		await waitForPageLoad(page);
 
 		const sidebar = page.locator('aside');
-		const badges = sidebar.locator('.rounded-full');
-		expect(await badges.count()).toBeGreaterThan(0);
+		// Use Playwright's auto-retrying expect (resource counts load async)
+		await expect(sidebar.locator('.rounded-full').first()).toBeVisible({ timeout: 10000 });
 
 		assertNoPageErrors(errors);
 	});
@@ -176,9 +176,16 @@ test.describe('Org Admin - Resource Pages', () => {
 		await waitForPageLoad(page);
 
 		// Hard-assert: table renders with seeded cluster visible (proves seed→DB→API→UI)
+		// The initially-selected team depends on API ordering, so check for either
+		// the default-team cluster or the org-team cluster.
 		const table = page.locator('table');
-		await expect(table).toBeVisible();
-		await expect(page.getByText(SEED_ORG.cluster).first()).toBeVisible();
+		await expect(table).toBeVisible({ timeout: 10000 });
+		const hasSeedCluster = await page.getByText(SEED.cluster).count() > 0;
+		const hasOrgCluster = await page.getByText(SEED_ORG.cluster).count() > 0;
+		expect(
+			hasSeedCluster || hasOrgCluster,
+			`Expected seeded cluster (${SEED.cluster} or ${SEED_ORG.cluster}) to be visible`
+		).toBe(true);
 
 		assertNoPageErrors(errors);
 	});
@@ -190,8 +197,13 @@ test.describe('Org Admin - Resource Pages', () => {
 
 		// Hard-assert: table renders with seeded route config visible (proves seed→DB→API→UI)
 		const table = page.locator('table');
-		await expect(table).toBeVisible();
-		await expect(page.getByText(SEED_ORG.routeConfig).first()).toBeVisible();
+		await expect(table).toBeVisible({ timeout: 10000 });
+		const hasSeedRoute = await page.getByText(SEED.routeConfig).count() > 0;
+		const hasOrgRoute = await page.getByText(SEED_ORG.routeConfig).count() > 0;
+		expect(
+			hasSeedRoute || hasOrgRoute,
+			`Expected seeded route config (${SEED.routeConfig} or ${SEED_ORG.routeConfig}) to be visible`
+		).toBe(true);
 
 		assertNoPageErrors(errors);
 	});

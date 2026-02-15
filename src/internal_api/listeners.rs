@@ -321,7 +321,7 @@ mod tests {
     async fn test_create_listener_admin() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateListenerRequest {
             name: "test-listener".to_string(),
@@ -388,7 +388,7 @@ mod tests {
     async fn test_get_listener_not_found() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -400,8 +400,8 @@ mod tests {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
 
-        // Create listener as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create listener as team-a user
+        let admin_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateListenerRequest {
             name: "team-a-listener".to_string(),
             address: "0.0.0.0".to_string(),
@@ -426,7 +426,8 @@ mod tests {
     async fn test_list_listeners_team_filtering() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let admin_auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create listeners for different teams
         for (name, port, team, dp_id) in [
@@ -462,7 +463,7 @@ mod tests {
     async fn test_update_listener() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a listener
         let create_req = CreateListenerRequest {
@@ -500,7 +501,7 @@ mod tests {
     async fn test_delete_listener() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a listener
         let create_req = CreateListenerRequest {
@@ -527,7 +528,7 @@ mod tests {
     async fn test_delete_default_listener_blocked() {
         let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Try to delete the default gateway listener
         let result = ops.delete("default-gateway-listener", &auth).await;

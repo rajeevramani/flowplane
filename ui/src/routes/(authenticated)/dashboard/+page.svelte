@@ -6,6 +6,7 @@
 	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
+	import { isSystemAdmin } from '$lib/stores/org';
 	import type { Unsubscriber } from 'svelte/store';
 
 	let isFirstAdmin = $state(false);
@@ -23,16 +24,10 @@
 	async function loadResourceCounts(team: string) {
 		isLoadingResources = true;
 		try {
-			// Admin users see all resources from all teams
-			// Non-admin users see resources filtered by the selected team
-			const isAdmin = sessionInfo?.isAdmin ?? false;
-
 			const [imports, listeners, routes, clusters] = await Promise.all([
-				isAdmin
-					? apiClient.listAllImports()
-					: team
-						? apiClient.listImports(team)
-						: Promise.resolve([]),
+				team
+					? apiClient.listImports(team)
+					: Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRouteConfigs(),
 				apiClient.listClusters()
@@ -185,13 +180,9 @@
 		<div class="mb-8">
 			<h2 class="text-3xl font-bold text-gray-900">Welcome back, {sessionInfo.name}!</h2>
 			<p class="mt-2 text-gray-600">
-				{#if sessionInfo.isAdmin}
-					You have administrator access to the entire system.
-				{:else}
-					You have access to {sessionInfo.teams.length} team{sessionInfo.teams.length !== 1
-						? 's'
-						: ''}.
-				{/if}
+				You have access to {sessionInfo.teams.length} team{sessionInfo.teams.length !== 1
+					? 's'
+					: ''}.
 			</p>
 		</div>
 
@@ -256,8 +247,8 @@
 		<div class="mb-8">
 			<h3 class="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
 			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-				<!-- Admin-only actions -->
-				{#if sessionInfo.isAdmin}
+				<!-- Governance admin actions -->
+				{#if isSystemAdmin(sessionInfo.scopes)}
 					<a
 						href="/admin/users"
 						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"

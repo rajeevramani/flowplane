@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import type { UserWithTeamsResponse, UserTeamMembership, UpdateUserRequest, CreateTeamMembershipRequest, UpdateTeamMembershipRequest } from '$lib/api/types';
 	import ScopeSelector from '$lib/components/ScopeSelector.svelte';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let user = $state<UserWithTeamsResponse | null>(null);
 	let availableTeams = $state<string[]>([]);
@@ -41,7 +42,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

@@ -298,8 +298,8 @@
 			</div>
 		</div>
 
-		<!-- Admin Section (only for admins) -->
-		{#if sessionInfo.isAdmin}
+		<!-- Admin Section (only for governance admins) -->
+		{#if isSystemAdmin(sessionInfo.scopes)}
 			<div class="px-3 mb-4">
 				<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
 					Admin

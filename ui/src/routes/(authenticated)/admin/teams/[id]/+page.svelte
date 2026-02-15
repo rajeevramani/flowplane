@@ -4,6 +4,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import type { TeamResponse, UpdateTeamRequest, UserResponse, TeamStatus } from '$lib/api/types';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let teamId = $derived($page.params.id ?? '');
 
@@ -31,7 +32,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

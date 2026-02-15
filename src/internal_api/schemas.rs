@@ -54,21 +54,13 @@ impl AggregatedSchemaOperations {
             InternalError::service_unavailable("Aggregated schema repository unavailable")
         })?;
 
-        // Determine which team to query
-        // - Admin users (empty allowed_teams) can see all teams, but we need a team filter
-        //   for the repository query. For now, we'll require a team even for admins.
-        // - Non-admin users query their first allowed team
-        let team = if auth.is_admin {
-            // For admin, if we don't have a specific team filter, we need to handle this differently
-            // For simplicity, we'll require the caller to specify a team or we return an error
-            return Err(InternalError::validation(
-                "Admin users must specify a team filter for schema listing",
-            ));
-        } else {
-            auth.allowed_teams
-                .first()
-                .ok_or_else(|| InternalError::forbidden("No team access for listing schemas"))?
-        };
+        // Determine which team to query.
+        // Admin (is_admin) does NOT bypass team checks — admin:all is governance-only.
+        // Users need explicit team memberships to list tenant resources.
+        let team = auth
+            .allowed_teams
+            .first()
+            .ok_or_else(|| InternalError::forbidden("No team access for listing schemas"))?;
 
         // Call appropriate repository method based on filters
         let schemas = if req.latest_only.unwrap_or(false) {
@@ -461,16 +453,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_admin_requires_team() {
+    async fn test_list_requires_team_membership() {
         let setup = setup_state().await;
         let ops = AggregatedSchemaOperations::new(setup.state);
 
-        // Admin context without team filter should fail
+        // Admin context has no team memberships — admin:all is governance-only
+        // and does NOT grant access to tenant resources like schemas.
         let auth = InternalAuthContext::admin();
         let req = ListSchemasRequest::default();
         let result = ops.list(req, &auth).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), InternalError::InvalidInput { .. }));
+        assert!(matches!(result.unwrap_err(), InternalError::Forbidden { .. }));
     }
 }

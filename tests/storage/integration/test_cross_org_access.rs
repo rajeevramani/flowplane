@@ -515,7 +515,7 @@ fn check_resource_access_global_scope_non_admin_denied() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn check_resource_access_global_scope_admin_allowed() {
+fn check_resource_access_global_scope_admin_denied_for_tenant() {
     use flowplane::auth::authorization::check_resource_access;
 
     let ctx = AuthContext::new(
@@ -524,10 +524,14 @@ fn check_resource_access_global_scope_admin_allowed() {
         vec!["admin:all".into()],
     );
 
-    // Admin always has access
-    assert!(check_resource_access(&ctx, "clusters", "read", None));
-    assert!(check_resource_access(&ctx, "routes", "write", Some("any-team")));
-    assert!(check_resource_access(&ctx, "listeners", "delete", Some("engineering")));
+    // admin:all is governance-only — denied for tenant resources
+    assert!(!check_resource_access(&ctx, "clusters", "read", None));
+    assert!(!check_resource_access(&ctx, "routes", "write", Some("any-team")));
+    assert!(!check_resource_access(&ctx, "listeners", "delete", Some("engineering")));
+
+    // admin:all grants governance resource access
+    assert!(check_resource_access(&ctx, "admin-orgs", "read", None));
+    assert!(check_resource_access(&ctx, "admin-users", "write", None));
 }
 
 // ---------------------------------------------------------------------------
@@ -627,7 +631,7 @@ fn verify_org_boundary_same_org_returns_ok() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn verify_org_boundary_admin_bypasses() {
+fn verify_org_boundary_admin_no_bypass() {
     use flowplane::auth::authorization::verify_org_boundary;
     use flowplane::domain::OrgId;
 
@@ -640,9 +644,10 @@ fn verify_org_boundary_admin_bypasses() {
         vec!["admin:all".into()],
     );
 
-    // Admin can cross org boundaries
-    assert!(verify_org_boundary(&admin_ctx, &Some(org_a)).is_ok());
-    assert!(verify_org_boundary(&admin_ctx, &Some(org_b)).is_ok());
+    // Admin without org context cannot bypass org boundary (governance-only)
+    assert!(verify_org_boundary(&admin_ctx, &Some(org_a)).is_err());
+    assert!(verify_org_boundary(&admin_ctx, &Some(org_b)).is_err());
+    // But global resources (no org) are accessible
     assert!(verify_org_boundary(&admin_ctx, &None).is_ok());
 }
 
@@ -745,7 +750,7 @@ fn get_effective_team_scopes_empty_for_no_team_scopes() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: get_effective_team_scopes returns empty for admin (bypass)
+// Test: get_effective_team_scopes returns empty for admin (no team memberships)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -759,7 +764,11 @@ fn get_effective_team_scopes_empty_for_admin() {
     );
 
     let scopes = get_effective_team_scopes(&admin_ctx);
-    assert!(scopes.is_empty(), "Admin should get empty team scopes (bypass), got {:?}", scopes);
+    assert!(
+        scopes.is_empty(),
+        "Admin with no team memberships should get empty team scopes, got {:?}",
+        scopes
+    );
 }
 
 // ---------------------------------------------------------------------------

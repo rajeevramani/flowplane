@@ -277,7 +277,7 @@ mod tests {
     use axum::{Extension, Json};
     use serde_json::Value;
 
-    use crate::api::test_utils::{admin_auth_context, create_test_state};
+    use crate::api::test_utils::{create_test_state, team_auth_context};
     use crate::storage::test_helpers::{PLATFORM_TEAM_ID, TEAM_A_ID, TEAM_B_ID};
 
     use types::{
@@ -287,7 +287,7 @@ mod tests {
     // PaginationQuery and PaginatedResponse come from `use super::*;`
 
     // Use test_utils::create_test_state() which runs full migrations
-    // and test_utils::admin_auth_context() for admin permissions
+    // and test_utils::team_auth_context() for team-scoped permissions
 
     async fn setup_state() -> (crate::storage::test_helpers::TestDatabase, ApiState) {
         use crate::api::test_utils::TestTeamBuilder;
@@ -355,7 +355,7 @@ mod tests {
 
         let response = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body.clone()),
         )
         .await
@@ -382,9 +382,13 @@ mod tests {
         let mut body = sample_request();
         body.endpoints.clear();
 
-        let err = create_cluster_handler(State(state), Extension(admin_auth_context()), Json(body))
-            .await
-            .expect_err("expected validation error");
+        let err = create_cluster_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await
+        .expect_err("expected validation error");
 
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -397,7 +401,7 @@ mod tests {
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -406,7 +410,7 @@ mod tests {
 
         let response = list_clusters_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
@@ -424,7 +428,7 @@ mod tests {
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -433,7 +437,7 @@ mod tests {
 
         let response = get_cluster_handler(
             State(state),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
         )
         .await
@@ -451,7 +455,7 @@ mod tests {
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body.clone()),
         )
         .await
@@ -463,7 +467,7 @@ mod tests {
 
         let response = update_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
             Json(body),
         )
@@ -486,7 +490,7 @@ mod tests {
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Json(body),
         )
         .await
@@ -495,7 +499,7 @@ mod tests {
 
         let status = delete_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
         )
         .await
@@ -593,14 +597,19 @@ mod tests {
         assert!(names.contains(&"global-cluster"));
         assert!(!names.contains(&"team-a-cluster"));
 
-        // Admin should see all clusters (test-created + seed)
+        // Multi-team user should see clusters from all their teams
+        let multi_team = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("multi-team-token"),
+            "multi-team-user".into(),
+            vec!["team:team-a:clusters:read".into(), "team:team-b:clusters:read".into()],
+        );
         let response = list_clusters_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(multi_team),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
-        .expect("list clusters for admin");
+        .expect("list clusters for multi-team user");
 
         let clusters = &response.0.items;
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
@@ -796,15 +805,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_user_creates_team_owned_cluster() {
+    async fn team_user_creates_team_owned_cluster() {
         let (_db, state) = setup_state().await;
         let mut body = sample_request();
-        body.team = "platform".to_string(); // Admin explicitly specifies team
+        body.team = "platform".to_string(); // User explicitly specifies their team
 
-        // Admin creates a cluster for a specific team
+        // Team user creates a cluster for their team
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_auth_context()),
+            Extension(team_context("platform", "clusters", &["write"])),
             Json(body),
         )
         .await

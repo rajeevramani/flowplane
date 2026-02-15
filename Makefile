@@ -19,7 +19,7 @@
 #   make clean           - Remove volumes and orphan containers
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
-        build build-backend build-ui info prune \
+        build build-backend build-ui info prune seed \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
         test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps
 
@@ -108,6 +108,7 @@ help: ## Show this help message
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
+	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
 	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
@@ -190,6 +191,9 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 	@echo "  Jaeger UI:  http://localhost:16686"
 	@echo "  httpbin:    http://localhost:8000"
 
+seed: ## Seed dev data: org, org-admin, team, API, tokens
+	@./scripts/seed-data.sh
+
 # =============================================================================
 # Container Operations
 # =============================================================================
@@ -268,8 +272,7 @@ test-ui-e2e: _ensure-e2e-deps ## Run UI E2E tests (self-contained)
 	echo ""; \
 	echo "$(GREEN)HTML report: make test-ui-report$(RESET)"; \
 	echo "$(CYAN)Stopping PostgreSQL...$(RESET)"; \
-	$(DOCKER) stop flowplane-postgres >/dev/null 2>&1 || true; \
-	$(DOCKER) rm flowplane-postgres >/dev/null 2>&1 || true; \
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true; \
 	echo "$(GREEN)Cleanup complete.$(RESET)"; \
 	exit $$TEST_EXIT
 
@@ -362,11 +365,10 @@ prune: down ## Aggressive cleanup (images + volumes + cache)
 # =============================================================================
 
 _ensure-e2e-deps:
-	@if ! $(DOCKER) exec flowplane-postgres pg_isready -U flowplane >/dev/null 2>&1; then \
-		echo "$(CYAN)Starting PostgreSQL...$(RESET)"; \
-		$(MAKE) dev-db; \
-		sleep 3; \
-	fi
+	@echo "$(CYAN)Ensuring fresh PostgreSQL for E2E tests...$(RESET)"
+	@$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true
+	@$(MAKE) dev-db
+	@sleep 3
 	@if [ ! -f target/debug/flowplane ]; then \
 		echo "$(CYAN)Building backend...$(RESET)"; \
 		cargo build; \

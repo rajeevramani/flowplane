@@ -582,7 +582,7 @@ mod tests {
     async fn test_create_filter_admin() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateFilterRequest {
             name: "test-cors".to_string(),
@@ -642,7 +642,7 @@ mod tests {
     async fn test_get_filter_not_found() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -654,8 +654,8 @@ mod tests {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
 
-        // Create filter as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create filter for team-a using team-a context
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateFilterRequest {
             name: "team-a-filter".to_string(),
             filter_type: "cors".to_string(),
@@ -663,7 +663,7 @@ mod tests {
             team: Some(TEAM_A_ID.to_string()),
             config: sample_cors_config(),
         };
-        ops.create(req, &admin_auth).await.expect("create filter");
+        ops.create(req, &team_a_auth).await.expect("create filter");
 
         // Try to access from team-b
         let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
@@ -678,12 +678,12 @@ mod tests {
     async fn test_list_filters_team_filtering() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
 
-        // Create filters for different teams
+        // Create filters for different teams using team-scoped contexts
         for (name, team) in
             [("filter-a1", TEAM_A_ID), ("filter-b1", TEAM_B_ID), ("filter-a2", TEAM_A_ID)]
         {
+            let team_auth = InternalAuthContext::for_team(team);
             let req = CreateFilterRequest {
                 name: name.to_string(),
                 filter_type: "cors".to_string(),
@@ -691,7 +691,7 @@ mod tests {
                 team: Some(team.to_string()),
                 config: sample_cors_config(),
             };
-            ops.create(req, &admin_auth).await.expect("create filter");
+            ops.create(req, &team_auth).await.expect("create filter");
         }
 
         // List as team-a
@@ -710,7 +710,7 @@ mod tests {
     async fn test_list_filters_by_type() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let req = CreateFilterRequest {
@@ -720,7 +720,7 @@ mod tests {
             team: Some(TEST_TEAM_ID.to_string()),
             config: sample_cors_config(),
         };
-        ops.create(req, &admin_auth).await.expect("create filter");
+        ops.create(req, &auth).await.expect("create filter");
 
         // List with type filter
         let list_req = ListFiltersRequest {
@@ -728,7 +728,7 @@ mod tests {
             include_defaults: true,
             ..Default::default()
         };
-        let result = ops.list(list_req, &admin_auth).await.expect("list filters");
+        let result = ops.list(list_req, &auth).await.expect("list filters");
         assert_eq!(result.count, 1);
         assert_eq!(result.filters[0].filter_type, "cors");
 
@@ -738,7 +738,7 @@ mod tests {
             include_defaults: true,
             ..Default::default()
         };
-        let result = ops.list(list_req, &admin_auth).await.expect("list filters");
+        let result = ops.list(list_req, &auth).await.expect("list filters");
         assert_eq!(result.count, 0);
     }
 
@@ -746,7 +746,7 @@ mod tests {
     async fn test_update_filter() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let create_req = CreateFilterRequest {
@@ -776,7 +776,7 @@ mod tests {
     async fn test_delete_filter() {
         let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let create_req = CreateFilterRequest {

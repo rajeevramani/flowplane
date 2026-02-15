@@ -11,6 +11,27 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
 
+/// Validate that a team belongs to the caller's org. Returns McpError on failure.
+async fn validate_team_in_org(
+    db_pool: &crate::storage::DbPool,
+    team: &str,
+    org_id: &OrgId,
+) -> Result<(), McpError> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
+            .bind(team)
+            .bind(org_id.as_str())
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+
+    let count = row.map(|r| r.0).unwrap_or(0);
+    if count == 0 {
+        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
+    }
+    Ok(())
+}
+
 /// Tool definition for listing aggregated schemas
 pub fn cp_list_aggregated_schemas_tool() -> Tool {
     Tool::new(
@@ -218,6 +239,16 @@ pub async fn execute_export_schema_openapi(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        let pool = xds_state
+            .cluster_repository
+            .as_ref()
+            .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
+            .pool();
+        validate_team_in_org(pool, team, oid).await?;
+    }
+
     let schema_ids: Vec<i64> = args
         .get("schema_ids")
         .and_then(|v| v.as_array())
