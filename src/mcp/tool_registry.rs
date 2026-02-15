@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::auth::authorization::parse_org_from_scope;
+
 /// Risk level for MCP tool operations
 ///
 /// Ordered from safest to most dangerous. The `Ord` derive uses variant
@@ -980,10 +982,35 @@ pub fn check_scope_grants_authorization<'a>(
             continue;
         }
 
-        // TODO(Phase 10): org:X:member should respect team scopes, not bypass.
-        // Currently org:X:member tokens rely on cp:read/cp:write/mcp:execute scopes
-        // granted at login. Phase 10 should enforce that org:X:member only accesses
-        // tools for teams they belong to, not all teams in the org.
+        // Org-scoped roles: grant tool access based on role level.
+        // Cross-org isolation enforced by validate_team_org_membership() at transport layer.
+        if let Some((org_name, role)) = parse_org_from_scope(scope) {
+            if !org_name.is_empty() {
+                match role.as_str() {
+                    "admin" => {
+                        // Org admin: full access to non-governance, non-gateway resources.
+                        if !GOVERNANCE_RESOURCES.contains(&auth.resource) && auth.resource != "api"
+                        {
+                            return true;
+                        }
+                        continue;
+                    }
+                    "viewer" => {
+                        // Viewer: read-only access to non-governance, non-gateway resources.
+                        if !GOVERNANCE_RESOURCES.contains(&auth.resource)
+                            && auth.resource != "api"
+                            && auth.action == "read"
+                        {
+                            return true;
+                        }
+                        continue;
+                    }
+                    // "member" and unknown roles: no implicit grant, check other scopes.
+                    // Members rely on team-scoped permissions (cp:read/cp:write/team:X:*:*).
+                    _ => continue,
+                }
+            }
+        }
 
         // Exact match
         let required_scope = format!("{}:{}", auth.resource, auth.action);
@@ -1466,6 +1493,200 @@ mod tests {
             ["cp:read", "cp:write", "clusters:read", "listeners:read"].iter().copied(),
             &audit_auth
         ));
+    }
+
+    // ============================================================================
+    // Org Scope Tests
+    // ============================================================================
+
+    #[test]
+    fn test_org_admin_grants_cp_resources() {
+        // Org admin gets full access to CP resources (read/write/delete)
+        let resources = ["clusters", "listeners", "routes", "filters"];
+        for resource in &resources {
+            for action in &["read", "write", "delete"] {
+                let auth = ToolAuthorization {
+                    resource,
+                    action,
+                    description: "",
+                    risk_level: RiskLevel::Safe,
+                };
+                assert!(
+                    check_scope_grants_authorization(["org:acme:admin"].iter().copied(), &auth),
+                    "org:acme:admin should grant {}:{}",
+                    resource,
+                    action
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_org_admin_grants_sensitive_resources() {
+        // Org admin gets access to sensitive resources too
+        let cases = [
+            ("secrets", "read"),
+            ("secrets", "write"),
+            ("dataplanes", "read"),
+            ("dataplanes", "write"),
+            ("custom-wasm-filters", "read"),
+            ("custom-wasm-filters", "write"),
+            ("learning-sessions", "read"),
+            ("learning-sessions", "write"),
+            ("proxy-certificates", "read"),
+            ("reports", "read"),
+        ];
+        for (resource, action) in &cases {
+            let auth = ToolAuthorization {
+                resource,
+                action,
+                description: "",
+                risk_level: RiskLevel::Safe,
+            };
+            assert!(
+                check_scope_grants_authorization(["org:acme:admin"].iter().copied(), &auth),
+                "org:acme:admin should grant {}:{}",
+                resource,
+                action
+            );
+        }
+    }
+
+    #[test]
+    fn test_org_admin_denied_governance() {
+        // Org admin cannot access governance resources
+        let audit_auth = ToolAuthorization {
+            resource: "audit",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(!check_scope_grants_authorization(["org:acme:admin"].iter().copied(), &audit_auth));
+
+        let admin_summary_auth = ToolAuthorization {
+            resource: "admin-summary",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!check_scope_grants_authorization(
+            ["org:acme:admin"].iter().copied(),
+            &admin_summary_auth
+        ));
+    }
+
+    #[test]
+    fn test_org_admin_denied_gateway_api() {
+        let api_auth = ToolAuthorization {
+            resource: "api",
+            action: "execute",
+            description: "",
+            risk_level: RiskLevel::Medium,
+        };
+        assert!(!check_scope_grants_authorization(["org:acme:admin"].iter().copied(), &api_auth));
+    }
+
+    #[test]
+    fn test_org_viewer_read_only() {
+        // Viewer gets read access
+        let read_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(check_scope_grants_authorization(["org:acme:viewer"].iter().copied(), &read_auth));
+
+        // Viewer denied write
+        let write_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "write",
+            description: "",
+            risk_level: RiskLevel::Medium,
+        };
+        assert!(!check_scope_grants_authorization(
+            ["org:acme:viewer"].iter().copied(),
+            &write_auth
+        ));
+
+        // Viewer denied delete
+        let delete_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "delete",
+            description: "",
+            risk_level: RiskLevel::High,
+        };
+        assert!(!check_scope_grants_authorization(
+            ["org:acme:viewer"].iter().copied(),
+            &delete_auth
+        ));
+    }
+
+    #[test]
+    fn test_org_viewer_denied_governance() {
+        let audit_auth = ToolAuthorization {
+            resource: "audit",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(!check_scope_grants_authorization(
+            ["org:acme:viewer"].iter().copied(),
+            &audit_auth
+        ));
+    }
+
+    #[test]
+    fn test_org_member_no_implicit_access() {
+        // org:X:member alone does NOT grant implicit access (relies on team scopes)
+        let cluster_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!check_scope_grants_authorization(
+            ["org:acme:member"].iter().copied(),
+            &cluster_auth
+        ));
+    }
+
+    #[test]
+    fn test_dual_role_admin_all_plus_org_admin() {
+        // admin:all grants governance, org:X:admin grants resources
+        let audit_auth = ToolAuthorization {
+            resource: "audit",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Low,
+        };
+        assert!(check_scope_grants_authorization(
+            ["admin:all", "org:acme:admin"].iter().copied(),
+            &audit_auth
+        ));
+
+        let cluster_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "write",
+            description: "",
+            risk_level: RiskLevel::Medium,
+        };
+        assert!(check_scope_grants_authorization(
+            ["admin:all", "org:acme:admin"].iter().copied(),
+            &cluster_auth
+        ));
+    }
+
+    #[test]
+    fn test_org_admin_empty_org_name_denied() {
+        // Guard: org::admin (empty org name) should not grant access
+        let cluster_auth = ToolAuthorization {
+            resource: "clusters",
+            action: "read",
+            description: "",
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!check_scope_grants_authorization(["org::admin"].iter().copied(), &cluster_auth));
     }
 
     #[test]

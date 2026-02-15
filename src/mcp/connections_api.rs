@@ -82,8 +82,11 @@ pub async fn list_connections_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ConnectionsQuery>,
 ) -> Result<Json<ConnectionsListResult>, (StatusCode, String)> {
-    // Check authorization
-    if !context.has_scope("mcp:read") && !context.has_scope("admin:all") {
+    // Check authorization — mcp:read, admin:all, or any org scope grants access
+    let has_org_scope = context
+        .scopes()
+        .any(|s| s.starts_with("org:") && s.matches(':').count() == 2 && !s.contains("::"));
+    if !context.has_scope("mcp:read") && !context.has_scope("admin:all") && !has_org_scope {
         return Err((StatusCode::FORBIDDEN, "Missing required scope 'mcp:read'".to_string()));
     }
 
@@ -192,6 +195,27 @@ mod tests {
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "override-team");
+    }
+
+    #[test]
+    fn test_extract_team_org_admin_without_query_falls_through() {
+        // Org admin without team query or team scopes should fail gracefully
+        let query = ConnectionsQuery { team: None };
+        let context = create_test_context_with_scopes(vec!["org:acme:admin".to_string()]);
+
+        let result = extract_team(&query, &context);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unable to determine team"));
+    }
+
+    #[test]
+    fn test_extract_team_org_admin_with_query() {
+        let query = ConnectionsQuery { team: Some("acme-eng".to_string()) };
+        let context = create_test_context_with_scopes(vec!["org:acme:admin".to_string()]);
+
+        let result = extract_team(&query, &context);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "acme-eng");
     }
 
     #[test]
