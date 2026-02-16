@@ -13,7 +13,7 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_create_response, build_delete_response, build_query_response, build_update_response,
+    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
     ResourceRef,
 };
 use crate::storage::DbPool;
@@ -661,8 +661,23 @@ pub async fn execute_create_listener(
     let result = ops.create(create_req, &auth).await?;
     let created = result.data;
 
-    // 4. Format success response (minimal token-efficient format)
-    let output = build_create_response("listener", &created.name, created.id.as_ref());
+    // 4. Format rich response — listener is the final deployment step
+    let mut bound = json!({
+        "address": args["address"].as_str().unwrap_or("0.0.0.0"),
+        "port": port
+    });
+    if let Some(rc_name) = route_config_name {
+        bound["route_config"] = json!(rc_name);
+    }
+
+    let output = build_rich_create_response(
+        "listener",
+        &created.name,
+        created.id.as_ref(),
+        Some(bound),
+        None,
+        Some("Deployment complete. Verify with ops_trace_request or devops_get_deployment_status."),
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -815,11 +830,11 @@ pub async fn execute_query_port(
     }
 
     // Query listeners table with optional join to get route config name
-    // The route_config_name comes from the listener_routes junction table
+    // The route_config_name comes from the listener_route_configs junction table
     let query = r#"
         SELECT l.id, l.name, l.address, rc.name as route_config_name
         FROM listeners l
-        LEFT JOIN listener_routes lr ON l.id = lr.listener_id
+        LEFT JOIN listener_route_configs lr ON l.id = lr.listener_id
         LEFT JOIN route_configs rc ON lr.route_config_id = rc.id
         WHERE l.port = $1 AND (l.team = $2 OR l.team IS NULL)
         LIMIT 1

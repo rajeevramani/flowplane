@@ -14,7 +14,7 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_create_response, build_delete_response, build_query_response, build_update_response,
+    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
     ResourceRef,
 };
 use crate::storage::repositories::ClusterEndpointRepository;
@@ -192,26 +192,8 @@ Authorization: Requires clusters:read or cp:read scope."#
     )
 }
 
-/// Validate that a team belongs to the caller's org. Returns McpError on failure.
-async fn validate_team_in_org(
-    db_pool: &crate::storage::DbPool,
-    team: &str,
-    org_id: &OrgId,
-) -> Result<(), McpError> {
-    let row: Option<(i64,)> =
-        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
-            .bind(team)
-            .bind(org_id.as_str())
-            .fetch_optional(db_pool)
-            .await
-            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
-
-    let count = row.map(|r| r.0).unwrap_or(0);
-    if count == 0 {
-        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
-    }
-    Ok(())
-}
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
 
 /// Execute the cp_query_service tool.
 ///
@@ -801,8 +783,24 @@ pub async fn execute_create_cluster(
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let result = ops.create(internal_req, &auth).await?;
 
-    // 7. Format success response (minimal token-efficient format)
-    let output = build_create_response("cluster", &result.data.name, result.data.id.as_ref());
+    // 7. Format rich response with details and next-step guidance
+    let endpoint_count = args["endpoints"].as_array().map_or(0, |e| e.len());
+    let lb_policy = args["lbPolicy"].as_str().unwrap_or("ROUND_ROBIN");
+
+    let output = build_rich_create_response(
+        "cluster",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({
+            "endpoints": endpoint_count,
+            "lb_policy": lb_policy
+        })),
+        None,
+        Some(&format!(
+            "Create a route_config with cp_create_route_config referencing cluster '{}'",
+            result.data.name
+        )),
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 

@@ -278,6 +278,70 @@ pub fn build_create_response(resource_type: &str, name: &str, id: &str) -> Value
     build_action_response(true, Some(ResourceRef::new(resource_type, name, id)))
 }
 
+/// Build a rich create response with summary and next-step guidance.
+///
+/// # Token Budget: 50-80 tokens
+///
+/// Extends `build_create_response` with agent-friendly context:
+/// - `details`: key parameter echo (endpoint count, lb_policy, etc.)
+/// - `created`: counts of child resources created (virtual_hosts, routes)
+/// - `next_step`: what tool to call next in the workflow
+///
+/// Agents that receive `{"ok":true}` tend to make verification calls.
+/// Agents that receive `{"ok":true, "created":{...}, "next_step":"..."}` proceed with confidence.
+pub fn build_rich_create_response(
+    resource_type: &str,
+    name: &str,
+    id: &str,
+    details: Option<Value>,
+    created: Option<Value>,
+    next_step: Option<&str>,
+) -> Value {
+    let mut response = json!({
+        "ok": true,
+        "ref": {
+            "type": resource_type,
+            "name": name,
+            "id": id
+        }
+    });
+    if let Some(d) = details {
+        response["details"] = d;
+    }
+    if let Some(c) = created {
+        response["created"] = c;
+    }
+    if let Some(ns) = next_step {
+        response["next_step"] = json!(ns);
+    }
+    response
+}
+
+/// Build a rich delete response with confirmation of what was removed.
+///
+/// # Token Budget: 30-50 tokens
+///
+/// Extends `build_delete_response` with agent-friendly context:
+/// - `deleted`: identifies what was removed (type + name)
+/// - `cascade`: optional counts of child resources also removed
+pub fn build_rich_delete_response(
+    resource_type: &str,
+    name: &str,
+    cascade: Option<Value>,
+) -> Value {
+    let mut response = json!({
+        "ok": true,
+        "deleted": {
+            "type": resource_type,
+            "name": name
+        }
+    });
+    if let Some(c) = cascade {
+        response["cascade"] = c;
+    }
+    response
+}
+
 /// Build an update response with automatic ref construction
 ///
 /// # Token Budget: 30-50 tokens
@@ -608,5 +672,86 @@ mod tests {
 
         // Budget: 30-50 tokens = ~90-150 chars
         assert!(serialized.len() < 100);
+    }
+
+    // Tests for build_rich_create_response
+    #[test]
+    fn test_rich_create_response_minimal() {
+        let response = build_rich_create_response("cluster", "svc1", "c-1", None, None, None);
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["type"], "cluster");
+        assert_eq!(response["ref"]["name"], "svc1");
+        assert!(response.get("details").is_none());
+        assert!(response.get("created").is_none());
+        assert!(response.get("next_step").is_none());
+    }
+
+    #[test]
+    fn test_rich_create_response_full() {
+        let response = build_rich_create_response(
+            "route_config",
+            "api-routes",
+            "rc-123",
+            None,
+            Some(json!({"virtual_hosts": 1, "routes": 3})),
+            Some("Create a listener with cp_create_listener"),
+        );
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["ref"]["name"], "api-routes");
+        assert_eq!(response["created"]["virtual_hosts"], 1);
+        assert_eq!(response["created"]["routes"], 3);
+        assert_eq!(response["next_step"], "Create a listener with cp_create_listener");
+    }
+
+    #[test]
+    fn test_rich_create_response_with_details() {
+        let response = build_rich_create_response(
+            "cluster",
+            "orders-svc",
+            "c-456",
+            Some(json!({"endpoints": 2, "lb_policy": "ROUND_ROBIN"})),
+            None,
+            Some("Create route_config referencing cluster 'orders-svc'"),
+        );
+        assert_eq!(response["details"]["endpoints"], 2);
+        assert_eq!(response["details"]["lb_policy"], "ROUND_ROBIN");
+        assert!(response.get("created").is_none());
+    }
+
+    #[test]
+    fn test_rich_create_response_token_budget() {
+        let response = build_rich_create_response(
+            "route_config",
+            "api-routes",
+            "rc-123",
+            None,
+            Some(json!({"virtual_hosts": 1, "routes": 3})),
+            Some("Create a listener with cp_create_listener using routeConfigName: 'api-routes'"),
+        );
+        let serialized = serde_json::to_string(&response).unwrap();
+        // Budget: 50-80 tokens = ~150-250 chars
+        assert!(serialized.len() < 300);
+    }
+
+    // Tests for build_rich_delete_response
+    #[test]
+    fn test_rich_delete_response_basic() {
+        let response = build_rich_delete_response("cluster", "orders-svc", None);
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["deleted"]["type"], "cluster");
+        assert_eq!(response["deleted"]["name"], "orders-svc");
+        assert!(response.get("cascade").is_none());
+    }
+
+    #[test]
+    fn test_rich_delete_response_with_cascade() {
+        let response = build_rich_delete_response(
+            "route_config",
+            "api-routes",
+            Some(json!({"virtual_hosts": 2, "routes": 5})),
+        );
+        assert_eq!(response["deleted"]["name"], "api-routes");
+        assert_eq!(response["cascade"]["virtual_hosts"], 2);
+        assert_eq!(response["cascade"]["routes"], 5);
     }
 }

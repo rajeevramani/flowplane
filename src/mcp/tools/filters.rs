@@ -10,7 +10,7 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_create_response, build_delete_response, build_update_response,
+    build_delete_response, build_rich_create_response, build_update_response,
 };
 use crate::xds::XdsState;
 use serde_json::{json, Value};
@@ -482,8 +482,18 @@ pub async fn execute_create_filter(
 
     let result = ops.create(req, &auth).await?;
 
-    // 4. Format success response (minimal token-efficient format)
-    let output = build_create_response("filter", &result.data.name, result.data.id.as_ref());
+    // 4. Format rich response with filter_type and next-step guidance
+    let output = build_rich_create_response(
+        "filter",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({"filter_type": filter_type})),
+        None,
+        Some(&format!(
+            "Attach with cp_attach_filter to a listener or route_config. Filter name: '{}'",
+            result.data.name
+        )),
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -860,9 +870,16 @@ pub async fn execute_attach_filter(
         unreachable!()
     };
 
-    // 4. Format success response (minimal token-efficient format)
+    // 4. Format rich response with target confirmation
     let attachment_id = format!("{}-{}", filter, target_name);
-    let output = build_create_response("filter_attachment", filter, &attachment_id);
+    let output = build_rich_create_response(
+        "filter_attachment",
+        filter,
+        &attachment_id,
+        Some(json!({"target_type": target_type, "target_name": target_name})),
+        None,
+        None,
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 

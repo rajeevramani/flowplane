@@ -109,6 +109,7 @@ help: ## Show this help message
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
 	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
+	@echo "  $(CYAN)make seed-info$(RESET)       - Display seed data credentials"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
 	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
@@ -193,6 +194,24 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 
 seed: ## Seed dev data: org, org-admin, team, API, tokens
 	@./scripts/seed-data.sh
+
+seed-info: ## Display seed data credentials and configuration
+	@echo ""
+	@echo "$(CYAN)━━━ Flowplane Seed Info ━━━$(RESET)"
+	@echo ""
+	@echo "  $(GREEN)Credentials:$(RESET)"
+	@echo "    Platform admin:  $(CYAN)admin@flowplane.local$(RESET) / $(CYAN)Admin123!$(RESET)"
+	@echo "    Org admin:       $(CYAN)orgadmin@acme-corp.local$(RESET) / $(CYAN)OrgAdmin123!$(RESET)"
+	@echo ""
+	@echo "  $(GREEN)Resources:$(RESET)"
+	@echo "    Org:             $(CYAN)acme-corp$(RESET)"
+	@echo "    Team:            $(CYAN)engineering$(RESET)"
+	@echo "    Listener port:   $(CYAN)10016$(RESET)"
+	@echo "    API spec:        $(CYAN)httpbin.yaml$(RESET)"
+	@echo ""
+	@echo "  $(YELLOW)Note: API tokens are generated during 'make seed' and shown only once.$(RESET)"
+	@echo "  $(YELLOW)To view/rotate tokens, login to the UI or use the API.$(RESET)"
+	@echo ""
 
 # =============================================================================
 # Container Operations

@@ -2,7 +2,7 @@ admin:
   access_log_path: /dev/null
   address:
     socket_address:
-      address: 127.0.0.1
+      address: 0.0.0.0
       port_value: 9901
 dynamic_resources:
   ads_config:
@@ -16,13 +16,13 @@ dynamic_resources:
   lds_config:
     ads: {}
 node:
-  cluster: acme-corp-default-cluster
-  id: team=acme-corp-default/dp-3c567510-09a4-45f0-adb6-4ada22c5ef7a
+  cluster: engineering-cluster
+  id: team=engineering/dp-3c567510-09a4-45f0-adb6-4ada22c5ef7a
   metadata:
     dataplane_id: 3c567510-09a4-45f0-adb6-4ada22c5ef7a
-    dataplane_name: default
-    gateway_host: envoy-acme-default
-    team: acme-corp-default
+    dataplane_name: engineering-dataplane
+    gateway_host: envoy-engineering
+    team: engineering
 static_resources:
   clusters:
   - connect_timeout: 1s
@@ -35,7 +35,7 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: 0.0.0.0
+                address: control-plane
                 port_value: 50051
     name: xds_cluster
     type: LOGICAL_DNS

@@ -110,6 +110,31 @@ impl McpHandler {
         Self { db_pool, xds_state: Some(xds_state), team, scopes, org_id, initialized: false }
     }
 
+    /// Resolve team name to UUID for database queries.
+    ///
+    /// Resource tables store team UUIDs (not names), so any direct SQL query
+    /// must use the resolved UUID. Internal API tools handle this themselves,
+    /// but direct-DB tools and the reporting repository need the UUID passed in.
+    ///
+    /// Returns the team name unchanged if it's already a UUID or is empty.
+    async fn resolve_team_uuid(&self) -> Result<String, McpError> {
+        if self.team.is_empty() {
+            return Ok(self.team.clone());
+        }
+        if uuid::Uuid::parse_str(&self.team).is_ok() {
+            return Ok(self.team.clone());
+        }
+        let row: Option<(String,)> = sqlx::query_as("SELECT id FROM teams WHERE name = $1")
+            .bind(&self.team)
+            .fetch_optional(&*self.db_pool)
+            .await
+            .map_err(|e| {
+                McpError::InternalError(format!("Failed to resolve team '{}': {}", self.team, e))
+            })?;
+        row.map(|r| r.0)
+            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", self.team)))
+    }
+
     /// Handle an incoming JSON-RPC request
     pub async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
         let method = request.method.clone();
@@ -307,66 +332,51 @@ impl McpHandler {
 
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
+        // Resolve team name → UUID once for all tool dispatches.
+        // Resource tables store UUIDs, not names.
+        let team = match self.resolve_team_uuid().await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(team = %self.team, error = %e, "Failed to resolve team UUID");
+                return self.error_response(id, e);
+            }
+        };
+
         let result = match params.name.as_str() {
             // Read operations that only need db_pool (direct table query for efficiency)
             "cp_list_routes" => {
-                tools::execute_list_routes(&self.db_pool, &self.team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_list_routes(&self.db_pool, &team, self.org_id.as_ref(), args).await
             }
             // Query-first tools (direct db_pool access for token efficiency)
             "cp_query_port" => {
-                tools::execute_query_port(&self.db_pool, &self.team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_query_port(&self.db_pool, &team, self.org_id.as_ref(), args).await
             }
             "cp_query_path" => {
-                tools::execute_query_path(&self.db_pool, &self.team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_query_path(&self.db_pool, &team, self.org_id.as_ref(), args).await
             }
             // Ops tools that only need db_pool (diagnostic/reporting queries)
             "ops_trace_request" => {
-                tools::execute_ops_trace_request(
-                    &self.db_pool,
-                    &self.team,
-                    self.org_id.as_ref(),
-                    args,
-                )
-                .await
-            }
-            "ops_topology" => {
-                tools::execute_ops_topology(&self.db_pool, &self.team, self.org_id.as_ref(), args)
+                tools::execute_ops_trace_request(&self.db_pool, &team, self.org_id.as_ref(), args)
                     .await
             }
+            "ops_topology" => {
+                tools::execute_ops_topology(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
             "ops_config_validate" => {
-                tools::execute_ops_config_validate(
-                    &self.db_pool,
-                    &self.team,
-                    self.org_id.as_ref(),
-                    args,
-                )
-                .await
+                tools::execute_ops_config_validate(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
             }
             "ops_audit_query" => {
-                tools::execute_ops_audit_query(
-                    &self.db_pool,
-                    &self.team,
-                    self.org_id.as_ref(),
-                    args,
-                )
-                .await
+                tools::execute_ops_audit_query(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
             }
             // Dev agent tools (db_pool only)
             "dev_preflight_check" => {
-                tools::execute_dev_preflight_check(
-                    &self.db_pool,
-                    &self.team,
-                    self.org_id.as_ref(),
-                    args,
-                )
-                .await
+                tools::execute_dev_preflight_check(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
             }
             "cp_query_service" => {
-                tools::execute_query_service(&self.db_pool, &self.team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_query_service(&self.db_pool, &team, self.org_id.as_ref(), args).await
             }
 
             // Operations that require xds_state (internal API layer)
@@ -392,6 +402,8 @@ impl McpHandler {
             | "cp_create_listener"
             | "cp_update_listener"
             | "cp_delete_listener"
+            | "cp_list_route_configs"
+            | "cp_get_route_config"
             | "cp_create_route_config"
             | "cp_update_route_config"
             | "cp_delete_route_config"
@@ -433,119 +445,87 @@ impl McpHandler {
                 match params.name.as_str() {
                     // Cluster operations (use internal API layer)
                     "cp_list_clusters" => {
-                        tools::execute_list_clusters(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_list_clusters(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_cluster" => {
-                        tools::execute_get_cluster(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_get_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_cluster_health" => {
                         tools::execute_get_cluster_health(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_create_cluster" => {
-                        tools::execute_create_cluster(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_create_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_cluster" => {
-                        tools::execute_update_cluster(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_update_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_cluster" => {
-                        tools::execute_delete_cluster(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_delete_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Listener operations (use internal API layer)
                     "cp_list_listeners" => {
-                        tools::execute_list_listeners(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_list_listeners(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_listener" => {
-                        tools::execute_get_listener(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_get_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_listener_status" => {
                         tools::execute_get_listener_status(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_create_listener" => {
-                        tools::execute_create_listener(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_create_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_listener" => {
-                        tools::execute_update_listener(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_update_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_listener" => {
-                        tools::execute_delete_listener(
+                        tools::execute_delete_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    // Route config operations (use internal API layer)
+                    "cp_list_route_configs" => {
+                        tools::execute_list_route_configs(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
-                    // Route config CRUD (use internal API layer)
+                    "cp_get_route_config" => {
+                        tools::execute_get_route_config(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
                     "cp_create_route_config" => {
                         tools::execute_create_route_config(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -554,7 +534,7 @@ impl McpHandler {
                     "cp_update_route_config" => {
                         tools::execute_update_route_config(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -563,7 +543,7 @@ impl McpHandler {
                     "cp_delete_route_config" => {
                         tools::execute_delete_route_config(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -571,100 +551,54 @@ impl McpHandler {
                     }
                     // Individual route CRUD (use internal API layer)
                     "cp_get_route" => {
-                        tools::execute_get_route(xds_state, &self.team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_route(xds_state, &team, self.org_id.as_ref(), args).await
                     }
                     "cp_create_route" => {
-                        tools::execute_create_route(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_create_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_route" => {
-                        tools::execute_update_route(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_update_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_route" => {
-                        tools::execute_delete_route(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_delete_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Filter operations (use internal API layer)
                     "cp_list_filters" => {
-                        tools::execute_list_filters(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_list_filters(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_filter" => {
-                        tools::execute_get_filter(xds_state, &self.team, self.org_id.as_ref(), args)
+                        tools::execute_get_filter(xds_state, &team, self.org_id.as_ref(), args)
                             .await
                     }
                     "cp_create_filter" => {
-                        tools::execute_create_filter(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_create_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_filter" => {
-                        tools::execute_update_filter(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_update_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_filter" => {
-                        tools::execute_delete_filter(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_delete_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Filter attachment operations
                     "cp_attach_filter" => {
-                        tools::execute_attach_filter(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_attach_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_detach_filter" => {
-                        tools::execute_detach_filter(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_detach_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_list_filter_attachments" => {
                         tools::execute_list_filter_attachments(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -674,7 +608,7 @@ impl McpHandler {
                     "cp_list_virtual_hosts" => {
                         tools::execute_list_virtual_hosts(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -683,7 +617,7 @@ impl McpHandler {
                     "cp_get_virtual_host" => {
                         tools::execute_get_virtual_host(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -692,7 +626,7 @@ impl McpHandler {
                     "cp_create_virtual_host" => {
                         tools::execute_create_virtual_host(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -701,7 +635,7 @@ impl McpHandler {
                     "cp_update_virtual_host" => {
                         tools::execute_update_virtual_host(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -710,7 +644,7 @@ impl McpHandler {
                     "cp_delete_virtual_host" => {
                         tools::execute_delete_virtual_host(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -720,7 +654,7 @@ impl McpHandler {
                     "cp_list_aggregated_schemas" => {
                         tools::execute_list_aggregated_schemas(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -729,7 +663,7 @@ impl McpHandler {
                     "cp_get_aggregated_schema" => {
                         tools::execute_get_aggregated_schema(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -739,7 +673,7 @@ impl McpHandler {
                     "cp_list_learning_sessions" => {
                         tools::execute_list_learning_sessions(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -748,7 +682,7 @@ impl McpHandler {
                     "cp_get_learning_session" => {
                         tools::execute_get_learning_session(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -757,7 +691,7 @@ impl McpHandler {
                     "cp_create_learning_session" => {
                         tools::execute_create_learning_session(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -766,7 +700,7 @@ impl McpHandler {
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -776,7 +710,7 @@ impl McpHandler {
                     "cp_list_openapi_imports" => {
                         tools::execute_list_openapi_imports(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -785,7 +719,7 @@ impl McpHandler {
                     "cp_get_openapi_import" => {
                         tools::execute_get_openapi_import(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -793,27 +727,17 @@ impl McpHandler {
                     }
                     // Dataplane operations
                     "cp_list_dataplanes" => {
-                        tools::execute_list_dataplanes(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_list_dataplanes(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_dataplane" => {
-                        tools::execute_get_dataplane(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_get_dataplane(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_create_dataplane" => {
                         tools::execute_create_dataplane(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -822,7 +746,7 @@ impl McpHandler {
                     "cp_update_dataplane" => {
                         tools::execute_update_dataplane(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -831,7 +755,7 @@ impl McpHandler {
                     "cp_delete_dataplane" => {
                         tools::execute_delete_dataplane(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -841,26 +765,21 @@ impl McpHandler {
                     "cp_list_filter_types" => {
                         tools::execute_list_filter_types(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_get_filter_type" => {
-                        tools::execute_get_filter_type(
-                            xds_state,
-                            &self.team,
-                            self.org_id.as_ref(),
-                            args,
-                        )
-                        .await
+                        tools::execute_get_filter_type(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Schema export operations
                     "cp_export_schema_openapi" => {
                         tools::execute_export_schema_openapi(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -870,7 +789,7 @@ impl McpHandler {
                     "devops_get_deployment_status" => {
                         tools::execute_devops_get_deployment_status(
                             xds_state,
-                            &self.team,
+                            &team,
                             self.org_id.as_ref(),
                             args,
                         )
@@ -901,7 +820,12 @@ impl McpHandler {
     async fn handle_resources_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!(team = %self.team, "Listing available resources");
 
-        match resources::list_resources(&self.db_pool, &self.team).await {
+        let team = match self.resolve_team_uuid().await {
+            Ok(t) => t,
+            Err(e) => return self.error_response(id, e),
+        };
+
+        match resources::list_resources(&self.db_pool, &team).await {
             Ok(result) => match serde_json::to_value(result) {
                 Ok(value) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),

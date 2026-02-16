@@ -10,7 +10,7 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_create_response, build_delete_response, build_update_response,
+    build_delete_response, build_rich_create_response, build_update_response,
 };
 use crate::xds::XdsState;
 use serde_json::{json, Value};
@@ -436,8 +436,15 @@ pub async fn execute_create_dataplane(
 
     let result = ops.create(req, &auth).await?;
 
-    // 4. Format success response (minimal token-efficient format)
-    let output = build_create_response("dataplane", &result.data.name, result.data.id.as_ref());
+    // 4. Format rich response with team context and next-step guidance
+    let output = build_rich_create_response(
+        "dataplane",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({"team": dataplane_team})),
+        None,
+        Some("Create clusters with cp_create_cluster for backend services"),
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 

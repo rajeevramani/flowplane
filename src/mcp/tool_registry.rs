@@ -263,6 +263,24 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
         m.insert(
+            "cp_list_route_configs",
+            ToolAuthorization {
+                resource: "routes",
+                action: "read",
+                description: "List route configs requires routes:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "cp_get_route_config",
+            ToolAuthorization {
+                resource: "routes",
+                action: "read",
+                description: "Get route config requires routes:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
             "cp_create_route_config",
             ToolAuthorization {
                 resource: "routes",
@@ -1390,6 +1408,8 @@ mod tests {
             "cp_get_listener_status",
             "cp_query_port",
             "cp_list_routes",
+            "cp_list_route_configs",
+            "cp_get_route_config",
             "cp_get_route",
             "cp_query_path",
             "cp_list_filters",

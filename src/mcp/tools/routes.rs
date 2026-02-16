@@ -5,12 +5,13 @@
 use crate::domain::OrgId;
 use crate::internal_api::routes::transform_virtual_hosts_for_internal;
 use crate::internal_api::{
-    CreateRouteConfigRequest, InternalAuthContext, RouteConfigOperations, UpdateRouteConfigRequest,
+    CreateRouteConfigRequest, InternalAuthContext, ListRouteConfigsRequest, RouteConfigOperations,
+    UpdateRouteConfigRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_create_response, build_delete_response, build_query_response, build_update_response,
+    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
     ResourceRef,
 };
 use crate::storage::DbPool;
@@ -77,6 +78,215 @@ RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"
             }
         }),
     )
+}
+
+/// Returns the MCP tool definition for listing route configurations.
+///
+/// This tool supports pagination via `limit` and `offset` parameters.
+pub fn cp_list_route_configs_tool() -> Tool {
+    Tool::new(
+        "cp_list_route_configs",
+        r#"List all route configurations in the Flowplane control plane.
+
+RESOURCE ORDER: Route configs are order 2 of 4. They depend on clusters and are referenced by listeners.
+
+DEPENDENCY GRAPH:
+  [Clusters] ─────► [Route Configs] ─────► [Listeners]
+
+PURPOSE: Discover existing route configurations to:
+- See what routing rules exist before creating new ones
+- Find route configs to attach to listeners
+- Understand the routing topology
+
+RETURNS: Array of route config summaries with:
+- name: Unique route config identifier (used when creating listeners)
+- cluster_name: Default cluster target
+- path_prefix: Default path prefix
+- version: Configuration version for optimistic locking
+- source: API source (native, gateway, platform)
+- team: Owning team for multi-tenancy
+- created_at/updated_at: Timestamps
+
+WORKFLOW CONTEXT:
+1. Call cp_list_clusters to see available backends
+2. Call cp_list_route_configs to see existing routing rules
+3. Create new route configs with cp_create_route_config if needed
+4. Attach route configs to listeners with cp_create_listener
+
+RELATED TOOLS: cp_list_routes (individual routes), cp_create_route_config (create), cp_list_listeners (consumers)"#.to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of route configs to return (default: 50, max: 1000)",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 50
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of route configs to skip for pagination (default: 0)",
+                    "minimum": 0,
+                    "default": 0
+                }
+            }
+        }),
+    )
+}
+
+/// Execute the cp_list_route_configs tool.
+///
+/// Lists route configurations with pagination using the internal API layer.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_route_configs")]
+pub async fn execute_list_route_configs(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
+    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(0));
+
+    tracing::debug!(team = %team, limit = ?limit, offset = ?offset, "Listing route configs for team");
+
+    // Use internal API layer
+    let ops = RouteConfigOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let list_req = ListRouteConfigsRequest {
+        limit,
+        offset,
+        include_defaults: true, // MCP includes default resources
+    };
+
+    let result = ops.list(list_req, &auth).await?;
+
+    // Build output with route config summaries
+    let route_config_summaries: Vec<Value> = result
+        .routes
+        .iter()
+        .map(|rc| {
+            json!({
+                "name": rc.name,
+                "cluster_name": rc.cluster_name,
+                "path_prefix": rc.path_prefix,
+                "version": rc.version,
+                "source": rc.source,
+                "team": rc.team,
+                "created_at": rc.created_at.to_rfc3339(),
+                "updated_at": rc.updated_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "route_configs": route_config_summaries,
+        "count": result.count,
+        "limit": limit,
+        "offset": offset,
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, route_config_count = result.count, "Successfully listed route configs");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Returns the MCP tool definition for getting a route config by name.
+pub fn cp_get_route_config_tool() -> Tool {
+    Tool::new(
+        "cp_get_route_config",
+        r#"Get detailed information about a specific route configuration by name.
+
+RESOURCE ORDER: Route configs are order 2 of 4.
+
+DEPENDENCY GRAPH:
+  [Clusters] ─────► [Route Configs] ─────► [Listeners]
+
+PURPOSE: Retrieve full details of a route configuration including:
+- Configuration JSON (virtual hosts, routes, forwarding rules)
+- Cluster target and path prefix
+- Version for optimistic locking
+- Team ownership
+
+PARAMS:
+- name (required): Route configuration name
+
+RETURNS: Full route config object with configuration details.
+
+RELATED TOOLS: cp_list_route_configs (discover), cp_update_route_config (modify), cp_list_routes (individual routes)"#.to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Route configuration name to retrieve"
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
+/// Execute the cp_get_route_config tool.
+///
+/// Retrieves a specific route configuration by name.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_route_config")]
+pub async fn execute_get_route_config(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(team = %team, route_config_name = %name, "Getting route config by name");
+
+    let ops = RouteConfigOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let rc = ops.get(name, &auth).await?;
+
+    // Parse configuration JSON for structured output
+    let configuration: Value =
+        serde_json::from_str(&rc.configuration).unwrap_or_else(|_| json!(rc.configuration));
+
+    let output = json!({
+        "id": rc.id.to_string(),
+        "name": rc.name,
+        "cluster_name": rc.cluster_name,
+        "path_prefix": rc.path_prefix,
+        "configuration": configuration,
+        "version": rc.version,
+        "source": rc.source,
+        "team": rc.team,
+        "import_id": rc.import_id,
+        "created_at": rc.created_at.to_rfc3339(),
+        "updated_at": rc.updated_at.to_rfc3339(),
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, route_config_name = %name, "Successfully retrieved route config");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
 /// Returns the MCP tool definition for querying path routing.
@@ -283,7 +493,7 @@ pub async fn execute_query_path(
 
     // Build query based on whether port is specified
     // The query joins routes -> virtual_hosts -> route_configs
-    // and optionally to listener_routes -> listeners for port filtering
+    // and optionally to listener_route_configs -> listeners for port filtering
     let (query, result) = if let Some(p) = port {
         let query = r#"
             SELECT r.id as route_id, r.name as route_name, r.path_pattern, r.match_type,
@@ -291,7 +501,7 @@ pub async fn execute_query_path(
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
-            INNER JOIN listener_routes lr ON rc.id = lr.route_config_id
+            INNER JOIN listener_route_configs lr ON rc.id = lr.route_config_id
             INNER JOIN listeners l ON lr.listener_id = l.id
             WHERE (rc.team = $1 OR rc.team IS NULL)
               AND l.port = $2
@@ -713,8 +923,27 @@ pub async fn execute_create_route_config(
 
     let result = ops.create(req, &auth).await?;
 
-    // 5. Format success response (minimal token-efficient format)
-    let output = build_create_response("route_config", &result.data.name, result.data.id.as_ref());
+    // 5. Count child resources from input for agent confidence
+    let vhost_count = virtual_hosts.as_array().map_or(0, |v| v.len());
+    let route_count: usize = virtual_hosts.as_array().map_or(0, |vhosts| {
+        vhosts.iter().map(|vh| vh["routes"].as_array().map_or(0, |r| r.len())).sum()
+    });
+
+    // 6. Format rich response with summary and next-step guidance
+    let output = build_rich_create_response(
+        "route_config",
+        &result.data.name,
+        result.data.id.as_ref(),
+        None,
+        Some(json!({
+            "virtual_hosts": vhost_count,
+            "routes": route_count
+        })),
+        Some(&format!(
+            "Create a listener with cp_create_listener using routeConfigName: '{}'",
+            result.data.name
+        )),
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -722,6 +951,8 @@ pub async fn execute_create_route_config(
         team = %team,
         route_config_name = %result.data.name,
         route_config_id = %result.data.id,
+        vhost_count = vhost_count,
+        route_count = route_count,
         "Successfully created route config via MCP"
     );
 
@@ -1255,8 +1486,20 @@ pub async fn execute_create_route(
 
     let result = ops.create(req, &auth).await?;
 
-    // Format success response (minimal token-efficient format)
-    let output = build_create_response("route", &result.data.name, result.data.id.as_ref());
+    // Format rich response with path/cluster confirmation
+    let cluster_name = action.get("cluster").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let output = build_rich_create_response(
+        "route",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({
+            "path": path_pattern,
+            "match_type": match_type,
+            "cluster": cluster_name
+        })),
+        None,
+        None,
+    );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -1407,6 +1650,19 @@ mod tests {
         let tool = cp_list_routes_tool();
         assert_eq!(tool.name, "cp_list_routes");
         assert!(tool.description.as_ref().unwrap().contains("routes"));
+    }
+
+    #[test]
+    fn test_cp_list_route_configs_tool_definition() {
+        let tool = cp_list_route_configs_tool();
+        assert_eq!(tool.name, "cp_list_route_configs");
+        assert!(tool.description.as_ref().unwrap().contains("List all route configurations"));
+        assert!(tool.input_schema.get("properties").is_some());
+
+        // Verify optional pagination params
+        let props = &tool.input_schema["properties"];
+        assert!(props["limit"].is_object());
+        assert!(props["offset"].is_object());
     }
 
     #[test]

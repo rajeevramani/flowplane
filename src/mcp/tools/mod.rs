@@ -49,8 +49,12 @@ pub use listeners::{
 pub use listeners::{cp_create_listener_tool, cp_delete_listener_tool, cp_update_listener_tool};
 pub use listeners::{execute_create_listener, execute_delete_listener, execute_update_listener};
 
-pub use routes::{cp_list_routes_tool, cp_query_path_tool};
-pub use routes::{execute_list_routes, execute_query_path};
+pub use routes::{
+    cp_get_route_config_tool, cp_list_route_configs_tool, cp_list_routes_tool, cp_query_path_tool,
+};
+pub use routes::{
+    execute_get_route_config, execute_list_route_configs, execute_list_routes, execute_query_path,
+};
 
 // Re-export route config CRUD tools
 pub use routes::{
@@ -133,6 +137,30 @@ use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::storage::DbPool;
 use serde_json::Value;
 
+/// Validate that a team belongs to the caller's org. Returns McpError on failure.
+///
+/// The handler resolves team name → UUID before dispatching to tools,
+/// so `team` is a UUID at this point — query by `id`, not `name`.
+pub(crate) async fn validate_team_in_org(
+    db_pool: &DbPool,
+    team: &str,
+    org_id: &OrgId,
+) -> Result<(), McpError> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
+            .bind(team)
+            .bind(org_id.as_str())
+            .fetch_optional(db_pool)
+            .await
+            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+
+    let count = row.map(|r| r.0).unwrap_or(0);
+    if count == 0 {
+        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
+    }
+    Ok(())
+}
+
 /// Get all available MCP tools.
 ///
 /// Returns a vector of all tool definitions that can be exposed to MCP clients.
@@ -148,6 +176,8 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_query_port_tool(),
         cp_get_listener_status_tool(),
         cp_list_routes_tool(),
+        cp_list_route_configs_tool(),
+        cp_get_route_config_tool(),
         cp_get_route_tool(),
         cp_query_path_tool(),
         cp_list_filters_tool(),
@@ -258,8 +288,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 14 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 4 ops agent + 3 dev agent = 58 total
-        assert_eq!(tools.len(), 58);
+        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 4 ops agent + 3 dev agent = 60 total
+        assert_eq!(tools.len(), 60);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
@@ -269,6 +299,7 @@ mod tests {
         assert!(tool_names.contains(&"cp_list_listeners"));
         assert!(tool_names.contains(&"cp_get_listener"));
         assert!(tool_names.contains(&"cp_list_routes"));
+        assert!(tool_names.contains(&"cp_list_route_configs"));
         assert!(tool_names.contains(&"cp_get_route"));
         assert!(tool_names.contains(&"cp_list_filters"));
         assert!(tool_names.contains(&"cp_get_filter"));

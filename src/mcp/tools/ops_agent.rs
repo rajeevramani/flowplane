@@ -206,26 +206,8 @@ Authorization: Requires audit:read scope (NOT covered by cp:read)."#,
 // EXECUTE FUNCTIONS
 // =============================================================================
 
-/// Validate that a team belongs to the caller's org. Returns McpError on failure.
-async fn validate_team_in_org(
-    db_pool: &DbPool,
-    team: &str,
-    org_id: &OrgId,
-) -> Result<(), McpError> {
-    let row: Option<(i64,)> =
-        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE name = $1 AND org_id = $2")
-            .bind(team)
-            .bind(org_id.as_str())
-            .fetch_optional(db_pool)
-            .await
-            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
-
-    let count = row.map(|r| r.0).unwrap_or(0);
-    if count == 0 {
-        return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
-    }
-    Ok(())
-}
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
 
 /// Execute ops_trace_request: trace a request path through the gateway.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_ops_trace_request")]
