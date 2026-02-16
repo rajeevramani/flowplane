@@ -260,46 +260,54 @@ NEXT STEPS AFTER CREATING FILTER:
 1. Attach to a listener for global traffic processing, OR
 2. Attach to specific routes for per-endpoint policies
 
-CONFIGURATION BY FILTER TYPE:
+CONFIGURATION FORMAT:
+Pass filter-specific config as a flat object. The filterType parameter is used automatically.
+Use cp_get_filter_type to see the full JSON Schema for any filter type.
+
+EXAMPLES BY FILTER TYPE:
+
+local_rate_limit - Request Rate Limiting:
+{
+  "stat_prefix": "api_rate_limit",
+  "token_bucket": {"max_tokens": 100, "tokens_per_fill": 100, "fill_interval_ms": 60000},
+  "status_code": 429
+}
 
 jwt_auth - JWT Authentication:
 {
-  "providers": [{
-    "name": "my-provider",
-    "issuer": "https://auth.example.com",
-    "audiences": ["api"],
-    "jwks": {"remoteJwks": {"uri": "https://auth.example.com/.well-known/jwks.json"}}
-  }],
-  "rules": [{"match": {"prefix": "/api"}, "requires": {"providerName": "my-provider"}}]
+  "providers": {
+    "my-provider": {
+      "issuer": "https://auth.example.com",
+      "audiences": ["api"],
+      "jwks": {"type": "remote", "http_uri": {"uri": "https://auth.example.com/.well-known/jwks.json", "cluster": "jwks-cluster"}}
+    }
+  },
+  "rules": [{"match": {"prefix": "/api"}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]
 }
 
 cors - Cross-Origin Resource Sharing:
 {
-  "allowOrigins": [{"exact": "https://app.example.com"}],
-  "allowMethods": ["GET", "POST", "PUT", "DELETE"],
-  "allowHeaders": ["Authorization", "Content-Type"],
-  "maxAge": 86400
-}
-
-local_rate_limit - Request Rate Limiting:
-{
-  "statPrefix": "api_rate_limit",
-  "tokenBucket": {"maxTokens": 100, "tokensPerFill": 100, "fillInterval": "60s"},
-  "filterEnabled": {"defaultValue": {"numerator": 100, "denominator": "HUNDRED"}}
+  "policy": {
+    "allow_origin": [{"type": "exact", "value": "https://app.example.com"}],
+    "allow_methods": ["GET", "POST", "PUT", "DELETE"],
+    "allow_headers": ["Authorization", "Content-Type"],
+    "max_age": 86400
+  }
 }
 
 header_mutation - Header Modification:
 {
-  "requestHeadersToAdd": [{"header": {"key": "X-Custom", "value": "added"}, "append": false}],
-  "requestHeadersToRemove": ["X-Remove-Me"],
-  "responseHeadersToAdd": [{"header": {"key": "X-Response", "value": "added"}}]
+  "request_headers_to_add": [{"key": "X-Custom", "value": "added", "append": false}],
+  "request_headers_to_remove": ["X-Remove-Me"],
+  "response_headers_to_add": [{"key": "X-Response", "value": "added"}]
 }
 
 ext_authz - External Authorization:
 {
-  "httpService": {
-    "serverUri": {"uri": "http://auth-service:8080", "cluster": "auth-cluster"},
-    "authorizationRequest": {"allowedHeaders": {"patterns": [{"exact": "Authorization"}]}}
+  "service": {
+    "type": "http",
+    "server_uri": {"uri": "http://auth-service:8080", "cluster": "auth-cluster"},
+    "authorization_request": {"allowed_headers": ["Authorization"]}
   }
 }
 
@@ -458,8 +466,19 @@ pub async fn execute_create_filter(
     );
 
     // 2. Parse configuration into FilterConfig enum
-    let config: crate::domain::FilterConfig = serde_json::from_value(configuration.clone())
-        .map_err(|e| McpError::InvalidParams(format!("Invalid configuration: {}", e)))?;
+    // Auto-wrap with type envelope so agents can pass flat config matching the schema
+    // from cp_get_filter_type. Also accept pre-wrapped {"type": "...", "config": {...}}.
+    let wrapped = if configuration.get("type").is_some() && configuration.get("config").is_some() {
+        configuration.clone()
+    } else {
+        json!({"type": filter_type, "config": configuration})
+    };
+    let config: crate::domain::FilterConfig = serde_json::from_value(wrapped).map_err(|e| {
+        McpError::InvalidParams(format!(
+            "Invalid configuration for '{}': {}. Use cp_get_filter_type(\"{}\") to see required fields.",
+            filter_type, e, filter_type
+        ))
+    })?;
 
     // 3. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
@@ -527,19 +546,7 @@ pub async fn execute_update_filter(
         "Updating filter via MCP"
     );
 
-    // 2. Parse optional updates
-    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let new_config = if let Some(config_json) = args.get("configuration") {
-        Some(
-            serde_json::from_value(config_json.clone())
-                .map_err(|e| McpError::InvalidParams(format!("Invalid configuration: {}", e)))?,
-        )
-    } else {
-        None
-    };
-
-    // 3. Use internal API layer
+    // 2. Set up auth and operations
     let ops = FilterOperations::new(xds_state.clone());
     let team_repo = xds_state
         .team_repository
@@ -549,6 +556,27 @@ pub async fn execute_update_filter(
         .resolve_teams(team_repo)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    // 3. Parse optional updates (auto-wrap config if needed)
+    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let new_config = if let Some(config_json) = args.get("configuration") {
+        // Look up existing filter to get its type for auto-wrapping
+        let existing = ops.get(name, &auth).await?;
+        let wrapped = if config_json.get("type").is_some() && config_json.get("config").is_some() {
+            config_json.clone()
+        } else {
+            json!({"type": existing.filter_type, "config": config_json})
+        };
+        Some(serde_json::from_value(wrapped).map_err(|e| {
+            McpError::InvalidParams(format!(
+                "Invalid configuration for '{}': {}. Use cp_get_filter_type(\"{}\") to see required fields.",
+                existing.filter_type, e, existing.filter_type
+            ))
+        })?)
+    } else {
+        None
+    };
 
     let req =
         UpdateFilterRequest { name: new_name, description: new_description, config: new_config };

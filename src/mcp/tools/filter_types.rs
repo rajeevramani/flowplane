@@ -233,6 +233,10 @@ pub async fn execute_get_filter_type(
             crate::domain::filter_schema::SchemaSource::Custom => "custom",
         },
         "config_schema": schema.config_schema,
+        "usage_hint": format!(
+            "Pass config_schema fields directly as the 'configuration' parameter to cp_create_filter with filterType='{}'.",
+            schema.name
+        ),
     });
 
     let result_text =
