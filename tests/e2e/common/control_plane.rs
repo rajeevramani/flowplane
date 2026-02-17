@@ -102,6 +102,7 @@ impl ControlPlaneHandle {
         let simple_config = SimpleXdsConfig {
             bind_address: config.xds_addr.ip().to_string(),
             port: config.xds_addr.port(),
+            advertised_address: None,
             resources: XdsResourceConfig {
                 listener_port: config.default_listener_port,
                 ..Default::default()

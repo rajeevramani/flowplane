@@ -1,6 +1,6 @@
 # Flowplane
 
-![Version](https://img.shields.io/badge/version-0.0.13-blue)
+![Version](https://img.shields.io/badge/version-0.0.14-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
@@ -34,6 +34,32 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 - **Observability** - OpenTelemetry tracing, Prometheus metrics
 - **Security** - OAuth2, JWT, mTLS with Vault PKI integration
 
+### MCP & AI Agents
+
+Flowplane exposes 60 MCP tools and 7 prompt templates, enabling AI agents to deploy, diagnose, and manage API gateway configuration without touching the UI.
+
+**Agent Capabilities:**
+- Deploy APIs end-to-end with pre-flight validation
+- Diagnose routing issues by tracing request paths
+- Validate gateway configuration and detect misconfigurations
+- Generate OpenAPI specs from live traffic via learning sessions
+
+**Quick Demo:**
+
+```bash
+# Start Flowplane and seed demo data
+make up && make seed
+
+# Run the dev agent (requires an OpenAI-compatible LLM)
+FLOWPLANE_URL=http://localhost:8080 \
+FLOWPLANE_TEAM=engineering \
+FLOWPLANE_TOKEN=<token from seed output> \
+LLM_API_KEY=<your key> \
+python agents/dev_agent.py "Expose httpbin at localhost:8000 on path / at port 10001"
+```
+
+Tested with GPT-4o and Qwen 3 (via Ollama). See [agents/README.md](agents/README.md) for details and [MCP Integration](docs/mcp.md) for protocol documentation.
+
 ### Import OpenApi
 ![Import OpenAppi](docs/images/import.gif)
 
@@ -44,7 +70,7 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 
 - Rust (edition 2021)
 - Node.js 18+ (for UI)
-- SQLite (default) or PostgreSQL
+- PostgreSQL 15+
 - protoc (Protocol Buffers compiler)
 
 ## Quick Start
@@ -52,12 +78,13 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 ### Docker (Recommended)
 
 ```bash
+# Docker Compose is recommended for full setup (includes PostgreSQL).
+# For a quick preview of the API server only:
 docker run -d \
   --name flowplane \
   -p 8080:8080 \
   -p 50051:50051 \
   -v flowplane_data:/app/data \
-  -e FLOWPLANE_DATABASE_URL=sqlite:///app/data/flowplane.db \
   ghcr.io/rajeevramani/flowplane:latest
 ```
 
@@ -99,15 +126,15 @@ make help
 
 ### Binary
 
-Download from [GitHub Releases](https://github.com/flowplane-ai/flowplane/releases):
+Download from [GitHub Releases](https://github.com/rajeevramani/flowplane/releases):
 
 ```bash
 # Linux (x86_64)
-curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/rajeevramani/flowplane/releases/latest/download/flowplane-x86_64-unknown-linux-gnu.tar.gz
 tar xzf flowplane-x86_64-unknown-linux-gnu.tar.gz
 
 # macOS (Apple Silicon)
-curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/rajeevramani/flowplane/releases/latest/download/flowplane-aarch64-apple-darwin.tar.gz
 tar xzf flowplane-aarch64-apple-darwin.tar.gz
 
 # Run

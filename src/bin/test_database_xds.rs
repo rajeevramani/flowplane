@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let xds_config = SimpleXdsConfig {
         bind_address: "127.0.0.1".to_string(),
         port: 18004, // Use a different port for testing
+        advertised_address: None,
         resources: XdsResourceConfig {
             cluster_name: "test_cluster_db".to_string(),
             route_name: "test_route_db".to_string(),

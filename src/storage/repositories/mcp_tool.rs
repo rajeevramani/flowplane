@@ -328,7 +328,7 @@ impl McpToolRepository {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
-             FROM mcp_tools WHERE team = $1 AND enabled = 1
+             FROM mcp_tools WHERE team = $1 AND enabled = true
              ORDER BY created_at DESC"
         } else {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
@@ -515,7 +515,7 @@ impl McpToolRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_count_enabled_mcp_tools_by_team")]
     pub async fn count_enabled_by_team(&self, team: &str) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM mcp_tools WHERE team = $1 AND enabled = 1",
+            "SELECT COUNT(*) FROM mcp_tools WHERE team = $1 AND enabled = true",
         )
         .bind(team)
         .fetch_one(&self.pool)
@@ -543,23 +543,25 @@ impl McpToolRepository {
 
         // Admin bypass: empty teams = count all enabled MCP tools
         if teams.is_empty() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mcp_tools WHERE enabled = 1")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "Failed to count all enabled MCP tools (admin bypass)");
-                    FlowplaneError::Database {
-                        source: e,
-                        context: "Failed to count all enabled MCP tools".to_string(),
-                    }
-                })?;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM mcp_tools WHERE enabled = true",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to count all enabled MCP tools (admin bypass)");
+                FlowplaneError::Database {
+                    source: e,
+                    context: "Failed to count all enabled MCP tools".to_string(),
+                }
+            })?;
             return Ok(count);
         }
 
         // Build IN clause for team filtering
         let placeholders: Vec<String> = (1..=teams.len()).map(|i| format!("${}", i)).collect();
         let query_str = format!(
-            "SELECT COUNT(*) FROM mcp_tools WHERE team IN ({}) AND enabled = 1",
+            "SELECT COUNT(*) FROM mcp_tools WHERE team IN ({}) AND enabled = true",
             placeholders.join(", ")
         );
 

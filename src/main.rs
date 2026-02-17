@@ -230,13 +230,15 @@ async fn main() -> Result<()> {
 
     // Start background Access Log Processor to handle inference + persistence
     // Wire ExtProc body channel for request/response body capture (Task 12.3)
-    {
+    // IMPORTANT: Keep _processor_handle alive for the process lifetime so shutdown_tx
+    // isn't dropped. Dropping it causes shutdown_rx.changed() to return Err immediately,
+    // creating a CPU spin loop in workers and breaking cleanup/batcher tasks.
+    let _processor_handle = {
         use flowplane::services::AccessLogProcessor;
         let db_pool = Some(pool.clone());
         let processor = AccessLogProcessor::new(log_rx, Some(ext_proc_rx), db_pool, None);
-        // Spawn workers (handles internal batching and metrics). We don't need the handle here.
-        let _handle = processor.spawn_workers();
-    }
+        processor.spawn_workers()
+    };
 
     // Spawn background worker for learning session auto-completion
     let learning_session_service_bg = learning_session_service.clone();

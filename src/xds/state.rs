@@ -434,14 +434,18 @@ impl XdsState {
         };
 
         // Always include the built-in ExtProc gRPC cluster for body capture
-        let ext_proc_cluster =
-            create_ext_proc_cluster(&self.config.bind_address, self.config.port)?;
+        let ext_proc_cluster = create_ext_proc_cluster(
+            &self.config.bind_address,
+            self.config.port,
+            self.config.advertised_address.as_deref(),
+        )?;
         built.push(ext_proc_cluster);
 
         // Always include the built-in Access Log Service gRPC cluster for ALS
         let access_log_cluster = crate::xds::resources::create_access_log_cluster(
             &self.config.bind_address,
             self.config.port,
+            self.config.advertised_address.as_deref(),
         )?;
         built.push(access_log_cluster);
 
@@ -967,7 +971,7 @@ mod tests {
         let port = 19000;
 
         // Create the ExtProc cluster
-        let built_resource = create_ext_proc_cluster(bind_address, port).unwrap();
+        let built_resource = create_ext_proc_cluster(bind_address, port, None).unwrap();
 
         // Decode the cluster
         let cluster = envoy_types::pb::envoy::config::cluster::v3::Cluster::decode(

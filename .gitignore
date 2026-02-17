@@ -133,6 +133,14 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
 # Remove later
 deploy
-agents

@@ -229,6 +229,11 @@ pub async fn create_learning_session_handler(
     // Validate HTTP methods
     validate_http_methods(&payload.http_methods)?;
 
+    // Resolve team name → team ID (FK now references teams(id))
+    let team_id =
+        super::team_access::resolve_team_name(&state, &payload.team, context.org_id.as_ref())
+            .await?;
+
     // Get repository
     let repo = state
         .xds_state
@@ -238,9 +243,9 @@ pub async fn create_learning_session_handler(
 
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
-    // Create session using team from request body
+    // Create session using resolved team ID
     let create_request = CreateLearningSessionRequest {
-        team: payload.team.clone(),
+        team: team_id,
         route_pattern: payload.route_pattern,
         cluster_name: payload.cluster_name,
         http_methods: payload.http_methods,

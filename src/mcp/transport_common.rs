@@ -125,6 +125,33 @@ pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<S
     Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
+/// Resolve a team name to its UUID.
+///
+/// After the FK migration, many tables (mcp_tools, aggregated_api_schemas, etc.)
+/// store team as a UUID, not a name. This function queries the teams table to
+/// convert a team name to its UUID. If the input is already a UUID, it returns it as-is.
+///
+/// # Arguments
+/// * `team_name` - Team name (or UUID) to resolve
+/// * `db_pool` - Database connection pool
+///
+/// # Returns
+/// Team UUID string on success, error message on failure
+pub async fn resolve_team_id(team_name: &str, db_pool: &DbPool) -> Result<String, String> {
+    // If it already looks like a UUID, return as-is
+    if uuid::Uuid::parse_str(team_name).is_ok() {
+        return Ok(team_name.to_string());
+    }
+
+    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM teams WHERE name = $1")
+        .bind(team_name)
+        .fetch_optional(db_pool)
+        .await
+        .map_err(|e| format!("Failed to resolve team name '{}': {}", team_name, e))?;
+
+    row.map(|r| r.0).ok_or_else(|| format!("Team '{}' not found", team_name))
+}
+
 /// Validate that a team belongs to the caller's org.
 ///
 /// When team is provided via query parameter (not from token scopes), there's a risk

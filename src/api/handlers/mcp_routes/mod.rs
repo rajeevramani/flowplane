@@ -5,7 +5,9 @@
 mod types;
 
 use crate::api::error::ApiError;
-use crate::api::handlers::team_access::{get_db_pool, require_resource_access_resolved, TeamPath};
+use crate::api::handlers::team_access::{
+    get_db_pool, require_resource_access_resolved, resolve_team_name, TeamPath,
+};
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
 use crate::services::mcp_service::{EnableMcpRequest, McpService};
@@ -64,9 +66,12 @@ pub async fn get_mcp_status_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let status = service.get_status(&team, &route_id).await.map_err(ApiError::from)?;
+    let status = service.get_status(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(McpStatusResponse::from(status)))
 }
@@ -109,6 +114,9 @@ pub async fn enable_mcp_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
     let request = EnableMcpRequest {
@@ -119,7 +127,7 @@ pub async fn enable_mcp_handler(
         http_method: body.http_method,
     };
 
-    let tool = service.enable(&team, &route_id, request).await.map_err(ApiError::from)?;
+    let tool = service.enable(&team_id, &route_id, request).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(tool.into())))
 }
@@ -159,9 +167,12 @@ pub async fn disable_mcp_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    service.disable(&team, &route_id).await.map_err(ApiError::from)?;
+    service.disable(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -201,9 +212,12 @@ pub async fn refresh_mcp_schema_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let result = service.refresh_schema(&team, &route_id).await.map_err(ApiError::from)?;
+    let result = service.refresh_schema(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(RefreshSchemaResponse::from(result)))
 }
@@ -243,6 +257,9 @@ pub async fn bulk_enable_mcp_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
     let mut results = Vec::new();
@@ -258,7 +275,7 @@ pub async fn bulk_enable_mcp_handler(
             http_method: None,
         };
 
-        match service.enable(&team, &route_id, request).await {
+        match service.enable(&team_id, &route_id, request).await {
             Ok(tool) => {
                 results.push(types::BulkEnableResult {
                     route_id,
@@ -318,6 +335,9 @@ pub async fn bulk_disable_mcp_handler(
     )
     .await?;
 
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
     let mut results = Vec::new();
@@ -325,7 +345,7 @@ pub async fn bulk_disable_mcp_handler(
     let mut failed = 0;
 
     for route_id in body.route_ids {
-        match service.disable(&team, &route_id).await {
+        match service.disable(&team_id, &route_id).await {
             Ok(()) => {
                 results.push(types::BulkDisableResult { route_id, success: true, error: None });
                 succeeded += 1;

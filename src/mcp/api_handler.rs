@@ -160,7 +160,7 @@ impl McpApiHandler {
         let tools: Vec<Tool> = tools_data
             .into_iter()
             .map(|t| {
-                Tool::new(
+                let mut tool = Tool::new(
                     t.name.clone(),
                     t.description.clone().unwrap_or_default(),
                     if t.input_schema.is_null() || !t.input_schema.is_object() {
@@ -173,7 +173,10 @@ impl McpApiHandler {
                     } else {
                         t.input_schema.clone()
                     },
-                )
+                );
+                // Forward output_schema from learned/OpenAPI data to MCP protocol
+                tool.output_schema = t.output_schema.clone();
+                tool
             })
             .collect();
 

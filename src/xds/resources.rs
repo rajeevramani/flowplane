@@ -880,15 +880,28 @@ fn create_http2_typed_extension_protocol_options() -> Result<HashMap<String, Any
 ///
 /// This cluster enables Envoy to route External Processor filter requests
 /// to the FlowplaneExtProcService running on the xDS server.
-pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<BuiltResource> {
-    // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
-    let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
+pub fn create_ext_proc_cluster(
+    xds_bind_address: &str,
+    xds_port: u16,
+    advertised_address: Option<&str>,
+) -> Result<BuiltResource> {
+    // Use advertised address if set (for Docker/K8s), otherwise map 0.0.0.0 to loopback
+    let target_address = advertised_address.unwrap_or(if xds_bind_address == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        xds_bind_address
+    });
+
+    // Hostnames need LOGICAL_DNS; IP addresses use STATIC
+    let is_hostname = target_address.parse::<std::net::IpAddr>().is_err();
+    let discovery_type =
+        if is_hostname { DiscoveryType::LogicalDns } else { DiscoveryType::Static };
 
     let cluster = Cluster {
         name: "flowplane_ext_proc_service".to_string(),
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
-        // Use STATIC discovery for localhost
-        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
+        cluster_discovery_type: Some(ClusterDiscoveryType::Type(discovery_type as i32)),
+        dns_lookup_family: if is_hostname { DnsLookupFamily::V4Only as i32 } else { DnsLookupFamily::Auto as i32 },
         // Configure HTTP/2 for gRPC communication using modern typed extension approach
         typed_extension_protocol_options: create_http2_typed_extension_protocol_options()?,
         load_assignment: Some(ClusterLoadAssignment {
@@ -931,15 +944,28 @@ pub fn create_ext_proc_cluster(xds_bind_address: &str, xds_port: u16) -> Result<
 ///
 /// This cluster enables Envoy to send HTTP access logs to the
 /// FlowplaneAccessLogService running on the same xDS server.
-pub fn create_access_log_cluster(xds_bind_address: &str, xds_port: u16) -> Result<BuiltResource> {
-    // Envoy cannot connect to 0.0.0.0; map to loopback for in-process access
-    let target_address = if xds_bind_address == "0.0.0.0" { "127.0.0.1" } else { xds_bind_address };
+pub fn create_access_log_cluster(
+    xds_bind_address: &str,
+    xds_port: u16,
+    advertised_address: Option<&str>,
+) -> Result<BuiltResource> {
+    // Use advertised address if set (for Docker/K8s), otherwise map 0.0.0.0 to loopback
+    let target_address = advertised_address.unwrap_or(if xds_bind_address == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        xds_bind_address
+    });
+
+    // Hostnames need LOGICAL_DNS; IP addresses use STATIC
+    let is_hostname = target_address.parse::<std::net::IpAddr>().is_err();
+    let discovery_type =
+        if is_hostname { DiscoveryType::LogicalDns } else { DiscoveryType::Static };
 
     let cluster = Cluster {
         name: "flowplane_access_log_service".to_string(),
         connect_timeout: Some(Duration { seconds: 5, nanos: 0 }),
-        // Use STATIC discovery for localhost
-        cluster_discovery_type: Some(ClusterDiscoveryType::Type(DiscoveryType::Static as i32)),
+        cluster_discovery_type: Some(ClusterDiscoveryType::Type(discovery_type as i32)),
+        dns_lookup_family: if is_hostname { DnsLookupFamily::V4Only as i32 } else { DnsLookupFamily::Auto as i32 },
         // Configure HTTP/2 for gRPC communication using modern typed extension approach
         typed_extension_protocol_options: create_http2_typed_extension_protocol_options()?,
         load_assignment: Some(ClusterLoadAssignment {
@@ -1368,7 +1394,7 @@ mod tests {
         let bind_address = "127.0.0.1";
         let port = 18000;
 
-        let built_resource = create_ext_proc_cluster(bind_address, port).unwrap();
+        let built_resource = create_ext_proc_cluster(bind_address, port, None).unwrap();
 
         // Verify resource metadata
         assert_eq!(built_resource.name, "flowplane_ext_proc_service");
@@ -1432,7 +1458,7 @@ mod tests {
         let bind_address = "127.0.0.1";
         let port = 18000u16;
 
-        let built_resource = create_access_log_cluster(bind_address, port).unwrap();
+        let built_resource = create_access_log_cluster(bind_address, port, None).unwrap();
         assert_eq!(built_resource.name, "flowplane_access_log_service");
 
         // Decode and verify cluster properties

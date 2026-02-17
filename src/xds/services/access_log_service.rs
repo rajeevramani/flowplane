@@ -253,7 +253,7 @@ impl FlowplaneAccessLogService {
     #[allow(dead_code)] // Will be used in subtask 1.4 for server integration
     pub async fn add_session(&self, session: LearningSession) {
         let mut sessions = self.learning_sessions.write().await;
-        info!(session_id = %session.id, patterns = sessions.len(), "Adding learning session");
+        info!(session_id = %session.id, patterns = session.route_patterns.len(), "Adding learning session");
         sessions.push(session);
     }
 

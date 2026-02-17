@@ -829,27 +829,189 @@ mod tests {
         assert!(score > 0.50 && score < 0.56);
     }
 
-    // =============================================================================
-    // INTEGRATION TESTS - TEMPORARILY DISABLED
-    // =============================================================================
-    // The following integration tests require a PostgreSQL database:
-    // - test_version_tracking
-    // - test_field_presence_all_required
-    // - test_field_presence_optional_fields
-    // - test_nested_object_required_fields
-    // - test_no_required_fields
-    // - test_type_conflict_resolution
-    // - test_partial_type_conflicts
-    // - test_nested_type_conflicts
-    // - test_no_breaking_changes_on_first_version
-    // - test_detect_required_field_removed
-    // - test_detect_type_change
-    // - test_no_breaking_changes_on_compatible_change
-    // - test_detect_field_became_required
-    // - test_nested_field_optional_presence
-    // - test_deeply_nested_field_optional_presence
-    //
-    // These tests will be re-enabled in Phase 4 of the PostgreSQL migration
-    // when Testcontainers infrastructure is set up.
-    // See: .local/features/plans/postgresql-compatibility.md
+    #[cfg(feature = "postgres_tests")]
+    mod integration {
+        use crate::schema::SchemaInferenceEngine;
+        use crate::services::schema_aggregator::SchemaAggregator;
+        use crate::storage::repositories::{AggregatedSchemaRepository, InferredSchemaRepository};
+        use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+
+        /// Helper: create a learning session and return its ID
+        async fn create_session(pool: &crate::storage::DbPool) -> String {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO learning_sessions (
+                    id, team, route_pattern, status, target_sample_count, current_sample_count
+                ) VALUES ($1, $2, '/test/*', 'active', 100, 0)",
+            )
+            .bind(&session_id)
+            .bind(TEST_TEAM_ID)
+            .execute(pool)
+            .await
+            .unwrap();
+            session_id
+        }
+
+        /// Helper: insert an inferred schema with a response_schema JSON
+        async fn insert_inferred_schema(
+            pool: &crate::storage::DbPool,
+            session_id: &str,
+            method: &str,
+            path: &str,
+            status_code: Option<i64>,
+            response_json: &serde_json::Value,
+        ) {
+            let engine = SchemaInferenceEngine::new();
+            let schema = engine.infer_from_value(response_json).unwrap();
+            let schema_str = serde_json::to_string(&schema).unwrap();
+
+            sqlx::query(
+                "INSERT INTO inferred_schemas (
+                    team, session_id, http_method, path_pattern, response_schema,
+                    response_status_code, sample_count, confidence,
+                    first_seen_at, last_seen_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, 1, 1.0, NOW(), NOW())",
+            )
+            .bind(TEST_TEAM_ID)
+            .bind(session_id)
+            .bind(method)
+            .bind(path)
+            .bind(&schema_str)
+            .bind(status_code)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_session_basic() {
+            let test_db = TestDatabase::new("agg_session_basic").await;
+            let pool = test_db.pool.clone();
+            let session_id = create_session(&pool).await;
+
+            // Insert 5 inferred_schemas: 3 for GET /api/users (200), 2 for POST /api/users (201)
+            let get_response = serde_json::json!({"id": 1, "name": "Alice", "email": "a@b.com"});
+            for _ in 0..3 {
+                insert_inferred_schema(
+                    &pool,
+                    &session_id,
+                    "GET",
+                    "/api/users",
+                    Some(200),
+                    &get_response,
+                )
+                .await;
+            }
+
+            let post_response = serde_json::json!({"id": 2, "created": true});
+            for _ in 0..2 {
+                insert_inferred_schema(
+                    &pool,
+                    &session_id,
+                    "POST",
+                    "/api/users",
+                    Some(201),
+                    &post_response,
+                )
+                .await;
+            }
+
+            // Create aggregator with real repos
+            let inferred_repo = InferredSchemaRepository::new(pool.clone());
+            let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+            let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+
+            // Aggregate
+            let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+            assert_eq!(ids.len(), 2, "Should produce 2 aggregated schemas (one per endpoint)");
+
+            // Verify aggregated schemas
+            let schemas = aggregated_repo.get_by_ids(&ids).await.unwrap();
+            assert_eq!(schemas.len(), 2);
+
+            for schema in &schemas {
+                assert_eq!(schema.team, TEST_TEAM_ID);
+                assert_eq!(schema.path, "/api/users");
+                assert!(schema.confidence_score > 0.0, "Confidence should be > 0");
+                assert!(schema.sample_count > 0, "Sample count should be > 0");
+            }
+
+            // Check per-endpoint sample counts
+            let get_schema = schemas.iter().find(|s| s.http_method == "GET").unwrap();
+            assert_eq!(get_schema.sample_count, 3);
+
+            let post_schema = schemas.iter().find(|s| s.http_method == "POST").unwrap();
+            assert_eq!(post_schema.sample_count, 2);
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_session_no_schemas() {
+            let test_db = TestDatabase::new("agg_session_empty").await;
+            let pool = test_db.pool.clone();
+            let session_id = create_session(&pool).await;
+
+            // Don't insert any inferred schemas
+            let inferred_repo = InferredSchemaRepository::new(pool.clone());
+            let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+            let aggregator = SchemaAggregator::new(inferred_repo, aggregated_repo);
+
+            let ids = aggregator.aggregate_session(&session_id).await.unwrap();
+            assert!(ids.is_empty(), "Empty session should produce no aggregated schemas");
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_session_version_increment() {
+            let test_db = TestDatabase::new("agg_version_inc").await;
+            let pool = test_db.pool.clone();
+
+            // Session 1: initial schemas
+            let session1 = create_session(&pool).await;
+            let response_v1 = serde_json::json!({"id": 1, "name": "Alice"});
+            for _ in 0..3 {
+                insert_inferred_schema(
+                    &pool,
+                    &session1,
+                    "GET",
+                    "/api/users",
+                    Some(200),
+                    &response_v1,
+                )
+                .await;
+            }
+
+            let inferred_repo = InferredSchemaRepository::new(pool.clone());
+            let aggregated_repo = AggregatedSchemaRepository::new(pool.clone());
+            let aggregator = SchemaAggregator::new(inferred_repo.clone(), aggregated_repo.clone());
+
+            let ids_v1 = aggregator.aggregate_session(&session1).await.unwrap();
+            assert_eq!(ids_v1.len(), 1);
+
+            let v1 = aggregated_repo.get_by_id(ids_v1[0]).await.unwrap();
+            assert_eq!(v1.version, 1);
+
+            // Session 2: same endpoint, slightly different schema (added field)
+            let session2 = create_session(&pool).await;
+            let response_v2 = serde_json::json!({"id": 2, "name": "Bob", "email": "bob@test.com"});
+            for _ in 0..5 {
+                insert_inferred_schema(
+                    &pool,
+                    &session2,
+                    "GET",
+                    "/api/users",
+                    Some(200),
+                    &response_v2,
+                )
+                .await;
+            }
+
+            let aggregator2 = SchemaAggregator::new(inferred_repo, aggregated_repo.clone());
+            let ids_v2 = aggregator2.aggregate_session(&session2).await.unwrap();
+            assert_eq!(ids_v2.len(), 1);
+
+            let v2 = aggregated_repo.get_by_id(ids_v2[0]).await.unwrap();
+            assert_eq!(v2.version, 2, "Second aggregation should produce version 2");
+            assert_eq!(v2.previous_version_id, Some(v1.id));
+            assert_eq!(v2.sample_count, 5);
+        }
+    }
 }

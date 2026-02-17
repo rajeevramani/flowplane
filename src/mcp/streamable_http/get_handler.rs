@@ -377,6 +377,18 @@ async fn get_handler(
         }
     }
 
+    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
+    let team = match get_db_pool(&state) {
+        Ok(db_pool) => match crate::mcp::transport_common::resolve_team_id(&team, &db_pool).await {
+            Ok(team_id) => team_id,
+            Err(e) => {
+                error!(error = %e, "Failed to resolve team name to UUID");
+                return Err(error_response(error_codes::INVALID_REQUEST, e));
+            }
+        },
+        Err(_) => team, // Fallback to name if DB unavailable
+    };
+
     // Validate session ownership
     if let Err(e) = session_manager.validate_session_ownership(&session_id, &team) {
         warn!(

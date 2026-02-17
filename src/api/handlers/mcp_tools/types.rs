@@ -1,6 +1,5 @@
 //! Request and response types for MCP tools API
 
-use crate::api::handlers::pagination::default_limit;
 use crate::domain::mcp::SchemaSource;
 use crate::domain::{McpToolCategory, McpToolSourceType};
 use crate::mcp::protocol::Tool;
@@ -8,6 +7,12 @@ use crate::storage::McpToolData;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+/// Default limit for MCP tools listing — higher than the generic 50
+/// because this endpoint merges CP built-in tools (~60) with DB tools.
+fn default_mcp_tools_limit() -> i64 {
+    200
+}
 
 /// Query parameters for listing MCP tools
 #[derive(Debug, Clone, Deserialize, ToSchema, IntoParams, Default)]
@@ -25,8 +30,8 @@ pub struct ListMcpToolsQuery {
     #[serde(default)]
     pub search: Option<String>,
 
-    /// Maximum number of tools to return (default: 50)
-    #[serde(default = "default_limit")]
+    /// Maximum number of tools to return (default: 200)
+    #[serde(default = "default_mcp_tools_limit")]
     pub limit: i64,
 
     /// Offset for pagination (default: 0)

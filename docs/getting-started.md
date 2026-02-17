@@ -13,7 +13,7 @@ This guide walks you through setting up Flowplane and creating your first resour
 **For building from source:**
 - Rust (edition 2021) with cargo
 - Node.js 18+ (for building UI)
-- SQLite (included) or PostgreSQL
+- PostgreSQL 15+
 - protoc (Protocol Buffers compiler)
 
 Optional:
@@ -24,7 +24,7 @@ Optional:
 ### Option 1: Build from Source
 
 ```bash
-git clone https://github.com/flowplane-ai/flowplane.git
+git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
 
 # Build UI (required for web dashboard)
@@ -42,7 +42,7 @@ The server automatically serves the UI from `./ui/build` when present. You can o
 
 ```bash
 # Clone repository
-git clone https://github.com/flowplane-ai/flowplane.git
+git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
 
 # Start with Docker Compose
@@ -58,11 +58,16 @@ Services start at:
 
 ### 1. Start the Control Plane
 
-```bash
-# Create data directory for SQLite
-mkdir -p data
+Using Docker Compose (recommended):
 
-# Run with default settings
+```bash
+make up
+```
+
+Or from source (requires a running PostgreSQL instance):
+
+```bash
+export DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
 cargo run --release
 ```
 
@@ -296,7 +301,7 @@ cp .env.example .env
 
 # Edit as needed
 # Key variables:
-# FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db
+# DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
 # FLOWPLANE_API_PORT=8080
 # FLOWPLANE_XDS_PORT=18000
 ```

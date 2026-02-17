@@ -283,7 +283,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (58 tools)
+        // Use get_all_tools() as single source of truth (60 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry

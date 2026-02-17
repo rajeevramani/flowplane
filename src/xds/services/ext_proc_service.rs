@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 /// Maximum body size to capture (10KB)
 const MAX_BODY_SIZE: usize = 10 * 1024;
@@ -142,6 +142,9 @@ impl ExternalProcessor for FlowplaneExtProcService {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        let active_session_count = self.learning_sessions.read().await.len();
+        info!(active_session_count, "ExtProc: New processing stream opened from Envoy");
+
         let mut stream = request.into_inner();
         let body_queue_tx = self.body_queue_tx.clone();
         let sessions = self.learning_sessions.clone();
@@ -173,7 +176,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
 
                             // If we have a matching session, request body buffering
                             if session_id.is_some() {
-                                debug!("ExtProc: Requesting request body buffering");
+                                info!(session_id = ?session_id, "ExtProc: Requesting request body buffering");
                                 yield ProcessingResponse {
                                     response: Some(processing_response::Response::RequestHeaders(
                                         HeadersResponse {
@@ -192,7 +195,8 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                 };
                             } else {
                                 // No matching session, skip processing
-                                debug!("ExtProc: No matching session, skipping body capture");
+                                let session_count = sessions.read().await.len();
+                                info!(active_sessions = session_count, "ExtProc: No matching session, skipping body capture");
                                 yield ProcessingResponse {
                                     response: Some(processing_response::Response::RequestHeaders(
                                         HeadersResponse {

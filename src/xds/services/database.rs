@@ -193,6 +193,7 @@ impl DatabaseAggregatedDiscoveryService {
         if let Ok(ext_proc) = crate::xds::resources::create_ext_proc_cluster(
             &self.state.config.bind_address,
             self.state.config.port,
+            self.state.config.advertised_address.as_deref(),
         ) {
             built.push(ext_proc);
         }
@@ -200,6 +201,7 @@ impl DatabaseAggregatedDiscoveryService {
         if let Ok(als) = crate::xds::resources::create_access_log_cluster(
             &self.state.config.bind_address,
             self.state.config.port,
+            self.state.config.advertised_address.as_deref(),
         ) {
             built.push(als);
         }

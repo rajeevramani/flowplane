@@ -50,6 +50,7 @@ services:
       FLOWPLANE_API_PORT: 8080
       FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
       FLOWPLANE_XDS_PORT: 50051
+      FLOWPLANE_XDS_ADVERTISED_ADDRESS: control-plane
       FLOWPLANE_COOKIE_SECURE: "false"
 
       # UI and MCP
@@ -69,10 +70,8 @@ services:
       VAULT_ADDR: "http://flowplane-vault:8200"
       VAULT_TOKEN: "flowplane-dev-token"
     ports:
-      - "8080:8080"   # HTTP API
-      - "50051:50051" # xDS gRPC
-      - "50052:50052" # Access Log Service
-      - "50053:50053" # External Processor
+      - "8080:8080"   # HTTP API + UI
+      - "50051:50051" # xDS gRPC (ADS + ALS + ExtProc all on this port)
     depends_on:
       postgres:
         condition: service_healthy
