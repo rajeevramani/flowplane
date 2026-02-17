@@ -84,6 +84,9 @@ class Guardrails:
         self._preflight_done: bool = False
         self._auto_preflight: bool = False
         self._dataplane_injection: bool = False
+        self._name_dedup: bool = False
+        self._port_validation: bool = False
+        self._port_range: tuple[int, int] = (10000, 10020)
         self.manifest: dict[str, list[dict]] = {
             "clusters": [],
             "route_configs": [],
@@ -104,6 +107,28 @@ class Guardrails:
     def enable_dataplane_injection(self) -> Guardrails:
         """Auto-inject dataplaneId into cp_create_listener if missing."""
         self._dataplane_injection = True
+        return self
+
+    def enable_name_dedup(self) -> Guardrails:
+        """Check for existing resources before cp_create_* calls.
+
+        Queries the corresponding cp_list_* tool to see if the name already
+        exists. If it does, appends a short suffix (port number or counter)
+        to make the name unique and injects a ``_dedup_warning`` key so the
+        LLM can report what happened.
+        """
+        self._name_dedup = True
+        return self
+
+    def enable_port_validation(self, low: int = 10000, high: int = 10020) -> Guardrails:
+        """Warn when cp_create_listener targets a port outside the expected range.
+
+        Also calls cp_query_port to check whether the port is already in use.
+        The call is *not* blocked — a warning is injected into the args so the
+        LLM can surface it to the user.
+        """
+        self._port_validation = True
+        self._port_range = (low, high)
         return self
 
     def add_pre_hook(self, hook: Callable[[str, dict], dict | None]) -> None:
@@ -141,6 +166,14 @@ class Guardrails:
                 if dp_id:
                     args["dataplaneId"] = dp_id
 
+        # Name dedup for create calls
+        if self._name_dedup and tool_name.startswith("cp_create_") and args.get("name"):
+            args = self._dedup_name(tool_name, args)
+
+        # Port validation for listener creation
+        if self._port_validation and tool_name == "cp_create_listener":
+            args = self._validate_port(args)
+
         # Custom pre-hooks
         for hook in self._pre_hooks:
             result = hook(tool_name, args)
@@ -174,6 +207,90 @@ class Guardrails:
                 pass
 
     # -- Internals ----------------------------------------------------------
+
+    # Map cp_create_* tool names to the corresponding cp_list_* tool and
+    # the response key that holds the list of items.
+    _CREATE_TO_LIST: dict[str, tuple[str, str]] = {
+        "cp_create_cluster": ("cp_list_clusters", "clusters"),
+        "cp_create_route_config": ("cp_list_route_configs", "route_configs"),
+        "cp_create_listener": ("cp_list_listeners", "listeners"),
+        "cp_create_virtual_host": ("cp_list_virtual_hosts", "virtual_hosts"),
+        "cp_create_route": ("cp_list_routes", "routes"),
+        "cp_create_filter": ("cp_list_filters", "filters"),
+        "cp_create_dataplane": ("cp_list_dataplanes", "dataplanes"),
+    }
+
+    def _dedup_name(self, tool_name: str, args: dict) -> dict:
+        """Check if the proposed name already exists; suffix it if so."""
+        mapping = self._CREATE_TO_LIST.get(tool_name)
+        if not mapping:
+            return args
+
+        list_tool, list_key = mapping
+        try:
+            resp = self.mcp.call_tool(list_tool, {})
+            items = resp.get(list_key) or resp.get("items") or []
+            if isinstance(resp, list):
+                items = resp
+        except Exception:
+            return args  # best-effort
+
+        existing_names = {item.get("name", "") for item in items}
+        proposed = args["name"]
+        if proposed not in existing_names:
+            return args
+
+        # Generate a unique name by appending a counter
+        args = dict(args)
+        for i in range(2, 100):
+            candidate = f"{proposed}-{i}"
+            if candidate not in existing_names:
+                args["name"] = candidate
+                args["_dedup_warning"] = (
+                    f"Name '{proposed}' already exists. "
+                    f"Renamed to '{candidate}'."
+                )
+                break
+        return args
+
+    def _validate_port(self, args: dict) -> dict:
+        """Check port availability and range for listener creation."""
+        port = args.get("port")
+        if port is None:
+            return args
+
+        args = dict(args)
+        warnings: list[str] = []
+        low, high = self._port_range
+
+        if not (low <= port <= high):
+            warnings.append(
+                f"Port {port} is outside the recommended Envoy range "
+                f"({low}-{high}). Envoy may not expose this port."
+            )
+
+        # Check if port is already in use
+        try:
+            resp = self.mcp.call_tool("cp_query_port", {"port": port})
+            # If the response indicates the port is in use, warn
+            if resp.get("in_use") or resp.get("listener"):
+                listener_name = ""
+                if isinstance(resp.get("listener"), dict):
+                    listener_name = resp["listener"].get("name", "")
+                elif isinstance(resp.get("listener"), str):
+                    listener_name = resp["listener"]
+                warnings.append(
+                    f"Port {port} is already in use"
+                    + (f" by listener '{listener_name}'" if listener_name else "")
+                    + "."
+                )
+        except Exception:
+            pass  # best-effort
+
+        if warnings:
+            args["_port_warnings"] = warnings
+
+        return args
 
     def _resolve_dataplane_id(self) -> str | None:
         """List dataplanes; return first ID or create a default one."""

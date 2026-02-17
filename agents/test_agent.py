@@ -727,3 +727,359 @@ class TestGuardrailsMemoryIntegration:
 
         msgs = memory.to_messages("Deploy agent")
         assert "http" in msgs[0]["content"]
+
+
+# ===========================================================================
+# Name Dedup Guardrail
+# ===========================================================================
+
+class TestGuardrailsNameDedup:
+    """Tests for the name deduplication guardrail."""
+
+    def test_no_collision_passes_through(self, guardrails, mock_mcp):
+        """When the proposed name does not exist, args should be unchanged."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {"clusters": [{"name": "other-cluster"}]}
+
+        result = guardrails.before_call("cp_create_cluster", {"name": "my-cluster"})
+        assert result["name"] == "my-cluster"
+        assert "_dedup_warning" not in result
+
+    def test_collision_renames(self, guardrails, mock_mcp):
+        """When the name already exists, it should be suffixed with -2."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {
+            "clusters": [{"name": "httpbin-cluster"}]
+        }
+
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "httpbin-cluster"}
+        )
+        assert result["name"] == "httpbin-cluster-2"
+        assert "_dedup_warning" in result
+        assert "httpbin-cluster" in result["_dedup_warning"]
+
+    def test_collision_skips_taken_suffixes(self, guardrails, mock_mcp):
+        """If -2 is also taken, it should try -3, etc."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {
+            "clusters": [
+                {"name": "httpbin-cluster"},
+                {"name": "httpbin-cluster-2"},
+                {"name": "httpbin-cluster-3"},
+            ]
+        }
+
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "httpbin-cluster"}
+        )
+        assert result["name"] == "httpbin-cluster-4"
+
+    def test_works_for_listeners(self, guardrails, mock_mcp):
+        """Name dedup should work for cp_create_listener too."""
+        guardrails.enable_name_dedup()
+        # First call: cp_list_listeners for dedup
+        # Second call: cp_list_dataplanes for dataplane injection (not enabled here)
+        mock_mcp.call_tool.return_value = {
+            "listeners": [{"name": "my-listener"}]
+        }
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "my-listener"}
+        )
+        assert result["name"] == "my-listener-2"
+
+    def test_works_for_route_configs(self, guardrails, mock_mcp):
+        """Name dedup should work for cp_create_route_config."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {
+            "route_configs": [{"name": "httpbin-rc"}]
+        }
+
+        result = guardrails.before_call(
+            "cp_create_route_config", {"name": "httpbin-rc"}
+        )
+        assert result["name"] == "httpbin-rc-2"
+
+    def test_disabled_by_default(self, guardrails, mock_mcp):
+        """Without enable_name_dedup(), no dedup should happen."""
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "httpbin-cluster"}
+        )
+        assert result["name"] == "httpbin-cluster"
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_no_name_in_args_skipped(self, guardrails, mock_mcp):
+        """If there's no 'name' in args, dedup should be skipped."""
+        guardrails.enable_name_dedup()
+
+        result = guardrails.before_call("cp_create_filter", {"type": "cors"})
+        assert result == {"type": "cors"}
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_non_create_tools_skipped(self, guardrails, mock_mcp):
+        """Dedup should only apply to cp_create_* tools."""
+        guardrails.enable_name_dedup()
+
+        result = guardrails.before_call(
+            "cp_list_clusters", {"name": "httpbin-cluster"}
+        )
+        assert result["name"] == "httpbin-cluster"
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_list_error_is_swallowed(self, guardrails, mock_mcp):
+        """If the list call fails, dedup should be skipped gracefully."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.side_effect = RuntimeError("connection refused")
+
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "my-cluster"}
+        )
+        assert result["name"] == "my-cluster"
+        assert "_dedup_warning" not in result
+
+    def test_does_not_mutate_original_args(self, guardrails, mock_mcp):
+        """Dedup should not mutate the original args dict."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {
+            "clusters": [{"name": "c1"}]
+        }
+
+        original = {"name": "c1"}
+        guardrails.before_call("cp_create_cluster", original)
+        assert original["name"] == "c1"
+        assert "_dedup_warning" not in original
+
+    def test_items_key_response(self, guardrails, mock_mcp):
+        """Dedup should handle responses with 'items' key."""
+        guardrails.enable_name_dedup()
+        mock_mcp.call_tool.return_value = {
+            "items": [{"name": "httpbin-cluster"}]
+        }
+
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "httpbin-cluster"}
+        )
+        assert result["name"] == "httpbin-cluster-2"
+
+    def test_chaining(self, guardrails):
+        """enable_name_dedup should return self for chaining."""
+        result = guardrails.enable_name_dedup()
+        assert result is guardrails
+
+
+# ===========================================================================
+# Port Validation Guardrail
+# ===========================================================================
+
+class TestGuardrailsPortValidation:
+    """Tests for the port validation guardrail."""
+
+    def test_port_in_range_no_warnings(self, guardrails, mock_mcp):
+        """A port within range that is not in use should produce no warnings."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {"in_use": False}
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 10001}
+        )
+        assert "_port_warnings" not in result
+
+    def test_port_out_of_range_warns(self, guardrails, mock_mcp):
+        """A port outside the default range should produce a warning."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {"in_use": False}
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 50000}
+        )
+        assert "_port_warnings" in result
+        assert any("outside" in w for w in result["_port_warnings"])
+
+    def test_port_already_in_use_warns(self, guardrails, mock_mcp):
+        """A port that is already in use should produce a warning."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {
+            "in_use": True,
+            "listener": {"name": "existing-listener"},
+        }
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 10001}
+        )
+        assert "_port_warnings" in result
+        assert any("already in use" in w for w in result["_port_warnings"])
+        assert any("existing-listener" in w for w in result["_port_warnings"])
+
+    def test_port_in_use_string_listener(self, guardrails, mock_mcp):
+        """Port in use with listener as string (not dict) should still work."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {
+            "in_use": True,
+            "listener": "old-listener",
+        }
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 10005}
+        )
+        assert any("old-listener" in w for w in result["_port_warnings"])
+
+    def test_both_out_of_range_and_in_use(self, guardrails, mock_mcp):
+        """Both warnings should appear when port is out of range AND in use."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {
+            "in_use": True,
+            "listener": "busy",
+        }
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 50000}
+        )
+        assert len(result["_port_warnings"]) == 2
+
+    def test_custom_port_range(self, guardrails, mock_mcp):
+        """Custom port range should be respected."""
+        guardrails.enable_port_validation(low=8000, high=9000)
+        mock_mcp.call_tool.return_value = {"in_use": False}
+
+        # Port 8500 is in the custom range — no warning
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 8500}
+        )
+        assert "_port_warnings" not in result
+
+        # Port 10001 is outside the custom range — should warn
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l2", "port": 10001}
+        )
+        assert "_port_warnings" in result
+
+    def test_disabled_by_default(self, guardrails, mock_mcp):
+        """Without enable_port_validation(), no validation should happen."""
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 99999}
+        )
+        assert "_port_warnings" not in result
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_only_for_listener(self, guardrails, mock_mcp):
+        """Port validation should only apply to cp_create_listener."""
+        guardrails.enable_port_validation()
+
+        result = guardrails.before_call(
+            "cp_create_cluster", {"name": "c1", "port": 50000}
+        )
+        assert "_port_warnings" not in result
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_no_port_in_args_skipped(self, guardrails, mock_mcp):
+        """If there's no port in args, validation should be skipped."""
+        guardrails.enable_port_validation()
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1"}
+        )
+        assert "_port_warnings" not in result
+        mock_mcp.call_tool.assert_not_called()
+
+    def test_query_port_error_swallowed(self, guardrails, mock_mcp):
+        """If cp_query_port fails, only the range warning should appear."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.side_effect = RuntimeError("timeout")
+
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 50000}
+        )
+        # Range warning should still appear
+        assert "_port_warnings" in result
+        assert len(result["_port_warnings"]) == 1
+        assert "outside" in result["_port_warnings"][0]
+
+    def test_does_not_mutate_original_args(self, guardrails, mock_mcp):
+        """Port validation should not mutate the original args dict."""
+        guardrails.enable_port_validation()
+        mock_mcp.call_tool.return_value = {"in_use": True, "listener": "x"}
+
+        original = {"name": "l1", "port": 10001}
+        guardrails.before_call("cp_create_listener", original)
+        assert "_port_warnings" not in original
+
+    def test_chaining(self, guardrails):
+        """enable_port_validation should return self for chaining."""
+        result = guardrails.enable_port_validation()
+        assert result is guardrails
+
+    def test_boundary_ports_in_range(self, guardrails, mock_mcp):
+        """Ports at exact boundaries should be considered in range."""
+        guardrails.enable_port_validation()  # default 10000-10020
+        mock_mcp.call_tool.return_value = {"in_use": False}
+
+        # Low boundary
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l1", "port": 10000}
+        )
+        assert "_port_warnings" not in result
+
+        # High boundary
+        result = guardrails.before_call(
+            "cp_create_listener", {"name": "l2", "port": 10020}
+        )
+        assert "_port_warnings" not in result
+
+
+# ===========================================================================
+# Combined Guardrails (name dedup + port validation + dataplane injection)
+# ===========================================================================
+
+class TestGuardrailsCombined:
+    """Test that name dedup, port validation, and dataplane injection work together."""
+
+    def test_listener_with_all_guardrails(self, guardrails, mock_mcp):
+        """Creating a listener with all guardrails enabled should run all checks.
+
+        Execution order in before_call:
+          1. Dataplane injection → cp_list_dataplanes
+          2. Name dedup → cp_list_listeners
+          3. Port validation → cp_query_port
+        """
+        guardrails.enable_name_dedup()
+        guardrails.enable_port_validation()
+        guardrails.enable_dataplane_injection()
+
+        mock_mcp.call_tool.side_effect = [
+            {"dataplanes": [{"id": "dp-1"}]},              # dataplane resolve
+            {"listeners": [{"name": "taken-listener"}]},   # dedup check
+            {"in_use": False},                              # port check
+        ]
+
+        result = guardrails.before_call(
+            "cp_create_listener",
+            {"name": "new-listener", "port": 10001},
+        )
+
+        # Name should pass through (no collision)
+        assert result["name"] == "new-listener"
+        # Port should be fine (in range, not in use)
+        assert "_port_warnings" not in result
+        # Dataplane should be injected
+        assert result["dataplaneId"] == "dp-1"
+
+    def test_listener_collision_and_bad_port(self, guardrails, mock_mcp):
+        """Both dedup rename and port warning should apply together."""
+        guardrails.enable_name_dedup()
+        guardrails.enable_port_validation()
+
+        mock_mcp.call_tool.side_effect = [
+            {"listeners": [{"name": "my-listener"}]},  # dedup: collision
+            {"in_use": False},                           # port: ok but out of range
+        ]
+
+        result = guardrails.before_call(
+            "cp_create_listener",
+            {"name": "my-listener", "port": 50000},
+        )
+
+        assert result["name"] == "my-listener-2"
+        assert "_dedup_warning" in result
+        assert "_port_warnings" in result
+        assert any("outside" in w for w in result["_port_warnings"])
