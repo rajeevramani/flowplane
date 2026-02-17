@@ -259,11 +259,15 @@ Required Parameters:
 - name: Name of the listener to update (cannot be changed)
 
 Optional Parameters:
+- routeConfigName: Name of the route configuration to bind (updates the HttpConnectionManager filter)
 - address: New bind address
 - port: New port number (1-65535)
 - protocol: HTTP, HTTPS, or TCP
 - filterChains: New filter chain configuration (REPLACES existing)
 - dataplaneId: ID of dataplane to assign listener to (for MCP tool gateway routing)
+
+NOTE: routeConfigName and filterChains are mutually exclusive. Use routeConfigName for simple
+route binding. Use filterChains for advanced configurations (TLS, tracing, etc.).
 
 TIP: Use cp_get_listener first to see current configuration.
 
@@ -274,6 +278,10 @@ Authorization: Requires cp:write scope."#,
                 "name": {
                     "type": "string",
                     "description": "Name of the listener to update (cannot be changed)"
+                },
+                "routeConfigName": {
+                    "type": "string",
+                    "description": "Name of the route configuration to bind to this listener. Updates the route_config_name in the HttpConnectionManager filter."
                 },
                 "address": {
                     "type": "string",
@@ -726,9 +734,47 @@ pub async fn execute_update_listener(
         .map_err(|e| McpError::InvalidParams(format!("Failed to parse listener config: {}", e)))?;
 
     // 5. Apply updates to config
+    let route_config_name = args.get("routeConfigName").and_then(|v| v.as_str());
+
     if let Some(fc_json) = args.get("filterChains") {
         config.filter_chains = serde_json::from_value(fc_json.clone())
             .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?;
+    } else if let Some(rc_name) = route_config_name {
+        // Update the route_config_name in the existing HttpConnectionManager filter.
+        // If no HCM filter exists yet, create a default filter chain with one.
+        let mut found = false;
+        for fc in &mut config.filter_chains {
+            for filter in &mut fc.filters {
+                if let FilterType::HttpConnectionManager { route_config_name: ref mut rcn, .. } =
+                    filter.filter_type
+                {
+                    *rcn = Some(rc_name.to_string());
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            // No existing HCM filter — create a default filter chain
+            config.filter_chains = vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: Some(rc_name.to_string()),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                        http_filters: vec![HttpFilterConfigEntry {
+                            name: None,
+                            is_optional: false,
+                            disabled: false,
+                            filter: HttpFilterKind::Router,
+                        }],
+                    },
+                }],
+                tls_context: None,
+            }];
+        }
     }
 
     let address = args.get("address").and_then(|v| v.as_str()).map(|s| s.to_string());
