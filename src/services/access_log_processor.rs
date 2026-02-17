@@ -770,80 +770,39 @@ impl AccessLogProcessor {
         );
 
         // Task 5.2: Schema inference for request and response bodies
+        // Infer both schemas first, then emit a single combined record so that
+        // request_schema and response_schema share the same grouping key
+        // (method, path, response_status_code) during aggregation.
         let inference_engine = SchemaInferenceEngine::new();
 
         // Infer request schema if body is present
+        let mut inferred_request_schema: Option<String> = None;
         if let Some(ref request_body) = entry.request_body {
             match std::str::from_utf8(request_body) {
-                Ok(json_str) => {
-                    match inference_engine.infer_from_json(json_str) {
-                        Ok(schema) => {
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                path = %entry.path,
-                                schema_type = ?schema.schema_type,
-                                "Inferred request schema"
-                            );
-
-                            // Normalize path before storing
-                            let normalized_path = normalize_path(&entry.path, path_norm_config);
-
-                            let record = InferredSchemaRecord {
-                                session_id: entry.session_id.clone(),
-                                team: entry.team.clone(),
-                                http_method: method_to_string(entry.method),
-                                path_pattern: normalized_path,
-                                request_schema: Some(serde_json::to_string(
-                                    &schema.to_json_schema(),
-                                )?),
-                                response_schema: None,
-                                response_status_code: None,
-                            };
-
-                            // Send to batcher with backpressure handling
-                            match schema_tx.try_send(record) {
-                                Ok(_) => {
-                                    info!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        schema_type = "request",
-                                        "Inferred schema sent to batcher for persistence"
-                                    );
-                                    metrics::record_schema_inferred("request", true).await;
-                                }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Queue is full - drop the schema and log for metrics
-                                    warn!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        "Schema queue full, dropping schema (backpressure)"
-                                    );
-                                    metrics::record_schema_dropped("request").await;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    // Batcher is shut down, ignore silently
-                                    debug!(worker_id, "Batcher channel closed, dropping schema");
-                                    metrics::record_schema_dropped("request").await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Non-JSON or malformed body - log but don't fail
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                error = %e,
-                                "Failed to infer request schema (likely non-JSON body)"
-                            );
-                            metrics::record_schema_inferred("request", false).await;
-                        }
+                Ok(json_str) => match inference_engine.infer_from_json(json_str) {
+                    Ok(schema) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            path = %entry.path,
+                            schema_type = ?schema.schema_type,
+                            "Inferred request schema"
+                        );
+                        inferred_request_schema =
+                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        metrics::record_schema_inferred("request", true).await;
                     }
-                }
+                    Err(e) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            error = %e,
+                            "Failed to infer request schema (likely non-JSON body)"
+                        );
+                        metrics::record_schema_inferred("request", false).await;
+                    }
+                },
                 Err(_) => {
-                    // Binary request body - skip schema inference
                     debug!(
                         worker_id,
                         session_id = %entry.session_id,
@@ -854,84 +813,80 @@ impl AccessLogProcessor {
         }
 
         // Infer response schema if body is present
+        let mut inferred_response_schema: Option<String> = None;
         if let Some(ref response_body) = entry.response_body {
             match std::str::from_utf8(response_body) {
-                Ok(json_str) => {
-                    match inference_engine.infer_from_json(json_str) {
-                        Ok(schema) => {
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                path = %entry.path,
-                                status = entry.response_status,
-                                schema_type = ?schema.schema_type,
-                                "Inferred response schema"
-                            );
-
-                            // Normalize path before storing
-                            let normalized_path = normalize_path(&entry.path, path_norm_config);
-
-                            let record = InferredSchemaRecord {
-                                session_id: entry.session_id.clone(),
-                                team: entry.team.clone(),
-                                http_method: method_to_string(entry.method),
-                                path_pattern: normalized_path,
-                                request_schema: None,
-                                response_schema: Some(serde_json::to_string(
-                                    &schema.to_json_schema(),
-                                )?),
-                                response_status_code: Some(entry.response_status),
-                            };
-
-                            // Send to batcher with backpressure handling
-                            match schema_tx.try_send(record) {
-                                Ok(_) => {
-                                    info!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        status = entry.response_status,
-                                        schema_type = "response",
-                                        "Inferred schema sent to batcher for persistence"
-                                    );
-                                    metrics::record_schema_inferred("response", true).await;
-                                }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Queue is full - drop the schema and log for metrics
-                                    warn!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        "Schema queue full, dropping schema (backpressure)"
-                                    );
-                                    metrics::record_schema_dropped("response").await;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    // Batcher is shut down, ignore silently
-                                    debug!(worker_id, "Batcher channel closed, dropping schema");
-                                    metrics::record_schema_dropped("response").await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Non-JSON or malformed body - log but don't fail
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                error = %e,
-                                "Failed to infer response schema (likely non-JSON body)"
-                            );
-                            metrics::record_schema_inferred("response", false).await;
-                        }
+                Ok(json_str) => match inference_engine.infer_from_json(json_str) {
+                    Ok(schema) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            path = %entry.path,
+                            status = entry.response_status,
+                            schema_type = ?schema.schema_type,
+                            "Inferred response schema"
+                        );
+                        inferred_response_schema =
+                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        metrics::record_schema_inferred("response", true).await;
                     }
-                }
+                    Err(e) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            error = %e,
+                            "Failed to infer response schema (likely non-JSON body)"
+                        );
+                        metrics::record_schema_inferred("response", false).await;
+                    }
+                },
                 Err(_) => {
-                    // Binary response body - skip schema inference
                     debug!(
                         worker_id,
                         session_id = %entry.session_id,
                         "Response body is not valid UTF-8 (binary data)"
                     );
+                }
+            }
+        }
+
+        // Emit a single combined record so request + response schemas share the
+        // same (method, path, status_code) grouping key during aggregation.
+        if inferred_request_schema.is_some() || inferred_response_schema.is_some() {
+            let normalized_path = normalize_path(&entry.path, path_norm_config);
+
+            let record = InferredSchemaRecord {
+                session_id: entry.session_id.clone(),
+                team: entry.team.clone(),
+                http_method: method_to_string(entry.method),
+                path_pattern: normalized_path,
+                request_schema: inferred_request_schema,
+                response_schema: inferred_response_schema,
+                response_status_code: Some(entry.response_status),
+            };
+
+            match schema_tx.try_send(record) {
+                Ok(_) => {
+                    info!(
+                        worker_id,
+                        session_id = %entry.session_id,
+                        path = %entry.path,
+                        status = entry.response_status,
+                        "Inferred schema sent to batcher for persistence"
+                    );
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!(
+                        worker_id,
+                        session_id = %entry.session_id,
+                        path = %entry.path,
+                        "Schema queue full, dropping schema (backpressure)"
+                    );
+                    metrics::record_schema_dropped("combined").await;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    debug!(worker_id, "Batcher channel closed, dropping schema");
+                    metrics::record_schema_dropped("combined").await;
                 }
             }
         }
