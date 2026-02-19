@@ -127,15 +127,14 @@ impl SchemaAggregator {
         // Aggregate request schemas by merging all observations
         let request_schema = merge_schemas(&observations, |obs| obs.request_schema.as_ref())?;
 
-        // Aggregate response schemas by status code
+        // Aggregate response schemas by status code.
+        // Always insert the status code key so bodyless endpoints (DELETE 204,
+        // GET collections) retain their status code in the aggregated record.
         let mut response_schemas_map = HashMap::new();
         if let Some(status) = response_status_code {
-            // Merge all response schemas for this status code
             let response_schema = merge_schemas(&observations, |obs| obs.response_schema.as_ref())?;
-
-            if let Some(schema) = response_schema {
-                response_schemas_map.insert(status.to_string(), schema);
-            }
+            response_schemas_map
+                .insert(status.to_string(), response_schema.unwrap_or(serde_json::Value::Null));
         }
 
         // Calculate sample count

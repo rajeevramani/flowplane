@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:57:49.915364+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "t5f7af30",
+    "ports": []
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771455457-8ABX7cTVgtWOrhl6TzVH",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll start by checking the existing gateway layout and any active learning sessions simultaneously before creating the new session.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Fi4voBQpWNFQ6B9rsFrS5h",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_topology"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01BENurL1x4toMC67ffksaqD",
+                  "function": {
+                    "arguments": "{\"status\": \"active\"}",
+                    "name": "cp_list_learning_sessions"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771455457,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 98,
+          "prompt_tokens": 12910,
+          "total_tokens": 13008,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.0402,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0402,
+            "upstream_inference_prompt_cost": 0.03873,
+            "upstream_inference_completions_cost": 0.00147
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "ops_topology",
+        "cp_list_learning_sessions"
+      ]
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771455459-sNR6jV3QVGVV8eWANcom",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "No active sessions exist. Now I'll create the learning session as requested:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01RgfFKN2nN5PwDqf8hD2riK",
+                  "function": {
+                    "arguments": "{\"route_pattern\": \".*\", \"target_sample_count\": 10, \"auto_start\": true}",
+                    "name": "cp_create_learning_session"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771455460,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 115,
+          "prompt_tokens": 13262,
+          "total_tokens": 13377,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.041511,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.041511,
+            "upstream_inference_prompt_cost": 0.039786,
+            "upstream_inference_completions_cost": 0.001725
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_create_learning_session"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771455462-ozQ6lVObjJqk1mqVmFLn",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The learning session is live! Here's a full status report:\n\n---\n\n## \u2705 Learning Session Created\n\n| Field | Value |\n|---|---|\n| **Session ID** | `b1a32966-e8fc-497f-8290-6bc40dd7b495` |\n| **Route Pattern** | `.*` (matches all paths) |\n| **Target Samples** | 10 |\n| **Status** | \ud83d\udfe2 Active |\n| **Auto-Started** | Yes |\n\n---\n\n## \u26a0\ufe0f Gateway Topology Notice\n\nBefore sending traffic, there are a few things to be aware of from the topology check:\n\n- **0 listeners** \u2014 No listeners are currently configured on the gateway\n- **0 route configs** \u2014 No routing rules are defined\n- **2 orphan clusters** exist (`auth-example-443-cluster`, `auth-example-443-cluster-2`) but are not connected to any listener or route\n\nThis means traffic **cannot flow through the gateway yet**. The learning session is active and ready to capture samples, but you'll need a listener and route configuration wired up first.\n\n---\n\n## \ud83d\udd27 Recommended Next Steps\n\n1. **Wire up the gateway** \u2014 Create a listener + route config + virtual host + route that forwards to your backend cluster. (The Dev Agent can help with this.)\n2. **Send traffic** \u2014 Once the gateway is configured, send 10 HTTP requests through the listener port. Example:\n   ```bash\n   curl http://localhost:{PORT}/your/api/path\n   ```\n3. **Monitor progress** \u2014 I can check the session progress at any time using session ID `b1a32966-e8fc-497f-8290-6bc40dd7b495`.\n4. **Review schemas** \u2014 Once 10 samples are collected and the session completes, I'll pull the generated OpenAPI schemas.\n\nWould you like me to monitor the session progress, or would you like help setting up the gateway listener and routes first?",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771455462,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 459,
+          "prompt_tokens": 13433,
+          "total_tokens": 13892,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.047184,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.047184,
+            "upstream_inference_prompt_cost": 0.040299,
+            "upstream_inference_completions_cost": 0.006885
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    }
+  ]
+}

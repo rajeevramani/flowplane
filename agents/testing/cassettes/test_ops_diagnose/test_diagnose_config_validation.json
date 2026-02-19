@@ -1,0 +1,178 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:39:11.845575+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "t860eeb0",
+    "ports": []
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771454334-vyVKSeXVOmrxA0S23Vel",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll run a comprehensive gateway health check by gathering all the information in parallel \u2014 topology, resource lists, validation, and recent audit activity.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01PQhaWRs8BCeHdKDmbnEW7q",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_topology"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01Sc4vfoGuyL2ahqzzAL6hmx",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_015nzaSNFYG3CJZMJuXSsgiQ",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_clusters"
+                  },
+                  "type": "function",
+                  "index": 2
+                },
+                {
+                  "id": "toolu_bdrk_013N7bCp7gtLxAdxVJwJLtwt",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_listeners"
+                  },
+                  "type": "function",
+                  "index": 3
+                },
+                {
+                  "id": "toolu_bdrk_01MxuiAupzFiWra5eEu8oQw5",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_route_configs"
+                  },
+                  "type": "function",
+                  "index": 4
+                },
+                {
+                  "id": "toolu_bdrk_01W7YxYMGTeTujcoNngx5ooj",
+                  "function": {
+                    "arguments": "{\"limit\": 20}",
+                    "name": "ops_audit_query"
+                  },
+                  "type": "function",
+                  "index": 5
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454334,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 189,
+          "prompt_tokens": 15898,
+          "total_tokens": 16087,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.050529,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.050529,
+            "upstream_inference_prompt_cost": 0.047694,
+            "upstream_inference_completions_cost": 0.002835
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "ops_topology",
+        "ops_config_validate",
+        "cp_list_clusters",
+        "cp_list_listeners",
+        "cp_list_route_configs",
+        "ops_audit_query"
+      ]
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771454338-Q0jMhqt6eyBUXuHWFRsA",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Here is the full gateway health report:\n\n---\n\n## \ud83d\udd34 Gateway Health Report \u2014 Issues Found\n\n**Overall Status: `INVALID`** \u2014 2 warnings, 0 errors\n\n---\n\n### \ud83d\udcca Resource Inventory\n\n| Resource | Count | Connected | Orphaned |\n|---|---|---|---|\n| Listeners | 0 | \u2014 | \u2014 |\n| Route Configs | 0 | \u2014 | 0 |\n| Clusters | 2 | 0 | **2** |\n| Routes | 0 | \u2014 | \u2014 |\n\n---\n\n### \u26a0\ufe0f Issues Detected\n\n#### 1. Orphan Cluster: `auth-example-443-cluster`\n- **Severity:** Warning\n- **Service:** `auth.example.com JWKS endpoint`\n- **Problem:** This cluster is not referenced by any route configuration and receives **zero traffic**.\n- **Created:** 2026-02-18\n\n#### 2. Orphan Cluster: `auth-example-443-cluster-2`\n- **Severity:** Warning\n- **Service:** `auth.example.com JWKS endpoint`\n- **Problem:** This cluster is not referenced by any route configuration and receives **zero traffic**.\n- **Created:** 2026-02-18 (same day as above \u2014 appears to be a duplicate)\n\n---\n\n### \ud83d\udd0d Key Observations\n\n1. **No listeners are configured.** The gateway is not listening on any port \u2014 **no traffic can be served at all.** This is the most critical gap.\n2. **No route configurations exist.** Without route configs, there's nothing to bind to a listener even if one were created.\n3. **Both clusters appear to be duplicates** \u2014 both are named for `auth.example.com JWKS endpoint` and were created within seconds of each other. One (`auth-example-443-cluster-2`) is likely an accidental duplicate.\n4. **Audit log access was unavailable** due to insufficient scope (`audit:read` required), so recent change history could not be retrieved.\n\n---\n\n### \ud83d\udee0\ufe0f Recommendations\n\n| Priority | Action |\n|---|---|\n| \ud83d\udd34 High | **Create a listener** on the appropriate port (e.g., 8080/443) to accept traffic |\n| \ud83d\udd34 High | **Create route configurations** with virtual hosts and routes pointing to your backend clusters |\n| \ud83d\udfe1 Medium | **Investigate the duplicate cluster** `auth-example-443-cluster-2` \u2014 if it's a copy of `auth-example-443-cluster`, consider deleting it |\n| \ud83d\udfe1 Medium | These clusters appear to be JWKS endpoints for JWT authentication \u2014 they should be referenced by a `jwt_auth` filter, not necessarily a routing rule. Verify this is intentional. |\n\n---\n\n**Bottom line:** The gateway is effectively **non-functional** \u2014 no listeners, no routes, and no traffic path exists end-to-end. The two clusters present are orphaned and likely were created as part of an incomplete setup or a JWT auth filter configuration. A listener and route configuration need to be created to complete the setup.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454338,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 724,
+          "prompt_tokens": 16984,
+          "total_tokens": 17708,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.061812,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.061812,
+            "upstream_inference_prompt_cost": 0.050952,
+            "upstream_inference_completions_cost": 0.01086
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    }
+  ]
+}

@@ -1,0 +1,358 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T20:11:31.345775+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "tf937007",
+    "ports": [
+      39718
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "chatcmpl-1c216d1f-123a-42b5-a7f0-42ac8487c803",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API step by step. Let me start with parallel pre-flight checks and gather existing infrastructure info.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01XfU6v9GEwS969JmbV8Ns3J",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"tf937007-cluster\", \"route_config_name\": \"tf937007-rc\", \"listener_name\": \"tf937007-listener\", \"listen_port\": 39718, \"path\": \"/\"}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_01CdhmwJx8JVihPVysd3pZSW",
+                  "function": {
+                    "arguments": "{}",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445470,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 195,
+          "prompt_tokens": 23313,
+          "total_tokens": 23508,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "chatcmpl-8da986d3-628a-457a-929f-ba60418f76b4",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All 5 preflight checks passed \u2705 and the dataplane is ready. Now let me create the cluster.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01VsuU1RfykUDB7Z8UDYHzjx",
+                  "function": {
+                    "arguments": "{\"name\": \"tf937007-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\": \"httpbin-test\", \"port\": 80}], \"lbPolicy\": \"ROUND_ROBIN\"}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445474,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 163,
+          "prompt_tokens": 23929,
+          "total_tokens": 24092,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "chatcmpl-9963e5fb-e33a-45b8-aee7-6fd33cbe92c6",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Cluster created \u2705. Now let me create the route configuration.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01GTHNG9BXBRBzdzJuHeHYAM",
+                  "function": {
+                    "arguments": "{\"name\": \"tf937007-rc\", \"virtualHosts\": [{\"name\": \"tf937007-vhost\", \"domains\": [\"*\"], \"routes\": [{\"name\": \"tf937007-route\", \"match\": {\"path\": {\"type\": \"prefix\", \"value\": \"/\"}}, \"action\": {\"type\": \"forward\", \"cluster\": \"tf937007-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445477,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 167,
+          "prompt_tokens": 24194,
+          "total_tokens": 24361,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "chatcmpl-c06f3729-fba6-4240-ab1b-1eaf4f88805e",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created \u2705 with virtual host `tf937007-vhost` and route prefix `/`. Now let me create the listener.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01HPMAEZU8cWsfTicburCBFT",
+                  "function": {
+                    "arguments": "{\"name\": \"tf937007-listener\", \"port\": 39718, \"routeConfigName\": \"tf937007-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445480,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 174,
+          "prompt_tokens": 24468,
+          "total_tokens": 24642,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "chatcmpl-c1e5d808-1575-404c-835f-78c3ebd16038",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener created \u2705. Now let me run full verification in parallel.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_012M4EqFiUxafjQU9tttk4eF",
+                  "function": {
+                    "arguments": "{\"name\": \"tf937007-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_01LH8F6YMRxCcYMMzhScMGVs",
+                  "function": {
+                    "arguments": "{\"path\": \"/\", \"port\": 39718}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 2
+                },
+                {
+                  "id": "toolu_01MCeERgaMD9NRcuiCEbW4vN",
+                  "function": {
+                    "arguments": "{}",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 3
+                }
+              ],
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445483,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 153,
+          "prompt_tokens": 24754,
+          "total_tokens": 24907,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_trace_request",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "chatcmpl-c66fa859-445b-4f28-82e3-fb013f6f6ead",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All verifications passed! Here's the complete deployment summary:\n\n---\n\n## \u2705 Deployment Summary\n\n### Resources Created (Exact Names as Requested)\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `tf937007-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `tf937007-rc` | Prefix `/` \u2192 `tf937007-cluster` |\n| **Virtual Host** | `tf937007-vhost` | Domains: `[\"*\"]` |\n| **Listener** | `tf937007-listener` | `0.0.0.0:39718` \u2192 `tf937007-rc` |\n\n### Request Trace (Port 39718, Path `/`)\n```\nClient\n  \u2192 tf937007-listener (0.0.0.0:39718)\n    \u2192 tf937007-rc (route config)\n      \u2192 tf937007-vhost (domains: [\"*\"])\n        \u2192 tf937007-route (prefix: /)\n          \u2192 tf937007-cluster\n            \u2192 httpbin-test:80\n```\n\n### Validation\n- \u2705 **0 errors, 0 warnings** \u2014 configuration is valid\n- \u2705 **Full routing chain wired** \u2014 listener \u2192 route config \u2192 virtual host \u2192 route \u2192 cluster \u2192 endpoint\n- \u2139\ufe0f Endpoint health status is `unknown` (health checks not configured; normal for initial deploy)\n\n### Access URL\n```\nhttp://127.0.0.1:39718/\n```",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "citations": []
+            }
+          }
+        ],
+        "created": 1771445491,
+        "model": "claude-sonnet-4-6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 366,
+          "prompt_tokens": 25368,
+          "total_tokens": 25734,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0
+          },
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "tool_names": []
+    }
+  ]
+}

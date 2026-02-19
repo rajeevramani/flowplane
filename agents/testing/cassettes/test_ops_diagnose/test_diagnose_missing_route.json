@@ -1,0 +1,659 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:40:39.675328+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "t7a9f0ce",
+    "ports": [
+      33432
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771454393-pLZYtFupMgzOTQBAxLFw",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API step by step using exactly the names you've specified. Let me start with parallel pre-flight checks and resource discovery.\n\n**Step 1: Pre-flight checks & discovery**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_013AK5gwqro2vTXHLPoXsBJf",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"t7a9f0ce-cluster\", \"route_config_name\": \"t7a9f0ce-rc\", \"listener_name\": \"t7a9f0ce-listener\", \"listen_port\": 33432, \"path\": \"/get\"}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01FjBrShsWqUAxNXjUR3v7zK",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454393,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 226,
+          "prompt_tokens": 23330,
+          "total_tokens": 23556,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.07338,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.07338,
+            "upstream_inference_prompt_cost": 0.06999,
+            "upstream_inference_completions_cost": 0.00339
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771454397-bDkUDjXgaZwBb2XNkbSl",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All 5 pre-flight checks passed \u2705. Dataplane found: `agent-test-dataplane`. Now creating the cluster.\n\n**Step 2: Create the cluster**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01GVdnoAq4BmTeHsztLmaGtx",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\":\"httpbin-test\",\"port\":80}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454397,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 159,
+          "prompt_tokens": 24000,
+          "total_tokens": 24159,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074385,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074385,
+            "upstream_inference_prompt_cost": 0.072,
+            "upstream_inference_completions_cost": 0.002385
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771454400-p6XPv7ndso0WPHuchzYi",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Cluster created \u2705. Now creating the route configuration.\n\n**Step 3: Create the route configuration**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01988xxHSFMjEG9KAa4oNxSh",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-rc\", \"virtualHosts\": [{\"name\":\"t7a9f0ce-vhost\",\"domains\":[\"*\"],\"routes\":[{\"name\":\"t7a9f0ce-route\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/get\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"t7a9f0ce-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454400,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 193,
+          "prompt_tokens": 24272,
+          "total_tokens": 24465,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075711,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075711,
+            "upstream_inference_prompt_cost": 0.072816,
+            "upstream_inference_completions_cost": 0.002895
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771454404-KFYr7LSzxiKXHSChHz49",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created \u2705 with virtual host `t7a9f0ce-vhost` and route on `/get`. Now creating the listener.\n\n**Step 4: Create the listener**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_015ZRCHyEQ3iijU6vV6XRBeY",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-listener\", \"port\": 33432, \"routeConfigName\": \"t7a9f0ce-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454404,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 195,
+          "prompt_tokens": 24576,
+          "total_tokens": 24771,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076653,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076653,
+            "upstream_inference_prompt_cost": 0.073728,
+            "upstream_inference_completions_cost": 0.002925
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771454409-05NLLGsaSQlqjJkiXfkD",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener created \u2705. Now running verification.\n\n**Step 5: Verification**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_014ynNhvKnoRn7w7vghWdW4e",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_015ymTQoV9MGF9gwmT6srcsy",
+                  "function": {
+                    "arguments": "{\"path\": \"/get\", \"port\": 33432}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_vrtx_0133HP683JjCR9k7GJYpHwDM",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454409,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 162,
+          "prompt_tokens": 24894,
+          "total_tokens": 25056,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.077112,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.077112,
+            "upstream_inference_prompt_cost": 0.074682,
+            "upstream_inference_completions_cost": 0.00243
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_trace_request",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771454413-ewV1DoXtvZaztPSaZDgR",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Verification complete. The 2 warnings are pre-existing orphan clusters unrelated to this deployment \u2014 **zero errors** for the newly deployed resources.\n\n---\n\n## \u2705 Deployment Summary\n\nAll resources created with **exactly** the names specified:\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `t7a9f0ce-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `t7a9f0ce-rc` | Path prefix `/get` |\n| **Virtual Host** | `t7a9f0ce-vhost` | Domains: `[\"*\"]` |\n| **Route** | `t7a9f0ce-route` | `prefix /get` \u2192 `t7a9f0ce-cluster` |\n| **Listener** | `t7a9f0ce-listener` | `0.0.0.0:33432` |\n\n### \ud83d\udd0d Trace Result\n```\nRequest: GET /get :33432\n  \u2192 Listener:   t7a9f0ce-listener (0.0.0.0:33432)\n  \u2192 Route Config: t7a9f0ce-rc\n  \u2192 Virtual Host: t7a9f0ce-vhost (domains: [\"*\"])\n  \u2192 Route:      t7a9f0ce-route (prefix /get)\n  \u2192 Cluster:    t7a9f0ce-cluster\n  \u2192 Backend:    httpbin-test:80\n```\n\n### \ud83c\udf10 Access URL\n```\nhttp://127.0.0.1:33432/get\n```",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454413,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 390,
+          "prompt_tokens": 25711,
+          "total_tokens": 26101,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.082983,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.082983,
+            "upstream_inference_prompt_cost": 0.077133,
+            "upstream_inference_completions_cost": 0.00585
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771454420-lPnMnbmF3D6KTbT3j9ar",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll trace the request and investigate in parallel \u2014 running the trace alongside checks on listeners and route configs.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01LesBAr4zy4Mxiv6AMLNafk",
+                  "function": {
+                    "arguments": "{\"path\": \"/api/users\", \"port\": 33432}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01BYFP5UJxgmrvAKU6Gk8Qtz",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_listeners"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_01QDKnbkgA5ZUYAhP7y9Aw52",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_route_configs"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454421,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 142,
+          "prompt_tokens": 15906,
+          "total_tokens": 16048,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.049848,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.049848,
+            "upstream_inference_prompt_cost": 0.047718,
+            "upstream_inference_completions_cost": 0.00213
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "ops_trace_request",
+        "cp_list_listeners",
+        "cp_list_route_configs"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771454424-j2aL1WXCxsPPoc96oeV7",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I can see the listener exists on port 33432, so let me dig deeper into the route config and virtual hosts to understand the routing rules.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_015WyZrXpGTZH6rBpo5uf9KN",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-rc\"}",
+                    "name": "cp_get_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_014aCrhQAaJ5reQ3JTRyHJq5",
+                  "function": {
+                    "arguments": "{\"route_config\": \"t7a9f0ce-rc\"}",
+                    "name": "cp_list_virtual_hosts"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_vrtx_01AsiDy957R1uuP5h2P6pdJd",
+                  "function": {
+                    "arguments": "{\"name\": \"t7a9f0ce-listener\"}",
+                    "name": "cp_get_listener"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454424,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 192,
+          "prompt_tokens": 16490,
+          "total_tokens": 16682,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.05235,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.05235,
+            "upstream_inference_prompt_cost": 0.04947,
+            "upstream_inference_completions_cost": 0.00288
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_get_route_config",
+        "cp_list_virtual_hosts",
+        "cp_get_listener"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771454428-jdD18EylGjjtdNbP1s9h",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The investigation is complete. Here's a full breakdown of what's happening and why you're getting a 404.\n\n---\n\n## \ud83d\udd0d Root Cause: Path Mismatch\n\nThe gateway is configured to route `/get`, but your request is to `/api/users`. **No route exists that matches `/api/users`.**\n\n---\n\n## Traffic Path Analysis\n\n```\nClient Request: localhost:33432/api/users\n        \u2502\n        \u25bc\n[Listener: t7a9f0ce-listener] \u2705  Port 33432 \u2014 EXISTS and is active\n        \u2502\n        \u25bc\n[Route Config: t7a9f0ce-rc] \u2705  Bound to the listener correctly\n        \u2502\n        \u25bc\n[Virtual Host: t7a9f0ce-vhost] \u2705  Matches all domains (\"*\")\n        \u2502\n        \u25bc\n[Route: t7a9f0ce-route] \u274c  Only matches prefix \"/get\"\n        \u2502                     Your path \"/api/users\" does NOT match!\n        \u25bc\n        404\n```\n\n---\n\n## What's Configured vs. What You're Requesting\n\n| Property | Configured | Requested |\n|---|---|---|\n| **Port** | `33432` | `33432` \u2705 |\n| **Domain** | `*` (any) | `localhost` \u2705 |\n| **Path (prefix)** | `/get` | `/api/users` \u274c |\n| **Backend Cluster** | `t7a9f0ce-cluster` | \u2014 (never reached) |\n\n---\n\n## How to Fix It\n\nYou have two options:\n\n### Option A \u2014 Add a new route for `/api/users`\nAdd a route to the existing virtual host (`t7a9f0ce-vhost`) that matches the prefix `/api/users` and forwards to `t7a9f0ce-cluster` (or a different cluster).\n\n### Option B \u2014 Update the existing route's path prefix\nIf `/api/users` is the intended path and `/get` was a mistake, update the existing route `t7a9f0ce-route` to match `/api/users` instead of `/get`.\n\n---\n\n**Bottom line:** The listener and route config are correctly wired, but the only defined route only handles `/get` prefixed paths. The path `/api/users` has no matching rule, so Envoy returns a 404.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454428,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 569,
+          "prompt_tokens": 17470,
+          "total_tokens": 18039,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.060945,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.060945,
+            "upstream_inference_prompt_cost": 0.05241,
+            "upstream_inference_completions_cost": 0.008535
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": []
+    }
+  ]
+}

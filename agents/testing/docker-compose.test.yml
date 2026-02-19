@@ -1,0 +1,127 @@
+# Isolated test environment for agent integration tests
+#
+# Usage:
+#   docker-compose -f agents/testing/docker-compose.test.yml up -d
+#   make test-agents-up
+#
+# Port offsets from dev env to avoid conflicts:
+#   PostgreSQL: 5433 (dev: 5432)
+#   CP HTTP:    8090 (dev: 8080)
+#   CP xDS:     50052 (dev: 50051)
+#   Envoy:      ports 15000-15100 (dynamic listeners for tests)
+#   Envoy Admin: 9902
+#
+# To include Envoy: docker-compose --profile envoy up -d
+
+services:
+  postgres-test:
+    image: postgres:17-alpine
+    container_name: flowplane-test-postgres
+    environment:
+      POSTGRES_USER: flowplane
+      POSTGRES_PASSWORD: flowplane
+      POSTGRES_DB: flowplane_test
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowplane"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+    networks:
+      - flowplane-test-network
+    restart: "no"
+
+  control-plane-test:
+    image: flowplane:latest
+    container_name: flowplane-test-cp
+    environment:
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-test-postgres:5432/flowplane_test
+      FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 50051
+      FLOWPLANE_XDS_ADVERTISED_ADDRESS: control-plane-test
+      FLOWPLANE_COOKIE_SECURE: "false"
+      FLOWPLANE_UI_ORIGIN: "http://localhost:8090"
+      RUST_LOG: info,flowplane=debug
+      FLOWPLANE_ENABLE_METRICS: "true"
+      FLOWPLANE_ENABLE_TRACING: "false"
+    ports:
+      - "8090:8080"
+      - "50052:50051"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - flowplane-test-network
+    restart: "no"
+
+  httpbin-test:
+    image: kennethreitz/httpbin:latest
+    container_name: flowplane-test-httpbin
+    networks:
+      - flowplane-test-network
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/get')\""]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 3s
+
+  mockbank-api:
+    build:
+      context: ../../../mock-backend
+      dockerfile: Dockerfile
+    container_name: flowplane-test-mockbank
+    ports:
+      - "3001:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/v2/api/customers').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flowplane-test-network
+    restart: "no"
+
+  envoy-test:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: flowplane-test-envoy
+    profiles: ["envoy"]
+    entrypoint: ["/usr/local/bin/envoy"]
+    command:
+      - --config-path
+      - /etc/envoy/envoy-bootstrap.yaml
+      - --log-level
+      - info
+    ports:
+      - "15000-15100:15000-15100"
+      - "9902:9902"
+    depends_on:
+      control-plane-test:
+        condition: service_healthy
+    volumes:
+      - ./envoy-bootstrap.yaml:/etc/envoy/envoy-bootstrap.yaml:ro
+    networks:
+      - flowplane-test-network
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9902/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+networks:
+  flowplane-test-network:
+    driver: bridge

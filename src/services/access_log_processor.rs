@@ -850,44 +850,46 @@ impl AccessLogProcessor {
             }
         }
 
-        // Emit a single combined record so request + response schemas share the
-        // same (method, path, status_code) grouping key during aggregation.
-        if inferred_request_schema.is_some() || inferred_response_schema.is_some() {
-            let normalized_path = normalize_path(&entry.path, path_norm_config);
+        // Emit a record for every access log entry, even when both schemas are
+        // None.  Bodyless endpoints (GET collections, DELETE 204) must still
+        // appear in the aggregated catalog so the OpenAPI export is complete.
+        // Strip query string before normalization so `/api/x?page=1` groups
+        // with `/api/x`.
+        let path_without_query = entry.path.split('?').next().unwrap_or(&entry.path);
+        let normalized_path = normalize_path(path_without_query, path_norm_config);
 
-            let record = InferredSchemaRecord {
-                session_id: entry.session_id.clone(),
-                team: entry.team.clone(),
-                http_method: method_to_string(entry.method),
-                path_pattern: normalized_path,
-                request_schema: inferred_request_schema,
-                response_schema: inferred_response_schema,
-                response_status_code: Some(entry.response_status),
-            };
+        let record = InferredSchemaRecord {
+            session_id: entry.session_id.clone(),
+            team: entry.team.clone(),
+            http_method: method_to_string(entry.method),
+            path_pattern: normalized_path,
+            request_schema: inferred_request_schema,
+            response_schema: inferred_response_schema,
+            response_status_code: Some(entry.response_status),
+        };
 
-            match schema_tx.try_send(record) {
-                Ok(_) => {
-                    info!(
-                        worker_id,
-                        session_id = %entry.session_id,
-                        path = %entry.path,
-                        status = entry.response_status,
-                        "Inferred schema sent to batcher for persistence"
-                    );
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        worker_id,
-                        session_id = %entry.session_id,
-                        path = %entry.path,
-                        "Schema queue full, dropping schema (backpressure)"
-                    );
-                    metrics::record_schema_dropped("combined").await;
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    debug!(worker_id, "Batcher channel closed, dropping schema");
-                    metrics::record_schema_dropped("combined").await;
-                }
+        match schema_tx.try_send(record) {
+            Ok(_) => {
+                info!(
+                    worker_id,
+                    session_id = %entry.session_id,
+                    path = %entry.path,
+                    status = entry.response_status,
+                    "Inferred schema sent to batcher for persistence"
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    worker_id,
+                    session_id = %entry.session_id,
+                    path = %entry.path,
+                    "Schema queue full, dropping schema (backpressure)"
+                );
+                metrics::record_schema_dropped("combined").await;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                debug!(worker_id, "Batcher channel closed, dropping schema");
+                metrics::record_schema_dropped("combined").await;
             }
         }
 
@@ -1589,6 +1591,99 @@ mod tests {
     // 1. Code review of the exponential backoff implementation
     // 2. Manual testing with actual database failures
     // 3. Integration tests that exercise the full path
+
+    #[tokio::test]
+    async fn test_query_string_stripped() {
+        let (schema_tx, mut schema_rx) = mpsc::channel(16);
+        let config = PathNormalizationConfig::rest_defaults();
+
+        // Entry with a simple query string
+        let entry1 = ProcessedLogEntry {
+            session_id: "qs-test-1".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users?page=1&limit=10".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 10,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry1, &schema_tx, &config).await.unwrap();
+
+        let record1 = schema_rx.recv().await.expect("should receive record");
+        assert_eq!(record1.path_pattern, "/api/users");
+        assert!(!record1.path_pattern.contains('?'), "path_pattern must not contain query string");
+
+        // Entry with numeric segment + query string — should normalize the ID
+        let entry2 = ProcessedLogEntry {
+            session_id: "qs-test-2".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users/123?fields=name,email".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 10,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry2, &schema_tx, &config).await.unwrap();
+
+        let record2 = schema_rx.recv().await.expect("should receive record");
+        assert_eq!(record2.path_pattern, "/api/users/{userId}");
+        assert!(!record2.path_pattern.contains('?'), "path_pattern must not contain query string");
+    }
+
+    #[tokio::test]
+    async fn test_bodyless_entry_emits_record() {
+        let (schema_tx, mut schema_rx) = mpsc::channel(16);
+        let config = PathNormalizationConfig::rest_defaults();
+
+        // GET with no request or response body
+        let entry = ProcessedLogEntry {
+            session_id: "bodyless-test".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 5,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry, &schema_tx, &config).await.unwrap();
+
+        let record = schema_rx
+            .recv()
+            .await
+            .expect("bodyless endpoint must still emit a record for OpenAPI catalog completeness");
+        assert_eq!(record.path_pattern, "/api/users");
+        assert_eq!(record.http_method, "GET");
+        assert!(record.request_schema.is_none());
+        assert!(record.response_schema.is_none());
+        assert_eq!(record.response_status_code, Some(200));
+    }
 
     #[cfg(feature = "postgres_tests")]
     mod postgres_tests {

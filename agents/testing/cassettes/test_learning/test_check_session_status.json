@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T23:06:41.604343+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "t7ebd2f6",
+    "ports": []
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771455992-VxbjbHiBuVDn7WLFqlEY",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01Uxh5bZQHJZiiTF6f8hdCWt",
+                  "function": {
+                    "arguments": "{\"status\": \"active\"}",
+                    "name": "cp_list_learning_sessions"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771455992,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 58,
+          "prompt_tokens": 12889,
+          "total_tokens": 12947,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.039537,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.039537,
+            "upstream_inference_prompt_cost": 0.038667,
+            "upstream_inference_completions_cost": 0.00087
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_list_learning_sessions"
+      ]
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771455994-ARPm05xNK0kdg61ZHAoA",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Here are the **2 currently active learning sessions**:\n\n---\n\n### \ud83d\udfe1 Session 1\n| Field | Value |\n|---|---|\n| **ID** | `b1a32966-e8fc-497f-8290-6bc40dd7b495` |\n| **Status** | \ud83d\udfe2 Active |\n| **Route Pattern** | `.*` (all routes) |\n| **Progress** | 0 / 10 samples **(0%)** |\n| **HTTP Methods** | All |\n| **Cluster Filter** | None |\n| **Started At** | 2026-02-18 22:57:41 UTC |\n\n---\n\n### \ud83d\udfe1 Session 2\n| Field | Value |\n|---|---|\n| **ID** | `195dd436-4049-4f38-838f-b10949a26775` |\n| **Status** | \ud83d\udfe2 Active |\n| **Route Pattern** | `.*` (all routes) |\n| **Progress** | 0 / 10 samples **(0%)** |\n| **HTTP Methods** | All |\n| **Cluster Filter** | None |\n| **Started At** | 2026-02-18 22:57:54 UTC |\n\n---\n\n### \u26a0\ufe0f Observations\n- Both sessions have **0 samples collected** despite being active, which means **no traffic has flowed through the gateway yet**.\n- Both sessions use the catch-all pattern `.*` and are capturing all HTTP methods.\n- Both have a modest target of **10 samples** \u2014 easy to complete quickly.\n\n### \ud83d\ude80 Next Steps\nTo move these sessions forward, you need to **send real HTTP requests through the gateway**. Would you like me to:\n1. **Check the gateway topology** to find the listener port and available routes, so I can give you concrete `curl` commands?\n2. **Cancel one of the duplicate sessions** (they have identical configurations)?",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771455994,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 460,
+          "prompt_tokens": 13305,
+          "total_tokens": 13765,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.046815,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.046815,
+            "upstream_inference_prompt_cost": 0.039915,
+            "upstream_inference_completions_cost": 0.0069
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    }
+  ]
+}

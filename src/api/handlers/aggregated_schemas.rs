@@ -757,6 +757,20 @@ fn build_openapi_spec(
     if let Some(ref resp_schemas) = schema.response_schemas {
         if let Some(resp_map) = resp_schemas.as_object() {
             for (status_code, resp_schema) in resp_map {
+                // Null schema means bodyless response (e.g. DELETE 204).
+                // Emit the status code without a content block — valid OpenAPI.
+                if resp_schema.is_null() {
+                    let description = if status_code == "204" {
+                        "No Content".to_string()
+                    } else {
+                        format!("Response with status {}", status_code)
+                    };
+                    operation["responses"][status_code] = serde_json::json!({
+                        "description": description
+                    });
+                    continue;
+                }
+
                 // Clone, strip internal attributes, and convert to OpenAPI format
                 let mut cleaned_resp_schema = resp_schema.clone();
                 strip_internal_attributes(&mut cleaned_resp_schema);
@@ -926,6 +940,20 @@ pub fn build_unified_openapi_spec(
             if let Some(ref resp_schemas) = schema.response_schemas {
                 if let Some(resp_map) = resp_schemas.as_object() {
                     for (status_code, resp_schema) in resp_map {
+                        // Null schema means bodyless response (e.g. DELETE 204).
+                        // Emit the status code without a content block — valid OpenAPI.
+                        if resp_schema.is_null() {
+                            let description = if status_code == "204" {
+                                "No Content".to_string()
+                            } else {
+                                format!("Response with status {}", status_code)
+                            };
+                            operation["responses"][status_code] = serde_json::json!({
+                                "description": description
+                            });
+                            continue;
+                        }
+
                         let mut cleaned_resp = resp_schema.clone();
                         strip_internal_attributes(&mut cleaned_resp);
                         let converted_resp = convert_schema_to_openapi(&cleaned_resp);

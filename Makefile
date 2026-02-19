@@ -21,7 +21,8 @@
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
         build build-backend build-ui info prune seed \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
-        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps
+        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
+        test-agents-up test-agents-down test-agents test-agents-envoy
 
 .DEFAULT_GOAL := help
 
@@ -110,6 +111,12 @@ help: ## Show this help message
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
 	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
 	@echo "  $(CYAN)make seed-info$(RESET)       - Display seed data credentials"
+	@echo ""
+	@echo "$(GREEN)Agent Tests:$(RESET)"
+	@echo "  $(CYAN)make test-agents-up$(RESET)    - Start isolated agent test env"
+	@echo "  $(CYAN)make test-agents-down$(RESET)  - Tear down agent test env"
+	@echo "  $(CYAN)make test-agents$(RESET)       - Run agent integration tests"
+	@echo "  $(CYAN)make test-agents-envoy$(RESET) - Run agent tests with Envoy"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
 	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
@@ -400,3 +407,39 @@ _ensure-e2e-deps:
 _ensure-network:
 	@$(DOCKER) network inspect flowplane-network >/dev/null 2>&1 || \
 		$(DOCKER) network create flowplane-network >/dev/null 2>&1
+
+# =============================================================================
+# Agent Integration Tests
+# =============================================================================
+
+AGENT_TEST_COMPOSE := -f agents/testing/docker-compose.test.yml
+
+test-agents-up: ## Start isolated agent test env (postgres + CP + httpbin)
+	@echo "$(CYAN)Starting agent test environment...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d
+	@echo ""
+	@echo "$(GREEN)Agent test env started!$(RESET)"
+	@echo "  CP HTTP:  http://localhost:8090"
+	@echo "  CP xDS:   localhost:50052"
+	@echo "  httpbin:  internal (via flowplane-test-network)"
+
+test-agents-down: ## Tear down agent test env
+	@echo "$(CYAN)Stopping agent test environment...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v
+	@echo "$(GREEN)Agent test env stopped.$(RESET)"
+
+test-agents: ## Run agent integration tests (bring up, run pytest, tear down)
+	@echo "$(CYAN)Running agent integration tests...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d --wait
+	cd agents && FLOWPLANE_TEST_URL=http://localhost:8090 python -m pytest tests/ -v; \
+	TEST_EXIT=$$?; \
+	cd .. && $(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v; \
+	exit $$TEST_EXIT
+
+test-agents-envoy: ## Run agent tests with Envoy (includes traffic/learning tests)
+	@echo "$(CYAN)Running agent integration tests with Envoy...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d --wait
+	cd agents && FLOWPLANE_TEST_URL=http://localhost:8090 WITH_ENVOY=1 python -m pytest tests/ -v; \
+	TEST_EXIT=$$?; \
+	cd .. && $(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v; \
+	exit $$TEST_EXIT

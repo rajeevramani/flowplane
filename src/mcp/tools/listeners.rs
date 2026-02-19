@@ -745,8 +745,9 @@ pub async fn execute_update_listener(
         let mut found = false;
         for fc in &mut config.filter_chains {
             for filter in &mut fc.filters {
-                if let FilterType::HttpConnectionManager { route_config_name: ref mut rcn, .. } =
-                    filter.filter_type
+                if let FilterType::HttpConnectionManager {
+                    route_config_name: ref mut rcn, ..
+                } = filter.filter_type
                 {
                     *rcn = Some(rc_name.to_string());
                     found = true;
