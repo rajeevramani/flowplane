@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Flowplane. This guide covers deve
 
 - **Rust** 1.89+ (edition 2021)
 - **Node.js** 20+ with pnpm
-- **SQLite** (default database)
+- **PostgreSQL** 15+
 - **protoc** (Protocol Buffers compiler)
 - **Docker/Podman** (optional, for containerized development)
 
@@ -67,7 +67,7 @@ make help
 
 ### Database
 
-The local development database is located at `data/development/flowplane.db`. Logs are written to `data/logs/flowplane-*.log`.
+The development database requires a running PostgreSQL instance. Set the connection URL via `DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane`. Logs are written to `data/logs/flowplane-*.log`.
 
 ## Code Standards
 
@@ -182,6 +182,9 @@ cargo test auth::
 # Run with output
 cargo test -- --nocapture
 
+# Run PostgreSQL integration tests (uses testcontainers — Docker/Podman required)
+cargo test --features postgres_tests
+
 # Run E2E tests (requires control plane not running on same ports)
 RUN_E2E=1 cargo test -p flowplane --test e2e -- --ignored --test-threads=1
 
@@ -221,10 +224,14 @@ flowplane/
 │   ├── domain/            # Domain types and business logic
 │   ├── services/          # Business services
 │   ├── storage/           # Database repositories
+│   ├── mcp/               # MCP protocol tools
+│   ├── internal_api/      # Internal operations layer
 │   └── xds/               # xDS protocol implementation
 ├── ui/                     # SvelteKit frontend
 │   ├── src/lib/           # Shared components and utilities
 │   └── src/routes/        # Page routes
+├── agents/                 # AI agent implementations
+├── migrations/             # PostgreSQL migrations
 ├── tests/                  # Integration and E2E tests
 ├── docs/                   # Documentation
 └── .local/features/        # Feature tracking (internal)

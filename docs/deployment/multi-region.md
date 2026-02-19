@@ -74,7 +74,7 @@ Control plane per region, shared PostgreSQL:
 
 ### PostgreSQL (Required for Multi-Region)
 
-SQLite is not suitable for multi-region deployments. Use PostgreSQL with:
+Multi-region deployments require a shared PostgreSQL instance accessible from all regions:
 
 #### Primary-Replica Setup
 

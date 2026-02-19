@@ -223,7 +223,7 @@ services:
       - "8080:8080"
       - "50051:50051"
     environment:
-      FLOWPLANE_DATABASE_URL: sqlite:///app/data/flowplane.db
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:password@postgres:5432/flowplane
     volumes:
       - flowplane-data:/app/data
 

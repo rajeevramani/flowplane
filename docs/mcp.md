@@ -81,7 +81,7 @@ Content-Type: application/json
   "id": 1,
   "result": {
     "protocolVersion": "2025-11-25",
-    "serverInfo": { "name": "flowplane", "version": "0.0.3" },
+    "serverInfo": { "name": "flowplane", "version": "0.0.14" },
     "capabilities": { ... }
   }
 }
@@ -203,24 +203,27 @@ Team identity is resolved in the following priority order:
 
 ## Control Plane (CP) Tools
 
-The CP endpoint exposes 52 built-in tools for managing Flowplane infrastructure (~60% CP API coverage).
+The CP endpoint exposes 60 built-in tools for managing Flowplane infrastructure (~60% CP API coverage).
 
 ### Tool Categories
 
 | Category | Tools | Coverage |
 |----------|-------|----------|
-| Clusters | 5 (list, get, create, update, delete) | 100% |
-| Listeners | 5 (list, get, create, update, delete) | 100% |
-| Route Configs | 3 (create, update, delete) | 100% |
+| Clusters | 6 (list, get, health, create, update, delete) | 100% |
+| Listeners | 7 (list, get, status, query_port, create, update, delete) | 100% |
+| Route Configs | 5 (list, get, create, update, delete) | 100% |
 | Routes | 5 (list, get, create, update, delete) | 100% |
 | Virtual Hosts | 5 (list, get, create, update, delete) | 100% |
 | Filters | 8 (list, get, create, update, delete, attach, detach, list attachments) | 100% |
+| Query Tools | 2 (query_path, query_service) | 100% |
 | Learning Sessions | 4 (list, get, create, delete) | 100% |
-| Aggregated Schemas | 2 (list, get) | 100% |
+| Aggregated Schemas | 3 (list, get, export_openapi) | 100% |
 | OpenAPI Imports | 2 (list, get) | 100% |
 | Dataplanes | 5 (list, get, create, update, delete) | 100% |
 | Filter Types | 2 (list, get) | 100% |
-| DevOps Agent | 6 (deploy_api, rate_limiting, jwt_auth, cors, canary, status) | 100% |
+| Ops Agent | 4 (trace_request, topology, config_validate, audit_query) | 100% |
+| Dev Agent | 1 (preflight_check) | 100% |
+| DevOps Agent | 1 (get_deployment_status) | 100% |
 
 ### Read-Only Tools
 
@@ -369,6 +372,23 @@ Retrieves filter configuration and metadata.
 
 **`cp_get_aggregated_schema`** - Get detailed schema information.
 
+**`cp_export_schema_openapi`** - Export aggregated schemas as an OpenAPI specification.
+
+**Input schema:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "schema_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of aggregated schema IDs to export"
+    }
+  },
+  "required": ["schema_ids"]
+}
+```
+
 #### OpenAPI Import Operations
 
 **`cp_list_openapi_imports`** - List OpenAPI specification imports.
@@ -499,7 +519,7 @@ Use the `resources/read` method with a resource URI:
 
 ## Prompts
 
-Flowplane provides 5 built-in prompts for common troubleshooting and analysis workflows.
+Flowplane provides 7 built-in prompts for common troubleshooting and analysis workflows.
 
 ### Available Prompts
 
@@ -551,6 +571,20 @@ Analyze listener configuration and provide optimization recommendations.
 Suggest performance optimizations for Flowplane configuration.
 
 **Arguments:**
+- `team` (required) - Team identifier
+
+#### 6. `dev_deploy_and_verify`
+Guide deployment of a service through the gateway with verification steps.
+
+**Arguments:**
+- `service_name` (required) - Name of the service to deploy
+- `team` (required) - Team identifier
+
+#### 7. `dev_learn_and_document`
+Guide API learning session creation and OpenAPI documentation export.
+
+**Arguments:**
+- `route_config_name` (required) - Route configuration to learn from
 - `team` (required) - Team identifier
 
 ### Using Prompts
@@ -809,7 +843,7 @@ To use Flowplane with Claude Desktop, add the following to your MCP configuratio
       "command": "flowplane",
       "args": ["mcp", "serve", "--team", "production"],
       "env": {
-        "DATABASE_URL": "sqlite:///path/to/flowplane.db"
+        "DATABASE_URL": "postgresql://flowplane:password@localhost:5432/flowplane"
       }
     }
   }
@@ -826,7 +860,7 @@ To use Flowplane with Claude Desktop, add the following to your MCP configuratio
         "mcp",
         "serve",
         "--team", "production",
-        "--database-url", "sqlite:///Users/you/flowplane/data/flowplane.db"
+        "--database-url", "postgresql://flowplane:password@localhost:5432/flowplane"
       ]
     }
   }

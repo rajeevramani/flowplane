@@ -7,7 +7,7 @@ Flowplane is a production-ready Envoy control plane that translates REST API cal
 1. **Security by Default**: Every API endpoint protected with scoped token authentication, comprehensive audit logging
 2. **Developer Experience**: High-level structured configs instead of raw Envoy protos, OpenAPI-first documentation
 3. **Extensibility**: Modular HTTP filter registry, Platform API layer for multi-team workflows
-4. **Production Ready**: TLS/mTLS support, SQLite for simplicity, PostgreSQL for scale
+4. **Production Ready**: TLS/mTLS support, PostgreSQL for persistence
 
 ## High-Level Flow
 
@@ -36,7 +36,7 @@ flowchart TB
 
         subgraph persistence[Persistence Layer]
             storage["Repositories<br/>(SQLx)"]
-            db[("SQLite / PostgreSQL<br/>clusters, routes, listeners<br/>tokens, audit_logs")]
+            db[("PostgreSQL<br/>clusters, routes, listeners<br/>tokens, audit_logs")]
         end
 
         subgraph xds_layer[xDS Layer :50051]
@@ -110,7 +110,7 @@ flowchart TB
 * **`cluster.rs`** – Cluster assembly (endpoints, load balancing, health checks, circuit breakers, TLS)
 
 ### Persistence (`src/storage`)
-* **Repository pattern** – Abstract database operations (SQLite, PostgreSQL)
+* **Repository pattern** – Abstract database operations (PostgreSQL)
 * **Migrations** – sqlx-based schema versioning
 * **Tables**: `clusters`, `routes`, `listeners`, `tokens`, `audit_logs`, `api_definitions`
 
@@ -147,7 +147,7 @@ flowchart TB
 ### Code Quality
 * **Test coverage** – 168+ unit tests, E2E integration tests with real Envoy
 * **Type safety** – Strong Rust typing prevents configuration errors at compile time
-* **Repository pattern** – Database abstraction supports SQLite (dev) and PostgreSQL (prod)
+* **Repository pattern** – Database abstraction uses PostgreSQL
 * **Modular filters** – HTTP filter registry allows easy addition of new filters following established patterns
 
 ## Security Model
@@ -218,6 +218,8 @@ On first startup:
 
 ## Multi-Tenancy Model
 
+Flowplane uses a hierarchical org-based tenancy model: **Organizations** contain **Teams**, and all resources (clusters, routes, listeners) belong to teams. Platform admins operate in a governance-only capacity — they manage orgs and users but cannot directly modify tenant resources.
+
 Flowplane supports team isolation through the Platform API:
 
 ### Shared Listener Mode (Default)
@@ -259,6 +261,15 @@ Flowplane supports team isolation through the Platform API:
 - Queryable via SQL for security investigations
 - Retention policy configurable per deployment
 
+## MCP & AI Agent Architecture
+
+Flowplane includes an MCP (Model Context Protocol) server that exposes control plane operations as AI-consumable tools. The MCP layer provides 60+ tools and 7 prompts for managing Envoy resources programmatically.
+
+Three built-in AI agents leverage MCP tools for different personas:
+- **Dev Agent** — Focuses on service onboarding, routing, and schema learning
+- **Ops Agent** — Handles listener management, TLS, and operational concerns
+- **DevOps Agent** — Combines both capabilities for full-stack gateway management
+
 ## Extension Points
 
 ### Adding HTTP Filters
@@ -288,7 +299,7 @@ The current implementation focuses on LDS (Listeners), RDS (Routes), CDS (Cluste
 |-----------|-----------|---------|
 | **HTTP Server** | Axum 0.7 | REST API framework with tower middleware |
 | **gRPC Server** | Tonic 0.12 | Envoy xDS protocol implementation |
-| **Database** | SQLx + SQLite/PostgreSQL | Configuration persistence, migrations |
+| **Database** | SQLx + PostgreSQL | Configuration persistence, migrations |
 | **Authentication** | Bearer tokens (SHA-256) | API security, scope enforcement |
 | **Observability** | tracing + prometheus | Logging, metrics, distributed tracing |
 | **API Documentation** | utoipa | Auto-generated OpenAPI 3.0 spec |
@@ -309,7 +320,7 @@ The current implementation focuses on LDS (Listeners), RDS (Routes), CDS (Cluste
 ### Long-term Exploration
 * **gRPC gateway support** – Proxy gRPC services with transcoding
 * **A2A protocol** – Application-to-application communication patterns
-* **MCP support** – Model Context Protocol integration
+* **MCP enhancements** – Extended Model Context Protocol tooling
 * **GraphQL gateway** – GraphQL → REST translation with schema stitching
 * **Policy engine** – OPA integration for advanced authorization
 * **Delta xDS** – Incremental configuration updates for scale

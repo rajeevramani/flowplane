@@ -80,7 +80,9 @@ The server starts with:
 
 ### 2. Bootstrap Authentication
 
-On first startup with an empty database, Flowplane displays setup instructions. Initialize the system by creating your admin account:
+On first startup with an empty database, Flowplane displays setup instructions. Initialize the system by creating your admin account.
+
+> **Note:** After bootstrapping, the platform admin creates an organization. Creating an org automatically provisions a default team (`{org-name}-default`). Resources (clusters, routes, listeners) belong to teams. The examples below use `my-org-default`, the auto-created default team for the `my-org` organization.
 
 ```bash
 # Initialize with your admin credentials
@@ -132,7 +134,31 @@ curl -X POST http://127.0.0.1:8080/api/v1/tokens \
 export FLOWPLANE_TOKEN="fp_pat_..."
 ```
 
-### 3. Verify API Access
+### 3. Create an Organization
+
+Create an organization — this automatically provisions a default team (`my-org-default`):
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/admin/organizations \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-org",
+    "displayName": "My Organization"
+  }'
+
+# Response:
+# {
+#   "id": "...",
+#   "name": "my-org",
+#   "displayName": "My Organization",
+#   "defaultTeam": "my-org-default"
+# }
+```
+
+The `my-org-default` team is ready to use immediately for creating resources.
+
+### 4. Verify API Access
 
 ```bash
 # Check health
@@ -154,7 +180,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/clusters \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "httpbin-cluster",
     "serviceName": "httpbin",
     "endpoints": [
@@ -175,7 +201,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "demo-routes",
     "virtualHosts": [
       {
@@ -208,7 +234,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/listeners \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "demo-listener",
     "address": "0.0.0.0",
     "port": 10000,
@@ -234,14 +260,29 @@ curl -X POST http://127.0.0.1:8080/api/v1/listeners \
   }'
 ```
 
-## Connecting Envoy
+### Create a Dataplane
 
-### Generate Bootstrap Configuration
+A dataplane represents an Envoy instance managed by Flowplane:
 
 ```bash
-# Get bootstrap config for your team
+curl -X POST http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "team": "my-org-default",
+    "name": "my-envoy",
+    "description": "Local development Envoy"
+  }'
+```
+
+## Connecting Envoy
+
+### Generate Envoy Configuration
+
+```bash
+# Get envoy config for your dataplane
 curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/teams/platform-admin/bootstrap > envoy-bootstrap.yaml
+  http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes/my-envoy/envoy-config > envoy-bootstrap.yaml
 ```
 
 ### Start Envoy
@@ -283,13 +324,13 @@ Access the dashboard at http://localhost:8080
 Import an OpenAPI specification to auto-generate resources:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=platform-admin" \
+curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=my-org-default" \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d @your-openapi-spec.json
 ```
 
-This creates clusters, routes, and optionally a listener from your API spec. The `platform-admin` team is created during bootstrap.
+This creates clusters, routes, and optionally a listener from your API spec.
 
 ## Environment Configuration
 

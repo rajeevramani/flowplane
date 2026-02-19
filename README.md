@@ -8,7 +8,9 @@
 
 ## What is Flowplane?
 
-Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API.
+Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API. Flowplane is designed for agent-operated workflows—AI agents can deploy, diagnose, and manage gateway configuration end-to-end via MCP tools.
+
+Resources are organized into **organizations** containing **teams**, providing multi-tenant isolation where each team manages its own gateway configuration independently.
 
 The platform addresses three challenges faced by teams operating Envoy proxies:
 
@@ -28,11 +30,15 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 - **xDS Server** - gRPC-based configuration server for Envoy proxies (ADS, LDS, RDS, CDS, EDS, SDS)
 - **REST API** - Management API for clusters, listeners, routes, filters, and secrets
 - **Web UI** - SvelteKit dashboard for resource management and monitoring
-- **Multi-tenant** - Team-based resource isolation with RBAC
+- **Multi-tenant** - Org → team hierarchy with RBAC and resource isolation
 - **HTTP Filters** - 15 filters including JWT Auth, OAuth2, Rate Limit, CORS, Header Mutation
 - **API Learning** - Infer API schemas from traffic via ExtProc and Access Logs
 - **Observability** - OpenTelemetry tracing, Prometheus metrics
 - **Security** - OAuth2, JWT, mTLS with Vault PKI integration
+- **Organization Multitenancy** - Orgs contain teams; org admins manage team membership and scopes
+- **Invite-only Registration** - Org admins invite users via tokens; no open signup
+- **Governance Admin** - Platform admins restricted to org/user management; cannot access tenant resources
+- **Dataplane Abstraction** - Envoy instances modeled as named dataplanes with gateway_host
 
 ### MCP & AI Agents
 
@@ -156,6 +162,14 @@ curl --request POST \
   "name": "Admin User"
 }'
 
+# Create an organization (platform admin only)
+# This auto-creates a default team named "my-org-default"
+curl --request POST \
+  --url http://localhost:8080/api/v1/admin/organizations \
+  --header 'authorization: Bearer TOKEN_FROM_INITIALIZE' \
+  --header 'content-type: application/json' \
+  --data '{"name": "my-org", "displayName": "My Organization"}'
+
 # Login
 curl --request POST \
   --url http://localhost:8080/api/v1/auth/login \
@@ -188,11 +202,11 @@ A **Dataplane** represents an Envoy proxy instance. Create one first, then gener
 ```bash
 # Create a dataplane
 curl --request POST \
-  --url http://localhost:8080/api/v1/teams/platform-admin/dataplanes \
+  --url http://localhost:8080/api/v1/teams/my-org-default/dataplanes \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   --header 'content-type: application/json' \
   --data '{
-  "team": "platform-admin",
+  "team": "my-org-default",
   "name": "default",
   "gatewayHost": "127.0.0.1",
   "description": "Default dataplane for local development"
@@ -200,7 +214,7 @@ curl --request POST \
 
 # Generate Envoy bootstrap config from the dataplane
 curl --request GET \
-  --url 'http://localhost:8080/api/v1/teams/platform-admin/dataplanes/default/bootstrap' \
+  --url 'http://localhost:8080/api/v1/teams/my-org-default/dataplanes/default/envoy-config' \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   > envoy.yaml
 
@@ -220,7 +234,7 @@ curl --request POST \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   --header 'content-type: application/json' \
   --data '{
-  "team": "platform-admin",
+  "team": "my-org-default",
   "name": "httpbin-cluster",
   "serviceName": "httpbin-service",
   "endpoints": [
@@ -241,7 +255,7 @@ curl --request POST \
   --header 'content-type: application/json' \
   --data '{
   "name": "httpbin-route",
-  "team": "platform-admin",
+  "team": "my-org-default",
   "virtualHosts": [
     {
       "name": "httpbin-vhost",
@@ -275,7 +289,7 @@ curl --request POST \
   "name": "httpbin-listener",
   "address": "0.0.0.0",
   "port": 10000,
-  "team": "platform-admin",
+  "team": "my-org-default",
   "dataplaneId": "DATAPLANE_ID_FROM_CREATE_RESPONSE",
   "protocol": "HTTP",
   "filterChains": [
@@ -382,6 +396,7 @@ graph TD
 - [Secrets Management (SDS)](docs/secrets-sds.md)
 - [Learning Gateway](docs/learning-manual/README.md)
 - [MCP Integration](docs/mcp.md)
+- [AI Agents](agents/README.md)
 
 ### Deployment
 - [Kubernetes](docs/deployment/kubernetes.md)
@@ -391,6 +406,9 @@ graph TD
 ### Architecture
 - [Architecture Overview](docs/architecture.md)
 - [Architecture Decision Records](docs/adr/README.md)
+
+### Contributing
+- [Contributing](CONTRIBUTING.md)
 
 ## Acknowledgments
 

@@ -201,7 +201,7 @@ spec:
 
 ## PostgreSQL StatefulSet
 
-For production, use PostgreSQL instead of SQLite:
+Flowplane requires PostgreSQL for persistent storage:
 
 ```yaml
 # postgres.yaml
@@ -305,7 +305,7 @@ spec:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FLOWPLANE_DATABASE_URL` | Database connection string | `sqlite://./data/flowplane.db` |
+| `FLOWPLANE_DATABASE_URL` | Database connection string | `postgresql://flowplane:password@localhost:5432/flowplane` |
 | `FLOWPLANE_DATABASE_MAX_CONNECTIONS` | Max pool connections | 10 |
 | `FLOWPLANE_DATABASE_MIN_CONNECTIONS` | Min pool connections | 0 |
 | `FLOWPLANE_API_PORT` | REST API port | 8080 |

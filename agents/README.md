@@ -143,5 +143,9 @@ Deployment complete! httpbin is now accessible at http://localhost:10001/
 ## Running Tests
 
 ```bash
-pytest agents/test_agent.py -v
+# Unit tests (no infrastructure needed)
+make test-agents
+
+# Full integration tests with Envoy (requires docker)
+make test-agents-envoy
 ```
